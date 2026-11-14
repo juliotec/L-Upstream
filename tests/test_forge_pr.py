@@ -206,26 +206,31 @@ class PR(unittest.TestCase):
         pr = self.forgejo.prs[1]
         self.assertEqual(pr["title"], "WIP: fix(menu): text cut off at 4K")
         self.assertTrue(pr["draft"])
-        # (no --body-file: the description starts from the template, with the commits filled in)
-        # (and If applicable down to the boxes the diff suggests: none for this one)
+        # (no --body-file: the description starts from the template, with the title's type and the commits filled
+        # in, and When it applies down to the boxes the diff suggests: none for this one)
         self.assertEqual(pr["body"], forge.desc.keep_applicable(
-            TEMPLATE.replace("main: <commit> (<date>)", "main: 7afe6ae1 (2026-11-10)")
-            .replace("this PR: <branch> @ <commit>", "this PR: fix @ 992a2420")
-            .replace("| | main @ <commit> | this PR @ <commit> |", "| | main @ 7afe6ae1 | this PR @ 992a2420 |"), []))
+            TEMPLATE.replace(TEMPLATE.split(" · ")[0], "**Type:** fix")
+            .replace("| | Before: main @ <commit> | After: this PR @ <commit> |",
+                     "| | Before: main @ 7afe6ae1 | After: this PR @ 992a2420 |"), []))
         self.assertIn("<what was measured>", pr["body"])
+        self.assertIn("## How to reproduce", pr["body"], "a fix")
         self.assertIn("pr ready 1", out)
+        self.assertEqual(self.run_forge("pr", "create", "fix", "--title", "perf(vk): faster")[0], 0)
+        body = self.forgejo.prs[2]["body"]
+        self.assertTrue(body.startswith("**Type:** perf · **Risk:** <low / medium / high>"), body[:60])
+        self.assertNotIn("## How to reproduce", body, "only a fix keeps it")
 
     def test_create_keeps_the_boxes_the_diff_suggests(self):
         self.forgejo.diffs[1] = "--- a/gpu/vk/vk_api.h\n+++ b/gpu/vk/vk_api.h\n@@ -1 +1 @@\n+x\n"
         self.assertEqual(self.run_forge("pr", "create", "fix", "--title", "fix: x")[0], 0)
-        lists = forge.desc.sections(forge.desc.sections(self.forgejo.prs[1]["body"])["Checklist"], "###")
-        self.assertEqual([item.split(" ")[0] for _, item in forge.desc.boxes(lists["If applicable"])],
+        lists = forge.desc.checklist(self.forgejo.prs[1]["body"])
+        self.assertEqual([item.split(" ")[0] for _, item in forge.desc.boxes(lists["When it applies"])],
                          ["`MKWVK_API_VERSION`", "A", "Host"])
         self.forgejo.diffs[5] = self.forgejo.diffs[1]
         self.forgejo.add(5, "WIP: fix: x", FILLED.replace("- [x] Docs updated.\n", ""))
         out = self.run_forge("pr", "status", "5")[1]
-        self.assertIn("Checklist, If applicable: 5 kept, 5 ticked", out)
-        self.assertIn("  hint: If applicable: the diff suggests '`MKWVK_API_VERSION` bumped", out)
+        self.assertIn("Checklist, When it applies: 6 kept, 6 ticked", out)
+        self.assertIn("  hint: When it applies: the diff suggests '`MKWVK_API_VERSION` bumped", out)
 
     def test_create_draft_is_the_default_and_wip_is_not_doubled(self):
         self.assertEqual(self.run_forge("pr", "create", "fix", "--title", "fix: x", "--draft", "--body", "b")[0], 0)
@@ -273,28 +278,28 @@ class PR(unittest.TestCase):
         self.forgejo.add(5, "WIP: fix: x", FILLED)["merge_base"] = "0123456789abcdef"
         self.forgejo.diffs[5] = DIFF
         out = self.run_forge("pr", "status", "5")[1]
-        self.assertIn("  note: the diff adds RX_VK_NEW_THING, which ## Flags and settings does not list", out)
+        self.assertIn("  note: the diff adds RX_VK_NEW_THING, which ### Flags and settings does not list", out)
         self.assertIn("  warning: measured on main 7afe6ae1", out)
         code, _, err = self.run_forge("pr", "ready", "5")
         self.assertEqual(code, 0, err)   # (the Flags note never stops it, nor does a warning)
-        self.assertIn("warning: the diff adds RX_VK_NEW_THING, which ## Flags and settings does not list", err)
+        self.assertIn("warning: the diff adds RX_VK_NEW_THING, which ### Flags and settings does not list", err)
         self.assertIn("warning: measured on main 7afe6ae1, but the PR is now on main 01234567", err)
         self.assertIn(("GET", "/repos/MagicBeanDev/Longshot/pulls/5.diff", None), self.forgejo.calls)
 
-    def test_ready_waits_for_the_test_requests(self):
-        body = FILLED.replace("(T-9MZ4)", "(request to open)")
-        self.forgejo.add(5, "WIP: fix: x", body)
+    def test_status_counts_what_must_be_tested(self):
+        self.forgejo.add(5, "WIP: fix: x", FILLED)
+        out = self.run_forge("pr", "status", "5")[1]
+        self.assertIn("Description: complete", out)
+        self.assertIn("Testing: Tested filled in, Not tested filled in; must be tested: 2 (1 for the Test Farm, 1 by "
+                      "hand)", out)
+        self.assertIn("Status line: Type: fix · Risk: low · Tested on: Linux, RX 6700 XT · Needs: Windows, NVIDIA; "
+                      "Steam Deck", out)
+        self.forgejo.prs[5]["body"] = FILLED.replace("(by hand: read each row's end, and the FPS counter's Dev level)", "")
         code, _, err = self.run_forge("pr", "ready", "5")
         self.assertEqual(code, 1)
-        self.assertIn("## Testing's 'Needs other testers:' still has a request to open: Steam Deck", err)
-        self.assertIn("scripts/test_requests.py request --pr", err)
-        self.assertNotIn("warning: ## Testing", err, "said once, as the reason")
-        self.assertIn("Description: complete but for 1 test request to open", self.run_forge("pr", "status", "5")[1])
+        self.assertIn("says not who runs it", err)
         self.forgejo.prs[5]["body"] = FILLED
         self.assertEqual(self.run_forge("pr", "ready", "5")[0], 0)
-        out = self.run_forge("pr", "status", "5")[1]
-        self.assertIn("Testing: Tested filled in, Not tested filled in; needs other testers: 2 (2 with a test request, "
-                      "0 to open)", out)
 
     def test_ready_force(self):
         self.forgejo.add(5, "WIP: fix: x", TEMPLATE)
@@ -406,7 +411,7 @@ class PR(unittest.TestCase):
         self.forgejo.add(5, "fix: x", FILLED)
         shot, kokiri, extra = (self.picture("main-21x9.png"), self.picture("kokiri.jpg", JPEG),
                                self.picture("extra.webp", WEBP))
-        text = ("Test request T-XXXX: pass\n\n![main at 21:9](attach:main-21x9.png)\n\n"
+        text = ("Tested on an RX 6700 XT: pass\n\n![main at 21:9](attach:main-21x9.png)\n\n"
                 "![Kokiri](attach:kokiri.jpg \"Kokiri Forest\") and again ![same](attach:main-21x9.png)\n")
         code, out, err = self.run_forge("pr", "comment", "5", "--body-file", self.file(text),
                                         "--attach", shot, kokiri, "--attach", extra)
@@ -422,7 +427,7 @@ class PR(unittest.TestCase):
         self.assertEqual([b["bytes"] for _, _, b in writes[1:4]], [PNG, JPEG, WEBP], "each file whole, once")
         # (posted first with the placeholders, the picture the text doesn't show added at the end; then edited)
         self.assertEqual(writes[0][2]["body"], text.rstrip() + "\n\n![extra.webp](attach:extra.webp)\n")
-        self.assertEqual(comment["body"], "Test request T-XXXX: pass\n\n![main at 21:9](%s)\n\n![Kokiri](%s \"Kokiri "
+        self.assertEqual(comment["body"], "Tested on an RX 6700 XT: pass\n\n![main at 21:9](%s)\n\n![Kokiri](%s \"Kokiri "
                          "Forest\") and again ![same](%s)\n\n![extra.webp](%s)\n"
                          % (ATTACHMENT % 1, ATTACHMENT % 2, ATTACHMENT % 1, ATTACHMENT % 3))
         self.assertEqual(out.splitlines(),
@@ -649,14 +654,14 @@ deleted file mode 100644
                                              "created_at": "2026-11-12T18:0%d:00Z" % i})
         code, out, _ = self.run_forge("pr", "status", "5")
         self.assertEqual(code, 0)
-        for want in ("work in progress", "to fix before pr ready", "For everyone: 0 of 10 ticked", "Mergeable: yes",
+        for want in ("work in progress", "to fix before pr ready", "Everyone: 0 of 10 ticked", "Mergeable: yes",
                      "Labels: needs measurements", "Reviews: bob approved", "Last comments (5 in all)", "comment 4"):
             self.assertIn(want, out)
         self.assertNotIn("carol", out)
         self.assertNotIn("comment 1", out)
         self.forgejo.add(6, "fix: y", FILLED)
         out = self.run_forge("pr", "status", "6")[1]
-        for want in ("ready for review", "Description: complete", "For everyone: 10 of 10 ticked", "Reviews: none"):
+        for want in ("ready for review", "Description: complete", "Everyone: 10 of 10 ticked", "Reviews: none"):
             self.assertIn(want, out)
 
     def test_status_mergeable_of_a_wip_pr(self):

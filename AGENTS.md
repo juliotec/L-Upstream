@@ -69,7 +69,7 @@ Never push to `forge`: Longshot's `main` takes reviewed pull requests only. `pr 
 <n>`, `pr list --mine` and `pr view <n> --comments` follow up ([docs/forge.md](docs/forge.md)).
 
 - **Work in progress until measured.** A PR opens as WIP (a `WIP:` title; `pr create` does it) and is marked ready
-  (`pr ready`) only when the Measurements have real numbers and every *For everyone* box is ticked. Don't `--force`
+  (`pr ready`) only when the Measurements have real numbers and every *Everyone* box is ticked. Don't `--force`
   it, and don't review a WIP PR. One that needs more work goes back (`pr wip <n>`).
 - **Take it out of WIP yourself once it is ready.** When the description check passes (`pr status <n>`) and the
   change is tested and measured, run `pr ready <n>` in the same session. Don't wait to be asked: nobody reviews a WIP
@@ -80,7 +80,7 @@ Never push to `forge`: Longshot's `main` takes reviewed pull requests only. `pr 
 - **The checklist is yours to keep true, on every update.** Each box is a statement about the PR as it is now, and
   every box is yours to settle, none is left for someone else by default. For each one, work out whether it holds:
   read the diff, run the check or the test it names, look at what was measured. Tick it when it holds, untick it when
-  a push makes it false, and delete an *If applicable* box that doesn't apply instead of marking it n/a. Go through
+  a push makes it false, and delete a *When it applies* box that doesn't apply instead of marking it n/a. Go through
   all of them again with every `pr update`.
 - **A box you can't settle yourself is a question for the person you work for, asked at once.** Say which box, what
   you found and what you need from them (a decision, a run on their hardware, a fact only they have), then update
@@ -92,20 +92,33 @@ Never push to `forge`: Longshot's `main` takes reviewed pull requests only. `pr 
 - **The title is a Conventional Commit** ([CONTRIBUTING.md](CONTRIBUTING.md#pull-request-titles)): it becomes the
   commit on `main` and decides the release. `pr create` refuses anything else.
 - **The description follows the [pull request template](.forgejo/pull_request_template.md)**, every section, the
-  whole *For everyone* list and only the *If applicable* boxes that apply, all ticked
-  ([CONTRIBUTING.md](CONTRIBUTING.md#commits-and-pull-requests)); `pr create` starts from it.
-- **The description opens with why the PR is needed**, in one or two plain sentences, and **includes screenshots
-  when the change shows on screen**.
+  whole *Everyone* list and only the *When it applies* boxes that apply, all ticked
+  ([CONTRIBUTING.md](CONTRIBUTING.md#commits-and-pull-requests)); `pr create` starts from it. The comments in the
+  template say what each part needs; in short:
+  - the **status line** first (type, risk, tested on, needs), so a reviewer sees the state at a glance;
+  - **Why** in plain words a player could follow. **Search the issue tracker** (`forge.py issue list`) and link
+    every issue that fits (`Fixes #N` / `See #N`);
+  - **How to reproduce** for a fix (seen on, steps, expected, actual); none for anything else;
+  - **What changed**: a two- or three-sentence summary, then the details by area;
+  - **Measurements**: the verdict first, then the table with each column's commit (`Before: main @ <hash>`, `After:
+    this PR @ <hash>`), or one line saying why there is nothing to measure; **Flags and settings** under it;
+  - **Testing**: tested, not tested, and what **must be tested** before merge, exactly where and how for someone
+    else, and whether the Test Farm (`@Beanstalk ...` on the PR) or a person by hand runs it. Never leave it unclear
+    what ran and what didn't;
+  - **Risks**, with **Compatibility** (saves, the options file, the caches, the vk ABI, the builder's tools);
+  - screenshots when the change shows on screen.
 - **It is tested and measured before it is marked ready.** Passing the checks is not enough on its own:
   - **Run the change in the game** and say where (the area, the GPU, the driver, the OS) and what you saw. If you
-    couldn't run it, say so, and leave it WIP until someone has, or ask for a
-    [test request](#test-requests).
+    couldn't run it, say so, and leave it WIP until someone has: the Test Farm (`@Beanstalk <what to test>` on
+    the PR) or a person by hand.
   - **A performance change carries numbers from the same scene before and after**, on the same build otherwise: fps
     or frame time, the log line it moves, memory where it is about memory. Several runs or an in-session A/B, since a
     single run each way varies more than most changes gain.
   - **A fix shows the bug gone:** the log line, the screenshot or the steps that failed before and pass now.
-  - **A new default** (a switch on for everyone, a preset, a limit) says which hardware it was measured on, and what
-    it costs where it wasn't.
+  - **A switch ships at its recommended value**, not off for its own sake: on by default when the measurements back
+    it, off when it is only for testing ([CONTRIBUTING.md](CONTRIBUTING.md#code-and-data-conventions)). A new default
+    (a switch on for everyone, a preset, a limit) says which hardware it was measured on, and what it costs where it
+    wasn't.
   - Add one self-contained file under `docs/tested/` for each new run you measured, using the
     [tested configurations](docs/tested-configurations.md) format. Existing rows stay frozen; do not append there or
     commit an assembled view.

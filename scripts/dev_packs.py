@@ -83,10 +83,11 @@ MODULES = ((("longshot.exe", "longshot.map", "objs.rsp", "host_hos_main.o"),
            (("longshot", None, "objs.rsp", "host_hos_main.o"), ("longshot_vk.so", None, "vk_objs.rsp", "vk_vk_menu.o")))
 GAME, RENDERER = MODULES[0][0], MODULES[1][0]
 STAMPED_SOURCES = ("host/hos_main.c", "gpu/vk/vk_menu.cpp")
-# (nx2/build.py's shader stamp: every file in gpu/vk/{eden,sirit,compat}/ and these four; tests/test_dev_packs.py checks they agree)
-STAMP_DIRS = ("eden", "sirit", "compat")
-STAMP_FILES = ("vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h")
-TRANSLATOR = tuple("gpu/vk/%s/" % d for d in STAMP_DIRS) + tuple("gpu/vk/" + f for f in STAMP_FILES)
+# (nx2/build.py's shader stamp is made of the files the checkout's own nx2/translator_files.py names (translator_changed); a
+# checkout from before that module stamped every file in gpu/vk/{eden,sirit,compat}/ and these four)
+OLD_TRANSLATOR = ("gpu/vk/eden/", "gpu/vk/sirit/", "gpu/vk/compat/", "gpu/vk/vk_shader.cpp", "gpu/vk/vk_bank.cpp",
+                  "gpu/vk/vk_state.h", "gpu/vk/vk_api.h")
+TRANSLATOR_FILES = "nx2/translator_files.py"
 RENDERER_ONLY = ("gpu/vk/", "third_party/imgui/", "third_party/fidelityfx")
 INCLUDE = re.compile(r'#\s*include\s+"([^"]+)"')
 NO_MODULE = ("docs/", "tests/", ".github/", ".forgejo/", ".claude/")   # (.forgejo: Longshot's workflows and templates)
@@ -100,6 +101,18 @@ WRITTEN_IN_PLAY = ("longshot_options.ini", "longshot_log.txt", "longshot_log.1.t
                    "longshot_pipelines.bin.built.warming", "longshot_prepare_skipped", "longshot_load_start.txt",
                    "longshot_load_start.txt.waited", "longshot_pipeline_report.txt", "longshot_frames.csv",
                    "longshot_damaged_files.txt")
+
+
+def translator_changed(tree, changed):
+    """Whether the shader stamp of the checkout tree's build differs from its base's, given the files changed since (paths
+    relative to the checkout, / separated): a stamped file, or what says which files are stamped"""
+    path = os.path.join(tree, *TRANSLATOR_FILES.split("/"))
+    if not os.path.isfile(path):
+        return any(p.startswith(OLD_TRANSLATOR) for p in changed)
+    spec = importlib.util.spec_from_file_location("translator_files_for_packs", path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return any(m.stamped(p) or p == TRANSLATOR_FILES for p in changed)
 
 
 def load_make_game(root=ROOT):
@@ -288,9 +301,30 @@ def clear_output(game):
             os.remove(p)
 
 
+def object_store():
+    """(nx2/object_store.py) The object store every base and pack on this PC shares, unless LONGSHOT_OBJ_STORE names another (or
+    is empty or 0: none): a new base compiles only what no earlier one did. In the user's cache folder; on another drive than the
+    bases its objects are copied instead of linked, so set LONGSHOT_OBJ_STORE to a folder on the bases' drive"""
+    if os.name == "nt":
+        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Longshot", "objects")
+    return os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "longshot-objects")
+
+
+def lift_store():
+    """(nx2/lift_store.py) The translations every base and pack on this PC share, unless LONGSHOT_LIFT_STORE names another (or is
+    empty or 0: none): a new base or a first pack translates the game only when the translator, the hot list or the game
+    changed. Copies are clones where the file system has them (btrfs, XFS), full copies elsewhere"""
+    if os.name == "nt":
+        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Longshot", "lifts")
+    return os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "longshot-lifts")
+
+
 def run(cmd, cwd, env=None):
     print("+ " + " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=cwd, check=True, env=dict(os.environ, **(env or {})))
+    e = dict(os.environ, **(env or {}))
+    e.setdefault("LONGSHOT_OBJ_STORE", object_store())
+    e.setdefault("LONGSHOT_LIFT_STORE", lift_store())
+    subprocess.run(cmd, cwd=cwd, check=True, env=e)
 
 
 def base_env(predict_s):
@@ -299,6 +333,15 @@ def base_env(predict_s):
     RX_VK_PREDICT_S). For development only: a player's build prepares them all. 0 (the default) changes nothing. Given to the
     game's prepare only, never to make_game.py: its lift key hashes every RX_ variable"""
     return {"RX_VK_PREDICT_S": str(predict_s)} if predict_s > 0 else {}
+
+
+def renderer_profile(base_work, environ):
+    """The renderer's play profile for a pack of the renderer alone: the one make_game.py gave the base's build
+    (<base work>/longshot_vk.profdata, by the same path, so the base's objects are found again), since nx2/build.py run by
+    itself uses none and the pack's renderer would then differ from the base's by more than the change. Nothing when the base
+    had none, or when RX_VK_PGO is set (a counting pack, or another profile)"""
+    prof = os.path.join(base_work, "longshot_vk.profdata")
+    return {"RX_VK_PGO": prof} if not environ.get("RX_VK_PGO") and os.path.isfile(prof) else {}
 
 
 PREPARE_FAILED = {3: "no usable Vulkan here", 4: "the GPU driver stopped responding"}   # (make_game.py prepare_shaders' codes)
@@ -486,7 +529,8 @@ def cmd_pack(a):
     elif how == "renderer":
         link_objects(b["work"], w["renderer_work"])
         run([sys.executable, "-I", "nx2/build.py", "--standalone"], tree,
-            {"OOT_WORK": w["renderer_work"], "RX_RELEASE": "1", "RX_VK_ONLY": "1", "LONGSHOT_KEEP_BUILD_FILES": "1"})
+            dict({"OOT_WORK": w["renderer_work"], "RX_RELEASE": "1", "RX_VK_ONLY": "1", "LONGSHOT_KEEP_BUILD_FILES": "1"},
+                 **renderer_profile(b["work"], os.environ)))
         built, kinds = os.path.join(w["renderer_work"], "sa", "build"), MODULES[1:]
     else:
         built, kinds = None, ()
@@ -503,7 +547,7 @@ def cmd_pack(a):
             dst = os.path.join(pack, "files", rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(os.path.join(w["game_out"], rel), dst)
-    prepare = any(p.startswith(TRANSLATOR) for p in changed) or SEED in extra
+    prepare = translator_changed(tree, changed) or SEED in extra
     if a.prepare is not None:
         prepare = a.prepare
     with open(os.path.join(pack, "pack.json"), "w", encoding="utf-8") as f:

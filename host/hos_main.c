@@ -129,23 +129,17 @@ static int reserve_guest(void) {
     hos_space_end = (uint64_t)(uintptr_t)&__global_base & ~0xFFFFULL;
     return hos_space_end >= (1ULL << 30);
 #elif defined(_WIN32)
-    /* Committed but untouched pages cost no physical memory. Write-watched: the renderer's buffer cache asks which
-       pages changed (GetWriteWatch) so that it uploads only those (soft write watch builds mark pages themselves). */
-#if defined(A64_WRITE_TRACK)
-    const DWORD watch = 0;
+    /* Committed but untouched pages cost no physical memory. Not write-watched: lifted stores and host writes mark
+       their pages themselves (the soft write watch, rt/a64.h A64_MARK), and the renderer reads those marks. */
     if (env_on("HOS_LARGE_PAGES") && reserve_large(GUEST_SPACE) == (void *)A64_HOST_BASE) {
         hos_large_pages = 1;
         hos_log("mem: the guest window is in large pages (%llu MB)", (unsigned long long)(GUEST_SPACE >> 20));
         return 1;
     }
-#else
-    const DWORD watch = MEM_WRITE_WATCH;
-#endif
-    /* mkw-recomp: 512 GB reserved (write-watched: the renderer's change tracking, a 16 MB bitmap), committed as the
-       runtime hands memory out (hos_commit) or on first touch */
+    /* mkw-recomp: 512 GB reserved, committed as the runtime hands memory out (hos_commit) or on first touch */
     void hos_commit_init(void);
     hos_commit_init();
-    return VirtualAlloc((void *)A64_HOST_BASE, GUEST_SPACE, MEM_RESERVE | watch, PAGE_NOACCESS) == (void *)A64_HOST_BASE;
+    return VirtualAlloc((void *)A64_HOST_BASE, GUEST_SPACE, MEM_RESERVE, PAGE_NOACCESS) == (void *)A64_HOST_BASE;
 #else
     /* (linux) the whole window readable and writable at once, its pages made as they are first touched (no commit
        step: MAP_NORESERVE). Decommitting is madvise (host/posix/win32_posix.c VirtualFree): the pages read as zero. */
@@ -1419,13 +1413,17 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
 }
 #endif
 
-int hos_oot_flight_shortcut_ready(void) {
+int hos_oot_player_seen(void) {
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     const int64_t seen = __atomic_load_n(&flight_player_seen, __ATOMIC_RELAXED);
     return seen && hos_now_ns() - seen < 250000000;
 #else
     return 0;
 #endif
+}
+
+int hos_oot_flight_shortcut_ready(void) {
+    return hos_oot_player_seen();
 }
 
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
@@ -1648,13 +1646,6 @@ float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
 volatile uint32_t hos_wide_keep_mask = 0xf;   /* (nx2/oot_wide.py KEEP_VTABLES: the screens that keep the whole picture, a bit each; MkwVkHost.wide_menus) */
-/* (nx2/oot_occlusion.py) read by the game's code where it decides to make occlusion queries: 1, none (LONGSHOT_OCCLUSION_OFF=1) */
-volatile int hos_occlusion_off;
-static void occlusion_switch(void) {
-    const char *e = getenv("LONGSHOT_OCCLUSION_OFF");
-    hos_occlusion_off = e && e[0] == '1';
-    if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (LONGSHOT_OCCLUSION_OFF=1)");
-}
 /* (issues 1241, 2838) Swap can keep a small Linux PC from running out of backing storage without keeping it responsive.
    Warn below the existing 10 GiB floor in physical RAM there too; this is not a promise that 10 GiB is enough.
    The game starts anyway, and headless runs only log the warning. Windows keeps its commit-limit check. */
@@ -1761,7 +1752,6 @@ static int game_main(int argc, char **argv) {
     }
     load_longshot_env();
 #endif
-    occlusion_switch();
     {
         const char *protect_hearts = getenv("HOS_OOT_PROTECT_HEARTS");
         hos_oot_protect_hearts = protect_hearts && !strcmp(protect_hearts, "1");
@@ -1774,6 +1764,7 @@ static int game_main(int argc, char **argv) {
         if (set && !env_on("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
     }
 #endif
+    void hos_crash_record_prepare(const char *log_path);
     {   // (started from its icon the game has nowhere to log to: longshot_log.txt in the game folder's logs/ (host/game_layout.c), for players to send in)
 #ifdef _WIN32
         {   /* (started again by the Insert menu's Restart now (host/hos_relaunch.c): the run before still has its log open until
@@ -1796,6 +1787,8 @@ static int game_main(int argc, char **argv) {
                 memcpy(path + n, "logs", 5);
                 if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) path[n + 4] = path[n - 1], n += 5;
             }
+            memcpy(path + n, "longshot_log.txt", 17);
+            hos_crash_record_prepare(path);   /* recovery before rotation; keep this run's actual destination */
             /* (the four runs before stay as longshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
                crash sent in the new run's log, and the crash was gone) */
             char from[MAX_PATH + 32], to[MAX_PATH + 32];
@@ -1805,15 +1798,18 @@ static int game_main(int argc, char **argv) {
                 memcpy(to, path, n), snprintf(to + n, 32, "longshot_log.%d.txt", k);
                 MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING);
             }
-            memcpy(path + n, "longshot_log.txt", 17);
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)
             startup_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
 #endif
             if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
-        }
+        } else hos_crash_record_prepare(NULL);   /* an externally supplied stderr, not the game's log */
     }
     hos_log("longshot %s", LONGSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    const char *hos_report_run_id(void);
+    hos_log("run_id: %s", hos_report_run_id());
     hos_game_layout_log();
+    void hos_crash_record_log_notes(void);
+    hos_crash_record_log_notes();
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(LONGSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
@@ -1886,6 +1882,10 @@ static int game_main(int argc, char **argv) {
         return 2;
     }
     if (env_on("HOS_TRACE")) hos_trace = 1;
+    if (env_on("HOS_HLE_STATS")) {
+        void hos_hle_stats_start(void);
+        hos_hle_stats_start();
+    }
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
     if (!reserve_guest()) {
@@ -2024,6 +2024,8 @@ static int game_main(int argc, char **argv) {
     }
     call_guest(c, hos_entry_nnMain, sp, "nnMain");
     hos_log("nnMain returned");
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
     return 0;
 }
 
@@ -2034,7 +2036,10 @@ static int game_argc;
 static char **game_argv;
 static DWORD WINAPI game_thread(void *p) {
     (void)p;
-    ExitProcess((UINT)game_main(game_argc, game_argv));
+    const UINT result = (UINT)game_main(game_argc, game_argv);
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
+    ExitProcess(result);
 }
 /* (longshot, linux) Room in the drivers' own shader caches for what the preparation builds. The pipelines the notes predict (~43,000
    in OoT, vk_draw.cpp predict_run) are built into the driver's disk cache alone, not into longshot_vk_pipelines.bin, which is read in whole

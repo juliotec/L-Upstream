@@ -260,8 +260,11 @@ for scripted input, screenshots, frame dumps and profiles are in the development
   deliberate refresh from upstream, say so in the part's note and run `python -I scripts/check_third_party.py --update
   <part>` in the same commit.
 - Treat local mkw-recomp and Eglantine checkouts as read-only references.
-- New switches use `RX_` in the renderer and `HOS_` in the runtime. They are off or neutral unless asked for, cost
-  nothing while off, and are documented beside the switches around them.
+- New switches use `RX_` in the renderer and `HOS_` in the runtime. A change that should have one (to A/B it, to turn
+  it off, to roll it back) gets one, and it ships at its **recommended** value: on by default when that is what you
+  recommend and the measurements back it, off when it is only for testing or not yet measured enough; never off just
+  because it is new. It costs nothing while off, and it is documented beside the switches around them. The PR's
+  *Flags and settings* says its value before and after, and why.
 - The GPU replay rules in [design notes, section 4](docs/design.md#4-the-lessons-from-mkw-as-rules-here) are not
   suggestions: nothing the replay reads may come from live guest memory, waits are honoured per queue, and texture and
   sampler registrations stay in submission order.
@@ -292,36 +295,36 @@ python -I scripts/forge.py pr create fix/arc-walls --title "fix(vk): walls missi
 1. Name the branch for the change: `fix/...`, `linux/...`, `builder/...`, `docs/...`. One topic per pull request: a fix
    doesn't carry a refactor, and two unrelated fixes are two PRs.
 2. Write the title as a Conventional Commit ([below](#pull-request-titles)).
-3. Fill in the description from [the pull request template](.forgejo/pull_request_template.md): the web page puts it in the box,
-   and `forge.py pr create` starts from it when you give no `--body-file`, with the commits filled in. Each heading
-   says in a line what a good answer looks like:
-   - **Why**: the problem or goal a player would notice, in one or two sentences ("The menu's text is cut off at 4K");
-   - **What changed**: bullets by area, with the files and functions a reviewer should read;
-   - **Flags and settings**: a note for reviewers and testers, not a gate: a row per switch, menu row, ini key or
-     build flag added or changed (what it does, its default, your recommendation: on by default, off by default or
-     on after more testing, with why; where it helps, where it doesn't and where it is untested), or "None";
-   - **Measurements**: `main` and this PR, each at its commit, the hardware, the scene, the method, how to reproduce
-     it, the table and the log lines ([what counts](#measurements));
-   - **Testing** (the [template](.forgejo/pull_request_template.md)'s section), in three parts: **Tested** (what you ran and checked, where and how, including what you checked
-     but didn't measure), **Not tested** (what the PR could affect that nobody has run yet, and why) and **Needs other
-     testers** (a line per thing you can't test yourself: what to check, the result expected, and its
-     [test request](docs/test-requests.md); "None" if you covered everything). The PR goes ready only once those test
-     requests are open;
-   - **Screenshots** when it shows on screen, from the same spot (a screenshot of the game is fine: the rule above is
-     about game files);
-   - **Risk and rollback**: what could break, and how to turn it off or revert it; **Reviewer notes** if any;
-   - `Fixes #123` (one line per issue) closes the issue when the PR merges; `See #123` keeps it open;
-   - the **checklist**: the whole *For everyone* list, every box ticked; from *If applicable*, only the boxes that
+3. Fill in the description from [the pull request template](.forgejo/pull_request_template.md): the web page puts it
+   in the box, and `forge.py pr create` starts from it when you give no `--body-file` (the type from the title, How to
+   reproduce only for a fix, the commits in the Measurements' columns). The comment under each heading says what a
+   good answer looks like; in short:
+   - the **status line** first: type, risk, where it was tested and where it still needs testing;
+   - **Why**, in plain words a player could follow, with the issues that fit linked (search the tracker first);
+   - **How to reproduce**, for a fix only: where it was seen, the steps, expected against actual;
+   - **What changed**: a two- or three-sentence summary, then the details by area, naming files and functions;
+   - **Measurements**: the verdict first, then the setup and a table whose columns name their commits
+     ([what counts](#measurements)), or one line saying why there is nothing to measure. Its **Flags and settings**
+     says "None", or gives each switch, menu row, ini key or build flag added or changed: its value before and after
+     this PR, its effect, where it helps, and your recommendation;
+   - **Testing**: what was tested (where and how), what wasn't (and why), and what **must be tested** before merge:
+     exactly where (OS, GPU, driver, or a Test Farm tag), the steps for someone else, the result to expect, and who
+     runs it: the Test Farm (Beanstalk: a `@Beanstalk <what to test>` comment on the PR) or a person by hand ("None"
+     when you covered everything);
+   - **Risks**: what could break, how to turn it off, and its **Compatibility** (saves, `longshot_options.ini`, the
+     shader and pipeline caches, the vk ABI, the builder's tools);
+   - **Issues**: `Fixes #123` closes the issue on merge, `See #123` links it; delete the section when there is none;
+   - the **checklist**: the whole *Everyone* list, every box ticked; from *When it applies*, only the boxes that
      apply to this PR, ticked (delete the rest: a box kept means it applies, so it must be done). `pr create` keeps
      the ones the diff suggests, and the check warns when the diff suggests one that isn't there.
      The author keeps it true: check each box against the PR as it is now, and again after every push (tick what
-     holds, untick what no longer does, delete what stopped applying). A *For everyone* box that can't be true yet
+     holds, untick what no longer does, delete what stopped applying). An *Everyone* box that can't be true yet
      stays unticked with the reason beside it, and the PR stays WIP.
      Every box is the author's to settle: work it out from the diff, the tests and the runs, and ask the person you
      work for only about what you can't settle yourself.
 4. **A pull request is work in progress until it is measured and ready for review.** On Forgejo that is a title
    starting with `WIP:` (or `[WIP]`). `pr create` opens it so (`--ready` when the description is complete already);
-   `pr ready <n>` marks it ready once the Measurements have real numbers and every *For everyone* box is ticked, and
+   `pr ready <n>` marks it ready once the Measurements have real numbers and every *Everyone* box is ticked, and
    refuses until then (the same check runs on every pull request: `scripts/check_pr_description.py`). Reviewers
    don't review a WIP pull request. One that turns out to need more work goes back to WIP (`pr wip <n>`); one without
    measurements also gets the label `needs measurements`.
@@ -349,14 +352,14 @@ the [pull request template](.forgejo/pull_request_template.md):
 | `build`, tools | time or size on `main` and with this PR, or test output |
 | `docs`, `test` only | test output on `main` and with this PR (a new test failing on `main` is the best proof) |
 
-Every number says plainly what it was measured on. The columns are `main @ <hash>` and `this PR @ <hash>` (`main @
-7afe6ae1`, `this PR @ 992a2420`), never a bare Before and After, and the same names caption the screenshots. One
-column is the change, the other the baseline it is compared with. When something else is compared, each column says
-exactly what, with its hash: `this PR @ 992a2420, RX_VK_X=0` against `this PR @ 992a2420, RX_VK_X=1`, or a build by
-its name (`nightly @ 55b976c0`, `nightly-123-abcd1234`). Then a `Baseline: <its column>` line says which one is the
-baseline, and a line says why `main` against this PR wasn't the comparison. A Δ column is optional; its sign is the
-change against the baseline. When the PR is rebased onto a newer `main`, measure again, or say why the numbers still
-hold.
+Every number says plainly what it was measured on. The section starts with a **Verdict:** line: did it help, by how
+much, did it pass. The table's columns name what was run with its commit, `Before: main @ <hash>` and `After: this PR
+@ <hash>` (`pr create` fills both in), never a bare Before and After, and the same names caption the screenshots. Add
+a column when a variant matters: `After, RX_VK_X=0: this PR @ 992a2420`. A Δ column is optional; its sign is the change
+against the before column. When the before column isn't `main` (or the after column isn't this PR), a `Baseline:` line
+says what it is and why `main` against this PR wasn't the comparison. When the PR is rebased onto a newer `main`,
+measure again, or say why the numbers still hold. A change with nothing to measure (docs only, a script with its own
+tests) says so in one line, and that line is the whole of it.
 
 For the two sides to compare:
 
@@ -369,18 +372,18 @@ For the two sides to compare:
 The numbers come from the FPS counter's **Breakdown** or **Dev** level (Insert menu, Gameplay), the `fps` lines of
 `longshot_log.txt`, `RX_VK_DRAW_STATS`, or a test. A filled-in Measurements section, from a real run (a
 full one also names the driver, CPU, RAM, the settings and where each number comes from). This one compares against
-another baseline, so it names it:
+another baseline, so it says so:
 
 ```
-Baseline: nightly @ 55b976c0 (last nightly before #2602)
-main: 87991bc8 (2026-11-12), with #2602
-#2602 had merged already, so this is main against the last nightly before it; main also carried about 50 other merges.
-Hardware: RTX 3080, Windows 11
-Scene: the player character in a demanding outdoor area, uncapped
-Method: 120 s each after a warm-up, two interleaved pairs (nightly, main, nightly, main)
+**Verdict:** faster: +31% fps and 4.15 ms off the median frame time, the readback waits gone.
+
+Baseline: nightly @ 55b976c0, the last nightly before #2602: #2602 had merged already, so this is main against it; main also carried about 50 other merges.
+Hardware: Windows 11, RTX 3080
+Scene: the player character in a demanding outdoor area, Ultra preset, uncapped
+Method: fps and frame time from the FPS counter's Breakdown, 120 s each after a warm-up, two interleaved pairs (nightly, main, nightly, main), the median
 How to reproduce: a save in that same outdoor area, Ultra preset, the FPS counter at Breakdown
 
-| | nightly @ 55b976c0 (last nightly before #2602) | main @ 87991bc8 (with #2602) | Δ |
+| | Before: nightly @ 55b976c0 | After: main @ 87991bc8 (with #2602) | Δ |
 |---|---|---|---|
 | fps (run 1 / run 2) | 59.7 / 60.8 | 78.4 / 79.3 | +31% |
 | median frame time | 16.35 ms | 12.2 ms | -4.15 ms |
@@ -427,7 +430,7 @@ Performance, and so on (`ci` and `chore` are left out). The details are in [docs
 [docs/releases.md](docs/releases.md).
 
 AI assistance is recorded with `Assisted-by:` and `Co-Authored-By:` trailers where the account allows it: if you
-used a tool, add the trailers that describe it (the template's box is under *If applicable*, since some maintainer
+used a tool, add the trailers that describe it (the template's box is under *When it applies*, since some maintainer
 accounts add no attribution); if you wrote the change yourself, there is nothing to add.
 
 ## Licensing

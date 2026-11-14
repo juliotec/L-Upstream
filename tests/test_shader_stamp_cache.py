@@ -5,6 +5,7 @@ An alternate --build-script permits the same regression to exercise an older pro
 import argparse
 import ast
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import sys
@@ -51,6 +52,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "gpu/vk/vk_fsr4.cpp": "int fsr;\n",
             "gpu/vk/vk_ngx_msvc_rt.cpp": "int msvc_rt;\n",
             "host/mingw_msvc_shims.c": "int shims;\n",
+            "host/pgo_rt.c": "int pgo_rt;\n",
             "gpu/vk/eden/translate.cpp": "int translator;\n",
             "gpu/vk/eden/ir.h": "struct IR {};\n",
             "gpu/vk/sirit/src/sirit.cpp": "int sirit;\n",
@@ -91,8 +93,15 @@ class ShaderStampCacheTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(text.encode())
         self.code = production_code(BUILD_SCRIPT)
+        # (the stamp's own module beside the build script, nx2/translator_files.py: the branch calls it for LONGSHOT_SHADER_STAMP)
+        stamp_module = BUILD_SCRIPT.parent / "translator_files.py"
+        self.translator_files = None
+        if stamp_module.exists():
+            spec = importlib.util.spec_from_file_location("translator_files_under_test", stamp_module)
+            self.translator_files = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.translator_files)
 
-    def jobs(self, linux, version="fixture", release=False, ngx="", mingw="llvm-mingw", fsr=False):
+    def jobs(self, linux, version="fixture", release=False, ngx="", mingw="llvm-mingw", fsr=False, pgo=""):
         namespace = {
             "os": os, "hashlib": hashlib,
             "GPU": str(self.root / "gpu"), "POSIX": str(self.root / "host/posix"), "HOST": str(self.root / "host"),
@@ -113,8 +122,10 @@ class ShaderStampCacheTests(unittest.TestCase):
             "NGX_SDK": ngx,   # ("": no NVIDIA NGX SDK, vk_dlss.cpp built without DLSS, as by default)
             "NGX_MSVC_RT": "vk_ngx_msvc_rt.cpp",
             "FSR": fsr,   # (LONGSHOT_FSR=1: vk_fsr4.cpp built with AMD FSR 4)
+            "translator_files": self.translator_files,
         }
-        with mock.patch.dict(os.environ, {"RX_RELEASE": "1"} if release else {}, clear=True), warnings.catch_warnings():
+        environ = dict({"RX_RELEASE": "1"} if release else {}, **({"RX_VK_PGO": pgo} if pgo else {}))   # (pgo: gen, or a profile)
+        with mock.patch.dict(os.environ, environ, clear=True), warnings.catch_warnings():
             # The production key/header helpers use short-lived open(...).read() expressions.
             warnings.simplefilter("ignore", ResourceWarning)
             exec(self.code, namespace)
@@ -217,6 +228,56 @@ class ShaderStampCacheTests(unittest.TestCase):
                 self.assertEqual(set(fsr), set(plain))   # (no other files: AMD's headers alone, nothing linked)
                 self.assertEqual({n for n, j in fsr.items() if "-DLONGSHOT_FSR" in j["flags"]}, {"gpu/vk/vk_fsr4.cpp"})
                 self.assertEqual(self.changed(plain, fsr), {"gpu/vk/vk_fsr4.cpp"})
+
+    # (RX_VK_PGO, after ProjectReLink: the back end's own files, not Eden's recompiler, sirit, Dear ImGui, the fonts, zstd or the
+    # POSIX calls)
+    def own(self, jobs):
+        return {n for n in jobs if n.startswith(("gpu/vk/vk_", "gpu/third_party/suyu/"))}
+
+    def test_no_profile_is_the_build_as_it_was(self):
+        for linux in (False, True):
+            with self.subTest(linux=linux):
+                plain = self.jobs(linux)
+                self.assertNotIn("host/pgo_rt.c", plain)
+                self.assertFalse([n for n, j in plain.items() if any(f.startswith(("-fprofile", "-DPGO_ENV", "-DLONGSHOT_VK_PROFILE")) for f in j["flags"])])
+
+    def test_counting_reaches_only_the_back_ends_own_files_and_adds_the_writer(self):
+        for linux in (False, True):
+            with self.subTest(linux=linux):
+                plain = self.jobs(linux)
+                with mock.patch("builtins.print"):
+                    gen = self.jobs(linux, pgo="gen")
+                own = self.own(plain)
+                self.assertIn("gpu/vk/vk_draw.cpp", own)
+                self.assertIn("gpu/third_party/suyu/video_core/textures/astc.cpp", own)
+                self.assertEqual(set(gen) - set(plain), {"host/pgo_rt.c"})   # (the counters' writer, the module's own copy)
+                self.assertEqual({n for n, j in gen.items() if "-fprofile-instr-generate" in j["flags"]}, own)
+                self.assertEqual(self.changed(plain, {n: gen[n] for n in plain}), own)
+                writer = gen["host/pgo_rt.c"]["flags"]
+                self.assertIn('-DPGO_ENV="RX_VK_PGO_FILE"', writer)   # (not HOS_PGO: that one is the game module's)
+                self.assertNotIn("-fprofile-instr-generate", writer)
+                self.assertEqual("-fPIC" in writer, linux)
+                self.assertEqual("-I" + str(self.root / "host/posix") in writer, linux)   # (its windows.h on Linux)
+
+    def test_a_profile_reaches_only_the_back_ends_own_files_by_its_contents(self):
+        profile = self.root / "work/longshot_vk.profdata"
+        profile.parent.mkdir()
+        for linux in (False, True):
+            with self.subTest(linux=linux):
+                plain = self.jobs(linux)
+                own = self.own(plain)
+                profile.write_bytes(b"one")
+                with mock.patch("builtins.print"):
+                    first = self.jobs(linux, pgo=str(profile))
+                    again = self.jobs(linux, pgo=str(profile))
+                    profile.write_bytes(b"two")
+                    second = self.jobs(linux, pgo=str(profile))
+                self.assertEqual(set(first), set(plain))   # (no writer: nothing counts)
+                self.assertEqual({n for n, j in first.items() if "-fprofile-instr-use=" + str(profile) in j["flags"]}, own)
+                self.assertFalse([n for n, j in first.items() if "-fprofile-instr-generate" in j["flags"]])
+                self.assertEqual(self.changed(plain, first), own)
+                self.assertEqual(self.changed(first, again), set())
+                self.assertEqual(self.changed(first, second), own)   # (the same path, another profile: built again)
 
 
 class NgxSdkTests(unittest.TestCase):

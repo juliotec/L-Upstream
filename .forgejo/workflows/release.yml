@@ -11,8 +11,8 @@
 #    A tag whose commit CI has released already (its nightly; for a stable, its release candidate) names that release in
 #    `checked` (scripts/release.py released-as: published, its SHA256SUMS signed by a key the launcher trusts and naming its
 #    every file; one that is not stops the run). Its run passed every check of the commit, so the build checks that ship
-#    no file are not run again. Its files are not reused: each carries its version (the AppImage's VERSION and Vulkan back
-#    end, the zip's VERSION and builder), and a release never ships a file that names another version.
+#    no file are not run again. Its files are not reused: each carries its version (the AppImage's VERSION, the zip's
+#    VERSION and builder), and a release never ships a file that names another version.
 # 2. linux, windows: Longshot-<v>-x86_64.AppImage and LongshotBuilder-<v>-windows-x64.zip (build-linux.yml, build-windows.yml).
 # 3. publish: SHA256SUMS over the files and tools.lock, SHA256SUMS.sig (the release key), the notes (git-cliff, cliff.toml),
 #    then a draft release with every file, published last: until then no launcher sees it. A nightly also prunes the

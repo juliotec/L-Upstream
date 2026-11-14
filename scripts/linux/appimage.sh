@@ -9,10 +9,12 @@
 #                                   the Longshot Launcher installs (docs/releases.md)
 # The same image builds the game and, with --play, starts the one it saved.
 #
-# The tools this build itself uses (clang for the Vulkan back end, the headers, the sysroot for the check below) are
-# tools.lock's, installed into build-linux/tools ($TOOLS) by scripts/tools.py install, as the builder installs them.
+# The tools this build itself uses (clang for the native helpers, the sysroot for the check below) are tools.lock's, installed
+# into build-linux/tools ($TOOLS) by scripts/tools.py install, as the builder installs them.
 # work/ (hot_funcs.txt, hot_order.txt, longshot_pieces.prof, image/chunks.txt: addresses and counts from playing, no game
-# code) is carried along when it is there.
+# code; longshot_vk.profdata: a developer's own renderer profile, used in place of the committed assets/profiles/ one) is carried
+# along when it is there. No Vulkan back end is built here: every player's build compiles it from the sources carried below, for
+# that PC's CPU and with the renderer's play profile, with or without DLSS and FSR 4 (one way to build it).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
@@ -29,13 +31,6 @@ TOOLS=${TOOLS:-$B/tools}
 export EMSDK=$TOOLS/usr/lib/longshot/emsdk RX_CPM=$TOOLS/usr/share/longshot/cpm
 S=$TOOLS/usr/lib/longshot/sysroot
 
-# ---- the Vulkan back end, built here once (it needs no game) ----
-VKW=$B/vk-work
-rm -rf "$VKW/sa/build/longshot_vk.so"
-OOT_WORK=$VKW RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 "$PY" -I nx2/build.py --standalone --jobs "${JOBS:-$(nproc)}"
-VK=$VKW/sa/build/longshot_vk.so
-[ -f "$VK" ] || { echo "longshot_vk.so was not built"; exit 1; }
-
 # ---- the tools' native helpers, built now: the AppImage is read-only. a64emit with its C++ runtime inside (the one this system
 # builds with is newer than older systems have), and the stamp build_emit.py checks, so it is not built again ----
 E=third_party/a64-kit/lift
@@ -46,9 +41,8 @@ E=third_party/a64-kit/lift
 "$PY" -I -c "import sys; sys.path.insert(0, 'nx2'); import zbic; zbic.lib()"
 
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/share/longshot" "$APPDIR/usr/lib/longshot"
+mkdir -p "$APPDIR/usr/share/longshot"
 T=$APPDIR/usr/share/longshot
-L=$APPDIR/usr/lib/longshot
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
 cp -a nx2 host scripts LICENSE README.md assets tools.lock "$T/"
@@ -63,16 +57,17 @@ for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_/]+[.]h' host | sort -u); do if [ -f "$
 cp -a third_party/opus "$T/third_party/"
 cp -a third_party/kenney_input "$T/third_party/"
 cp -a third_party/kenney_input_keyboard "$T/third_party/"
-# (NVIDIA DLSS, when ticked in the builder: scripts/ngx_sdk.py and the Vulkan back end's sources, compiled with LONGSHOT_NGX_SDK)
+# (the Vulkan back end's sources, which every player's build compiles (nx2/build.py), and, for NVIDIA DLSS when ticked in the
+# builder, scripts/ngx_sdk.py, compiled with LONGSHOT_NGX_SDK. assets/ above carries its play profile, assets/profiles/)
 mkdir -p "$T/scripts"
 cp scripts/ngx_sdk.py "$T/scripts/"
 cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
 cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
-# (AMD FSR 4, when chosen: AMD's MIT FSR API headers, which the Vulkan back end compiled here builds with (make_game.py --fsr,
+# (AMD FSR 4, when chosen: AMD's MIT FSR API headers, which the player's Vulkan back end builds with (make_game.py --fsr,
 # nx2/build.py). AMD's runtime is not among them: on Linux the player's own amd_fidelityfx_upscaler_vk.so, the readme)
 cp -a third_party/fidelityfx "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
-# (zbic's single-file zstd too: the Vulkan back end compiled here, with DLSS, builds zstd.c and includes zstd.h; v2.2.0-rc.1
+# (zbic's single-file zstd too: the player's Vulkan back end builds zstd.c and includes zstd.h; v2.2.0-rc.1
 # carried only zbic.so, and every Linux build with DLSS stopped at FileNotFoundError: zstd.h)
 cp -a third_party/zbic/zbic.so third_party/zbic/zstd.c third_party/zbic/zstd.h third_party/zbic/zstd_errors.h \
       third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
@@ -80,7 +75,7 @@ cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
 rm -f "$T/third_party/a64-kit/tools/lld-link.exe"
 if [ -d work ]; then
     mkdir -p "$T/work/image"
-    for f in hot_funcs.txt hot_order.txt longshot_pieces.prof; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
+    for f in hot_funcs.txt hot_order.txt longshot_pieces.prof longshot_vk.profdata; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
     [ -f work/image/chunks.txt ] && cp work/image/chunks.txt "$T/work/image/"
 fi
 # (the pipeline state list's sources, assets/pipeline_states/, came with assets/ above, and are required: nx2/make_game.py merges
@@ -89,9 +84,8 @@ fi
 [ -n "$(find "$T/assets/pipeline_states" -name "*.bin.xz" 2>/dev/null)" ] || { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
 find "$T" -name __pycache__ -prune -exec rm -rf {} +
 
-# ---- what it starts with: its Python (the tools' download, nx2/make_game.py) and the Vulkan back end ----
+# ---- what it starts with: its Python (the tools' download, nx2/make_game.py) ----
 cp -a "$DEPS/python" "$APPDIR/usr/python"
-cp "$VK" "$L/longshot_vk.so"
 # ---- the licences of the third-party parts compiled into longshot_vk.so (tests/test_appimage_licenses.py) ----
 mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx"
 cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
