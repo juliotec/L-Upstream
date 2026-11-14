@@ -10,7 +10,7 @@ too.
 
 Open a [new report](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) and include:
 
-- **The version:** the first line of `longshot_log.txt`, in the game folder.
+- **The version:** the first line of `longshot_log.txt`, in the game folder's `logs` folder.
 - **Your PC:** the operating system, the graphics card and its driver version.
 - **What happened,** and where in the game, with the steps to make it happen again if you can.
 - **`longshot_log.txt`** from the run, and a screenshot or a short video.

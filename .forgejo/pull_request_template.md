@@ -115,7 +115,7 @@ Fixes #
 - [ ] AI assistance recorded with `Assisted-by:` / `Co-Authored-By:` trailers.
 - [ ] Flags noted, and the switch reference updated (docs/development.md, the README).
 - [ ] Screenshots for a change that shows on screen.
-- [ ] A row in `docs/tested-configurations.md` for each measured run.
+- [ ] A file in `docs/tested/` for each new measured run (format in `docs/tested-configurations.md`; no appended row or assembled view).
 - [ ] `MKWVK_API_VERSION` bumped (`gpu/vk/vk_api.h`'s `MkwVkHost` or `MkwVkRenderer` changed).
 - [ ] The SPIR-V headers regenerated with glslang (a shader changed).
 - [ ] A game-free test added for the fix, failing on `main` and passing here.

@@ -229,28 +229,31 @@ def test_generated_and_runtime(d):
     write(game / "romfs" / "prompts" / "icon.bntx", b"base icon")
     write(game / game_mod, b"base game")
     write(game / vk_mod, b"base renderer")
-    write(game / "longshot_programs.bin", b"cache")
+    write(game / "cache" / "longshot_programs.bin", b"cache")
+    write(game / "cache" / "prompts" / "Common.bntx.zs", b"made at run time")   # (the game's, never a build's output)
+    write(game / "logs" / "longshot_log.txt", b"a log")
     write(game / "language.txt", b"en-US")
     write(game / "prompts" / "Common.bntx", b"base prompts")
     write(game / "longshot_pipeline_states_shipped.bin", b"shipped")
     write(game / "longshot_options.ini", b"[menu]")
-    write(game / "mkw_vk_pipelines_play_2.bin", b"seeded play cache")   # (what --seed brings, before the build records outputs)
-    write(game / "mkw_vk_pipelines.stamp", b"the pipeline cache's stamp")
+    write(game / "cache" / "longshot_vk_pipelines_play_2.bin", b"seeded play cache")   # (what --seed brings, before the build records outputs)
+    write(game / "cache" / "longshot_vk_pipelines.stamp", b"the pipeline cache's stamp")
+    write(game / "mkw_vk_pipelines_play_4.bin", b"an older layout's seeded play cache")   # (moved into cache/ at the first start)
     write(game / "longshot_pipelines.bin.predicting", b"a prediction a crash left unfinished")
     if packs.MODULES[0][1]:   # (the game's map: Windows only)
         write(game / packs.MODULES[0][1], b"map")
     outputs = packs.build_outputs(str(game))
     check("a play cache and the pipeline stamp are not build outputs (%s)" % outputs,
-          "mkw_vk_pipelines_play_2.bin" not in outputs and "mkw_vk_pipelines.stamp" not in outputs
-          and "longshot_pipelines.bin.predicting" not in outputs)
+          "cache/longshot_vk_pipelines_play_2.bin" not in outputs and "cache/longshot_vk_pipelines.stamp" not in outputs
+          and "mkw_vk_pipelines_play_4.bin" not in outputs and "longshot_pipelines.bin.predicting" not in outputs)
     write(game / "user" / "save0.bin", b"a save, made in play")
     write(game / "longshot_env.txt", b"HOS_X=1")
     os.makedirs(out / "romfs" / "a")
     os.link(game / "romfs" / "a" / "data.bin", out / "romfs" / "a" / "data.bin")
     write(out / "romfs" / "prompts" / "icon.bntx", b"new icon")
     write(out / game_mod, b"built game")
-    write(out / "longshot_programs.bin", b"other cache")
-    write(out / "mkw_vk_pipelines_play_5.bin", b"a play cache the pack's build has")
+    write(out / "cache" / "longshot_programs.bin", b"other cache")
+    write(out / "cache" / "longshot_vk_pipelines_play_5.bin", b"a play cache the pack's build has")
     write(out / "language.txt", b"en-US")
     gen, gone = packs.generated_changes(str(game), str(out), outputs)
     check("a regenerated file is kept, the same ones, the modules and the caches are not: %s" % gen, gen == ["romfs/prompts/icon.bntx"])
@@ -284,7 +287,7 @@ def test_generated_and_runtime(d):
     check("the pack's game", (rt / game_mod).read_bytes() == b"pack cpu")
     check("the base's renderer", (rt / vk_mod).read_bytes() == b"base renderer")
     check("romfs hard-linked", os.path.samefile(rt / "romfs" / "a" / "data.bin", game / "romfs" / "a" / "data.bin"))
-    check("the caches copied, not linked (the game writes them)", not os.path.samefile(rt / "longshot_programs.bin", game / "longshot_programs.bin"))
+    check("the caches copied, not linked (the game writes them)", not os.path.samefile(rt / "cache" / "longshot_programs.bin", game / "cache" / "longshot_programs.bin"))
     check("the pack's generated file", (rt / "romfs" / "prompts" / "icon.bntx").read_bytes() == b"new icon")
     check("...not written through the base's hard link", (game / "romfs" / "prompts" / "icon.bntx").read_bytes() == b"base icon")
     check("the pack's deleted file is not in the runtime", not (rt / "prompts" / "Common.bntx").exists())
@@ -365,8 +368,8 @@ def fake_base(d, predict_s=0):
     write(game / "romfs" / "a" / "data.bin", b"romfs")
     write(game / packs.GAME, b"base game")
     write(game / packs.RENDERER, b"base renderer")
-    write(game / "longshot_programs.bin", b"programs")
-    write(game / "mkw_vk_pipelines.bin", b"pipelines")
+    write(game / "cache" / "longshot_programs.bin", b"programs")
+    write(game / "cache" / "longshot_vk_pipelines.bin", b"pipelines")
     packs.write_base(str(base_dir), {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "romfs": "r",
                                      "exefs": "e", "predict_s": predict_s})
     return base_dir, game
@@ -443,8 +446,8 @@ def test_outputs_before_prepare(d):
     def fake_run(argv, **kw):
         calls.append(("prepare", list(argv[1:])))
         game = Path(kw["cwd"])
-        write(game / "mkw_vk_pipelines.stamp", b"stamp")
-        write(game / "longshot_pipelines.bin.predicted_keys", b"keys")
+        write(game / "cache" / "longshot_vk_pipelines.stamp", b"stamp")
+        write(game / "cache" / "longshot_pipelines.bin.predicted_keys", b"keys")
         write(game / "longshot_some_future_cache.dat", b"a file a later renderer writes")
         return packs.subprocess.CompletedProcess(argv, 0)
     saved = packs.make_game, packs.changed_files, packs.git, packs.subprocess.run
@@ -461,7 +464,8 @@ def test_outputs_before_prepare(d):
         check("the preparation runs once, after the build, with the Compile shaders level (%s)" % prep,
               len(prep) == 1 and prep[0][1][:1] == ["--prepare-shaders"] and "--compile-shaders" in prep[0][1])
         check("what the preparation wrote is not an output (%s)" % outputs,
-              not {"mkw_vk_pipelines.stamp", "longshot_pipelines.bin.predicted_keys", "longshot_some_future_cache.dat"} & set(outputs))
+              not {"cache/longshot_vk_pipelines.stamp", "cache/longshot_pipelines.bin.predicted_keys", "longshot_some_future_cache.dat"}
+              & set(outputs))
     check("what make_game.py made is (%s)" % outputs, "longshot_shaders.bin" in outputs)
 
 
@@ -515,8 +519,12 @@ def test_prepare_outcomes(d):
 
 def test_seed(d):
     """--seed copies every cache the seed folder holds, the play files too (recent pipelines can live only there), and
-    nothing else"""
+    nothing else: those in its cache/ into the game's cache/, and an older layout's loose ones as they are (the game's first
+    start moves them into cache/)"""
     seed = d / "seed"
+    for name, data in (("longshot_vk_pipelines.bin", b"p"), ("longshot_vk_pipelines_play_4.bin", b"play"),
+                       ("longshot_vk_pipelines.stamp", b"stamp"), ("longshot_log.txt", b"not a cache")):
+        write(seed / "cache" / name, data)
     for name, data in (("mkw_vk_pipelines.bin", b"p"), ("mkw_vk_pipelines_play_3.bin", b"play"), (packs.CACHES[0], b"c"),
                        ("mkw_vk_pipelines.stamp", b"stamp"), ("longshot_pipelines.bin.predicted_keys", b"keys"),
                        ("longshot_log.txt", b"log"), ("image.bin", b"game")):
@@ -538,7 +546,9 @@ def test_seed(d):
     for name in ("mkw_vk_pipelines.bin", "mkw_vk_pipelines_play_3.bin", packs.CACHES[0], "mkw_vk_pipelines.stamp",
                  "longshot_pipelines.bin.predicted_keys"):
         check("the seed's %s is copied" % name, (game / name).exists())
-    for name in ("longshot_log.txt", "image.bin"):
+    for name in ("longshot_vk_pipelines.bin", "longshot_vk_pipelines_play_4.bin", "longshot_vk_pipelines.stamp"):
+        check("the seed's cache/%s is copied into cache/" % name, (game / "cache" / name).exists())
+    for name in ("longshot_log.txt", "image.bin", "cache/longshot_log.txt"):
         check("the seed's %s is not" % name, not (game / name).exists())
 
 
@@ -548,21 +558,23 @@ def test_warm(d):
     play = d / "play.py"
     play.write_text("import sys, os\n"
                     "rt = sys.argv[1]\n"
-                    "open(os.path.join(rt, 'longshot_programs.bin'), 'ab').write(b' and more')\n"
-                    "open(os.path.join(rt, 'mkw_vk_pipelines_play_1.bin'), 'wb').write(b'played')\n"
-                    "open(os.path.join(rt, 'longshot_log.txt'), 'w').write('a log')\n"
+                    "open(os.path.join(rt, 'cache', 'longshot_programs.bin'), 'ab').write(b' and more')\n"
+                    "open(os.path.join(rt, 'cache', 'longshot_vk_pipelines_play_1.bin'), 'wb').write(b'played')\n"
+                    "os.makedirs(os.path.join(rt, 'logs'), exist_ok=True)\n"
+                    "open(os.path.join(rt, 'logs', 'longshot_log.txt'), 'w').write('a log')\n"
+                    "open(os.path.join(rt, 'cache', 'longshot_log.txt'), 'w').write('not a cache either')\n"
                     "open(os.path.join(rt, %r), 'wb').write(b'not a cache')\n" % packs.GAME)
     cmd = '"%s" -I "%s" "{runtime}"' % (sys.executable.replace("\\", "/"), str(play).replace("\\", "/"))
     packs.main(["warm", str(base_dir), "--run", cmd])
-    check("a grown cache comes back", (game / "longshot_programs.bin").read_bytes() == b"programs and more")
-    check("a new play file comes back", (game / "mkw_vk_pipelines_play_1.bin").read_bytes() == b"played")
-    check("an unchanged cache stays", (game / "mkw_vk_pipelines.bin").read_bytes() == b"pipelines")
-    check("a log is not a cache", not (game / "longshot_log.txt").exists())
+    check("a grown cache comes back", (game / "cache" / "longshot_programs.bin").read_bytes() == b"programs and more")
+    check("a new play file comes back", (game / "cache" / "longshot_vk_pipelines_play_1.bin").read_bytes() == b"played")
+    check("an unchanged cache stays", (game / "cache" / "longshot_vk_pipelines.bin").read_bytes() == b"pipelines")
+    check("a log is not a cache", not (game / "logs").exists() and not (game / "cache" / "longshot_log.txt").exists())
     check("a module is never copied back", (game / packs.GAME).read_bytes() == b"base game")
     check("the warm-up's runtime is gone", not (base_dir / "warm-runtime").exists())
     b = json.loads((base_dir / "base.json").read_text())
     check("base.json records the warm-up (%s)" % b.get("warmed"),
-          b.get("warmed", {}).get("files") == ["longshot_programs.bin", "mkw_vk_pipelines_play_1.bin"])
+          b.get("warmed", {}).get("files") == ["longshot_programs.bin", "longshot_vk_pipelines_play_1.bin"])
     check("the busy marker is gone after the job", not (base_dir / packs.BUSY).exists())
     packs.main(["rt", str(base_dir), str(base_dir / "warm-runtime")])
     packs.main(["warm", str(base_dir), "--run", cmd])
@@ -579,7 +591,7 @@ def test_warm(d):
     outside = d / "outside.bin"
     outside.write_bytes(b"not a cache of this runtime")
     packs.main(["rt", str(base_dir), str(base_dir / "warm-runtime")])
-    lnk = base_dir / "warm-runtime" / "mkw_vk_pipelines_play_7.bin"
+    lnk = base_dir / "warm-runtime" / "cache" / "longshot_vk_pipelines_play_7.bin"
     try:
         os.symlink(outside, lnk)
     except OSError:
@@ -589,7 +601,7 @@ def test_warm(d):
         shutil.rmtree(base_dir / "warm-runtime")
     else:
         packs.main(["warm", str(base_dir), "--run", '"%s" -c "pass"' % sys.executable.replace("\\", "/")])
-        check("a linked cache file is not copied back", not (game / "mkw_vk_pipelines_play_7.bin").exists())
+        check("a linked cache file is not copied back", not (game / "cache" / "longshot_vk_pipelines_play_7.bin").exists())
 
 
 def test_busy(d):

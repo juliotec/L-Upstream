@@ -90,7 +90,7 @@ body:
     id: log
     attributes:
       label: longshot_log.txt
-      description: Drag the file here. It is in the game folder and holds the last run; `longshot_log.1.txt` is the run before. If you started the game again after the problem, attach that one too. Logs hold no game files.
+      description: Drag the file here. It is in the `logs` folder of your game folder and holds the last run; `longshot_log.1.txt` is the run before. If you started the game again after the problem, attach that one too. Logs hold no game files.
     validations:
       required: true
   - type: textarea

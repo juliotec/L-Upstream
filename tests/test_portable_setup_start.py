@@ -84,7 +84,7 @@ int wmain(int argc, wchar_t **argv) {
                         "-municode", "-I" + str(ROOT / "builder/setup"), str(c), "-o", str(exe)], check=True)
         tree = root / "Portable ü, tree"
         tree.mkdir()
-        home = tree / "LongshotBuilder"
+        home = tree / "LongshotBuilder-data"   # (not LongshotBuilder: the builder the zip carries, beside the setup)
         profile = root / "authored AppData"
         setup = tree / "Setup.exe"
         import os
@@ -100,7 +100,7 @@ int wmain(int argc, wchar_t **argv) {
         run(root / "downloaded-setup.exe", home, 0, {"LONGSHOT_SETUP_BASE": str(home), "LONGSHOT_BUILDER_PORTABLE": "1"})
         moved = root / "Relocated ü, tree"
         tree.rename(moved)
-        home = moved / "LongshotBuilder"
+        home = moved / "LongshotBuilder-data"
         run(moved / "Setup.exe", home, 0)
         run(root / "standard-setup.exe", profile / "LongshotBuilder", 3)
         run(root / "downloaded-setup.exe", home, 2, {"LONGSHOT_SETUP_BASE": "relative"})

@@ -1,9 +1,9 @@
 // Starlight's docs collection: the pages in src/content/docs, plus the repository's own documents (content-pages.ts)
-// rendered straight from their files. Nothing is written to disk; in dev, a change to a source file rebuilds them.
+// rendered straight from their files. Nothing is written to disk; dev watches edits, additions and removals.
 import type { Loader, LoaderContext } from 'astro/loaders';
 import { docsLoader } from '@astrojs/starlight/loaders';
 import { contentPages } from '../content-pages.ts';
-import { renderPage, sourceFiles } from './pages.ts';
+import { isSourceFile, renderPage, sourceFiles, testedFragmentsPath } from './pages.ts';
 
 async function loadRepoPages(context: LoaderContext) {
   for (const slug of Object.keys(contentPages)) {
@@ -22,10 +22,12 @@ export function longshotDocsLoader(): Loader {
       await docs.load(context);
       await loadRepoPages(context);
       if (!context.watcher) return;
-      context.watcher.add(sourceFiles);
-      context.watcher.on('change', async (file) => {
-        if (sourceFiles.includes(file)) await loadRepoPages(context);
-      });
+      context.watcher.add([...sourceFiles, testedFragmentsPath]);
+      for (const event of ['add', 'change', 'unlink'] as const) {
+        context.watcher.on(event, async (file) => {
+          if (isSourceFile(file)) await loadRepoPages(context);
+        });
+      }
     },
   };
 }

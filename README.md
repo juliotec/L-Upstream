@@ -56,8 +56,9 @@ what does not yet. Open problems are collected in tracking issues, linked below.
 | Hyrule Field, Castle Town, Kakariko and the dungeons | ⚠️ Players got there, with open bugs: lighting and shadows ([#1004](https://github.com/NotRexed/Hookshot/issues/1004)), crashes and freezes ([#2507](https://github.com/NotRexed/Hookshot/issues/2507)) |
 | Ultrawide and 4:3 | ✅ Works. The Aspect ratio row's default, Monitor's shape, widens the 3D to the screen and keeps the HUD and movies in the middle 16:9 ([#2119](https://github.com/NotRexed/Hookshot/pull/2119)) |
 | NVIDIA cards | ✅ Works. The most tested |
-| AMD cards | ⚠️ Many tested: reports from the RX 6600, RX 6800 XT, RX 7800 XT, RX 7900 XTX and RX 9070 XT. On Windows, the RX 6000 cards (Navi 21 and 22) draw task and mesh shaders through the compute fallback by default, as the driver lost the GPU with them ([#1747](https://github.com/NotRexed/Hookshot/pull/1747), [#1992](https://github.com/NotRexed/Hookshot/pull/1992), [#2215](https://github.com/NotRexed/Hookshot/pull/2215)). Driver crashes and device lost are still reported ([#996](https://github.com/NotRexed/Hookshot/issues/996)) |
-| Intel cards | ❓ Few reports, many of them black screens or crashes ([#999](https://github.com/NotRexed/Hookshot/issues/999)) |
+| AMD cards | ⚠️ Many tested: reports from the RX 6600, RX 6800 XT, RX 7800 XT, RX 7900 XTX and RX 9070 XT. On Windows, the RX 6600 to RX 6950 XT and their mobile and Pro models (Navi 21, 22 and 23) draw task and mesh shaders through the compute fallback by default: the driver lost the GPU on their own mesh shaders on an RX 6700 XT, an RX 6800 XT and, in one report in Mako, an RX 6600 ([#1747](https://github.com/NotRexed/Hookshot/pull/1747), [#1992](https://github.com/NotRexed/Hookshot/pull/1992), [#2215](https://github.com/NotRexed/Hookshot/pull/2215)); another RX 6600 played 15-20 minutes on them ([Longshot #130](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/130)). The RX 6400 and 6500 XT (Navi 24) keep their own mesh shaders, as no report has them losing the GPU; `RX_VK_TASK_MESH_FALLBACK=1` tries the fallback. Driver crashes and device lost are still reported ([#996](https://github.com/NotRexed/Hookshot/issues/996)) |
+| Intel cards | ❓ Few reports, many of them black screens or crashes ([#999](https://github.com/NotRexed/Hookshot/issues/999)). On Windows, Intel's shader compiler is entered by one thread, and a shader it faults on is left out instead of closing the game, on later starts too ([#252](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/252)). Made for an Intel UHD laptop with 4 threads and 16 GB that crashed in `igvk64.dll` (see [Intel laptops](#intel-laptops)): not yet tested on an Intel GPU |
+| Pre-rendered movies on a slow CPU | ⚠️ Shown rather than skipped when the decoder is slower than the movie, so the picture can fall behind the sound. With 4 logical processors or fewer the decoder uses 2 threads, leaving the game its own. The first picture can still be black on some PCs |
 | Cards without mesh shaders (such as NVIDIA GTX 10 and AMD RX 5000) | ⚠️ Run through the compute fallback (since v2.0.6), which runs the mesh programs as compute shaders on cards with buffer device addresses: slower, and it leaves out the mesh draws that take their count from a buffer ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
 | Linux | ✅ Works with the AppImage. Tested on several distributions (CachyOS, Fedora, Bazzite, SteamOS) and cards, with open problems on some AMD cards ([#1000](https://github.com/NotRexed/Hookshot/issues/1000)) |
 
@@ -96,7 +97,7 @@ Longshot's first version will be **v3.0.0**; the launcher's first will be **v1.0
 **Your game copy:** program `0400486024DEC000` · update **v131072** · build `e0f3ccfa`.
 Use a `.nup` file, or the `romfs` and `exefs` folders. Other game versions are not supported.
 
-These are estimates from the [tested configurations](docs/tested-configurations.md), not a promise of a particular
+These are estimates from the [tested configurations catalogue](https://longshot.magicbean.dev/tested-configurations/), not a promise of a particular
 frame rate: the game runs on more than this, and performance depends on the resolution and settings you choose.
 
 | Component | Minimum | Recommended |
@@ -109,8 +110,13 @@ frame rate: the game runs on more than this, and performance depends on the reso
 | **System memory (RAM)** | **16 GB.** See the memory guidance below. | **16 GB or more.** |
 | **Storage** | **About 60 GB free while building.** A hard drive works, but builds are much slower. | **An SSD with about 60 GB free.** |
 
+**Below the minimum:** a laptop with Intel UHD graphics and a 4-thread CPU is below both minimums. The game has been
+reported to start on one (Intel UHD, 4 threads, 16 GB, Windows), at about 35 fps on the title and with crashes
+in Intel's driver that [#252](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/252) is meant to fix. See
+[Intel laptops](#intel-laptops) for what to set and what to send.
+
 Memory use depends on the build, driver and scene: recent Linux/NVIDIA runs used roughly
-13–19 GiB for the game alone (see [tested configurations](docs/tested-configurations.md)), so even a 16 GB PC can need
+13–19 GiB for the game alone (see the [tested configurations catalogue](https://longshot.magicbean.dev/tested-configurations/)), so even a 16 GB PC can need
 swap. Leave room for the desktop and other programs.
 Swap can prevent an out-of-memory exit, but it is not extra RAM; heavy swapping can make the whole desktop unresponsive.
 
@@ -148,8 +154,10 @@ preparation builds:
   longer (415 s against 292 s on an RTX 3090 with a 12-core CPU), and play almost never uses them.
 
 A preparation the game runs at a launch (after "Prepare shaders now" was unticked, or after an update or a new GPU driver
-changed what the shaders are translated for) follows the same choice, kept as `compile_shaders` in
-`longshot_options.ini` (0 Most, 1 All). `--compile-shaders all` or `most` on the game's command line, or
+changed what the shaders are translated for) follows the same choice. A build whose preparation stopped ("the GPU
+driver stopped responding") leaves `longshot_prepare_skipped` instead, and the game then prepares nothing at a launch,
+building each shader when first drawn, until that file is deleted or a build prepares them. The choice is kept as
+`compile_shaders` in `longshot_options.ini` (0 Most, 1 All). `--compile-shaders all` or `most` on the game's command line, or
 `RX_VK_COMPILE_SHADERS=all` or `most`, sets it for one run.
 
 ### On Linux
@@ -246,7 +254,12 @@ The build reads your game and never changes it.
 | The launcher, each version's builder and its tools (`toolchains`), the build files (`work`) | `%LOCALAPPDATA%\LongshotLauncher` (the installed program in `%LOCALAPPDATA%\Programs\LongshotLauncher`; the portable one's data in `LongshotLauncher-data` beside it) | `~/.local/share/longshot/launcher` (the portable AppImage's in `<AppImage>.home` beside it) |
 | A builder without the launcher (`--cli`) and its tools | `%LOCALAPPDATA%\LongshotBuilder` | `~/.local/share/longshot/builder` and `~/.cache/longshot-builder` |
 | The in-game menu's choices | `longshot_options.ini` in the game folder | `longshot_options.ini` in the game folder |
+| The shader and pipeline caches, and the logs | `cache` and `logs` in the game folder | `cache` and `logs` in the game folder |
 
+- **Caches and logs:** the game keeps its shader and pipeline caches in the game folder's `cache` folder (several GB, made
+  for this version and this graphics card) and its logs in `logs`. `cache` can be deleted at any time: the next start
+  prepares the shaders again (minutes on some PCs). A game folder from an older build has them loose beside the game: the
+  first start moves them into these folders.
 - **Saves elsewhere:** start the game with `--user <folder>` ([command line arguments](#running-the-game-from-the-command-line)).
   A `user` folder from an earlier Linux build is moved to `~/.local/share/longshot` once. To carry on with a save from
   Hookshot, an emulator (Lichii, Eglantine, Orchid, ...) or NX2navi, or to take yours there, see the
@@ -285,7 +298,7 @@ anywhere else may not be ours.
 
 ### If something goes wrong
 
-**Start with the log:** `longshot_log.txt` in the game folder holds the last run, and `longshot_log.1.txt` to `.4.txt`
+**Start with the log:** `longshot_log.txt` in the game folder's `logs` folder holds the last run, and `longshot_log.1.txt` to `.4.txt`
 the four before it (started from a terminal, the game prints there instead). Every 600 frames it writes a `vk: status:`
 line with the video memory in use against what the driver allows, and DLSS's details while it draws;
 `vk: over the driver's video-memory allowance` says when the game went past it.
@@ -297,6 +310,8 @@ line with the video memory in use against what the driver allows, and DLSS's det
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, and add `%LOCALAPPDATA%\LongshotLauncher` and `%LOCALAPPDATA%\Programs\LongshotLauncher` to its exclusions, then build again ([common problems](docs/common-issues.md#your-antivirus-removed-part-of-the-build-tools)). |
 | **Starting** | |
 | The game opens and closes, or the log says "device lost" | Update your graphics driver. AMD cards have known crashes ([#708](https://github.com/NotRexed/Hookshot/issues/708), [#614](https://github.com/NotRexed/Hookshot/issues/614)). |
+| Windows, Intel: the game closes in the first scene, and the log names `igvk64.dll` | Keep the Debug tab's **Intel shader compiles** row on **One at a time** (the default) and update the graphics driver. See [Intel laptops](#intel-laptops). |
+| The build said "the GPU driver stopped responding", or the log says `the shaders' preparation was skipped at the build` | The game then builds every shader when it is first drawn, and stutters or leaves things out for a long time. Delete `longshot_prepare_skipped` from the game folder's `cache` folder so that the next start prepares them, or build again with **Prepare shaders now** ticked. |
 | Linux: the game doesn't start, or the picture is broken | The game needs a Vulkan 1.3 driver, ideally with mesh shaders: `vulkaninfo \| grep mesh` should list `VK_EXT_mesh_shader`. Update Mesa or the NVIDIA driver. |
 | Linux: low-memory warning, or the whole desktop becomes unresponsive while loading | Close other programs and check `free -h`: the `Mem` and `Swap` rows are separate. Below 10 GiB of physical RAM the game warns even with plenty of swap; absence of that warning does not mean a run will fit. Do not keep retrying a load that locks up the PC. After restarting, keep the failed session's log before launching again, and check `journalctl -k -b -1` for an out-of-memory kill or a GPU reset (if the previous boot's journal was saved). |
 | **Graphics** | |
@@ -307,6 +322,7 @@ line with the video memory in use against what the driver allows, and DLSS's det
 | Stutter the first time you see something | Normal for now: shaders are being prepared, and it is smooth the next time you pass. You can help remove it for everyone: [send your pipeline list](#send-your-pipeline-list). |
 | Windows, NVIDIA: stutter on every start, in places you have seen | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines). In the NVIDIA Control Panel, under Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself. |
 | Low FPS | See [Low FPS or stutter](#low-fps-or-stutter) below. |
+| A movie stutters, falls behind its sound, or starts on a black picture | On a CPU with 4 logical processors or fewer, the decoder uses 2 threads; `HOS_DAV1D_THREADS=<n>` in `longshot_env.txt` sets another count. Run once with `HOS_VIDEO_LOG=1` and attach the log: its `video:` lines say how long each picture took to decode and how far the picture was behind the sound. |
 | Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree (`gfx_0.0.0 timeout` in `journalctl -k`) | Add `RX_VK_MESH_NOCULL=2c56dc1006942f74` to `longshot_env.txt`: it gets past it with every model drawn, by turning off the culling pass that runs for seconds. `RX_VK_SKIP_CODE=2c56dc1006942f74` also gets past it, but the models those draws make go missing ([development guide](docs/development.md#switches-for-testing-and-debugging), [#817](https://github.com/NotRexed/Hookshot/issues/817)). |
 | **Other** | |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set. |
@@ -329,6 +345,28 @@ report** in the [in-game menu](#in-game-menu) gathers all of it in one press.
 4. If the GPU time stays high, run once more with `RX_VK_PASS_TIMING=1` in `longshot_env.txt`: every 600 presents it
    reports which GPU passes take the time. That timing adds work itself, so keep the first log for the FPS comparison,
    and remove the switch afterwards. The [development guide](docs/development.md#time-and-profiles) has more switches.
+
+#### Intel laptops
+
+What [#252](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/252) changes was made from the logs of a laptop with
+Intel UHD Graphics, a 4-thread CPU, 16 GB and Windows. There the game closed in Intel's driver (`igvk64.dll`) in the
+background save of the pipeline cache while other threads built pipelines into the same cache; main now fetches a
+cache's data with no build under way on Intel ([#190](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/190)).
+The build's shader preparation had stopped, so every run built its shaders in play, and the title ran at about 35 fps.
+It has not been tested on an Intel GPU yet. On such a PC:
+
+1. Build with **Prepare shaders now** ticked. If the game folder's `cache` folder has a `longshot_prepare_skipped` file
+   from an earlier build, delete it first.
+2. Keep the Debug tab's **Intel shader compiles** row on **One at a time** (the default). Side by side builds faster on a
+   CPU with many cores, but Intel's driver can crash the game then.
+3. A shader the driver faulted on is listed in `longshot_driver_faults.txt` (in the `cache` folder) and left out, with
+   its draws, on later starts on the same driver. After a driver update the list starts again; delete the file to try
+   them all again sooner.
+4. Leave **ASTC as RGBA8** off: it is the [AMD texture workaround](#amd-texture-workaround), and its larger textures
+   come out of the memory that integrated graphics share with the rest of the PC.
+5. If it still crashes or runs slowly, [report it](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) with
+   `longshot_log.txt` from a run with `HOS_VIDEO_LOG=1` in `longshot_env.txt`, the build's details, and the FPS on the
+   title and in the first scene.
 
 #### AMD texture workaround
 
@@ -384,7 +422,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+), Auto (this PC) | Auto (this PC) on a first start; Custom in an options file from before it |
 | | Aspect ratio | The shapes your screen's resolutions have, narrowest first (5:4, 4:3, 16:10, 16:9, 21:9, 32:9, ...), your monitor's own marked "(monitor's)" (after a restart) | Your monitor's |
-| | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own) at 16:9; your screen's own size is marked "(native)" (after a restart) | 2048x1152, or your screen's size where it is smaller (a Steam Deck's 1280x800, a 1080p monitor); Auto (this PC) leaves it as it is |
+| | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own reduced size, 80% of its 2560x1440, marked "(reduced)") at 16:9; your screen's own size is marked "(native)" (after a restart) | 2560x1440, the game's own picture, or your screen's size where it is smaller (a Steam Deck's 1280x800, a 1080p monitor), at its own shape (a 2560x1080 ultrawide starts at 2560x1080, a 2256x1504 laptop at 2256x1504); Auto (this PC) leaves it as it is |
 | | Profile | Docked, Handheld (after a restart) | Docked; a quality preset sets it |
 | | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, below, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4 (only in builds with FSR 4, below, on GPUs AMD's files cover), Off (no upscaling). NVIDIA DLAA and AMD FSR 4 Native AA are DLSS's and FSR 4's Native, chosen on the Render resolution row | Game's own; Auto (this PC) chooses DLSS or FSR 4 where they run |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
@@ -410,7 +448,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | VRAM budget | Auto, 3.6, 4.8, 6, 7.5, 9, 11 GB (2.2 GB only from the Minimum (4GB) preset); a quality preset sets it | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
-| | Audio output | Auto, Stereo, 5.1 (after a restart) | Auto |
+| | Audio output | Auto, Stereo, 5.1, Mono (layout changes after a restart; Mono/Stereo live on stereo output) | Auto |
 | Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
 | | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
 | | Menu size | Small, Medium, Large | Medium |
@@ -447,6 +485,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Developer: Sampler cache | Off, On (changes at once) | Off |
 | | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
 | | Developer: ASTC as RGBA8 | Off, On (after a restart) | Off |
+| | Developer: Intel shader compiles | One at a time, Side by side (after a restart; Intel graphics on Windows only) | One at a time |
 
 - **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Profile
   and the video memory limits for a card with that much memory. It leaves the Upscaler and Frame generation as
@@ -455,7 +494,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Auto (this PC)**, which a first start begins on, chooses for the PC it runs on: the memory tier from the card's
   video memory (an integrated GPU, a Steam Deck or a card without mesh shaders at Minimum), DLSS on an NVIDIA RTX card
   or FSR 4 on an AMD RX 9000 where the build has them (else the game's own upscaler). It leaves the Output resolution as
-  it is: on a first start the game's own 2048x1152, or the screen's size where that is smaller. In the first minute of play it then measures the GPU: while
+  it is: on a first start the game's own 2560x1440, or the screen's size where that is smaller. In the first minute of play it then measures the GPU: while
   frames are missed with the GPU over 90% busy it lowers the Render resolution a step, and while the frame rate cap holds
   with the GPU under half busy it raises it a step, up to the best mode that still upscales (DLSS or FSR Quality, or 100%
   with the game's own; never DLAA or native AA). At most two steps; a PC that holds its cap keeps its picture. It chooses again when the card or the screen changes. `longshot_log.txt`'s
@@ -489,6 +528,13 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   system, the menu options and the `RX_`/`HOS_` switches you changed) and ends with a link that opens the form with them
   filled in (the switches by name only); `longshot_log.txt` (this run's log so far) and `longshot_log.1.txt` (the run
   before's, which has the crash if the game crashed last time); and `picture.png`, the game's picture without the menu.
+  Settings whose defaults depend on the display, upscaler, Auto preset or other run-time context are listed after the
+  changes, in the same answer, under a **Depends on this PC** line, with their current value and “default depends on this
+  PC”. They are not counted as changed settings; the report does not invent a default from a run-time list index. The rows
+  a preset sets keep their fixed defaults on Custom while Auto (this PC) has never chosen for the options file; with a
+  preset, or once Auto has chosen, they depend on this PC.
+  Fixed defaults, including GPU Auto, the system-default microphone and Frame generation by's Auto, still report actual
+  changes; the Aspect ratio's default is the monitor's shape, and the Game language's `language.txt`'s.
   Your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name `<user>` in the logs' paths. A switch's
   value is written only when it is a number, a size or on/off, and never for a name with `TOKEN`, `KEY`, `ROOM`,
   `SECRET`, `PASS`, `SERVER` or `USER` in it; other values read `(value left out)`. Nothing else goes in (no saves, no
@@ -526,7 +572,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   targets get a bigger GPU pool, so a full-size 3D fits. Where the screen's modes are not known (Linux), the menu offers
   1920x1080, 2560x1440, 3840x2160, 5120x1440 and 5120x2880. For a size the menu does not offer, set
   `output_res=<width>x<height>` in `longshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
-  pixels, and between 5:4 and 48:9 in shape; anything else uses the game's 2048x1152. The menu then offers it as its own
+  pixels, and between 5:4 and 48:9 in shape; anything else uses the game's reduced 2048x1152. The menu then offers it as its own
   choice. A picture wider or narrower than 16:9 is kept to 5120x2160's pixels, so above that a size of another shape is
   not a native frame. A size's own shape sets the camera's, even when the OS reports a single 16:9 primary monitor. For
   three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
@@ -572,6 +618,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Robust buffers** (Debug tab, Developer): a read past a buffer's end is dropped instead of stopping the GPU. Auto is
   on, on every card; Off can be faster on some NVIDIA cards.
 - **ASTC as RGBA8** (Debug tab, Developer): the AMD texture workaround below.
+- **Intel shader compiles** (Debug tab, Developer; Intel graphics on Windows only): One at a time, the default, lets one
+  thread at a time into Intel's shader compiler; Side by side is faster on many cores but can crash in the driver. See
+  [Intel laptops](#intel-laptops). It applies after a restart.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
 - **FPS counter** shows in a corner (**FPS counter position**; at the top right while the menu is open), at one of
@@ -596,7 +645,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   while the game was in front.
 - **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
-  down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
+  down). Mono averages the stereo channels into both ears, for one-sided hearing or one earbud. Mono/Stereo
+  changes apply live while output is stereo; changing the channel layout (from or to 5.1) needs a restart.
+  Auto never applies the mono average. Saved `audio_output` values remain 0 Auto, 1 Stereo, 2 5.1; Mono is 3.
+  For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses the channel layout over the menu (6 leaves Mono inactive).
 - **Microphone** is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
   Default follows Windows' default recording device; the list shows each microphone by name, and a change applies at
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
@@ -674,6 +726,13 @@ face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</k
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
 `longshot_options.ini`.
 
+**Toggle:** on the Controls page, set a Switch button's Toggle column to On to hold it with one press and release it
+with the next. Both gamepad inputs, bound keys and mouse buttons share the latch. Every Toggle starts Off.
+Plus, Minus, stick directions and ocarina note rows have no Toggle. Opening Insert, pressing Plus or Minus,
+losing focus, rebinding or Reset to defaults releases latched buttons. With Controller in background On, a new
+press can latch again behind another window. On Linux, other game dialogs do not necessarily clear the latch;
+press Insert to release it. There is no separate on-screen latch indicator.
+
 **Ocarina notes:** the page gains five rows, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)`, `(X)`, unset by default: the game's own
 buttons play until you bind a note to a key or gamepad input of your own, and a bound note then answers only that input while
 the game waits for it. A dialogue or cutscene that takes the buttons ends the wait, and a song lesson keeps the game's own too.
@@ -684,6 +743,7 @@ the game waits for it. A dialogue or cutscene that takes the buttons ends the wa
 ```ini
 pad_a=0
 key_a=69,13
+toggle_a=0
 ```
 
 `pad_<button>` is a gamepad input by position: 0 bottom face button, 1 right, 2 left, 3 top, 4 Select or Back, 5 Home,
@@ -695,7 +755,9 @@ buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y`
 `rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions: `move_up`
 `move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`, and the ocarina's five notes,
 which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
-its default.
+its default. `toggle_<button>=0|1` sets that button's Toggle (0 Off, the default; 1 On). It accepts the Switch
+buttons above except `plus` and `minus`; stick directions and note rows do not accept it. Other values mean Off.
+The file saves enabled flags, not held state; a restart starts with no button latched.
 
 </details>
 
@@ -974,10 +1036,12 @@ switch that stands in for a menu row (`RX_VK_PACE`, `RX_VK_UPSCALE`, `RX_VK_FRAM
 
 To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
 `longshot_env.txt` in the game folder). The tools then show below it on the same tab. **Damage taken** is in the
-**Player** group beside **Heart protection**: Half, Normal (the default), Double or Quadruple. It applies only while
-Debug tools is on: off, Link takes Normal damage, and the saved choice returns when the tools do. Heart protection takes
-priority while enabled. The tab's Developer section, always shown, has the Descriptor reuse, Sampler cache, Robust
-buffers and ASTC as RGBA8 rows.
+**Player** group beside **Heart protection**: Half, Normal (the default), Double or Quadruple (`damage_taken=0/1/2/3`
+in `longshot_options.ini`). It applies only while Debug tools is on: off, Link takes Normal damage, and the saved
+choice returns when the tools do. Heart protection takes priority while enabled. Half scales the full hit before life
+is clamped to zero: with two quarter hearts left, a four-quarter hit still kills. The tab's Developer section, always
+shown, has the Descriptor reuse, Sampler cache, Robust buffers and ASTC as RGBA8 rows, and on Intel graphics on
+Windows the Intel shader compiles row.
 
 A save whose minimap stopped showing after a Teleport on an earlier build (the area left had hidden it, and the flag
 stayed set in the save) is mended by the Teleport itself: teleport to an outdoor area, wait until you can move, then
@@ -1008,6 +1072,37 @@ the networks and falls back only when a movie frame takes the GPU more than 40 m
 cards, or where the GPU cannot multiply the networks' matrices itself, the movies always get the linear upscale. It does
 not change the gameplay upscaler, and movies can look softer. `RX_VK_NETWORK_KEEP=all` takes precedence and keeps the
 movie networks.
+
+A movie whose pictures take longer to decode than the time between them is shown, rather than skipped until the sound
+has moved on: on a slow CPU the opening used to drop most of its pictures. How fast the decoder is counts from its recent
+pictures, so a slow first picture does not stop a decoder that keeps up from catching up later, and catching up takes at
+most one picture's time in a frame. With a decoder slower than the movie, the picture can fall behind the sound.
+`HOS_VIDEO_NO_CATCHUP=1` skips nothing. Each picture is waited for for about a tenth of a second
+(`HOS_VIDEO_ACQUIRE_TRIES=1`: a count of sleeps instead of the clock). After a movie stops or is flushed, and nothing new
+has been submitted, there is no wait. The first picture can still be black on some PCs; why is not known yet.
+
+A PC with 4 logical processors or fewer decodes the movies on 2 threads rather than one per processor, so the decoder
+leaves the game's own threads their time. A 4-thread laptop with Intel UHD Graphics showed the title and the opening
+movie at about 35 fps of 60, with the game's thread waiting 14 to 24 ms on most frames; that report was not run again
+with this change. `HOS_DAV1D_THREADS=<n>` sets the count on any PC.
+
+On Windows, Intel's compiler (UHD and Arc) is entered by one thread. A fault inside it leaves that shader out instead
+of closing the game, and the program is written to `longshot_driver_faults.txt` so that later starts on the same
+driver leave it out too (delete the file to try again). This covers the game's shaders and the renderer's own (texture
+decoding, upscaling, frame generation). A draw that only asks whether its pipeline is ready never waits behind another
+thread's compile: while one is compiling, the answer is "not yet", even for a pipeline already in a cache, and the
+draw is left out until a worker has made it (the log's `vk: asked cold: Intel's gate busy` lines count these). The
+renderer's own pipelines made at their first use (the movie's upscale, the texture decoders, a masked clear, the
+write-back and late-page fixes) do wait for a compile under way. Whether the driver keeps working after a caught fault
+has not been tested. The first scene can still pause while shaders compile, especially when they were not prepared at
+the build. If a build's preparation stopped ("the GPU driver stopped responding"), the game leaves a
+`longshot_prepare_skipped` file in its `cache` folder and every start after that builds shaders only when first drawn.
+Build again with **Prepare shaders now** ticked, or delete that file, to prepare them with this fix.
+The Debug tab's **Intel shader compiles** row (Developer section, shown on Intel graphics on Windows) chooses: **One at
+a time**, the default and the safe choice on a CPU with 4 cores or fewer, or **Side by side**, faster builds on a CPU
+with many cores, but Intel's driver can crash the game while building them. It applies after a restart.
+`RX_VK_NO_INTEL_SERIAL=1` is Side by side for a run, whatever the row says. NVIDIA, AMD, and Intel on other systems are
+unchanged.
 
 `RX_VK_SKIP_CODE=<prefix,...>` leaves out the draws of every program with a stage whose native code key starts with one
 of the prefixes (the keys the log prints after "its code:"). On a Steam Deck, `RX_VK_SKIP_CODE=2c56dc1006942f74`

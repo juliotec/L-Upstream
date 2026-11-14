@@ -105,6 +105,13 @@ README annotations; absence of a badge is not a promise about every build or mod
 Search and section filters enhance native disclosures; without JavaScript every card
 remains available. Setting links clear filters and printing includes the whole catalogue.
 
+The tested-configurations catalogue (`/tested-configurations/`) is assembled by the same repository-doc loader from
+`docs/tested-configurations.md` and the new run files under `docs/tested/`. The earlier rows stay on the source page,
+in their original order; only new runs are fragments. Assembly reads local files and uses the existing Markdown
+pipeline, with no generated source page, extra package or network request. Development watches fragment additions,
+edits and removals. The site's existing neutral-prose policy changes displayed wording only, not links, inline code or
+the source records; the source page remains available on Forgejo.
+
 Common issues uses seven symptom cards with short checklists and a nested “Still stuck?”
 disclosure for reporting details, issue search and Discord. The steps and links remain
 in `docs/common-issues.md`; `format-common-issues.mjs` supplies presentation labels only.

@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "vk_internal.h"
+#include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include <sirit/sirit.h>
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
@@ -135,7 +136,12 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data) 
     }
     vkBindBufferMemory(dev.device, buffer, memory, 0);
     uint32_t* words = nullptr;
-    vkMapMemory(dev.device, memory, 0, size, 0, (void**)&words);
+    if (vkMapMemory(dev.device, memory, 0, size, 0, (void**)&words) != VK_SUCCESS || !words) {
+        logf("vk: cooperative matrix test: the buffer could not be mapped");
+        vkDestroyBuffer(dev.device, buffer, nullptr);
+        vkFreeMemory(dev.device, memory, nullptr);
+        return false;
+    }
     std::memcpy(words, data.data(), size);
 
     VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -150,16 +156,19 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data) 
     VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     smi.codeSize = code.size() * 4, smi.pCode = code.data();
     VkShaderModule module{};
-    vkCreateShaderModule(dev.device, &smi, nullptr, &module);
     VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr};
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo lanes{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     lanes.requiredSubgroupSize = 32;   // (as the programs it stands for will run: vk_main.cpp)
-    if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) cpi.stage.pNext = &lanes;
-    cpi.layout = layout;
     VkPipeline pipeline{};
-    const VkResult pr = module ? vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipeline)
-                               : VK_ERROR_INITIALIZATION_FAILED;
+    VkResult pr;
+    {
+        IntelDriverGate gate;
+        if (extern_guarded_shader_module(&smi, &module) != VK_SUCCESS) module = VK_NULL_HANDLE;
+        cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr};
+        if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) cpi.stage.pNext = &lanes;
+        cpi.layout = layout;
+        pr = module ? extern_guarded_compute(VK_NULL_HANDLE, &cpi, &pipeline) : VK_ERROR_INITIALIZATION_FAILED;
+    }
     bool ok = false;
     if (pr == VK_SUCCESS) {
         VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
@@ -198,15 +207,19 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data) 
         vkEndCommandBuffer(cmd);
         VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         VkFence fence{};
-        vkCreateFence(dev.device, &fci, nullptr, &fence);
+        if (vkCreateFence(dev.device, &fci, nullptr, &fence) != VK_SUCCESS) fence = VK_NULL_HANDLE;   // (no fence: not submitted, so all is freed below)
         VkCommandBufferSubmitInfo csi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
         csi.commandBuffer = cmd;
         VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         si.commandBufferInfoCount = 1, si.pCommandBufferInfos = &csi;
-        ok = vkQueueSubmit2(dev.queue, 1, &si, fence) == VK_SUCCESS &&
-             vkWaitForFences(dev.device, 1, &fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
+        const bool submitted = fence && vkQueueSubmit2(dev.queue, 1, &si, fence) == VK_SUCCESS;
+        ok = submitted && vkWaitForFences(dev.device, 1, &fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
         if (ok) std::memcpy(data.data(), words, size);
         else logf("vk: cooperative matrix test: the dispatch did not complete");
+        if (submitted && !ok) {   // (it may still be running: what it uses is left alive rather than destroyed under it)
+            if (module) vkDestroyShaderModule(dev.device, module, nullptr);
+            return false;
+        }
         vkDestroyFence(dev.device, fence, nullptr);
         vkDestroyCommandPool(dev.device, cmd_pool, nullptr);
         vkDestroyDescriptorPool(dev.device, pool, nullptr);

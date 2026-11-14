@@ -4,15 +4,17 @@ The Builder has no window: players use the [Longshot Launcher](https://longshot.
 [portable zip](https://longshot.magicbean.dev/download/launcher/windows-portable) keeps its data beside it. This page
 is for the Builder's command line (`--cli`, as RecompLauncher runs it) kept on an external SSD.
 
-Put the release's `LongshotBuilder.exe` setup in a writable folder on your SSD, then run it with `--portable` before
-`--cli` and make_game.py's options, for example:
+Unpack the whole release zip into a writable folder on your SSD, then run its `LongshotBuilder.exe` setup with
+`--portable` before `--cli` and make_game.py's options, for example:
 
 ```powershell
 .\LongshotBuilder.exe --portable --cli --nup "E:\your-game.nup"
 ```
 
-The setup creates a marked `LongshotBuilder` data folder beside itself. Keep this folder: it contains the installed
-Builder, its build tools, SDK downloads you opt into, and the default build files. The normal setup continues to use
+The setup creates a marked `LongshotBuilder-data` data folder beside itself. Keep this folder: it contains the
+installed Builder, its build tools, SDK downloads you opt into, and the default build files. The zip's own
+`LongshotBuilder` folder beside the setup is what the setup installs from; it is never the data folder, and a setup
+that finds a portable marker in it stops (unpack the zip into a new folder). The normal setup continues to use
 `%LOCALAPPDATA%\LongshotBuilder`; portable mode does not import that installation.
 
 With `--prepare`, the default game folder is `Longshot` beside the data folder. You can move their containing folder or

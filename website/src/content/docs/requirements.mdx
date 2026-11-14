@@ -7,7 +7,7 @@ description: What you need to play Longshot.
 **Your game copy:** program `0400486024DEC000` · update **v131072** · build `e0f3ccfa`.
 Use a `.nup` file, or the `romfs` and `exefs` folders. Other game versions are not supported.
 
-These are estimates from the [tested configurations](https://git.magicbean.dev/MagicBeanDev/Longshot/src/branch/main/docs/tested-configurations.md), not a promise of a particular
+These are estimates from the [tested configurations catalogue](/tested-configurations/), not a promise of a particular
 frame rate: the game runs on more than this, and performance depends on the resolution and settings you choose.
 
 | Component | Minimum | Recommended |
@@ -20,8 +20,13 @@ frame rate: the game runs on more than this, and performance depends on the reso
 | **System memory (RAM)** | **16 GB.** See the memory guidance below. | **16 GB or more.** |
 | **Storage** | **About 60 GB free while building.** A hard drive works, but builds are much slower. | **An SSD with about 60 GB free.** |
 
+**Below the minimum:** a laptop with Intel UHD graphics and a 4-thread CPU is below both minimums. The game has been
+reported to start on one (Intel UHD, 4 threads, 16 GB, Windows), at about 35 fps on the title and with crashes
+in Intel's driver that [#252](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/252) is meant to fix. See
+[Intel laptops](https://git.magicbean.dev/MagicBeanDev/Longshot/src/branch/main/README.md#intel-laptops) for what to set and what to send.
+
 Memory use depends on the build, driver and scene: recent Linux/NVIDIA runs used roughly
-13–19 GiB for the game alone (see [tested configurations](https://git.magicbean.dev/MagicBeanDev/Longshot/src/branch/main/docs/tested-configurations.md)), so even a 16 GB PC can need
+13–19 GiB for the game alone (see the [tested configurations catalogue](/tested-configurations/)), so even a 16 GB PC can need
 swap. Leave room for the desktop and other programs.
 Swap can prevent an out-of-memory exit, but it is not extra RAM; heavy swapping can make the whole desktop unresponsive.
 
@@ -36,6 +41,6 @@ there is nothing else to install.
 - [Install Longshot](/install/)
 - [Check common issues and workarounds](/help/)
 - [Search Longshot reports](https://git.magicbean.dev/MagicBeanDev/Longshot/issues)
-- [Compare tested configurations](https://git.magicbean.dev/MagicBeanDev/Longshot/src/branch/main/docs/tested-configurations.md)
+- [Compare tested configurations](/tested-configurations/)
 
 **We do not host, store, or distribute game files.** You need your own supported copy, and Longshot builds it locally.

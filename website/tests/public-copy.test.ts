@@ -13,6 +13,13 @@ test('public descriptions use neutral game, platform, place and character wordin
     'Windows, Linux, Vulkan, NVIDIA DLSS and AMD FSR; switch tabs.');
 });
 
+test('archived world-name shorthand stays neutral without changing the specific place descriptions', () => {
+  assert.equal(publicGameText('Hyrule, then Hyrule Field and Hyrule Castle'),
+    'the game world, then the main outdoor area and the castle');
+  assert.equal(publicGameText('hyrule'), 'the game world');
+  assert.equal(publicGameText('Hyrulean'), 'Hyrulean');
+});
+
 test('activity exports neutralize title and search copy without altering source records or identifiers', () => {
   const item = { title: 'fix: OoT crashes in Kokiri Forest', originalTitle: 'fix: OoT crashes in Kokiri Forest',
     summary: 'Zelda on Nintendo Switch 2', workaround: 'Try outside Hyrule Field', labels: ['Ocarina of Time', 'Graphics'],

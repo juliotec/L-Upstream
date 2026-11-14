@@ -17,6 +17,7 @@ export function publicGameText(text: string): string {
     .replace(/\b(?:the )?(?:Great )?Deku Tree\b/gi, 'the first dungeon')
     .replace(/\bHyrule Field\b/gi, 'the main outdoor area')
     .replace(/\bHyrule Castle\b/gi, 'the castle')
+    .replace(/\bHyrule\b/gi, 'the game world') // Some archived runs use only the world name.
     .replace(/\bKakariko(?: Village)?\b/gi, 'the village')
     .replace(/\bGoron City\b/gi, 'the mountain settlement')
     .replace(/\bZora['’]s (?:River|Domain|Fountain)\b/gi, 'the water region')

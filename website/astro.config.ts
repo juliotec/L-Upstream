@@ -1,11 +1,14 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { unified } from '@astrojs/markdown-remark';
 import { repository, siteUrl, editUrl } from './src/site.ts';
 import { repoAssets } from './src/repo-docs/assets.ts';
+import { remarkTestedConfigurations } from './src/repo-docs/tested-configurations.ts';
 
 export default defineConfig({
   site: siteUrl,
   trailingSlash: 'always',
+  markdown: { processor: unified({ remarkPlugins: [remarkTestedConfigurations] }) },
   integrations: [repoAssets(), starlight({
     title: 'Longshot',
     description: 'Longshot by Team MagicBean. Guides, project updates, and practical help for your PC adventure.',

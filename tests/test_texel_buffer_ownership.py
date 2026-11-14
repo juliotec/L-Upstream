@@ -38,7 +38,7 @@ def main():
     assert state.count("std::map<") == 2
     state = state.replace("std::map<", "FaultMap<")
     eviction = block(memory, "void imports_give_back()")
-    eviction = eviction[:eviction.index("    // (longshot) Off by default")] + "}\n"
+    eviction = eviction[:eviction.index("    // (longshot) Default by OS and vendor")] + "}\n"
     actual = "\n".join([
         state,
         block(texture, "void release_texel_buffer_views("),
@@ -58,7 +58,7 @@ def main():
     cases = ["healthy", "remap", "offset", "format", "range", "liveness", "late-map",
              "host-oom", "device-oom", "other-error", "registry-commit", "view-commit",
              "cached-after-failure", "independent", "retirement", "eviction", "reuse-handle",
-             "storage", "alignment", "zero-limit", "clamped-range", "invalid", "concurrent"]
+             "clamped-range", "invalid", "unsupported", "concurrent"]
     with tempfile.TemporaryDirectory(prefix="texel-buffer-ownership-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")

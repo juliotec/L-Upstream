@@ -8,6 +8,7 @@ import { editUrl, siteUrl, sourceUrl } from '../site.ts';
 import { formatInstallHub } from './format-install.ts';
 import { formatGraphicsSettings } from './graphics-settings.ts';
 import { formatCommonIssues } from './format-common-issues.ts';
+import { fragmentDirectory, publicTestedRunsMarker, readTestedConfigurations } from './tested-configurations.ts';
 
 // Astro runs from website/; the documents are in the repository around it.
 export const repoRoot = path.resolve('..');
@@ -18,6 +19,12 @@ const publicAssets = new Set(['assets/longshot.png']);
 
 /** Every file a page is made from, for rebuilding the pages when one changes in dev. */
 export const sourceFiles = [...new Set([...Object.values(contentPages), 'gpu/vk/vk_menu.cpp'])].map(repoFile);
+export const testedFragmentsPath = repoFile(fragmentDirectory);
+export function isSourceFile(file: string): boolean {
+  file = path.resolve(file);
+  return sourceFiles.includes(file) || (path.dirname(file) === testedFragmentsPath &&
+    file.endsWith('.md') && path.basename(file) !== 'README.md');
+}
 
 function urlFor(value: string, source: string) {
   // The documents link to the site with its full address, which also works on Forgejo; on the site itself, a path.
@@ -33,24 +40,33 @@ function urlFor(value: string, source: string) {
   return sourceUrl(resolved) + fragment;
 }
 
+export function rewriteRepoLinks(text: string, source: string): string {
+  // Keep code samples untouched; only rewrite actual prose links and HTML attributes.
+  return text.split(/(^```[^\n]*\n[\s\S]*?^```\s*$)/gm).map((chunk) => chunk.startsWith('```') ? chunk : chunk
+    .replace(/(!?\[[^\]]*\]\()([^\s)]+)(\))/g, (_, before, url, after) => before + urlFor(url, source) + after)
+    .replace(/(\b(?:src|href)=")(?!https?:|#)([^"]+)(")/g, (_, before, url, after) => before + urlFor(url, source) + after),
+  ).join('');
+}
+
 export interface RepoPage { title: string; markdown: string; editUrl: string; tableOfContents?: false }
 
 export async function renderPage(slug: string): Promise<RepoPage> {
   const source = contentPages[slug];
   let text = await readFile(repoFile(source), 'utf8');
+  if (source === 'docs/tested-configurations.md') {
+    // Resolve fragment links at their own paths, after validation, before assembling the document's links.
+    text = await readTestedConfigurations(text, testedFragmentsPath, rewriteRepoLinks);
+  }
   const title = text.match(/^# (.+)$/m)?.[1] || source;
   text = text.replace(/^# .+\n/m, '');
-  // Keep code samples untouched; only rewrite actual prose links and HTML attributes.
-  text = text.split(/(^```[^\n]*\n[\s\S]*?^```\s*$)/gm).map((chunk) => chunk.startsWith('```') ? chunk : chunk
-    .replace(/(!?\[[^\]]*\]\()([^\s)]+)(\))/g, (_, before, url, after) => before + urlFor(url, source) + after)
-    .replace(/(\b(?:src|href)=")(?!https?:|#)([^"]+)(")/g, (_, before, url, after) => before + urlFor(url, source) + after),
-  ).join('');
+  text = rewriteRepoLinks(text, source);
   if (source === 'docs/getting-started.md') text = formatInstallHub(text);
   if (source === 'docs/common-issues.md') text = formatCommonIssues(text);
   if (source === 'docs/graphics-and-controls.md') {
     text = await formatGraphicsSettings(text, await readFile(repoFile('README.md'), 'utf8'),
       await readFile(repoFile('gpu/vk/vk_menu.cpp'), 'utf8'), await createMarkdownProcessor());
   }
+  if (source === 'docs/tested-configurations.md') text = publicTestedRunsMarker + '\n\n' + text;
   return { title, markdown: text, editUrl: editUrl(source),
     ...(source === 'docs/common-issues.md' ? { tableOfContents: false as const } : {}) };
 }

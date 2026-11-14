@@ -54,6 +54,10 @@ enum { HOS_OPT_SKIP_OPENING = 52 };
 /* (HOS_OPT_FPS_CAP, 53: the Game frame rate cap row, host/nn_vi.c fps_refresh reads it at each present: 0 the console's 60, then
    90, 120, 144, 165, 240, 6 Uncapped; a change applies in play) */
 enum { HOS_OPT_FPS_CAP = 53 };
+/* Hold-to-toggle's enabled Switch buttons, 1 << HOS_SW_*. Off (zero) by default; the existing option callback. */
+enum { HOS_OPT_HOLD_TOGGLE = 54 };
+/* Audio output: 0 Auto, 1 Stereo, 2 5.1, 3 Mono. Only Mono averages final stereo output live. */
+enum { HOS_OPT_AUDIO_OUTPUT = 57 };
 /* Damage taken: 0 Half, 1 Normal (unchanged), 2 Double, 3 Quadruple. */
 enum { HOS_OPT_DAMAGE_TAKEN = 55 };
 

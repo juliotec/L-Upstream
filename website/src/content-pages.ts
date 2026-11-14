@@ -3,6 +3,7 @@
 export const contentPages: Record<string, string> = {
   'install': 'docs/getting-started.md',
   'settings': 'docs/graphics-and-controls.md',
+  'tested-configurations': 'docs/tested-configurations.md',
   'saves': 'docs/updates-and-saves.md',
   'saves/transfer': 'docs/saves.md',
   'help': 'docs/common-issues.md',
