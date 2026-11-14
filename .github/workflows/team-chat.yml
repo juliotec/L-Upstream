@@ -1,0 +1,67 @@
+name: team-chat
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Text to post (several fixes in one message)"
+        required: true
+        type: string
+      room:
+        description: "Room alias (empty = #agent-updates:magicbean.dev)"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: team-chat
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    env:
+      LONGSHOT_TEAM_CHAT_DIR: ${{ github.workspace }}/.team-chat
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: longshot-main
+
+      - name: Restore last post time
+        uses: actions/cache/restore@v4
+        with:
+          path: .team-chat
+          key: team-chat-${{ github.run_id }}
+          restore-keys: team-chat-
+
+      - name: Sign in
+        env:
+          MATRIX_TOKEN: ${{ secrets.MATRIX_TOKEN }}
+        run: printf '%s\n' "$MATRIX_TOKEN" | python3 -I scripts/team_chat.py login --access-token-stdin
+
+      - name: Post
+        env:
+          MESSAGE: ${{ inputs.message }}
+          ROOM: ${{ inputs.room }}
+        run: |
+          if [ -n "$ROOM" ]; then
+            python3 -I scripts/team_chat.py post "$MESSAGE" --room "$ROOM"
+          else
+            python3 -I scripts/team_chat.py post "$MESSAGE"
+          fi
+
+      - name: Drop the token
+        if: always()
+        run: |
+          f=.team-chat/team_chat.json
+          [ -f "$f" ] && python3 -I -c "import json,sys; p=sys.argv[1]; c=json.load(open(p)); [c.pop(k,None) for k in ('access_token','device_id')]; json.dump(c,open(p,'w'))" "$f" || true
+
+      - name: Save last post time
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: .team-chat
+          key: team-chat-${{ github.run_id }}
