@@ -15,7 +15,7 @@ on:
         type: choice
         options: [push, create, update, comment, ready, status]
       branch:
-        "Branch on juliotec/L-Upstream (push
+        description: "Branch on juliotec/L-Upstream (push, create, update with push)"
         required: false
         type: string
         default: ""
