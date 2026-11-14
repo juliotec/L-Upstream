@@ -53,8 +53,9 @@ python -I scripts/forge.py pr ready 12
 `pr create` prints the pull request's link. Title and description follow
 [CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests). It opens the PR as **work in progress** (a `WIP: `
 title, Forgejo's draft mark), with the description started from
-[the template](../.forgejo/pull_request_template.md) when you give no `--body-file`, and main's and the branch's
-commits filled in where the Measurements name them. `--ready` opens it ready, when the description is complete already
+[the template](../.forgejo/pull_request_template.md) when you give no `--body-file`: the status line's type from the
+title, How to reproduce kept only for a `fix`, main's and the branch's commits in the Measurements' `Before: main @` and
+`After: this PR @` columns, and *When it applies* down to the boxes the diff suggests. `--ready` opens it ready, when the description is complete already
 (`--draft`, the earlier flag, is now the default and still accepted).
 
 ## Work in progress, ready, and keeping the PR current
@@ -70,13 +71,13 @@ python -I scripts/forge.py pr review 12 (--approve | --comment | --request-chang
 ```
 
 - `pr ready` runs the PR description check (`scripts/check_pr_description.py`, the same one the `PR description`
-  workflow runs) on the description and the PR's diff, and refuses while a section is empty or still holds the
-  template's `<...>`, the Measurements don't name `main @ <hash>` and `this PR @ <hash>`, Testing lacks its Tested,
-  Not tested or Needs other testers part, a test request is still "request to open", a *For everyone* box is
-  missing or unticked, or an *If applicable* box kept is unticked (a box the diff suggests but that isn't there is a
-  hint). It prints what is missing; `--force` goes on with a warning. Flags and settings is a note, never a reason
-  to refuse: what it leaves out (a switch the diff adds and the table doesn't list, say) is a warning. `pr create`
-  keeps only the *If applicable* boxes the diff suggests (none: the heading and a comment). It also takes off the label `needs measurements`.
+  workflow runs; its opening comment lists every rule) on the description, the title and the diff, and refuses while
+  a part of [the template](../.forgejo/pull_request_template.md) is missing, empty or still holds its `<...>`: the
+  status line, How to reproduce for a `fix`, the Measurements' verdict and columns named by commit (or one line
+  saying why there is nothing to measure), *Flags and settings*, Testing's Must be tested (each item where, how and
+  who runs it: the Test Farm or by hand), Risks' Compatibility, and every *Everyone* box ticked. It prints what is missing;
+  `--force` goes on with a warning. A switch the diff adds that Flags doesn't list, a box the diff suggests and a
+  rebase since the measurements are warnings. It also takes off the label `needs measurements`.
 - `pr update` is the "I pushed more" step: it edits the description (with `--body-file`) and posts the comment saying
   what changed, so the description stays the PR as it is now and the comments keep the history. With `--comment` only,
   it only comments.

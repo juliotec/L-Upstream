@@ -55,8 +55,8 @@ download is genuine.
 
 1. **Let the launcher run as a program.** In your file manager, open its **Properties** and turn on "Allow executing
    file as program", or run `chmod +x LongshotLauncher-*-x86_64.AppImage`.
-2. **Check your system.** Linux needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12 or newer), and Longshot's Linux
-   AppImage needs a CPU with **AVX2**.
+2. **Check your system.** Linux needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12 or newer). A CPU without AVX2
+   builds and plays too: the game and its renderer are built for your processor.
 
 [Search Linux reports](https://longshot.magicbean.dev/progress/#problem-search?q=linux)
 

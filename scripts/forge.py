@@ -39,11 +39,13 @@ this script as "forge.py credential get|store|erase".
 
 A pull request is work in progress until it is measured and ready for review (CONTRIBUTING.md, Commits and pull
 requests): a title starting with "WIP: ", Forgejo's draft mark. pr create opens it so, with the description started
-from .forgejo/pull_request_template.md when no --body or --body-file is given; --ready opens it ready, when the
-description is complete already; it fills in the commits the Measurements name (main's: the merge base; this PR's:
-the branch's head). pr ready takes WIP: off after the same check as the PR description workflow
-(check_pr_description.py: every section filled in, the measurements named by commit, every For everyone box
-ticked; the Flags note only warns), and refuses when it fails
+from .forgejo/pull_request_template.md when no --body or --body-file is given (the status line's type from the title,
+How to reproduce only for a fix, the commits the Measurements' columns name: main's the merge base, this PR's the
+branch's head); --ready opens it ready, when the description is complete already. pr ready takes WIP: off after the
+same check as the PR description workflow (check_pr_description.py: the status line, every section filled in, the
+measurements named by commit, Must be tested saying where, how and who runs it, every Everyone box ticked), and
+refuses when it
+fails
 (--force goes on with a warning); pr wip puts it back. The description is the PR as it is now, the comments its
 history: pr update edits the description and posts a comment saying what changed in one step.
 
@@ -323,17 +325,12 @@ def pr_diff(number):
         return None
 
 
-def complete_or_refuse(body, force, number=None, diff=None, merge_base=None):
+def complete_or_refuse(body, force, number=None, diff=None, merge_base=None, title=None):
     """Refuses (a ForgeError listing what is missing) unless body passes the PR description check; --force warns and
     goes on. The check's warnings are printed either way."""
-    found, warnings = desc.review(body, diff=diff, merge_base=merge_base)
-    to_open = desc.requests_to_open(body)
-    for w in warnings if not to_open else [w for w in warnings if "still to open" not in w]:
+    found, warnings = desc.review(body, diff=diff, merge_base=merge_base, title=title)
+    for w in warnings:
         print("forge.py: warning: " + w, file=sys.stderr)
-    # (ready only once the test requests Needs other testers names are open: CONTRIBUTING.md, Commits and pull requests)
-    found = found + ["## Testing's 'Needs other testers:' still has a request to open: %s (open it: python -I "
-                     "scripts/test_requests.py request --pr <n> ..., then put its id there)" % item
-                     for item in to_open]
     if not found:
         return
     listed = "\n".join("  - " + f for f in found)
@@ -348,30 +345,31 @@ def complete_or_refuse(body, force, number=None, diff=None, merge_base=None):
 
 def warn_if_incomplete(pr, body):
     """After a description edit on a PR marked ready: say so when it no longer passes the check"""
-    found = desc.problems(body)
+    found = desc.problems(body, title=pr.get("title"))
     if found and not desc.is_draft(pr.get("title"), pr.get("draft")):
         print("forge.py: warning: #%d is marked ready, but its description no longer passes the check:\n%s\n"
               "(if it needs more work: python -I scripts/forge.py pr wip %d)"
               % (pr["number"], "\n".join("  - " + f for f in found), pr["number"]), file=sys.stderr)
 
 
-def fill_commits(body, branch, pr):
-    """body with the template's stand-ins for the commits filled in: main's is the merge base, this PR's the head"""
+TYPE_STAND_IN = re.compile(r"(\*\*Type:\*\* )<[^<>\n]+>")
+
+
+def fill_template(body, title):
+    """The template as pr create starts a description from: the status line's type the title's, and How to reproduce
+    only for a fix"""
+    kind = re.match(r"[a-z]+", title).group(0)
+    body = TYPE_STAND_IN.sub(lambda m: m.group(1) + kind, body, count=1)
+    return body if kind == "fix" else desc.without_reproduce(body)
+
+
+def fill_commits(body, pr):
+    """body with the template's stand-ins for the Measurements' commits filled in: main's is the merge base, this PR's
+    the head"""
     head, base = (pr.get("head") or {}).get("sha"), pr.get("merge_base")
-    if not head or not base:
-        return body
-    date = None
-    try:
-        date = api("GET", "/repos/%s/git/commits/%s" % (REPO, base))["commit"]["committer"]["date"][:10]
-    except (ForgeError, KeyError, TypeError):
-        pass
-    for old, new in (("main: <commit> (<date>)", "main: %s (%s)" % (base[:8], date) if date else None),
-                     ("main: <commit>", "main: %s" % base[:8]),
-                     ("this PR: <branch> @ <commit>", "this PR: %s @ %s" % (branch, head[:8])),
-                     ("main @ <commit>", "main @ %s" % base[:8]),
-                     ("this PR @ <commit>", "this PR @ %s" % head[:8])):
-        if new:
-            body = body.replace(old, new)
+    if head and base:
+        body = body.replace("Before: main @ <commit>", "Before: main @ %s" % base[:8])
+        body = body.replace("this PR @ <commit>", "this PR @ %s" % head[:8])
     return body
 
 
@@ -657,7 +655,8 @@ def cmd_pr_ready(args):
     if not desc.is_draft(pr["title"], pr.get("draft")):
         print("#%d is ready for review already: %s" % (pr["number"], pr["html_url"]))
         return
-    complete_or_refuse(pr.get("body"), args.force, pr["number"], pr_diff(pr["number"]), pr.get("merge_base"))
+    complete_or_refuse(pr.get("body"), args.force, pr["number"], pr_diff(pr["number"]), pr.get("merge_base"),
+                       pr["title"])
     done = edit_pr(pr["number"], title=desc.strip_wip(pr["title"]))
     if done.get("draft"):   # (the server reads another prefix as work in progress too)
         raise ForgeError("Forgejo still takes #%d for work in progress: %r (its WORK_IN_PROGRESS_PREFIXES); take the "
@@ -748,31 +747,32 @@ def cmd_pr_status(args):
     state = ("merged" if pr.get("merged") else pr["state"] if pr["state"] != "open"
              else "work in progress" if wip else "ready for review")
     print("#%d %s\n%s, by %s: %s" % (pr["number"], pr["title"], state, pr["user"]["login"], pr["html_url"]))
-    found, warnings = desc.review(body, diff=pr_diff(pr["number"]), merge_base=pr.get("merge_base"))
-    to_open = len(desc.requests_to_open(body))
-    print("Description: %s" % (("complete" if not to_open else "complete but for %d test request%s to open" % (
-        to_open, "" if to_open == 1 else "s")) if not found else "%d to fix%s" % (
+    found, warnings = desc.review(body, diff=pr_diff(pr["number"]), merge_base=pr.get("merge_base"), title=pr["title"])
+    print("Description: %s" % ("complete" if not found else "%d to fix%s" % (
         len(found), "" if pr["state"] != "open" else " before pr ready" if wip
         else " (it is marked ready: pr wip %d if it needs more work)" % pr["number"])))
     for f in found:
         print("  - " + f)
-    for w in warnings:   # (the Flags and settings note is never a gate: what it leaves out is a note)
+    for w in warnings:   # (what the diff suggests is a hint; the rest are warnings)
         print("  %s: %s" % ("note" if "Flags and settings" in w else "hint" if "the diff suggests" in w else "warning", w))
-    parts = desc.testing_parts(desc.sections(desc.without_comments(body)).get("Testing", ""))
-    needs = parts.get("Needs other testers", "").strip()
+    stripped = desc.without_comments(body)
+    line = desc.status(stripped)
+    print("Status line: %s" % ("missing" if line is None else " · ".join(
+        "%s: %s" % (k, line.get(k, "?")) for k in desc.STATUS)))
+    parts = desc.testing_parts(desc.sections(stripped).get("Testing", ""))
     if not parts:
-        print("Testing: no Tested / Not tested / Needs other testers parts")
+        print("Testing: no Tested / Not tested / Must be tested parts")
     else:
-        items = [] if re.match(r"^none\b", needs, re.I) else desc.tester_lines(needs)
-        print("Testing: %s; needs other testers: %s" % (
+        items = desc.farm_items(body)
+        print("Testing: %s; must be tested: %s" % (
             ", ".join("%s %s" % (p, "filled in" if desc.STAND_IN.sub("", parts.get(p, "")).strip() else "missing") for p in desc.TESTING_PARTS[:2]),
-            "none" if not items else "%d (%d with a test request, %d to open)" % (
-                len(items), sum(bool(desc.TEST_REQUEST.search(i)) for i in items), len(desc.requests_to_open(body)))))
-    lists = desc.sections(desc.sections(desc.without_comments(body)).get("Checklist", ""), "###")
-    items = desc.boxes(lists.get("For everyone", ""))
-    print("Checklist, For everyone: %d of %d ticked" % (sum(t for t, _ in items), len(items)))
-    items = desc.boxes(lists.get("If applicable", ""))
-    print("Checklist, If applicable: %d kept, %d ticked" % (len(items), sum(t for t, _ in items)))
+            "none" if not items else "%d (%d for the Test Farm, %d by hand)" % (
+                len(items), sum(farm for _, farm in items), sum(not farm for _, farm in items))))
+    lists = desc.checklist(stripped)
+    items = desc.boxes(lists.get(desc.EVERYONE, ""))
+    print("Checklist, Everyone: %d of %d ticked" % (sum(t for t, _ in items), len(items)))
+    items = desc.boxes(lists.get(desc.APPLIES, ""))
+    print("Checklist, When it applies: %d kept, %d ticked" % (len(items), sum(t for t, _ in items)))
     if pr["state"] == "open":
         print("Mergeable: %s" % mergeable_note(pr, wip))
     labels = [l["name"] for l in pr.get("labels") or []]
@@ -803,7 +803,7 @@ def cmd_pr(args):
         title = check_title(args.title)
         body = text_arg(args) if body_given(args) else template_body()   # (nobody starts from nothing)
         if args.ready:
-            complete_or_refuse(body, args.force)
+            complete_or_refuse(body, args.force, title=title)
         login = me()
         fork, made = ensure_fork(login)
         if made:   # (first pull request: set up pushing, then the branch has to go there)
@@ -816,10 +816,10 @@ def cmd_pr(args):
         pr = api("POST", "/repos/%s/pulls" % REPO, {
             "base": "main", "head": "%s:%s" % (login, args.branch),
             "title": title if args.ready else WIP + title, "body": body})
-        filled = fill_commits(body, args.branch, pr)
-        if not body_given(args):   # (the template's If applicable list, down to the boxes the diff suggests)
+        filled = fill_commits(body, pr)
+        if not body_given(args):   # (the template filled in, and When it applies down to the boxes the diff suggests)
             keep = [item for item, _ in desc.suggested_boxes(pr_diff(pr["number"]))]
-            filled = desc.keep_applicable(filled, keep)
+            filled = desc.keep_applicable(fill_template(filled, title), keep)
         if filled != body:
             edit_pr(pr["number"], body=filled)
         print(pr["html_url"])
@@ -950,8 +950,9 @@ def main(argv=None):
     s.add_argument("--force", action="store_true", help="with --ready: open it ready even if the check fails")
     body_args(s)
     s = pr.add_parser("ready", help="mark it ready for review: take WIP: off, once the description passes the check",
-                      description="Takes the WIP prefix off the title, after the PR description check: Why and "
-                      "Measurements filled in, every For everyone box ticked. Refuses when it fails.")
+                      description="Takes the WIP prefix off the title, after the PR description check: the status "
+                      "line, every section filled in, the measurements named by commit, Must be tested with its test "
+                      "requests, every Everyone box ticked. Refuses when it fails.")
     s.add_argument("number", type=int)
     s.add_argument("--force", action="store_true", help="mark it ready even if the check fails (with a warning)")
     s = pr.add_parser("wip", help="put it back to work in progress (WIP: title): it needs more work")

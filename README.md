@@ -103,7 +103,7 @@ frame rate: the game runs on more than this, and performance depends on the reso
 | Component | Minimum | Recommended |
 |---|---|---|
 | **Operating system** | **64-bit Windows 10 / 11**, or **64-bit Linux** with glibc 2.35 or newer. | Same. |
-| **Processor** | A 6-core x86-64 CPU, such as an AMD Ryzen 5 2600 or Intel Core i5-8400. **AVX2 is required for the Linux AppImage**; Windows and source builds also run without it, more slowly. | AMD Ryzen 5 5600 or Intel Core i5-12400 or newer. For a steady 60 fps in demanding outdoor areas, a Ryzen 7 5700X3D or Core i5-13600K. |
+| **Processor** | A 6-core x86-64 CPU, such as an AMD Ryzen 5 2600 or Intel Core i5-8400. AVX2 is not required: a CPU without it builds and runs Longshot, more slowly. | AMD Ryzen 5 5600 or Intel Core i5-12400 or newer. For a steady 60 fps in demanding outdoor areas, a Ryzen 7 5700X3D or Core i5-13600K. |
 | **Graphics card** | **Vulkan 1.3.** NVIDIA GeForce GTX 1060 6 GB or GTX 1650, AMD Radeon RX 5500 XT, or Intel Arc A380. | **Vulkan 1.3 with mesh shaders.** NVIDIA GeForce RTX 3060 or RTX 4060, AMD Radeon RX 6600 XT or RX 6700 XT, or Intel Arc A750. Check the [project status](#project-status) for each maker's known issues. |
 | **Mesh shaders** | Not required: without them, Longshot draws through a slower compute fallback. | **Strongly recommended:** NVIDIA RTX 20 series and newer, AMD RX 6000 series and newer, Intel Arc. |
 | **Video memory (VRAM)** | **4 GB**, with the in-game Minimum (4GB) or Low (6GB) quality preset. | **8 GB or more.** |
@@ -423,6 +423,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+), Auto (this PC) | Auto (this PC) on a first start; Custom in an options file from before it |
 | | Aspect ratio | The shapes your screen's resolutions have, narrowest first (5:4, 4:3, 16:10, 16:9, 21:9, 32:9, ...), your monitor's own marked "(monitor's)" (after a restart) | Your monitor's |
 | | Output resolution | The Aspect ratio's sizes: your screen's resolutions and the common ones (1440p, 4K, 5K at 16:9; 1920x1200, 2560x1600 at 16:10; 3440x1440 at 21:9; ...), and 2048x1152 (the game's own reduced size, 80% of its 2560x1440, marked "(reduced)") at 16:9; your screen's own size is marked "(native)" (after a restart) | 2560x1440, the game's own picture, or your screen's size where it is smaller (a Steam Deck's 1280x800, a 1080p monitor), at its own shape (a 2560x1080 ultrawide starts at 2560x1080, a 2256x1504 laptop at 2256x1504); Auto (this PC) leaves it as it is |
+| | Custom output size | A size of your own, typed as `<width>x<height>` (after a restart) | None |
 | | Profile | Docked, Handheld (after a restart) | Docked; a quality preset sets it |
 | | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, below, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4 (only in builds with FSR 4, below, on GPUs AMD's files cover), Off (no upscaling). NVIDIA DLAA and AMD FSR 4 Native AA are DLSS's and FSR 4's Native, chosen on the Render resolution row | Game's own; Auto (this PC) chooses DLSS or FSR 4 where they run |
 | | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
@@ -445,6 +446,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native. DLSS/DLAA with their NVIDIA frame-generation inputs, and AMD FSR 4, can be tried with `RX_VK_PSYCHOV35_DLSS=1`; FSR 3.1, TAAU and Upscaler Off still fall back to the game's network) | Vanilla |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
+| | Threaded rendering | Auto, On, Off (after a restart). Auto is On with 12 or more processor threads for the game | Auto |
 | | VRAM budget | Auto, 3.6, 4.8, 6, 7.5, 9, 11 GB (2.2 GB only from the Minimum (4GB) preset); a quality preset sets it | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
@@ -456,6 +458,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
+| | Skip title screen | Off, On (after a restart) | Off |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | | Game language | The game's 16 languages, each by its own name (after a restart) | `language.txt`'s, else English (US) |
 | | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
@@ -475,6 +478,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Layout preset | Nintendo (Def), Xbox / PC, Swap Face; Custom once you bind a button yourself (on the Controls page) | Nintendo (Def) |
 | | Button prompts | Auto, Switch, Xbox, PlayStation 4, PlayStation 5, Steam Deck, Keyboard (on the Controls page; changes at once where the game allows it, else after a restart) | Auto |
 | | Motion | Opens the Motion page: Motion controls (Off, On; On), Motion sensitivity X (10% to 600%) and Y (10% to 300%, in steps of 10; 100%), Invert motion X and Y (Off, On; Off), Motion deadzone (Low, Standard, High; Standard) | |
+| | Walk mode | Hold, Toggle | Hold |
+| | Walk speed | 15% to 90%, in steps of 5 | 45% |
 | | Controls | Opens the Controls page | |
 | | Menu shortcut | Insert or F1; F1 only; Insert, F1 or Esc | Insert, F1 or Esc |
 | | Compact menu key | Right Shift, Right Ctrl | Right Shift |
@@ -505,6 +510,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   world and lower brings it closer. The game's zoom changes remain relative to your choice.
   Aiming has been tested in the 50% to 150% range, including with ultrawide enabled.
   Cutscenes, the HUD and movies keep their own view. The setting is saved as `field_of_view` in `longshot_options.ini`.
+- **Skip title screen** starts the game with your most recent save: Longshot presses A through the title screen and its
+  file list as soon as the game has a save. Until you have saved once, it leaves the title screen alone, so a new game can
+  still be started. It applies after a restart; turn it off to watch the intro and use the title.
 - **GPU device** matters on a PC with more than one graphics card (a laptop's integrated and dedicated GPUs, or a
   second card for Lossless Scaling). Auto prefers a dedicated one, and only cards with Vulkan 1.3 are listed.
   `longshot_log.txt` lists every card as `vk: device <n>`; `RX_VK_DEVICE=<n>` chooses one for a single run and wins
@@ -570,10 +578,19 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   where 16:9 only adds bars above and below; an ultrawide keeps its 16:9. The output's rows below show the sizes for the
   output you chose. At your screen's own size the HUD and text map pixel for pixel. Above 2560x1440 the game's render
   targets get a bigger GPU pool, so a full-size 3D fits. Where the screen's modes are not known (Linux), the menu offers
-  1920x1080, 2560x1440, 3840x2160, 5120x1440 and 5120x2880. For a size the menu does not offer, set
-  `output_res=<width>x<height>` in `longshot_options.ini`: each side a multiple of 8, at least 640x360, at most 5120x2880's
-  pixels, and between 5:4 and 48:9 in shape; anything else uses the game's reduced 2048x1152. The menu then offers it as its own
-  choice. A picture wider or narrower than 16:9 is kept to 5120x2160's pixels, so above that a size of another shape is
+  1920x1080, 2560x1440, 3840x2160, 5120x1440 and 5120x2880. For a size the menu does not offer, type it in
+  **Custom output size** (Enter or the pad's confirm button to edit and set it, Esc or the back button to cancel).
+  On a controller, D-pad Left/Right moves the caret, Up/Down cycles its digit or separator, the right shoulder inserts
+  a digit and the left shoulder removes a character. At the end, Up/Down adds a character. The shown Paste button
+  still pastes; with a keyboard, Ctrl+V or Shift+Insert does the same. Full-width digits and `ｘ` become ASCII.
+  Or set `output_res=<width>x<height>` in `longshot_options.ini`: each side a multiple of 8, at least 640x360,
+  at most 5120x2880's pixels, and between 5:4 and 48:9 in shape. The menu says why it refuses a size; in the file,
+  anything else uses the game's reduced 2048x1152. The Output resolution row chooses the typed size from its list when it is
+  already there, including sizes found after a monitor change, or offers it as your own choice and selects its shape.
+  Typing a 16:9 size keeps Aspect ratio on the monitor's shape when it already follows the monitor.
+  The size this run started with stays available until the next start, so returning to the starting shape still
+  restores that size even after a custom-size edit.
+  A picture wider or narrower than 16:9 is kept to 5120x2160's pixels, so above that a size of another shape is
   not a native frame. A size's own shape sets the camera's, even when the OS reports a single 16:9 primary monitor. For
   three 16:9 monitors, use `5760x1080` or `7680x1440` and a window or logical display
   that spans all three. Both render at full size: 7680x1440 has 5120x2160's pixels, the most a wide picture takes.
@@ -615,6 +632,12 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Off. On waits for each refresh (FIFO): no tearing, at most the display's rate. Off shows each frame at once and can
   tear (where the driver cannot, it is Auto). It changes at once. `RX_VK_FIFO=1` (On) or `RX_VK_IMMEDIATE=1` (Off) chooses
   for one run.
+- **Threaded rendering:** On draws the picture on threads of its own (a render thread and a recorder thread) while
+  the game goes on to its next frame, for a higher frame rate on a processor with threads to spare; it is still being
+  tested and can show flashes. Off draws it on the game's own thread, as before. Auto chooses by the processor
+  (On with 12 or more threads for the game, Off with fewer, and Off wherever the mode is not safe). It applies after
+  a restart. `RX_VK_ASYNC` and `RX_VK_RECORDER`, when set, choose for
+  one run.
 - **Robust buffers** (Debug tab, Developer): a read past a buffer's end is dropped instead of stopping the GPU. Auto is
   on, on every card; Off can be faster on some NVIDIA cards.
 - **ASTC as RGBA8** (Debug tab, Developer): the AMD texture workaround below.
@@ -695,11 +718,20 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   action on (the first of its two), and WASD and the mouse for the sticks; the ocarina's notes and the pause menu's
   controller keep the Switch's buttons.
 - **Save my pipeline list** (Debug tab, under Developer): see [Send your pipeline list](#send-your-pipeline-list).
+- **Walk mode** and **Walk speed:** on the keyboard the movement keys push the stick all the way, so Link runs. While the
+  Walk key is held (<kbd>Caps Lock</kbd> unless you change it on the Controls page), they tilt it only Walk speed of the
+  way, and he walks; with Walk mode on Toggle, one press walks and the next runs again. 15% is his slowest walk, 45% to
+  50% his fastest; from 55% up he jogs, then runs. Controllers, the mouse and the camera keys are not changed. Caps Lock
+  still switches capitals on and off in other programs at each press: bind another key if that bothers you.
+  Walk mode is separate from the Controls page's Toggle column, which holds Switch buttons such as ZL, not Walk.
+  They can be used together without toggling twice. In Toggle mode, walking stays selected across Insert and focus
+  changes, but a Walk key held when play resumes must be released before a fresh press changes that selection.
 
 ### Controls
 
 Use a controller, or the keyboard and mouse. On the keyboard, <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move
-and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the camera.
+(hold <kbd>Caps Lock</kbd> to walk) and the arrow keys (or <kbd>I</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd>) turn the
+camera.
 With the default keyboard bindings, press <kbd>E</kbd> to select **New Game** on the title screen.
 
 **Mouse in the game's menus (Windows):** the title screen and its file list, the pause menu, the Key Items, Threads of
@@ -720,7 +752,7 @@ anything SDL reports as a Switch Pro Controller or Joy-Con, and that includes th
 (8BitDo, GameSir and others; SDL gives them Nintendo's ids). Some of them may turn it into weak rumble or none: set
 `HOS_HD_RUMBLE=0` to give them the plain motor rumble.
 
-To change which gamepad button or key presses a Switch button, or which keys move and turn the camera, open the
+To change which gamepad button or key presses a Switch button, or which keys move, walk and turn the camera, open the
 Controls tab's Controls page. Choose a row and a column (Gamepad or Keyboard), press <kbd>Enter</kbd> (or the bottom
 face button), then the new button or key. <kbd>Esc</kbd> cancels, <kbd>Delete</kbd> clears it, and Reset to defaults
 puts them all back. A gamepad button taken from another Switch button swaps with it. The page saves them in
@@ -728,7 +760,7 @@ puts them all back. A gamepad button taken from another Switch button swaps with
 
 **Toggle:** on the Controls page, set a Switch button's Toggle column to On to hold it with one press and release it
 with the next. Both gamepad inputs, bound keys and mouse buttons share the latch. Every Toggle starts Off.
-Plus, Minus, stick directions and ocarina note rows have no Toggle. Opening Insert, pressing Plus or Minus,
+Plus, Minus, stick directions, Walk and ocarina note rows have no Toggle. Opening Insert, pressing Plus or Minus,
 losing focus, rebinding or Reset to defaults releases latched buttons. With Controller in background On, a new
 press can latch again behind another window. On Linux, other game dialogs do not necessarily clear the latch;
 press Insert to release it. There is no separate on-screen latch indicator.
@@ -752,11 +784,11 @@ toggle_a=0
 [Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
 <kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none; the mouse's buttons are 1 (left), 2 (right), 4 (middle), 5 and 6 (side
 buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
-`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions: `move_up`
-`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right`, and the ocarina's five notes,
+`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions and walking: `move_up`
+`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right` `walk`, and the ocarina's five notes,
 which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
 its default. `toggle_<button>=0|1` sets that button's Toggle (0 Off, the default; 1 On). It accepts the Switch
-buttons above except `plus` and `minus`; stick directions and note rows do not accept it. Other values mean Off.
+buttons above except `plus` and `minus`; stick directions, Walk and note rows do not accept it. Other values mean Off.
 The file saves enabled flags, not held state; a restart starts with no button latched.
 
 </details>
@@ -766,7 +798,8 @@ The file saves enabled flags, not held state; a restart starts with no button la
 Put mods in a `mods` folder in the game folder, beside `longshot.exe` (or point `HOS_MODS` at another folder), in the
 layout emulators use: `mods/<name>/romfs/...` holds files that replace or add to the game's own. Deeper layouts such as
 `mods/contents/<title id>/<name>/romfs` work too. A folder whose name starts with `-` or `_` is off. When two mods
-have the same file, the one whose folder name sorts last wins, so name them `01-...`, `02-...` to set the order.
+have the same file, the one whose whole path relative to `mods` sorts last (ignoring case) wins. Use `01-...`, `02-...`
+at the same level to set the order. Stop the game before changing mods, then restart.
 
 Only RomFS mods are loaded. `exefs` patches (`.pchtxt`, `.ips`) are left out: Longshot compiles the game's code ahead
 of time, so patching its instructions would need a rebuild. The log (`longshot_log.txt`) names each mod and the files
@@ -783,6 +816,9 @@ entries into that table (each file gets the larger of the two), so your controll
 format, or a zstd frame that does not give its size) is used as it is, with the Switch's icons.
 If a mod includes tables for several game versions, the prompts use the table name from the game's own RomFS,
 not the first table found in the mod. Other versions' tables do not change the prompts' font or its size entries.
+
+For authors: the [existing file contract and game-free example](docs/mods.md) cover discovery, conflicting files,
+disabling and what this loader does not provide. The example contains only invented text, not a seed or game data.
 
 ## Build from source
 
@@ -930,7 +966,8 @@ license. Never share a game folder built with them, and do not post builds made 
   (`nvngx_dlss.dll`, `libnvidia-ngx-dlss.so.<version>` on Linux) and DLSS Frame Generation's (`nvngx_dlssg.dll`,
   `libnvidia-ngx-dlssg.so.<version>`) in the game folder's `ngx` folder. An update of that folder keeps DLSS.
 - **A builder from the command line:** `--cli` with make_game.py's `--fetch-ngx-sdk --accept-nvidia-license`
-  (below: what they do).
+  (below: what they do). The SDK goes to `work/ngx-sdk` in the Longshot folder, or to `LONGSHOT_NGX_SDK` when that is set
+  (the Builder drops a variable set on the PC, so a launcher has none).
 - **Windows, the command line:** `python -I scripts/ngx_sdk.py --platform windows <sdk folder>` asks you to accept
   NVIDIA's license (or pass `--accept-nvidia-license`) and fetches the headers, `nvsdk_ngx_s.lib`, `nvngx_dlss.dll` and
   `nvngx_dlssg.dll`, each checked against its SHA-256. Then build with `LONGSHOT_NGX_SDK=<sdk folder>`: `make_game.py`
@@ -1000,8 +1037,7 @@ in `longshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to 
   set it in the environment or a `HOS_ENV_FILE` file; `longshot_env.txt` takes no paths.) Without them the Upscaler row
   says so and offers the rest. On Linux, a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`, such as fsr4-vk's)
   takes their place: AMD publishes none for Linux, so you put it beside the game yourself. A Linux build with FSR 4
-  (`--fsr`) compiles its own Vulkan back end, as with DLSS, since the AppImage's prebuilt one has no FSR 4: a few
-  minutes longer.
+  (`--fsr`) compiles it into the Vulkan back end, which every build compiles.
 - **Or fetched for you (Windows):** `make_game.py --fsr --fetch-fsr-runtime --accept-amd-license` downloads those two
   DLLs and AMD's license from AMD's FidelityFX SDK repository at the v2.4.0 tag, checks each against its SHA-256, and
   puts them in the game folder (`LONGSHOT_FFX_SDK=<folder>` keeps them between builds, default `workfx-sdk`).
@@ -1055,8 +1091,9 @@ For a first run on a 4 GB card such as a GTX 1650, `RX_VK_LOW_SPEC=1` starts wit
 frame generation and upscaling off. It applies only when there is no `longshot_options.ini` yet; after that, change
 the settings in the in-game menu.
 
-On **Minimum (4GB)**, when the driver reports a nonzero VRAM budget of at most 4.5 GiB, sampled ASTC textures use
-a 1024 dimension limit and an 8 MiB decoded-size threshold for leaving out their top mip levels. This lowers texture
+On **Minimum (4GB)**, when the driver reports a nonzero VRAM budget of at most 4.5 GiB, or the GPU is integrated
+and the PC has 16 GB of RAM or less (its "VRAM" is that RAM, whatever budget the driver reports), sampled ASTC textures
+use a 1024 dimension limit and an 8 MiB decoded-size threshold for leaving out their top mip levels. This lowers texture
 detail to reduce the working set. Other presets and larger or unknown budgets keep the 2048 / 64 MiB defaults;
 uncompressed render targets, depth images and the separate `RX_VK_TEX_MAX_MB` allocation limit keep their handling.
 The driver budget is sampled at the first texture creation and kept for the session. It is a heuristic, not a physical
