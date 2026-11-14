@@ -53,7 +53,7 @@ jobs:
     env:
       LONGSHOT_TEAM_CHAT_DIR: ${{ github.workspace }}/.forge-session
       FORGE_USER: jcabarca
-      FORK_URL: https://git.magicbean.dev/jcabarca/Longshot-Upstream.git
+      FORK_URL: https://git.magicbean.dev/jcabarca/Longshot.git
       ACTION: ${{ inputs.action }}
       BRANCH: ${{ inputs.branch }}
       NUMBER: ${{ inputs.number }}
