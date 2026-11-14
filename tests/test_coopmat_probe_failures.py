@@ -28,6 +28,11 @@ template <class T> T handle(uintptr_t v) { return reinterpret_cast<T>(v); }
 struct { VkDevice device = handle<VkDevice>(1); VkPhysicalDevice physical = handle<VkPhysicalDevice>(2);
 		 VkQueue queue = handle<VkQueue>(3); uint32_t queue_family = 0; VkShaderStageFlags sg32_stages = 0; } dev;
 void logf(const char*, ...) {}
+struct IntelDriverGate { ~IntelDriverGate() {} };
+VkResult vkCreateShaderModule(VkDevice, const VkShaderModuleCreateInfo*, const VkAllocationCallbacks*, VkShaderModule*);
+VkResult vkCreateComputePipelines(VkDevice, VkPipelineCache, uint32_t, const VkComputePipelineCreateInfo*, const VkAllocationCallbacks*, VkPipeline*);
+VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) { return vkCreateShaderModule(dev.device, ci, nullptr, m); }
+VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) { return vkCreateComputePipelines(dev.device, cache, 1, ci, nullptr, pl); }
 
 VkResult vkCreateBuffer(VkDevice, const VkBufferCreateInfo*, const VkAllocationCallbacks*, VkBuffer* b) { *b = handle<VkBuffer>(10); return VK_SUCCESS; }
 void vkGetBufferMemoryRequirements(VkDevice, VkBuffer, VkMemoryRequirements* r) { *r = {256, 4, 1}; }
