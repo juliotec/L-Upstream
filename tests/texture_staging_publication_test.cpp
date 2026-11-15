@@ -128,6 +128,24 @@ int run(int argc, char** argv) {
         completed_value = rec_value++; cpu(37,0xa7);
         require(attempts.size() == 2 && arenas.size() == 1 && arenas.front().buffer == old, "completed fallback reused without another allocation");
         require(flushes == 2, "fallback reuse publishes new bytes");
+    } else if (test == "astc-pitch") {
+        // (a layer tail that is not a multiple of minStorageBufferOffsetAlignment: each layer starts at an aligned pitch,
+        // VUID-VkWriteDescriptorSet-descriptorType-00328, and a short layer is padded with zeros, not the arena's old bytes)
+        tex.L.layer_size = 1552;
+        cpu(37, 0x5b);
+        Arena& a = arenas.front();
+        std::memset(a.mapped + a.used, 0xee, a.size - a.used);
+        std::fill(a.allocation->gpu.begin() + a.used, a.allocation->gpu.end(), 0xee);   // (the old bytes, as the GPU sees them too)
+        const uint64_t align = std::max<uint64_t>(dev.props.limits.nonCoherentAtomSize, 256);
+        const uint64_t at = (a.used + align - 1) / align * align, pitch = 1792, short_n = 100;
+        guest[tex.L.layer_size] = 0x3c;
+        require(upload_astc_gpu(tex, tex.L.layer_size + short_n, nullptr), "ASTC layers staged");
+        require(a.used == at + 2 * pitch, "each layer staged at a pitch aligned to minStorageBufferOffsetAlignment");
+        require(a.mapped[at + pitch] == 0x3c && a.mapped[at + pitch + short_n - 1] == 0x5b, "second layer at the aligned pitch");
+        require(std::all_of(a.mapped + at + tex.L.layer_size, a.mapped + at + pitch, [](uint8_t b) { return b == 0; }),
+                "first layer padded with zeros up to the pitch");
+        require(std::all_of(a.mapped + at + pitch + short_n, a.mapped + at + 2 * pitch, [](uint8_t b) { return b == 0; }),
+                "short layer padded with zeros, not the arena's old bytes");
     } else require(false, "known case");
     return 0;
 }
