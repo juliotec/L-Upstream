@@ -128,12 +128,12 @@ jobs:
 
       # (the third-party code's objects a player's build links instead of compiling (nx2/third_party_objects.py): made with
       # what a player's build compiles them with, llvm-mingw's same release and tools.lock's cpm (the Vulkan, SPIR-V and VMA
-      # headers) and wgpu-native (the WebGPU renderer's suyu code). Found by their keys alone: a set that does not fit is not used)
+      # headers). Found by their keys alone: a set that does not fit is not used)
       - name: The third-party objects
         run: |
-          python -I scripts/tools.py install "$RUNNER_TEMP/win-tools" --system windows-x64 --only cpm wgpu-native --cache "$RUNNER_TEMP/tools-cache"
+          python -I scripts/tools.py install "$RUNNER_TEMP/win-tools" --system windows-x64 --only cpm --cache "$RUNNER_TEMP/tools-cache"
           W="$RUNNER_TEMP/win-tools/LongshotBuilder/tools"
-          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" RX_CPM="$W/cpm" WGPU_NATIVE="$W/wgpu-native" \
+          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" RX_CPM="$W/cpm" \
             python -I -B nx2/third_party_objects.py make "$RUNNER_TEMP/third_party_objects" --jobs "$(nproc)"
       # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
       - name: Package folder
