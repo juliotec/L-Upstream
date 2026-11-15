@@ -32,11 +32,13 @@ export default defineConfig({
       { label: 'Help', items: [
         { label: 'Common problems', slug: 'help' },
         { label: 'Report a problem', slug: 'help/report' },
+        { label: 'Report slow performance', slug: 'help/performance' },
         { label: 'Antivirus warnings', slug: 'help/antivirus' },
       ] },
       { label: 'Development', items: [
         { label: 'Progress', slug: 'progress' },
         { label: 'Contributing', slug: 'contributing' },
+        { label: 'Scrub a save', slug: 'saves/scrub' },
         { label: 'Source code ↗', link: repository },
       ] },
       { label: 'About', items: [

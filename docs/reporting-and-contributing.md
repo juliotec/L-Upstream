@@ -18,6 +18,9 @@ Open a [new report](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) 
 **Gameplay → Bug report** in the in-game menu gathers the log and your PC's details into one folder in one press, with
 your user name taken out. Never attach game files, keys or saves.
 
+If the problem is that the game runs slowly or stutters, [report slow performance](performance-report.md) shows how to
+have the game measure itself first.
+
 ## Help with testing
 
 Fixes often need checking on hardware the developer doesn't have: another graphics card, Linux, a Steam Deck. The team

@@ -1,10 +1,9 @@
 /* The Vulkan back end (longshot_vk.dll, longshot_vk.so on Linux) and the game executable: what each gives the other.
 
    The executable records the game's NVN command buffers (host/nvn_native.c) and calls a renderer through the rx_*
-   functions (gpu/render/rx_nvn.h). Unless RX_BACKEND names another, host/rx_backend.c loads it, hands it the host
-   functions below and routes the rx_* calls to the table it returns; otherwise they go to the WebGPU renderer in
-   the executable. The DLL carries Eden's shader recompiler (gpu/vk/eden, SPIR-V back end) and sirit: their C++
-   namespaces are the same as those of the WebGPU renderer's suyu copy, so the two live in different binaries. */
+   functions (gpu/render/rx_nvn.h). host/rx_backend.c loads it, the only renderer, hands it the host functions below
+   and routes the rx_* calls to the table it returns (without it they go to stand-ins that draw nothing). The DLL
+   carries Eden's shader recompiler (gpu/vk/eden, SPIR-V back end) and sirit. */
 #pragma once
 
 #include <stdint.h>
@@ -15,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 22
+#define MKWVK_API_VERSION 23
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (longshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -226,6 +225,10 @@ typedef struct MkwVkHost {
        max, in order (characters and HOS_TEXT_KEY editing keys, repeats included; Ctrl+V and Shift+Insert paste): the count.
        host/display.c (WM_CHAR, WM_KEYDOWN) and host/posix/display_sdl.c (SDL's text input and key events) put them in */
     int (*take_text)(int focus, uint32_t *out, int max);
+    /* (version 23, longshot) the player's settings file, longshot_options.ini in the user folder (host/options_path.c): the
+       Insert menu's (gpu/vk/vk_menu.cpp ini_path) and the switches its rows read before it loads. "" when none could be chosen:
+       every row at its default, and nothing saved */
+    const char *(*options_path)(void);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */
@@ -303,7 +306,7 @@ typedef struct MkwVkRenderer {
     void (*nvn_program_created)(const nvn_prog *p);
 } MkwVkRenderer;
 
-/* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */
+/* the DLL's one export: null when Vulkan is not usable (the executable then draws nothing) */
 typedef const MkwVkRenderer *(*mkwvk_init_fn)(const MkwVkHost *host);
 #ifdef MKWVK_BUILDING
 #ifdef _WIN32

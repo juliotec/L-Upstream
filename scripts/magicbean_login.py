@@ -108,7 +108,8 @@ def forge_tokens(form):
 
 
 class _SessionLock:
-    """Only one process renews the sign-in at a time: Forgejo takes each refresh token once, so two renewals at the
+    """Only one process renews the sign-in at a time: Forgejo can take each refresh token once (its default;
+    git.magicbean.dev has taken them again since 2026-11-15, INVALIDATE_REFRESH_TOKENS off), so two renewals at the
     same moment (git's credential helper and forge.py, two agents) used to leave the second with "token was already
     used" and the sign-in lost. The second waits here, then finds the token the first saved."""
 
@@ -137,6 +138,19 @@ class _SessionLock:
         self.f.close()
 
 
+def cannot_save():
+    """Why a sign-in could not be saved in the config folder (a sandbox that makes it read-only, its permissions), or
+    None when it can: tried by making a file there, as write_private does."""
+    probe = "%s.%d.probe" % (forge_path(), os.getpid())
+    try:
+        os.makedirs(config_dir(), exist_ok=True)
+        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+        os.remove(probe)
+    except OSError as e:
+        return "%s cannot be written (%s)" % (config_dir(), e.strerror or e)
+    return None
+
+
 def forge_session():
     """The saved git sign-in with an access token good for at least a minute (renewed with the refresh token, which
     Forgejo replaces each time), or None."""
@@ -145,6 +159,13 @@ def forge_session():
         return None
     if state["expires_at"] - 60 >= time.time():
         return state
+    # (renewed only where the new token can be saved: a renewal Forgejo answers but this can't save is lost, and with
+    # it, on a server that takes each refresh token once, the sign-in)
+    why = cannot_save()
+    if why:
+        print("the git.magicbean.dev sign-in has run out and is not renewed here: %s. It is kept: run this where the "
+              "folder can be written (outside the sandbox), and don't sign in again" % why, file=sys.stderr)
+        return None
     with _SessionLock():
         state = forge_load()   # (read again under the lock: another process may have renewed it meanwhile)
         if not state:

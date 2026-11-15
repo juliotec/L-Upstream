@@ -5,6 +5,8 @@ the same moment left the second with "token was already used" and the sign-in lo
 expired sign-in together against a stand-in for Forgejo that refuses a reused refresh token: every one must come back
 with a token, and the stand-in must have been asked once. No network, no forge.
 
+A folder the new token cannot be saved in (a sandbox) is not renewed in at all: the sign-in is kept for a run that can.
+
 python -I -B tests/test_forge_session_lock.py
 """
 import json
@@ -58,6 +60,30 @@ class SessionLock(unittest.TestCase):
             self.assertEqual(saved["refresh_token"], "rt-after-rt0")
             self.assertGreater(saved["expires_at"], time.time())
             self.assertEqual([n for n in os.listdir(conf) if n.endswith(".tmp")], [])
+
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "a read-only folder needs POSIX permissions and no root")
+    def test_no_renewal_where_it_cannot_be_saved(self):
+        # (a sandbox makes the config folder read-only: a renewal there used to be answered by Forgejo, then lost)
+        with tempfile.TemporaryDirectory() as d:
+            conf, used = os.path.join(d, "conf"), os.path.join(d, "used")
+            os.makedirs(conf)
+            os.makedirs(used)
+            path = os.path.join(conf, "forge.json")
+            saved = {"login": "someone", "access_token": "old", "refresh_token": "rt0", "expires_at": 0}
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(saved, f)
+            os.chmod(conf, 0o500)
+            try:
+                env = dict(os.environ, LONGSHOT_TEAM_CHAT_DIR=conf)
+                p = subprocess.run([sys.executable, "-I", "-B", "-c", CHILD, ROOT, used], env=env,
+                                   capture_output=True, text=True, timeout=60)
+            finally:
+                os.chmod(conf, 0o700)
+            self.assertEqual(json.loads(p.stdout.strip() or "null"), None, p.stderr)
+            self.assertIn("not renewed here", p.stderr)
+            self.assertEqual(os.listdir(used), [])   # (Forgejo never asked)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), saved)
 
 
 if __name__ == "__main__":

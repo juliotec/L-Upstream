@@ -4,6 +4,7 @@
 #include "hos.h"
 #include "hos_paths.h"
 #include "hos_wide_size.h"
+#include "options_path.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,15 +89,11 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
    (MKW docked composes 3840 x 2160) */
 int hos_ini_option(const char *key, int otherwise);
 #define ini_option hos_ini_option
-/* (longshot) An option's text in longshot_options.ini, the game folder's (the Insert menu's choices, gpu/vk/vk_menu.cpp), the last
-   line that sets it, its line end cut: whether there was one */
+/* (longshot) An option's text in longshot_options.ini (the Insert menu's choices, gpu/vk/vk_menu.cpp; where it is:
+   host/options_path.c), the last line that sets it, its line end cut: whether there was one */
 static int ini_text(const char *key, char *out, size_t size) {
-    char path[MAX_PATH];
-    const DWORD n = hos_game_path_a(path, MAX_PATH);
-    char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
-    if (!slash || !size) return 0;
-    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "longshot_options.ini");
-    FILE *f = fopen(path, "r");
+    if (!size) return 0;
+    FILE *f = fopen(hos_options_file(), "r");
     if (!f) return 0;
     char line[80];
     const size_t len = strlen(key);

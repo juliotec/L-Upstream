@@ -109,7 +109,7 @@ Rotating the key: RELEASING.md, "Rotate the key".
 ## tools.lock (Longshot)
 
 The builders need build tools that are not Longshot's own code. Windows (`windows-x64` lines): llvm-mingw, Python with the
-prompt packages, emsdk, the CPM cache (FFmpeg, Vulkan and SPIR-V headers, VMA, dav1d), wgpu-native, the prebuilt files of
+prompt packages, emsdk, the CPM cache (FFmpeg, Vulkan and SPIR-V headers, VMA, dav1d), the prebuilt files of
 `third_party` (a64emit.dll, lld-link.exe, SDL2/SDL3, zbic.dll). No play profile is among them: play profiles are
 committed in `assets/profiles/`. Linux (`linux-x64` lines): LLVM's clang
 and lld (`emsdk`), the glibc 2.35 `sysroot`, `ffmpeg` with dav1d, `sdl2` and the Vulkan, SPIR-V and VMA headers (`cpm`).
@@ -143,7 +143,7 @@ tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 LongshotBuilder/tools/
   `add` or `assemble`: a new package version, then the line (RELEASING.md, "Bump a tool"). The release workflow refuses a
   `tools.lock` whose package files are not there with their size and SHA-256, or that lacks a tool the
   builder needs (`tools.py check --require`), in its first job, before anything is built.
-- **Today's lock.** Windows: Python, emsdk and wgpu-native are taken as they are from Hookshot v2.1.0's Windows builder
+- **Today's lock.** Windows: Python and emsdk are taken as they are from Hookshot v2.1.0's Windows builder
   (NotRexed/Hookshot's `builder-parts` release), with their SHA-256; llvm-mingw is upstream's; the CPM cache is Hookshot
   v2.1.0's with dav1d added (`scripts/windows/dav1d.sh`), and `third-party` the prebuilt files of Hookshot v2.1.0's
   `third_party` part (`assemble third-party`). Linux: `scripts/linux/deps.sh tools`'s. The lock has no play profile:
@@ -244,7 +244,10 @@ The first release of each product only needs its first number (Longshot `v3.0.0`
 ## Release notes
 
 git-cliff writes them at release time from the commit titles since the previous tag, with the repository's `cliff.toml`.
-For a stable, that is since the previous stable, so its notes cover its release candidates. The headings are Features,
+For a stable, that is since the previous stable, so its notes cover its release candidates. A release candidate after the
+first has two lists: its own, headed `## <tag> (<date>), new since rc.N`, the commits since the rc before; then
+`## Earlier release candidates: rc.1, rc.2 (since <stable>)`, what those brought since the last stable in one list
+(`release.py notes`, git-cliff's `--ignore-tags`). The headings are Features,
 Fixes, Performance, Reverted, Documentation, Code, Build and Tests; `ci` and `chore` are left out. The notes go on the
 release page only: nothing is committed back to `main`, and there is no changelog file to keep up (Hookshot's is in
 NotRexed/Hookshot).

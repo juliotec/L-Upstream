@@ -26,7 +26,7 @@ The order (the launcher's `Core/Versions.cs`): stables and release candidates in
 as an update of the other, and a build stays on its channel unless the player picks another.
 
 The "public" surface the rules protect is the command line of `make_game.py` and the builders, the `RX_` and `HOS_`
-switches, the files a build writes into a game folder (`longshot_options.ini`, `longshot_env.txt`, `language.txt`,
+switches, the settings file (`longshot_options.ini`, in the user folder `--user` names, else the game folder), the files a build writes into a game folder (`longshot_env.txt`, `language.txt`,
 `longshot_version.txt`), saves, the release files' names, `SHA256SUMS` and `tools.lock`, `recomplauncher.json`, and the format of
 `longshot_log.txt`. The C sources and internal headers are not an API and may change in any release.
 

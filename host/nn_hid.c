@@ -27,6 +27,7 @@
    pad } = 0x28 bytes. */
 #include "hos.h"
 #include "hos_paths.h"
+#include "options_path.h"
 #include "control.h"
 #include <math.h>
 #include <stdio.h>
@@ -358,15 +359,15 @@ static void live_input(void) {
             offset += (int64_t)n;
             const int64_t at = script_elapsed_ms(now);
             if (line[0] == '!') {   /* commands: !dump = a frame dump of the next frame (as RX_DUMP_AT) */
-                void rx_request_frame_dump(void);   /* gpu/render/rx_debug.cpp */
+                void rx_request_frame_dump(void);   /* the WebGPU renderer's, gone: host/rx_nowgpu.c, host/posix/linux_stubs.c say so */
                 if (!strncmp(line, "!dump", 5)) rx_request_frame_dump();
                 extern volatile int hos_nvn_sync_log_on;   /* nvn_native.c: "!synclog" */
                 if (!strncmp(line, "!synclog", 8)) hos_nvn_sync_log_on = 1;
-                void rx_set_screenshot_ms(int64_t ms);   /* gpu/render/rx_core.cpp: "!shots <ms>" */
+                void rx_set_screenshot_ms(int64_t ms);   /* (as !dump): "!shots <ms>" */
                 if (!strncmp(line, "!shots ", 7)) rx_set_screenshot_ms(atoll(line + 7));
-                void rx_request_rdoc_capture(int frames);   /* gpu/render/rx_debug.cpp: "!rdoc [frames]" */
+                void rx_request_rdoc_capture(int frames);   /* (as !dump): "!rdoc [frames]" */
                 if (!strncmp(line, "!rdoc", 5)) rx_request_rdoc_capture(atoi(line + 5));
-                void rx_flash_dark_arm(void);   /* gpu/render/rx_core.cpp: arms RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
+                void rx_flash_dark_arm(void);   /* (as !dump): armed RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
                 extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
                 if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
@@ -501,7 +502,7 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
 }
 
 /* ---- (longshot) the controls: the gamepad inputs (by position) and the keys that press each Switch button, from
-   longshot_options.ini beside the executable when it has them: pad_<button>=<position>[,<position>] (HOS_PAD_*, -1 none) and
+   longshot_options.ini in the user folder (host/options_path.c) when it has them: pad_<button>=<position>[,<position>] (HOS_PAD_*, -1 none) and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
    first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
    stick's and the camera's directions, and Walk; the ocarina's five note controls take a gamepad input too.
@@ -572,14 +573,7 @@ static void binds_load(void) {
         return;
     }
     binds_default();
-    char path[MAX_PATH];
-    const DWORD len = hos_game_path_a(path, MAX_PATH);
-    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
-    FILE *f = NULL;
-    if (slash) {
-        snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "longshot_options.ini");
-        f = fopen(path, "r");
-    }
+    FILE *f = fopen(hos_options_file(), "r");   /* (host/options_path.c) */
     int changed = 0;
     if (f) {
         char line[80];

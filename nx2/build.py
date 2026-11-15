@@ -161,26 +161,16 @@ GPU = os.path.join(kit.HERE, "..", "gpu")
 # FFmpeg (libavcodec's VP8/VP9 decoders, swscale) for nn::codec's video decoders (host/nn_video.c): the static build
 # in the Eglantine clone's package cache
 FFMPEG = None   # (found in the CPM caches below, once cpm_dirs is defined)
-# the renderer's WebGPU: a wgpu-native release (include/, lib/); TOTKPort's build of it by default
-WGPU = os.environ.get("WGPU_NATIVE", os.path.join(os.path.expanduser("~"), "Desktop", "TOTKPort", "third_party",
-                                                  "wgpu-native"))
 
 
-def gpu_sources():
-    """The renderer (gpu/render, TOTKPort's, NVN replayed with WebGPU) and what it builds on, from suyu
-    (gpu/third_party/suyu): the shader recompiler (Maxwell frontend, IR passes, the WGSL backend; the Ampere
-    lowering is header-only), surface formats, texture decoders (block linear, ASTC)."""
-    suyu = os.path.join(GPU, "third_party", "suyu")
-    out = []
-    for d, dirs, files in os.walk(os.path.join(suyu, "shader_recompiler")):
-        dirs[:] = [x for x in dirs if x != "glsl"]   # (the GLSL backend: TOTKPort's shader tests' reference only)
-        out += [os.path.join(d, f) for f in files if f.endswith(".cpp") and f not in ("attribute.cpp", "flow_test.cpp")]
-    vc = os.path.join(suyu, "video_core")
-    out += [os.path.join(vc, *f.split("/")) for f in ("surface.cpp", "texture_cache/format_lookup_table.cpp",
-                                                      "textures/astc.cpp", "textures/decoders.cpp")]
-    render = os.path.join(GPU, "render")
-    out += [os.path.join(render, f) for f in os.listdir(render) if f.endswith(".cpp")]
-    return sorted(out)
+def exe_resources():
+    """(Windows) the .res with the exe's icon (and the name Windows shows for it) to link: the game's own, which the builder made
+    from its .nup (work/longshot_game.res, nx2/game_title.py), else a developer's picture (work/longshot.res, nx2/make_icon.py),
+    else none. Only one: both are icon 1"""
+    for name in ("longshot_game.res", "longshot.res"):
+        if os.path.exists(os.path.join(kit.WORK, name)):
+            return [os.path.join(kit.WORK, name)]
+    return []
 
 
 def tree_headers(*roots, skip=()):
@@ -246,7 +236,7 @@ def vk_sources():
             out += [os.path.join(d, f) for f in files if f.endswith(".cpp")]
     out += [os.path.join(vk, f) for f in os.listdir(vk) if f.endswith(".cpp") and f != NGX_MSVC_RT]
     vc = os.path.join(GPU, "third_party", "suyu", "video_core")
-    out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (the WebGPU back end's unswizzle)
+    out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (suyu's unswizzle and ASTC decoder)
     return sorted(out)
 
 
@@ -1094,13 +1084,12 @@ def main():
             [os.path.join(rt64, "a64_rt.c")]
     if a.standalone:
         srcs += [os.path.join(gen, f) for f in ("a64_stubs.c", "hos_image.c", "nvn2_exports.c")]
-        # (EvilOOT) host/rx_nowgpu.c stands in for the WebGPU renderer only when there is no wgpu-native to build it with (Linux has
-        # its own stand-ins, host/posix/linux_stubs.c)
-        have_wgpu = os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
+        # (EvilOOT) host/rx_nowgpu.c stands in for the WebGPU renderer, which is built no more (the Vulkan back end is the
+        # only renderer); Linux has its own stand-ins, host/posix/linux_stubs.c
         host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c") and (f != "pgo_rt.c" or PGO == "gen")
-                           and not (LINUX and f in ("display.c", "mf_av1.c", "rx_nowgpu.c")) and (f != "rx_nowgpu.c" or not have_wgpu)
+                           and not (LINUX and f in ("display.c", "mf_av1.c", "rx_nowgpu.c"))
                            and (f != "dav1d_av1.c" or dav1d_windows()))
-        if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation and no WebGPU renderer)
+        if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation)
             host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
     else:
         srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
@@ -1189,28 +1178,12 @@ def main():
         jobs += zstd_jobs(cc, target() + THIRD_PARTY_CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
                                                             "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"], obj_dir, "zstd_",
                           tp_deps)
-    # the renderer (C++20, NDEBUG: no asserts in it or suyu), when a wgpu-native release is there
-    wgpu = a.standalone and not LINUX and os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
-    if a.standalone and not wgpu and not LINUX:
-        print("no wgpu-native at %s (WGPU_NATIVE): building without the renderer" % WGPU)
-    if wgpu:
-        cxx = toolchain.need(toolchain.find("clang++"))
-        gflags = target() + ["-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything",
-                                              "-I" + os.path.join(GPU, "compat"),
-                                              "-I" + os.path.join(GPU, "third_party", "suyu"),
-                                              "-I" + os.path.join(WGPU, "include"), "-I" + HOST, "-I" + rt64] + WRITE_TRACK +                  ["-include", os.path.join(GPU, "render", "rx_wgpu_names.h")]   # (rx_* -> wgr_*: host/rx_backend.c)
-        gdeps = tree_headers(GPU, HOST, skip=("vk",)) + open(os.path.join(WGPU, "include", "webgpu", "webgpu.h"), "rb").read()
-        for src in gpu_sources():
-            name = os.path.relpath(src, GPU).replace(os.sep, "_")[:-4]
-            # (suyu's recompiler and texture code are third-party: nx2/third_party_objects.py; the renderer itself is not)
-            jobs.append((cxx, src, os.path.join(obj_dir, "gpu_" + name + ".o"), gflags,
-                         gdeps + tp_deps if third_party_objects.is_third_party(src) else gdeps))
-    # the Vulkan back end, a DLL of its own (RX_BACKEND=vulkan): CPM cache, LONGSHOT_*_HEADERS, or system includes
+    # the Vulkan back end, a DLL of its own (the only renderer): CPM cache, LONGSHOT_*_HEADERS, or system includes
     vk_jobs = []
     vk_headers, spirv_headers, vma_headers = vulkan_headers()
     build_vk = a.standalone and vk_headers and spirv_headers and vma_headers
     if a.standalone and not build_vk:
-        # (was silent: the exe linked, RX_BACKEND=vulkan then fell through to WebGPU / a stub, black window)
+        # (was silent: the exe linked, the renderer then fell through to a stub, black window)
         missing = [n for n, p in (("Vulkan", vk_headers), ("SPIR-V", spirv_headers), ("VMA", vma_headers)) if not p]
         print("no headers for %s (missing %s). Set RX_CPM to a CPM cache, or LONGSHOT_VULKAN_HEADERS / "
               "LONGSHOT_SPIRV_HEADERS / LONGSHOT_VMA_HEADERS (package root or its include/ folder), or install "
@@ -1472,10 +1445,9 @@ def main():
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
                            ["-o", exe] + linker("/map:" + exe[:-4] + ".map") + [toolchain.link_opt("/stack:8388608"), "@" + rsp] + HOT_ORDER() + HOST_LIBS +
                            ([toolchain.link_opt("/nodefaultlib:clang_rt.profile.lib")] if PGO == "gen" else []) +
-                           ([os.path.join(kit.WORK, "longshot.res")] if os.path.exists(os.path.join(kit.WORK, "longshot.res")) else []) +   # (nx2/make_icon.py)
+                           exe_resources() +   # (the exe's icon and name: nx2/game_title.py, nx2/make_icon.py)
                            [win_manifest.write(os.path.join(out, "longshot_manifest.res"))] +   # (UTF-8 paths: nx2/win_manifest.py)
                            ([toolchain.link_opt("/subsystem:windows"), toolchain.link_opt("/entry:mainCRTStartup")] if os.environ.get("RX_RELEASE") == "1" else []) +   # (no console window)
-                           ([os.path.join(WGPU, "lib", "wgpu_native.dll.lib")] if wgpu else []) +
                            ([os.path.join(FFMPEG, "lib", l + ".lib") for l in ("avcodec", "swscale", "swresample", "avutil")] +
                             ["-lbcrypt", "-lmfplat", "-lmfuuid", "-lstrmiids", "-lole32"] if FFMPEG else []) +
                            ([os.path.join(dav1d_windows(), "lib", "libdav1d.a")] if dav1d_windows() else []) +
@@ -1487,11 +1459,6 @@ def main():
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
-        if wgpu:   # (wgpu_native.dll beside it; in use while the game runs)
-            import shutil
-            dll, dst = os.path.join(WGPU, "lib", "wgpu_native.dll"), os.path.join(out, "wgpu_native.dll")
-            if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
-                shutil.copyfile(dll, dst)
         # (longshot) a shared FFmpeg's DLLs beside it (an LGPL shared build, as cross builds find: the static one needs none)
         for l in FFMPEG_LIBS if FFMPEG and os.path.isdir(os.path.join(FFMPEG, "bin")) else ():
             import shutil
@@ -1511,7 +1478,7 @@ def main():
         if os.path.exists(sdl3) and (not os.path.exists(sdl3_dst) or os.path.getsize(sdl3_dst) != os.path.getsize(sdl3)):
             import shutil
             shutil.copyfile(sdl3, sdl3_dst)
-    if vk_jobs:   # (longshot_vk.dll beside the exe: loaded by host/rx_backend.c with RX_BACKEND=vulkan)
+    if vk_jobs:   # (longshot_vk.dll beside the exe: loaded by host/rx_backend.c)
         vdll = os.path.join(out, VK_LIB)
         vrsp = os.path.join(out, "vk_objs.rsp")
         open(vrsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))

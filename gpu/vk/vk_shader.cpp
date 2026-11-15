@@ -52,6 +52,7 @@
 
 #include "vk_paths.h"
 #include "vk_internal.h"
+#include "flat_map.h"
 #include "vk_jobs.h"
 #include "vk_draw.h"
 #include "vk_progcache.h"
@@ -211,16 +212,22 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
     using Shader::Ampere::Instruction;
     std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
+    // (longshot) A word the capture reads as a branch that would leave every program (to before its start, between two
+    // instructions, or past the largest program, 16 MiB: program_address_map.h) is no instruction of this one. The
+    // capture's end rules are narrower than the lowering's (a loop left only by predicated EXITs, a library function that
+    // ends the shader), so it can read on past the program's end into what follows it there. The program ends before
+    // that word: the lowering, which takes a program only to its own end with every branch inside it (an indirect one's
+    // targets when it translates), says whether it does, and only if it does not is the program refused, naming the word
+    // as before.
+    uint32_t outside = ~0u;   // (that word's instruction number)
     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
         Instruction& insn = native.emplace_back();
         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
         const auto r = capture.Observe(insn, i);
         if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
-            char why[96];
-            snprintf(why, sizeof why, "the branch at instruction %u (+%#x) goes outside the program", i,
-                     (unsigned)(i * sizeof(Instruction)));
-            c.why = why;
-            return c;
+            native.pop_back();
+            outside = i;
+            break;
         }
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
@@ -323,10 +330,24 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
                 }
             }
         }
-        char why[160];
-        snprintf(why, sizeof why, "does not lower at +%#x: %s", lowered.error_offset, std::string(lowered.error).c_str());
+        char why[256];
+        if (outside != ~0u)   // (the code before the word the capture stopped at does not lower: refused for that word, as before)
+            snprintf(why, sizeof why, "the branch at instruction %u (+%#x) goes outside the program (%#x code bytes), and the "
+                     "code before it does not lower at +%#x: %s", outside, (unsigned)(outside * sizeof(Instruction)),
+                     len - hdr, lowered.error_offset, std::string(lowered.error).c_str());
+        else
+            snprintf(why, sizeof why, "does not lower at +%#x: %s", lowered.error_offset, std::string(lowered.error).c_str());
         c.why = why;
         return c;
+    }
+    if (outside != ~0u) {   // (longshot: each program once, up to 64: it ended before the word the capture stopped at)
+        static std::mutex mu;
+        static std::unordered_set<uint64_t> seen;
+        std::lock_guard lk(mu);
+        if (seen.size() < 64 && seen.insert(c.key).second)
+            logf("vk: NVN2 program %016llx (stage %u) ends at +%#x, before the word at +%#x that would branch outside it "
+                 "(%#x code bytes)", (unsigned long long)c.key, st, lowered.source_size,
+                 (unsigned)(outside * sizeof(Instruction)), len - hdr);
     }
     c.texture_bound = lowered.required_texture_buffer;
     c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
@@ -1824,7 +1845,7 @@ struct Pick {
     const Program* p = nullptr;
     std::vector<uint32_t> handles;   // (at its answers' descriptors: their slots and the slots' versions)
 };
-thread_local std::unordered_map<uint64_t, Pick> picks;   // (each recording thread's: program_pick has its own lock)
+thread_local FlatMap<uint64_t, Pick> picks;   // (each recording thread's: program_pick has its own lock)
 uint64_t pick_inputs(const NvnState& s, const uint8_t color_types[8]) {
     uint64_t h = 0x9E37;
     for (int i = 0; i < 16; i++) h = h * 1099511628211ull ^ (uint64_t)s.vattr[i];
@@ -1976,6 +1997,9 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
         }
     }
     const uint64_t key = (compute ? 0x5EED : pick_inputs(s, color_types)) * 1099511628211ull ^ s.prog.serial;
+    // (held across program_pick below and written through after it, though an insert into the FlatMap picks would move it
+    // (flat_map.h): nothing in between inserts into this thread's picks. program_pick takes shader_mu, which is not recursive,
+    // so it cannot reach program_for again; a callback from it into the draw path would have to look pk up anew)
     Pick& pk = picks[key];
     auto keep = [&](const Program* p) {
         if (!p || !p->ready.load(std::memory_order_acquire) || p->failed) return p;

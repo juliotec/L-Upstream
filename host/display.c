@@ -1,4 +1,4 @@
-/* The game's window (Windows): the renderer's surface (gpu/render/, WebGPU). The native NVN layer (nvn_native.c)
+/* The game's window (Windows): the renderer's surface (the Vulkan back end, gpu/vk). The native NVN layer (nvn_native.c)
    presents the game's window textures into it (rx_nvn_present). The title bar carries live numbers.
    TOTKPort's hos/display.c, without its emulated-GPU fallback (the window buffer read from guest memory): MKW has
    no emulated GPU, so the renderer is the only way to a picture.
@@ -17,6 +17,7 @@ void hos_input_clear_toggles(void);
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "hos_paths.h"   /* (hos_game_title: the game's own name, from its folder) */
 #include "../gpu/render/rx.h"
 void rx_close_asked(void);   /* host/rx_backend.c */
 #include "../gpu/vk/vk_api.h"
@@ -541,6 +542,11 @@ static DWORD WINAPI display_main(void *p) {
         AdjustWindowRect(&s, WS_OVERLAPPEDWINDOW, FALSE);
         SetWindowPos(hwnd, NULL, 0, 0, s.right - s.left, s.bottom - s.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    {   /* the game's own name for the window (host/hos_paths.h hos_game_title), as Unicode: the class is an ANSI one */
+        wchar_t title[256];
+        if (MultiByteToWideChar(CP_UTF8, 0, hos_game_title(HOS_GAME_TITLE), -1, title, 256))
+            DefWindowProcW(hwnd, WM_SETTEXT, 0, (LPARAM)title);
+    }
     /* (no activate: shown at the bottom of the z-order, so a game in front keeps its focus) */
     if (noactivate)
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -551,7 +557,7 @@ static DWORD WINAPI display_main(void *p) {
     RegisterRawInputDevices(&rid, 1, sizeof rid);
     pointer_update(hwnd, 0, 0);
     renderer = rx_start(hwnd);
-    if (!renderer) hos_log("display: no WebGPU device: the window stays black");
+    if (!renderer) hos_log("display: no renderer: the window stays black");
     SetEvent(renderer_up);
     SetTimer(hwnd, 1, 250, NULL);
     MSG m;

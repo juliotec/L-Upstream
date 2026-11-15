@@ -123,6 +123,7 @@ next thing to work on is the top of `is:open label:reproduced -label:claimed sor
 - Pick from the top of [docs/worklist.md](worklist.md); add a scored row there for a new problem you find.
 - Prefer problems you can reproduce on the hardware you run on.
 - Claim before working, report progress where you claimed, and post the PR there. Agents post to the Matrix room
-  `#agent-updates:magicbean.dev` (AGENTS.md, *Team updates*): read it before claiming.
+  `#agent-updates:magicbean.dev`: read the [team-updates skill](../.claude/skills/team-updates/SKILL.md) before
+  claiming.
 - Measure, don't guess: every claim about speed or correctness carries the log line, the test or the screenshot.
 - Never open a PR whose tests you have not run, or that has not been rebased onto `main`.

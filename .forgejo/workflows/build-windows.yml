@@ -8,7 +8,7 @@
 # version), so it is always made again. It is a workflow artifact; called by release.yml with the version's name, it is
 # the release's. dav1d for the AV1 movies is not built here: it is in tools.lock's CPM cache (the cpm package), and the
 # zip's job checks that package's dav1d under Wine.
-# Every job runs on the Linux runner (ubuntu-24.04): there is no Windows one (docs/forgejo-runners.md). The setup and the
+# Every job runs on a Linux runner (label release): there is no Windows one (docs/forgejo-runners.md). The setup and the
 # Vulkan back end are cross-compiled with llvm-mingw's Linux build of tools.lock's release (scripts/builder_package.py,
 # LINUX_LLVM_MINGW), the builder (command-line only) is published for win-x64 with EnableWindowsTargeting, and the files are checked as
 # Windows files (their PE headers, resources and runtime) and started under Wine. What only a Windows PC can check is in
@@ -56,7 +56,7 @@ defaults:
 jobs:
   package:
     name: Longshot Builder zip
-    runs-on: ubuntu-24.04
+    runs-on: release  # (a release's build: only the runners kept for them take it, docs/forgejo-runners.md)
     timeout-minutes: 30
     steps:
       - name: Check out source
@@ -128,12 +128,12 @@ jobs:
 
       # (the third-party code's objects a player's build links instead of compiling (nx2/third_party_objects.py): made with
       # what a player's build compiles them with, llvm-mingw's same release and tools.lock's cpm (the Vulkan, SPIR-V and VMA
-      # headers) and wgpu-native (the WebGPU renderer's suyu code). Found by their keys alone: a set that does not fit is not used)
+      # headers). Found by their keys alone: a set that does not fit is not used)
       - name: The third-party objects
         run: |
-          python -I scripts/tools.py install "$RUNNER_TEMP/win-tools" --system windows-x64 --only cpm wgpu-native --cache "$RUNNER_TEMP/tools-cache"
+          python -I scripts/tools.py install "$RUNNER_TEMP/win-tools" --system windows-x64 --only cpm --cache "$RUNNER_TEMP/tools-cache"
           W="$RUNNER_TEMP/win-tools/LongshotBuilder/tools"
-          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" RX_CPM="$W/cpm" WGPU_NATIVE="$W/wgpu-native" \
+          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" RX_CPM="$W/cpm" \
             python -I -B nx2/third_party_objects.py make "$RUNNER_TEMP/third_party_objects" --jobs "$(nproc)"
       # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
       - name: Package folder
@@ -200,7 +200,7 @@ jobs:
 
   vulkan:
     name: Windows Vulkan back end (llvm-mingw)
-    runs-on: ubuntu-24.04
+    runs-on: release  # (a release's build: only the runners kept for them take it, docs/forgejo-runners.md)
     timeout-minutes: 45
     steps:
       - name: Check out source

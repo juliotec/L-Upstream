@@ -12,7 +12,7 @@ data is involved. Python's standard library only.
         the tracked gpu, host, nx2, scripts and third_party under tools\\, and the pipeline state list's sources
         (assets/pipeline_states/, which must be there and read). None of tools.lock's tools: the setup or the launcher adds
         those on the player's PC. --third-party-objects: the third-party code's objects (nx2/third_party_objects.py make, with
-        llvm-mingw and tools.lock's cpm and wgpu-native), as tools\\third_party_objects, which a player's build links instead
+        llvm-mingw and tools.lock's cpm), as tools\\third_party_objects, which a player's build links instead
         of compiling them
     python -I scripts/builder_package.py zip <package folder> <version> --setup <setup exe> --out <zip>
         LongshotBuilder-<version>-windows-x64.zip: LongshotBuilder.exe (the setup), LongshotBuilder\\ (the package),

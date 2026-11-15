@@ -23,6 +23,7 @@
    our entries merged into it (sizes), so a mod that grows files keeps the icons. */
 #include "hos.h"
 #include "hos_paths.h"
+#include "options_path.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -144,8 +145,7 @@ static int choose_face(const char *dir) {
     int choice = 0;
     snprintf(path, sizeof path, "%sprompts/keyboard", dir);
     keyboard_built = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
-    snprintf(path, sizeof path, "%slongshot_options.ini", dir);
-    FILE *f = fopen(path, "r");
+    FILE *f = fopen(hos_options_file(), "r");   /* (host/options_path.c) */
     if (f) {
         while (fgets(line, sizeof line, f))
             if (!strncmp(line, "button_prompts=", 15)) choice = atoi(line + 15);

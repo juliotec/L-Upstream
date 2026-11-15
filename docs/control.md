@@ -7,7 +7,7 @@ through one connection, with replies. Presses are timed in frames, and every rep
 
 - The game side is `host/control.c`. Hooks: `host/nn_hid.c` (the controller's read), `gpu/vk/vk_replay.cpp` (shots at a
   present), `gpu/vk/vk_menu.cpp` (the Insert menu's settings, through its own setter), `host/hos_thread.c` (log lines),
-  `host/hos_main.c` (the start, and for OoT the current map and debug teleport), `host/oot_state_tap.c` (OoT snapshots
+  `host/hos_main.c` (the start, the current map and the debug teleport), `host/oot_state_tap.c` (the game's snapshots
   from Link's update, copied to the bridge thread), `host/hos_mem.c` (guest memory's
   bounds), `host/nn_fs.c` (the save folder), `host/rx_backend.c` (the renderer's side, `MkwVkRenderer`).
 - The client is `scripts/longshot_ctl.py` (standard library only).
@@ -102,7 +102,7 @@ Requests on one connection may be answered out of order: a `status` sent while a
 Match replies by `id`. Lines with an `"event"` key and no `"ok"` key are subscription events (see `subscribe`).
 
 `protocol:1` allows additive fields, commands and explicitly requested event kinds. Clients ignore unknown fields.
-The OoT snapshot fields and `oot` subscription below are compatible additions: existing fields keep their types and
+The game's snapshot fields and the `oot` subscription below are compatible additions: existing fields keep their types and
 the default subscription is unchanged.
 
 A client may shut its sending side once its requests are sent (`printf '...\n' | socat - UNIX-CONNECT:<path>`): the
@@ -169,7 +169,7 @@ version.
 
 `map` is the game's own name for the map (`Sequence_CurrentBanc`), read on the game's thread with the player's update
 every 250 ms: the last one known, so it stays through loads and menus, and it is `null` until Link was first seen.
-`game` is OoT's read-only snapshot from Link's update. A `status` request asks for one fresh snapshot; requests
+`game` is the game's read-only snapshot from Link's update. A `status` request asks for one fresh snapshot; requests
 waiting together share that capture. The socket thread never reads the guest or blocks waiting for the game.
 If no Link update arrives within 250 ms (title, pause or loading), the reply keeps the last snapshot and its
 original `frame`/`t`. Before a snapshot is available it returns only the original typed fields if known, or `null`.
@@ -302,7 +302,7 @@ Auto deliberately selects that new value. This does not remember the last native
 it. Arguments:
 
 - `events`: any of `present`, `state`, `log`, `map` and `oot`. The default remains `["present", "state"]`.
-- `every`: frames between present/OoT samples (default 60, 1 to 216000).
+- `every`: frames between present and game samples (default 60, 1 to 216000).
 - `log`: only log lines that contain this text (it also turns `log` on).
 - `flags`: with `oot`, up to 64 flag names (1 to 47 letters, digits, `_` or `.`) or `0x` and eight hex digits, as an
   array of strings. Values are looked up in Bool, Int, Float, Enum, String64 and UInt order; absent/unreadable values
@@ -354,7 +354,7 @@ A pending sample is retained until the bridge takes it; if the bridge is delayed
 than overwriting its changes. Frame gaps can therefore exceed `every`. A client that stops reading is still dropped
 at the bridge's output limit. Flag scanning is off unless that connection asks for it and stops when it leaves.
 
-**teleport** (OoT): the Debug tab's teleport, by destination: `to`, the destination's index or one of its maps' names
+**teleport**: the Debug tab's teleport, by destination: `to`, the destination's index or one of its maps' names
 (any case). Without `to`, the destinations: `{"destinations":[{"index":0,"child":"KokiriForest_Child","adult":
 "KokiriForest_Adult"},...]}` (a destination with no map for an age has `null` there). It is what the Cheats page's
 Teleport list asks for: the game takes it at the player's next update, in play, and goes to the map of Link's age.
@@ -381,7 +381,7 @@ It changes the game as the menu's teleport does, and a save made after it keeps 
 < {"id":13,"ok":true,"frame":6190,"state":"loading","waited":187,"map":"HyruleField_Child"}
 ```
 
-**age** (OoT): the Debug tab's Switch age, so a script can reach the adult's maps (or the child's) without a save of
+**age**: the Debug tab's Switch age, so a script can reach the adult's maps (or the child's) without a save of
 that age: `to`, `"child"` or `"adult"`, none the other age. The game takes it as it takes a teleport, at the player's
 next update in play, and does it as the menu does: Link's age flipped and the current map reloaded in the other age
 (the Market's, when this map has no destination). It uses the teleport's tickets, so a later teleport or age switch
@@ -676,13 +676,13 @@ with its explicit `process_exited:false` result, so callers can decide whether t
 - **Windows**: CI has no Windows runner, so the named pipe is tested only when a Windows tester runs the suite
   (RELEASING.md, *Needs a Windows tester*). The bridge inside a Windows game build, `launch` on Windows, and refusing
   remote pipe clients (`PIPE_REJECT_REMOTE_CLIENTS`, which needs a second machine) are not tested.
-- **The state is a guess** from the draws a frame (above). A scene with unusual counts can be misread; for OoT, `game`'s
+- **The state is a guess** from the draws a frame (above). A scene with unusual counts can be misread; `game`'s
   `event` and `loading` and `map` are the game's own.
 - **A teleport the game sent but that did not move Link**: `accepted` (the event manager's answer) is reported, not turned into an error: `false` was seen once, when the map did not change, but that it always means no move is not established. Otherwise `wait map` times out.
 - **The first `option_get` or `option_set`** after start can wait, on the bridge's thread, for the start-up check of
   the upscalers (NVIDIA's NGX start: about 3 s). The game does not wait for it; other replies to every client wait
   that long.
-- **OoT samples** stop when Link is not updated. They contain no actor list and do not turn `symbols` into a supported command.
+- **The game's samples** stop when Link is not updated. They contain no actor list and do not turn `symbols` into a supported command.
 - `HOS_CONTROL_MEM=rw` writes were checked against the game's memory (written, read back, put back), not against the
   picture the GPU draws from a written value.
 

@@ -8,6 +8,7 @@ export const contentPages: Record<string, string> = {
   'saves/transfer': 'docs/saves.md',
   'help': 'docs/common-issues.md',
   'help/report': 'docs/reporting-and-contributing.md',
+  'help/performance': 'docs/performance-report.md',
   'contributing': 'CONTRIBUTING.md',
 };
 

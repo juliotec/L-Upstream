@@ -184,6 +184,10 @@ them), checked, and added by a pull request two maintainers approve.
 
    `<name>` is a-z, 0-9 and `-`. It writes `slot_00/progress.sav`, `slot_00/caption.sav` and a `README.md` to fill in
    (its first line says where the save stands), and prints every change it made. Nothing is written when a step fails.
+
+   Without Python, the website's [save scrubber](https://longshot.magicbean.dev/saves/scrub/) does the same in the
+   browser (the files are not uploaded) and gives the folder back as a zip: the same bytes, held to this script's
+   output by `website/tests/save-scrub.test.ts`.
 3. `python -I scripts/longshot_saves.py check-repo-saves` must pass. Then open the pull request, saying how the save was made.
 
 ### What scrub changes

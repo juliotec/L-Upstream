@@ -94,6 +94,8 @@ break.
 
 ## Development setup
 
+After you clone the repository, run **`mise run setup`** once to install the pre-commit and commit-msg hooks.
+
 You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions don't
 work, and the build reads the dump where it lies without changing it. A build needs about 60 GB free. For runtime
 memory, see the README's [requirements](README.md#what-you-need): the game alone can exceed 16 GiB, depending on the
@@ -101,6 +103,15 @@ build, driver and scene. Build on an SSD if you can: a hard drive works but take
 
 Where a step below needs files from the Builder, use the Windows builder of the newest
 [Longshot release](https://git.magicbean.dev/MagicBeanDev/Longshot/releases).
+
+### Tools: mise, CircleCI and AI agents
+
+- **mise** pins every tool this repo uses. Install it ([mise docs](https://mise.jdx.dev/getting-started.html)), then in the repo run `mise install` and, once per clone, `mise run setup` (it installs the pre-commit and commit-msg hooks). `mise run lint` and `mise run test` run the same checks CI does.
+- **CircleCI** runs CI for this repo; [docs/ci.md](docs/ci.md) has the flow and what runs when. Sign up at https://circleci.com/signup and ask in Discord to be added to the MagicBeanDev org, so you can see runs, read logs and rerun jobs.
+- **CircleCI CLI:** `mise install` installs the pinned version, or see the [official install docs](https://circleci.com/docs/guides/toolkit/circleci-cli/). Run `circleci auth login` once.
+- **CircleCI MCP server**, so an AI agent can read failures and logs and rerun jobs. Claude Code: `claude mcp add --transport http circleci-mcp-server https://mcp.circleci.com/v1/mcp`, then `/mcp` and Authenticate. Cursor: search "circleci" in the MCP marketplace.
+- **CircleCI docs MCP**, so an agent can look things up in CircleCI's docs (no account needed): `claude mcp add --transport http circleci-docs https://circleci.mcp.kapa.ai`.
+- **Chunk CLI** (optional) runs this repo's checks on a remote CircleCI sidecar, handy for an agent or a machine without the toolchain. Install with `brew install CircleCI-Public/circleci/chunk` (Windows: see its [README](https://github.com/CircleCI-Public/chunk-cli)), run `chunk auth login`, then `chunk sidecar create`, `chunk sidecar sync` and `chunk validate`. The commands it runs are in `.chunk/config.json`.
 
 ### Windows
 
@@ -121,7 +132,6 @@ Where a step below needs files from the Builder, use the Windows builder of the 
    | From `tools` | To | Variable |
    |---|---|---|
    | `cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it the standalone build stops, unless system headers or `LONGSHOT_*_HEADERS` are set) |
-   | `wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game has none) |
    | `third_party` | `third_party\` | its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2 |
    | `work` | `work\` | hot-function list, link order, profile and icon (without them the game builds but runs slower) |
 
@@ -213,9 +223,10 @@ output. Name part of a path to run only matching checks (`tests/run_all.py ub_`)
 compiler, `spirv-val`, the SPIR-V or Vulkan headers, `zstandard`) is skipped and says so; `--strict` fails it instead.
 Checks that can't run everywhere say so in their own file (`RUN_ALL_SKIP`); `--no-skip` runs them anyway.
 
-Forgejo doesn't run these on pull requests or on `main` for now: CI runs only the light checks (the title, the
-description, workflow lint, the third-party notes), and a maintainer can start the full checks by hand (*Actions* >
-*CI* > *Run workflow*). So run them before you open a pull request and put their results in it.
+CircleCI on Forgejo (see [docs/ci.md](docs/ci.md)) runs path-filtered game-free checks on same-repo pull requests and
+`main`. Run `mise run ci:smoke` and `mise run test` locally before you push, and put results in
+the pull request. Forgejo Actions workflows under `.forgejo/workflows/` remain until cutover; they still match what
+CI reproduces.
 
 ### Checks that need your dump or a run
 

@@ -367,7 +367,7 @@ static void write_small(const wchar_t *path, const char *text) {
 }
 
 /* The folder a tool of tools.lock unpacks into (the tools the builder ships: Python, emsdk, the CPM packages, third_party,
-   wgpu-native, llvm-mingw), relative to a version's folder, in rel: its dest */
+   llvm-mingw), relative to a version's folder, in rel: its dest */
 static int part_folder(const Part *p, wchar_t *rel, int n) {
     swprintf(rel, n, L"%hs", p->dest);
     for (wchar_t *q = rel; *q; q++) if (*q == L'/') *q = L'\\';

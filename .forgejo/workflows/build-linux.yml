@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   appimage:
-    runs-on: ubuntu-latest
+    runs-on: release  # (a release's build: only the runners kept for them take it, docs/forgejo-runners.md)
     container: ubuntu:22.04
     # (about 4 minutes with the dependencies cached; building them all, as a release does, takes longer)
     timeout-minutes: 60

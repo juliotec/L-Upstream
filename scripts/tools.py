@@ -54,7 +54,7 @@ SYSTEMS = ("windows-x64", "linux-x64")
 # (the tools each builder needs: the release workflow refuses a lock without one of them. The Linux builder's AppImage carries
 # its Python; the rest is here, builder/linux/linux_tools.py). No play profile is a tool: play profiles are committed in
 # assets/profiles/
-REQUIRED = {"windows-x64": ("llvm-mingw", "python", "emsdk", "cpm", "wgpu-native", "third-party"),
+REQUIRED = {"windows-x64": ("llvm-mingw", "python", "emsdk", "cpm", "third-party"),
             "linux-x64": ("emsdk", "cpm", "ffmpeg", "sdl2", "sysroot")}
 NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")

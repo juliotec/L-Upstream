@@ -1,7 +1,7 @@
-/* Which renderer the rx_* calls go to (gpu/vk/vk_api.h): the WebGPU one in the executable (gpu/render, its
-   functions renamed wgr_* by rx_wgpu_names.h) or, unset or RX_BACKEND=vulkan, the Vulkan one in longshot_vk.dll
-   (longshot_vk.so) beside the executable. Decided at rx_start, before any other rx_* call; a DLL that is missing or finds no usable Vulkan
-   device leaves the WebGPU renderer in place (logged). */
+/* Where the rx_* calls go (gpu/vk/vk_api.h): the Vulkan back end in longshot_vk.dll (longshot_vk.so) beside the
+   executable, the only renderer. Loaded at rx_start, before any other rx_* call; a DLL that is missing or finds no usable
+   Vulkan device leaves the wgr_* stand-ins in place (host/rx_nowgpu.c, host/posix/linux_stubs.c: once the WebGPU
+   renderer's functions, gpu/render, which is built no more), and nothing is drawn (logged). */
 #include "hos.h"
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +12,7 @@
 #include "../gpu/vk/dlss_math.h"
 #include "control.h"
 
-/* the WebGPU renderer (gpu/render, renamed) */
+/* the stand-ins when there is no Vulkan back end (host/rx_nowgpu.c, host/posix/linux_stubs.c) */
 int wgr_start(void *hwnd);
 void wgr_resize(int width, int height);
 const char *wgr_describe(void);
@@ -191,6 +191,7 @@ int hos_mouse_pointer(MkwVkPointer *out);   /* display.c, posix/display_sdl.c */
 int hos_sdl_gyro_status(void);   /* pad_sdl.c */
 extern const char *hos_romfs_dir;   /* nn_fs.c, set by hos_main.c */
 static const char *host_romfs_dir(void) { return hos_romfs_dir; }
+const char *hos_options_file(void);   /* options_path.c */
 
 #ifdef _WIN32
 static unsigned char menu_key_press[256];
@@ -269,7 +270,7 @@ static const MkwVkHost vk_host = {
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
     host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts, host_screen_size,
-    host_take_text,
+    host_take_text, hos_options_file,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -279,7 +280,7 @@ static HMODULE vk_module;   /* (the last back end loaded: rx_close_asked) */
    first): those calls are kept here and given to the renderer rx_start chose, in order. Without that the Vulkan back
    end never knew the first ~0x60 texture slots, and lit geometry sampled them as its black dummy.
    The texels the game writes then (WriteTexels) are kept too, with a copy of their data: without a renderer they went
-   nowhere (Linux has no WebGPU renderer to take them), and a texture filled so at boot kept zeros in its storage. OoT's
+   nowhere (no WebGPU renderer to take them), and a texture filled so at boot kept zeros in its storage. OoT's
    4x4 white placeholder is one: bound in place of the ground fog's depth, it read 0 and hid the ground fog at some camera
    angles. That happened when the window's thread started the renderer after the game had begun (windowed, not headless). */
 typedef struct {
@@ -345,50 +346,48 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
     HMODULE m = LoadLibraryA(path);
     if (!m) {
 #ifdef _WIN32
-        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());
+        hos_log("rx: %s did not load (%lu): nothing is drawn", path, GetLastError());
 #else   /* (why, as dlerror() said: a missing file, a glibc too old, a wrong ELF class. The line names the file
            LoadLibraryA opened, longshot_vk.so, and drops dlerror()'s leading "<that file>: ", so the path, home folder
-           included, is in it once. Linux has no WebGPU: wgr_start draws nothing) */
+           included, is in it once. wgr_start draws nothing) */
         char *ext = strrchr(path, '.');
         if (ext && !strcmp(ext, ".dll")) strcpy(ext, ".so");
         const char *why = hos_load_error();
         const size_t n_path = strlen(path);
         if (!strncmp(why, path, n_path) && !strncmp(why + n_path, ": ", 2)) why += n_path + 2;
-        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%s): nothing is drawn", path, why);
+        hos_log("rx: %s did not load (%s): nothing is drawn", path, why);
 #endif
         return NULL;
     }
     vk_module = m;
     mkwvk_init_fn init = (mkwvk_init_fn)(void *)GetProcAddress(m, "mkwvk_init");
     if (!init) {
-        hos_log("rx: %s has no mkwvk_init: WebGPU", path);
+        hos_log("rx: %s has no mkwvk_init: nothing is drawn", path);
         return NULL;
     }
     const MkwVkRenderer *r = init(&vk_host);
     if (!r) {
-        hos_log("rx: mkwvk_init returned NULL: WebGPU");
+        hos_log("rx: mkwvk_init returned NULL: nothing is drawn");
         return NULL;
     }
     if (r->version != MKWVK_API_VERSION) {
-        hos_log("rx: mkwvk_init version mismatch (%u vs %u): WebGPU", r->version, MKWVK_API_VERSION);
+        hos_log("rx: mkwvk_init version mismatch (%u vs %u): nothing is drawn", r->version, MKWVK_API_VERSION);
         return NULL;
     }
     return r;
 }
 
 int rx_start(void *hwnd) {
-    const char *b = getenv("RX_BACKEND");
-    if (!b || !_stricmp(b, "vulkan")) {   /* (longshot: Vulkan unless told otherwise; a started game has no RX_BACKEND) */
-        const char *dll = "longshot_vk.dll";
-        const MkwVkRenderer *r = load_vulkan(dll);
-        if (r && r->start(hwnd)) {
-            vk = r;
-            hos_log("rx: renderer: Vulkan (%s)", dll);
-            flush_early();
-            return 1;
-        }
-        if (r) hos_log("rx: the Vulkan back end could not start on the window: WebGPU");
+    /* (longshot: Vulkan, the only renderer; RX_BACKEND, which once picked the WebGPU one, is not read) */
+    const char *dll = "longshot_vk.dll";
+    const MkwVkRenderer *r = load_vulkan(dll);
+    if (r && r->start(hwnd)) {
+        vk = r;
+        hos_log("rx: renderer: Vulkan (%s)", dll);
+        flush_early();
+        return 1;
     }
+    if (r) hos_log("rx: the Vulkan back end could not start on the window: nothing is drawn");
     const int ok = wgr_start(hwnd);
     flush_early();
     return ok;
@@ -567,7 +566,7 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
 int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
-/* (longshot) the control bridge (host/control.c): the Vulkan back end's, none with WebGPU (0) */
+/* (longshot) the control bridge (host/control.c): the Vulkan back end's, none without it (0) */
 int rx_control_frame_info(int64_t *presents, int64_t *draws, int *width, int *height) {
     if (!vk || !vk->frame_info) return 0;
     vk->frame_info(presents, draws, width, height);

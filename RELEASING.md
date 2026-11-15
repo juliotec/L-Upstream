@@ -276,7 +276,7 @@ None of this is done yet. In order (the org secret is shared by both repositorie
    [docs/forgejo-runners.md](https://git.magicbean.dev/MagicBeanDev/Longshot/src/branch/main/docs/forgejo-runners.md)
    (Linux only, for both: Longshot's Windows files are cross-built on Linux).
 6. **The tools' packages and `tools.lock`.** Done (2026-11-13): `cpm` with dav1d and `third-party` assembled and added,
-   llvm-mingw, python, emsdk and wgpu-native mirrored, the Linux tools added, each a generic package of the organization
+   llvm-mingw, python, emsdk and wgpu-native mirrored (wgpu-native dropped since, 2026-11-14: no WebGPU renderer), the Linux tools added, each a generic package of the organization
    (docs/releases.md, "tools.lock"). No play profile is a tool: play profiles are committed in `assets/profiles/`.
    `python -I scripts/tools.py check --require` must pass: `release.yml` stops in its first job, before any build, until
    it does.

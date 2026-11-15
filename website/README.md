@@ -123,7 +123,9 @@ disclosures work without JavaScript, and the shared print handling expands every
 
 Public pages use neutral game and console wording. Imported menu descriptions and activity text pass through
 `src/lib/public-copy.ts` before publication; source records and links remain intact. `npm run check` rejects the
-listed game-brand terms in generated page prose and the public progress feed. Literal commands, required save
+game-brand terms listed there (`GAME_BRANDING`) in generated page prose and the public progress feed. Players' issue
+titles reach the feed as they are typed, so any listed term the wording rules don't cover becomes "in-game" rather
+than blocking the deployment. Literal commands, required save
 paths, technical product names and third-party attribution are preserved. Update public wording and its tests if
 an upstream description introduces a new term; never rename a real file path or runtime setting to hide it.
 

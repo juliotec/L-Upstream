@@ -19,6 +19,7 @@ void hos_input_clear_toggles(void);
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include "../hos_paths.h"   /* (the game folder: its title and icon) */
 #include "../../gpu/vk/vk_api.h"
 #include "../display_pointer.h"
 #include <math.h>
@@ -305,7 +306,7 @@ void hos_display_loop(void) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
-    window = hos_sdl_window(window_title(HOS_GAME_TITLE), win_w, win_h);
+    window = hos_sdl_window(window_title(hos_game_title(HOS_GAME_TITLE)), win_w, win_h);   /* (the game's own name: host/hos_paths.h) */
     if (!window) {
         hos_log("display: SDL_CreateWindow: %s: no window", hos_sdl_error());
         fprintf(stderr, "display: SDL_CreateWindow: %s: no window\n", hos_sdl_error());
@@ -316,10 +317,11 @@ void hos_display_loop(void) {
     }
     vk_window.window = window;
     hos_posix_window[0] = 1;
-    {   /* the window's icon: longshot.png beside the game (make_game.py puts it there), for X11 and the compositors that
-           take one from the window; the others find it through the menu entry */
+    {   /* the window's icon: longshot.png in the game folder (make_game.py puts it there: the game's own icon, else Longshot's),
+           for X11 and the compositors that take one from the window; the others find it through the menu entry. (The folder, not
+           the exe's: the game is bin/longshot in a packaged builder's folder, and the icon was looked for in bin/) */
         char png[MAX_PATH];
-        DWORD n = GetModuleFileNameA(NULL, png, MAX_PATH);
+        DWORD n = hos_game_path_a(png, MAX_PATH);
         while (n && png[n - 1] != '/') n--;
         snprintf(png + n, sizeof png - n, "longshot.png");
         hos_sdl_icon(window, png);

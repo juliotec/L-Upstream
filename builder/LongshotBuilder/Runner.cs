@@ -103,7 +103,7 @@ sealed class Runner
         si.Environment.Remove("LONGSHOT_NGX_SDK");
         si.Environment.Remove("LONGSHOT_FFX_SDK");
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
-        var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm"), ("WGPU_NATIVE", "wgpu-native") };
+        var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm") };
         foreach (var (name, folder) in sets)
         {
             var path = Path.Combine(tools.Root, folder);

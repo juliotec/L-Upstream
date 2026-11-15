@@ -146,7 +146,8 @@ the driver's limit itself.
 
 1. **Match the preset to your card.** In the menu's **Graphics** tab, pick the **Quality preset** for your graphics
    memory: Minimum (4GB), Low (6GB), Balanced (8GB) and so on. If the log says
-   `vk: over the driver's video-memory allowance`, choose a lower one.
+   `vk: over the driver's video-memory allowance`, choose a lower one: its smaller render resolution needs less video
+   memory. How much the textures may use comes from the card and is not a setting.
 2. **Walk through the same spot twice** once the shaders are prepared. Note whether the slowdown clears the second time,
    or lasts until you restart.
 3. **Compare fairly.** Turn off **Frame generation**, so the FPS counts the game's own frames, and keep the resolution,
