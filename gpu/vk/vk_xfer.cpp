@@ -217,7 +217,7 @@ void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const 
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = span.buffer;
     const VkDeviceAddress base = pipe && span ? vkGetBufferDeviceAddress(dev.device, &da) : 0;
-    if (!base) {
+    if (!base || (base + span.offset) % 4) {
         warn(11, "DEPTH24 (D32_SFLOAT) copied to a buffer: no conversion pipeline, floats left");
         return;
     }
