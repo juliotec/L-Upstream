@@ -49,16 +49,26 @@ bool r5g5b5a1_sampled() {
 }
 
 /// A 24-bit depth format, or its 32-bit float twin where the GPU cannot render to it or sample it (AMD's GPUs have
-/// neither X8_D24_UNORM_PACK32 nor D24_UNORM_S8_UINT as depth attachments: RDNA 2, 3 and 4)
+/// neither X8_D24_UNORM_PACK32 nor D24_UNORM_S8_UINT as depth attachments: RDNA 2, 3 and 4). The twin is used only
+/// where the GPU can render to it, sample it and copy into and out of it (D32_SFLOAT_S8_UINT need not be sampled nor
+/// copied: VUID-vkCmdCopyBufferToImage-dstImage-01997); otherwise the D24 format is kept.
 VkFormat depth24_or_32(VkFormat d24, VkFormat d32) {
     static signed char known[2] = {-1, -1};
     signed char& k = known[d24 == VK_FORMAT_D24_UNORM_S8_UINT ? 1 : 0];
     if (k < 0) {
-        VkFormatProperties p{};
+        const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                                          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+        const VkFormatFeatureFlags twin = need | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+                                          VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        VkFormatProperties p{}, q{};
         vkGetPhysicalDeviceFormatProperties(dev.physical, d24, &p);
-        k = (p.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
-                    (p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ? 1 : 0;
-        if (!k) logf("vk: depth format %d not supported by this GPU: %d used instead", (int)d24, (int)d32);
+        k = (p.optimalTilingFeatures & need) == need ? 1 : 0;
+        if (!k) {
+            vkGetPhysicalDeviceFormatProperties(dev.physical, d32, &q);
+            k = (q.optimalTilingFeatures & twin) == twin ? 0 : 1;
+            if (k) logf("vk: depth format %d not supported by this GPU, nor its twin %d: kept", (int)d24, (int)d32);
+            else logf("vk: depth format %d not supported by this GPU: %d used instead", (int)d24, (int)d32);
+        }
     }
     return k ? d24 : d32;
 }
