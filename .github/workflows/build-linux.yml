@@ -201,7 +201,7 @@ jobs:
             RX_VK_ONLY=1 RX_RELEASE=1 RX_VK_PGO="$VK_PGO" "$D/python/bin/python3" -I nx2/build.py --standalone --jobs "$(nproc)"
           test -f "$VKW/sa/build/longshot_vk.so"
 
-      # (the object cache down
+      # (the object cache down to the objects this build used, as nx2/make_game.py prune_object_cache does: each object in
       # sa/build/obj names its key in <obj>.sha1. Nothing goes when no stamp is found)
       - name: Object cache for pull requests
         if: env.RELEASE_TAG == ''
@@ -233,10 +233,10 @@ jobs:
         shell: bash   # (this container's default is sh, which has no PIPESTATUS)
         run: |
           cp -r build-linux/vk-work "$RUNNER_TEMP/vk-fsr"
-          # (the build check's, without FSR: the test below is this build's)
-                 D="$PWD/build-linux/deps" T="$PWD/build-linux/tools"
-                 OOT_WORK="$RUNNER_TEMP/vk-fsr" EMSDK="$T/usr/lib/longshot/emsdk" RX_CPM="$T/usr/share/longshot/cpm" RX_MARCH=x86-64-v3 \
-                   RX_VK_ONLY=1 RX_RELEASE=1 RX_VK_PGO="$VK_PGO" LONGSHOT_FSR=1
+          rm -f "$RUNNER_TEMP/vk-fsr/sa/build/longshot_vk.so"   # (the build check's, without FSR: the test below is this build's)
+          D="$PWD/build-linux/deps" T="$PWD/build-linux/tools"
+          OOT_WORK="$RUNNER_TEMP/vk-fsr" EMSDK="$T/usr/lib/longshot/emsdk" RX_CPM="$T/usr/share/longshot/cpm" RX_MARCH=x86-64-v3 \
+            RX_VK_ONLY=1 RX_RELEASE=1 RX_VK_PGO="$VK_PGO" LONGSHOT_FSR=1 "$D/python/bin/python3" -I nx2/build.py --standalone --jobs "$(nproc)" |
             tee "$RUNNER_TEMP/vk-fsr.log"
           test "${PIPESTATUS[0]}" -eq 0
           grep -q "with AMD FSR 4" "$RUNNER_TEMP/vk-fsr.log"
