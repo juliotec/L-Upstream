@@ -263,6 +263,9 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
     // whose upload converts them to floats; to a buffer, d32_to_d24 turns the floats back)
     const bool d24_as_d32 = p.tex && p.tex->d.format == NVN_FORMAT_DEPTH24 &&
                             vk_format(NVN_FORMAT_DEPTH24).format == VK_FORMAT_D32_SFLOAT;
+    // (DEPTH24_STENCIL8 kept as D32_SFLOAT_S8_UINT: its depth aspect copied to a buffer is turned back the same way)
+    const bool d24s8_as_d32 = !to_image && p.tex && p.tex->d.format == NVN_FORMAT_DEPTH24_STENCIL8 &&
+                              vk_format(NVN_FORMAT_DEPTH24_STENCIL8).format == VK_FORMAT_D32_SFLOAT_S8_UINT;
     if (to_image && p.tex) {   // (RX_VK_LOG_BIG_COPY)
         if (Texture* t = texture_get(p.tex, false))
             log_big_copy(b2t_gpu && !astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
@@ -325,7 +328,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
         texture_written(s.tex, "a buffer-to-texture copy");
     } else {
         vkCmdCopyImageToBuffer(cmd, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, span.buffer, 1, &c);
-        if (d24_as_d32) d32_to_d24(cmd, s, span, c);
+        if (d24_as_d32 || d24s8_as_d32) d32_to_d24(cmd, s, span, c);
         const uint64_t guest = host->gpu_guest(p.buf);
         if (guest) memory_stamp_gpu(guest, size);   // (textures over that memory are uploaded again)
         texture_gpu_wrote(p.buf, size);           // (and once the copy is done: the stamp came before it ran)
