@@ -1092,7 +1092,15 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         if (overlaps(dirty, (uint64_t)layer * layer_size + tail0, (uint64_t)(layer + 1) * layer_size)) layers.push_back(layer);
     if (layers.empty()) return true;
     const bool all = layers.size() == tex.layers;
-    const Staging s = staging(tail * layers.size(), std::max<uint64_t>(256, dev.props.limits.minStorageBufferOffsetAlignment));
+    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    // (each layer staged at an aligned pitch: at k * tail, a layer's storage buffer offset could miss
+    // minStorageBufferOffsetAlignment, VUID-VkWriteDescriptorSet-descriptorType-00328)
+    const uint64_t pitch = (tail + align - 1) / align * align;
+    if (pitch > UINT32_MAX) {
+        astc_fail = "its layout";
+        return false;
+    }
+    const Staging s = staging(pitch * layers.size(), std::max<uint64_t>(256, align));
     if (!s.buffer) {
         astc_fail = "no staging memory for its ASTC blocks";
         return false;
@@ -1100,16 +1108,16 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     std::vector<uint8_t> scratch;
     for (size_t k = 0; k < layers.size(); k++) {
         const uint64_t at = (uint64_t)layers[k] * layer_size + tail0;
-        if (at >= total) continue;
-        const uint64_t n = std::min(tail, total - at);
-        std::memcpy(s.data + k * tail, guest_bytes(tex.gpu + at, n, scratch), n);
+        const uint64_t n = at < total ? std::min(tail, total - at) : 0;
+        if (n) std::memcpy(s.data + k * pitch, guest_bytes(tex.gpu + at, n, scratch), n);
+        if (n < pitch) std::memset(s.data + k * pitch + n, 0, pitch - n);   // (zeros past the guest's bytes, not the staging's old ones)
     }
-    const uint64_t staged = tail * layers.size();
+    const uint64_t staged = pitch * layers.size();
     flush_mapped_range(s.allocation, s.offset, staged);   // (encoded blocks read by the GPU decoder, not necessarily coherent)
     st_bytes += (int64_t)staged;
     VkCommandBuffer cmd = upload_cmd();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    descriptors_disturbed();   // (the next draw or dispatch binds its own pipeline and descriptors again)
     if (tex.bc) {   // (decoded into the scratch a run of consecutive layers at a time, re-encoded, copied in)
         if (!bc_scratch_layout(cmd, tex.bc_resized)) {
             astc_fail = "no memory for the BC3 scratch";
@@ -1123,7 +1131,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             // (longshot-amd: a resized BC3 image: the level decodes at the game's size, g.w x g.h, and is encoded at iw x ih)
             AstcPush pc{};
             pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-            pc.layer_stride = (uint32_t)tail;
+            pc.layer_stride = (uint32_t)pitch;
             const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
             pc.x_shift = 9 + g.tile_h + g.tile_d;
             pc.block_size = gobs_x << pc.x_shift;
@@ -1140,7 +1148,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 while (k1 < layers.size() && k1 - k0 < run && layers[k1] == layers[k1 - 1] + 1) k1++;
                 const uint32_t n = (uint32_t)(k1 - k0);
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-                const uint64_t from = k0 * tail + off;
+                const uint64_t from = k0 * pitch + off;
                 VkDescriptorBufferInfo bi{s.buffer, s.offset + from, staged - from};
                 VkDescriptorImageInfo ii{VK_NULL_HANDLE, bc_scratch_view, VK_IMAGE_LAYOUT_GENERAL};
                 VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -1167,7 +1175,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         if (g.offset < tail0 || off >= tail || (off % align)) continue;
         AstcPush pc{};
         pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-        pc.layer_stride = (uint32_t)tail;
+        pc.layer_stride = (uint32_t)pitch;
         const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
         pc.x_shift = 9 + g.tile_h + g.tile_d;
         pc.block_size = gobs_x << pc.x_shift;
@@ -1180,7 +1188,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 astc_fail = "no view of a level";
                 return false;
             }
-            const uint64_t from = (all ? 0 : k * tail) + off;
+            const uint64_t from = (all ? 0 : k * pitch) + off;
             VkDescriptorBufferInfo bi{s.buffer, s.offset + from, staged - from};
             VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
