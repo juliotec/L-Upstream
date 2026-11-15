@@ -50,6 +50,9 @@ bool r5g5b5a1_sampled() {
 } // namespace
 
 VkFormatInfo vk_format(int nvn_format) {
+    // (with VK_KHR_maintenance5, RGB5A1 and RGB5 are A1B5G5R5 bit for bit, and their view swaps nothing: vk_texture.cpp)
+    if (dev.maintenance5 && (nvn_format == NVN_FORMAT_RGB5A1 || nvn_format == NVN_FORMAT_RGB5))
+        return {VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR, false, 1, 1};
     if (nvn_format >= 0x79 && nvn_format <= 0x94) {
         const int i = (nvn_format - 0x79) % 14;
         const bool srgb = nvn_format >= 0x87;
