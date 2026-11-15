@@ -20,6 +20,18 @@ inline bool mma_software = false;   // (HMMA_nx2 in software: emit_spirv_warp.cp
 // chosen by vk_coopmat.cpp's self-test; and whether its quad broadcasts may be used (the device has quad operations in every stage)
 inline uint32_t mma_software_form = 0;
 inline bool mma_software_quad = false;
+// (longshot, AMD RDNA 3/4) HMMA_nx2 on 16x16x16 f16 cooperative matrices: the console's fragments are staged through a
+// per-subgroup tile of shared memory at their PTX m16n8k16 positions, so the device's own lane layout does not matter
+// (emit_spirv_warp.cpp DefineWmma16MatrixFunction, vk_coopmat.cpp). B and C are padded to 16 columns with zeros.
+inline bool mma_wmma16 = false;
+// (with mma_wmma16) one 16x16x16 multiply instead of two K=8 halves rounded to f16 between them as HMMA.F16 does
+inline bool mma_wmma16_fast = false;
+// shared memory the WMMA16 tiles add per subgroup, in u32 words: A (16x16 row major), B's two K halves (each 16x16 column
+// major, the other half's rows zero) and C/D (16x16 row major), 16x16 f16 = 128 words each
+inline constexpr uint32_t mma_wmma16_tile_words = 4 * 128;
+inline constexpr uint32_t mma_wmma16_tile_bytes = mma_wmma16_tile_words * 4;
+// the device's maxComputeSharedMemorySize (vk_coopmat.cpp): a program whose tiles would pass it multiplies in software
+inline uint32_t mma_wmma16_shared_limit = 0;
 // (amd-fix) float colour outputs carry no NaN or infinity to their target (EmitSetFragColor): one NaN texel spreads
 // through bloom/blur/downsample averages into glowing blocks (OoT's flowers on AMD, Longshot issue 606). On for every
 // card since v2.0.6 (vk_coopmat.cpp coopmat_init); RX_VK_NAN_GUARD=0 turns it off. Idea from NX2navi patch 0027.
