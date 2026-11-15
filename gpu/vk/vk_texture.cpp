@@ -3863,9 +3863,13 @@ bool sparse_flush(Texture* tex) {
     {   // (bound before any work that writes the blocks is submitted: waited for here, on the recording thread. And
         // after the work submitted before is done: a sparse bind is not ordered with command buffers by their
         // barriers, and one that landed while a pass sampled the image changed what the pass read part-way through
-        // its tiles. Opt-in, RX_VK_SPARSE_IDLE=1: MKW binds hundreds of blocks a race, and the replay's stalls at
-        // each made its other races worse)
-        static const bool no_idle = !env_on("RX_VK_SPARSE_IDLE");
+        // its tiles. Opt-in elsewhere, RX_VK_SPARSE_IDLE=1: MKW binds hundreds of blocks a race, and the replay's
+        // stalls at each made its other races worse. On by default on AMD, whose sparse binds land while earlier
+        // passes still sample; RX_VK_SPARSE_IDLE=0 turns it off there)
+        static const bool no_idle = [] {
+            if (getenv("RX_VK_SPARSE_IDLE")) return !env_on("RX_VK_SPARSE_IDLE");
+            return dev.props.vendorID != 0x1002;
+        }();
         static int64_t binds;
         std::lock_guard qk(dev.present_mu);
         queue_flush_locked();
