@@ -80,7 +80,7 @@ def main():
     if "d24_as_d32" not in b2t or "(astc || d24_as_d32)" not in b2t:
         raise SystemExit("copy_b2t copies the game's 24-bit words as they are into a DEPTH24 texture kept as D32_SFLOAT")
     t2b = b2t[b2t.index("vkCmdCopyImageToBuffer"):]
-    if "if (d24_as_d32 || d24s8_as_d32) d32_to_d24(cmd, s, span, c);" not in t2b.split("\n", 2)[1]:
+    if "if (d24_as_d32 || d24s8_as_d32) d32_to_d24(cmd, s, span, c, size);" not in t2b.split("\n", 2)[1]:
         raise SystemExit("copy_b2t leaves floats in the buffer when a DEPTH24 texture kept as D32_SFLOAT is copied out")
     conv = block(xfer, "void d32_to_d24(")
     if "span.address" in conv or "vkGetBufferDeviceAddress(dev.device, &da)" not in conv or \
@@ -90,6 +90,8 @@ def main():
         raise SystemExit("d32_to_d24 reads 4-byte words through an address it never checked is 4-byte aligned")
     if "maxComputeWorkGroupCount" not in conv or "gz > most[2]" not in conv:
         raise SystemExit("d32_to_d24 dispatches one group per layer without checking maxComputeWorkGroupCount")
+    if "size / 4 > UINT32_MAX" not in conv:
+        raise SystemExit("d32_to_d24's 32-bit word index wraps on a copy past 16 GiB, converting the wrong words")
     if "NVN_FORMAT_DEPTH24_STENCIL8" not in b2t or "VK_FORMAT_D32_SFLOAT_S8_UINT" not in b2t:
         raise SystemExit("copy_b2t leaves floats in the buffer when a DEPTH24_STENCIL8 kept as D32_SFLOAT_S8_UINT is copied out")
     shaders = a.source / "gpu/vk/shaders"
