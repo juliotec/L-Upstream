@@ -4874,6 +4874,7 @@ struct DynState {
     uint32_t sref[2], scmp[2], swm[2];
     float bias[3];
     VkBool32 bias_en;
+    VkBool32 bias_unorm;   // (a D24 kept as D32: the bias in D24 units, VK_EXT_depth_bias_control)
     VkCullModeFlags cull;
     VkFrontFace front;
     VkPrimitiveTopology topo;
@@ -5050,6 +5051,11 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
             d.bias[0] = -eq_bias, d.bias[1] = 0.0f, d.bias[2] = 0.0f;
         }
     }
+    // (A D24 the device keeps as D32, vk_formats.cpp: a float format's bias unit follows the depth's exponent, so the
+    // game's D24 units came out too small away from 0 (shadow acne). Forced to the D24 unit where the device can)
+    d.bias_unorm = dev.depth_bias_control && depth &&
+                   (at.depth->nvn_format == NVN_FORMAT_DEPTH24 || at.depth->nvn_format == NVN_FORMAT_DEPTH24_STENCIL8) &&
+                   (at.depth_format == VK_FORMAT_D32_SFLOAT || at.depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT);
     d.st = stencil && s.ds.st;
     d.sops[0][0] = stencil_op(s.ds.fail_f), d.sops[0][1] = stencil_op(s.ds.zpass_f), d.sops[0][2] = stencil_op(s.ds.zfail_f);
     d.sops[1][0] = stencil_op(s.ds.fail_b), d.sops[1][1] = stencil_op(s.ds.zpass_b), d.sops[1][2] = stencil_op(s.ds.zfail_b);
@@ -5096,7 +5102,17 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_BIT, d.swm[0]);
         vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, d.swm[1]);
     }
-    if (DYN_CHANGED(bias)) vkCmdSetDepthBias(cmd, d.bias[0], d.bias[1], d.bias[2]);
+    if (DYN_CHANGED(bias) || DYN_CHANGED(bias_unorm)) {
+        if (dev.depth_bias_control && vkCmdSetDepthBias2EXT) {
+            VkDepthBiasRepresentationInfoEXT rep{VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT};
+            rep.depthBiasRepresentation = d.bias_unorm ? VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT
+                                                       : VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORMAT_EXT;
+            VkDepthBiasInfoEXT bi{VK_STRUCTURE_TYPE_DEPTH_BIAS_INFO_EXT, &rep};
+            bi.depthBiasConstantFactor = d.bias[0], bi.depthBiasClamp = d.bias[1], bi.depthBiasSlopeFactor = d.bias[2];
+            vkCmdSetDepthBias2EXT(cmd, &bi);
+        } else
+            vkCmdSetDepthBias(cmd, d.bias[0], d.bias[1], d.bias[2]);
+    }
     if (DYN_CHANGED(bias_en)) vkCmdSetDepthBiasEnable(cmd, d.bias_en);
     if (!last_dyn_valid) vkCmdSetLineWidth(cmd, 1.0f), vkCmdSetDepthBoundsTestEnable(cmd, VK_FALSE);
     if (DYN_CHANGED(cull)) vkCmdSetCullMode(cmd, d.cull);
