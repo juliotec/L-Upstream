@@ -1283,7 +1283,8 @@ bool unswizzle_ready() {
 
 /// The whole texture (every level and layer dirty overlaps) unswizzled on the GPU; false: not a texture for it
 bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
-    if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
+    // (not a sparse image: nothing here binds its blocks, and a store into an unbound one is dropped)
+    if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || tex.sparse || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
         is_bc(tex.format) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
         return false;
     if (total < (8u << 20) || tex.block_w != 1 || tex.block_h != 1) return false;
@@ -1313,6 +1314,7 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, unsw_pipe);
+    descriptors_disturbed();   // (also when a view fails and the CPU path takes over)
     for (uint32_t level = 0; level < tex.levels; level++) {
         const LevelGeo g = level_geo(tex, level);
         bool any = false;
@@ -1349,7 +1351,6 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         st_bytes += (int64_t)g.swizzled * tex.layers;
     }
     full_barrier(cmd);
-    descriptors_disturbed();
     return true;
 }
 
