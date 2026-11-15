@@ -174,7 +174,7 @@ struct D32ToD24Push {
     uint64_t base;
     uint32_t width, height, row, layer;
 };
-void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const VkBufferImageCopy& c) {
+void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const VkBufferImageCopy& c, uint64_t size) {
     static VkPipelineLayout layout = VK_NULL_HANDLE;
     static const VkPipeline pipe = [] {
         VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(D32ToD24Push)};
@@ -201,7 +201,8 @@ void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const 
     const VkDeviceAddress base = pipe && span ? vkGetBufferDeviceAddress(dev.device, &da) : 0;
     const uint32_t* most = dev.props.limits.maxComputeWorkGroupCount;
     const uint64_t gx = ((uint64_t)s.w + 7) / 8, gy = ((uint64_t)s.h + 7) / 8, gz = (uint64_t)s.layers * s.d;
-    if (!base || (base + span.offset) % 4 || gx > most[0] || gy > most[1] || gz > most[2]) {
+    if (!base || (base + span.offset) % 4 || gx > most[0] || gy > most[1] || gz > most[2] ||
+        size / 4 > UINT32_MAX) {   // (the shader's word index is 32-bit)
         warn(11, "DEPTH24 (D32_SFLOAT) copied to a buffer: no conversion pipeline, floats left");
         return;
     }
@@ -294,7 +295,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
         texture_written(s.tex, "a buffer-to-texture copy");
     } else {
         vkCmdCopyImageToBuffer(cmd, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, span.buffer, 1, &c);
-        if (d24_as_d32 || d24s8_as_d32) d32_to_d24(cmd, s, span, c);
+        if (d24_as_d32 || d24s8_as_d32) d32_to_d24(cmd, s, span, c, size);
         const uint64_t guest = host->gpu_guest(p.buf);
         if (guest) memory_stamp_gpu(guest, size);   // (textures over that memory are uploaded again)
         texture_gpu_wrote(p.buf, size);           // (and once the copy is done: the stamp came before it ran)
