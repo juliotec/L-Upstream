@@ -268,6 +268,7 @@ public:
     Id is_helper_invocation{};
     Id subgroup_local_invocation_id{};
     Id software_matrix_function{};   // (longshot: emit_spirv_warp.cpp)
+    Id wmma16_function{};   // (longshot: emit_spirv_warp.cpp DefineWmma16MatrixFunction)
     Id subgroup_mask_eq{};
     Id subgroup_mask_lt{};
     Id subgroup_mask_le{};
