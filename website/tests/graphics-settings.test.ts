@@ -28,6 +28,20 @@ test('the Audio, Gameplay and Controls tabs follow the README, and Debug stays o
   assert.equal(new Set(groups.flatMap(group => group.settings).map(setting => setting.id)).size, groups.flatMap(group => group.settings).length);
 });
 
+test('registered text fields retain their choices and restart requirements; unknown actions still fail', () => {
+  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+    .find(setting => setting.name === 'Custom output size');
+  assert.equal(setting.defaultValue, 'None');
+  assert.equal(setting.restart, true);
+  assert.match(setting.choices, /<width>x<height>/);
+  const unregistered = menu.replace(/const FieldRow field_rows\[\][\s\S]*?;/, 'const FieldRow field_rows[] = {};');
+  assert.notEqual(unregistered, menu);
+  assert.throws(() => readGraphicsSettings(readme, unregistered), /coverage mismatch at Custom output size/);
+  const wrongRestart = readme.replace(/(\| \| Custom output size \|[^\n]*)\(after a restart\)/, '$1');
+  assert.notEqual(wrongRestart, readme);
+  assert.throws(() => readGraphicsSettings(wrongRestart, menu), /restart mismatch at Custom output size/);
+});
+
 test('all Graphics rows follow the source sections and preserve README choices/defaults', () => {
   const groups = readGraphicsSettings(readme, menu).filter(group => group.tab === 'Graphics');
   const settings = groups.flatMap(group => group.settings);
@@ -80,7 +94,7 @@ test('cards take the menu\'s help, the source restart flag and README conditions
   assert(settings.every(setting => setting.summary), 'every card has the menu\'s description');
   assert(!settings.some(setting => /Applies after/.test(setting.summary)));
   assert.deepEqual(settings.filter(setting => setting.restart).map(setting => setting.name),
-    ['Aspect ratio', 'Output resolution', 'Profile', 'GPU device', 'Audio output', 'Game language', 'Button prompts']);
+    ['Aspect ratio', 'Output resolution', 'Custom output size', 'Profile', 'GPU device', 'Threaded rendering', 'Audio output', 'Skip title screen', 'Game language', 'Button prompts']);
   assert.deepEqual(find('NVIDIA Reflex').badges, ['NVIDIA GPUs only']);
   assert.deepEqual(find('HDR tone mapper').badges, ['With HDR on Native']);
   assert(find('HDR contrast').badges.includes('While HDR is on'));
@@ -91,7 +105,9 @@ test('cards take the menu\'s help, the source restart flag and README conditions
 test('restart, coverage and condition drift between README and the menu stop publication', () => {
   // (README says after a restart where the menu applies at once, or not where it takes one)
   assert.throws(() => readGraphicsSettings(readme.replace('| | Fullscreen | Off, On', '| | Fullscreen | Off, On (after a restart)'), menu), /restart mismatch at Fullscreen/);
-  assert.throws(() => readGraphicsSettings(readme.replace('Auto, Stereo, 5.1 (after a restart)', 'Auto, Stereo, 5.1'), menu), /restart mismatch at Audio output/);
+  const noAudioRestart = readme.replace(/^(\| \| Audio output \|[^\n]*)after a restart/m, '$1without restarting');
+  assert.notEqual(noAudioRestart, readme, 'Audio output fixture must remove its restart annotation');
+  assert.throws(() => readGraphicsSettings(noAudioRestart, menu), /restart mismatch at Audio output/);
   // (a row of another tab added to the menu, or one README lists that the menu lacks)
   assert.throws(() => readGraphicsSettings(readme, menu.replace('{TAB_AUDIO, "Volume"', '{TAB_AUDIO, "Balance", &opts.volume, 0, 1, 1, tx_onoff, "x"},\n    {TAB_AUDIO, "Volume"')), /Audio coverage mismatch/);
   assert.throws(() => readGraphicsSettings(readme.replace(/^\| \| Mute in background .*\n/m, ''), menu), /Audio coverage mismatch/);

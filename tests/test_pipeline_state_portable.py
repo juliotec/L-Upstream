@@ -44,7 +44,8 @@ def main():
     shader = (ROOT / 'gpu/vk/vk_shader.cpp').read_text(encoding='utf-8')
     # vk_formats.cpp: the ASTC tables, vk_format (astc_native: the made-up device's answer below)
     astc_tables = block(fmts, 'namespace {\nconstexpr int kAstcBw', True)
-    formats = '\n'.join([astc_tables, block(fmts, 'VkFormatInfo vk_format(int nvn_format)'),
+    formats = '\n'.join([astc_tables, 'namespace {\n' + block(fmts, 'VkFormat depth24_or_32(VkFormat d24, VkFormat d32)') + '\n}',
+                         block(fmts, 'VkFormatInfo vk_format(int nvn_format)'),
                          block(fmts, 'bool is_depth_format(VkFormat f)'), block(fmts, 'bool has_stencil(VkFormat f)')])
     texture = '\n'.join(block(tex, m) for m in (
         'bool is_bc(VkFormat f)', 'bool is_astc(VkFormat f)', 'VkFormat linear_twin(VkFormat f)', 'VkFormat widened(VkFormat f, int* from_bpb)',
@@ -79,7 +80,7 @@ def main():
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 // the made-up GPUs: A samples ASTC and has mesh shaders; B decodes ASTC and runs mesh programs as the compute fallback
 bool gpu_b = false;
-struct { void* physical = (void*)1; } dev;
+struct { void* physical = (void*)1; bool maintenance5 = false; } dev;
 static void vkGetPhysicalDeviceFormatProperties(void*, VkFormat f, VkFormatProperties* p) {
     *p = {};
     const bool astc = f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
@@ -91,6 +92,7 @@ static VkFormatProperties format_props(VkFormat f) { VkFormatProperties p; vkGet
 struct VkFormatInfo { VkFormat format; bool astc; int block_w, block_h; };
 namespace { bool astc_native() { VkFormatProperties p; vkGetPhysicalDeviceFormatProperties(nullptr, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &p);
     return p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT; } }
+static void logf(const char*, ...) {}
 enum class ViewUse { Sample, Attachment, Storage };
 struct Texture { int nvn_format = 0; };
 struct Stage { VkShaderStageFlagBits vk_stage; };

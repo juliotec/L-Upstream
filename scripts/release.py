@@ -57,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -445,7 +446,16 @@ def on_github():
     return os.environ.get("RELEASE_FORGE") == "github"
 
 
-def api(method, path, body=None, data=None, content_type=None, upload=False, missing_ok=False):
+UPLOAD_TRIES = 4      # (an upload the server answers with a 5xx, or that the connection drops, is made again: this many times in all)
+UPLOAD_PAUSE = 20.0   # (seconds before the second try; twice that before the third, and so on)
+
+
+class ServerTrouble(Exception):
+    """A request the server answered with a 5xx, or that never got its answer: worth making again"""
+
+
+def api(method, path, body=None, data=None, content_type=None, upload=False, missing_ok=False, again=False):
+    """again: a 5xx answer or a lost connection raises ServerTrouble instead of ending the run, for a caller that retries"""
     if on_github():
         base = "https://uploads.github.com" if upload else "https://api.github.com"
     else:
@@ -465,8 +475,39 @@ def api(method, path, body=None, data=None, content_type=None, upload=False, mis
     except urllib.error.HTTPError as e:
         if missing_ok and (e.code == 404 or (on_github() and e.code == 422)):   # (GitHub: 422 for a ref that is not there)
             return None
-        fail("%s %s: HTTP %d %s" % (method, path, e.code, e.read().decode("utf-8", "replace")[:300]))
+        said = "%s %s: HTTP %d %s" % (method, path, e.code, e.read().decode("utf-8", "replace")[:300])
+        if again and e.code >= 500:
+            raise ServerTrouble(said)
+        fail(said)
+    except (urllib.error.URLError, OSError) as e:   # (no answer: refused, reset, timed out)
+        if again:
+            raise ServerTrouble("%s %s: %s" % (method, path, e))
+        fail("%s %s: %s" % (method, path, e))
     return json.loads(text) if text else None
+
+
+def upload_file(repo, rel_id, name, data):
+    """One release file, uploaded and its size checked. The server's own trouble (a 5xx, a dropped connection: its storage
+    or the proxy in front of it, not this file) is not the end of the release: what that try left under the name is
+    removed and the upload made again, UPLOAD_TRIES times in all, after a longer pause each time"""
+    form, ctype = (data, "application/octet-stream") if on_github() else multipart(name, data)
+    path = "/repos/%s/releases/%d/assets?name=%s" % (repo, rel_id, urllib.parse.quote(name))
+    for attempt in range(1, UPLOAD_TRIES + 1):
+        try:
+            got = api("POST", path, data=form, content_type=ctype, upload=True, again=attempt < UPLOAD_TRIES)
+        except ServerTrouble as e:
+            pause = UPLOAD_PAUSE * attempt
+            print("::warning::%s: upload %d of %d failed (%s): again in %d s" % (name, attempt, UPLOAD_TRIES, e, pause), flush=True)
+            time.sleep(pause)
+            for rel in releases(repo):   # (a failed upload can leave its file behind: a second one of the name is refused)
+                if rel["id"] == rel_id:
+                    for asset in rel.get("assets") or []:
+                        if asset["name"] == name:
+                            api("DELETE", "/repos/%s/releases/%d/assets/%d" % (repo, rel_id, asset["id"]), missing_ok=True)
+            continue
+        if got.get("size") != len(data):
+            fail("%s: uploaded %s bytes of %d" % (name, got.get("size"), len(data)))
+        return
 
 
 def releases(repo, pages=1000):
@@ -515,11 +556,7 @@ def publish(tag, target, notes_file, files, product):
         name = os.path.basename(path)
         with open(path, "rb") as f:
             data = f.read()
-        form, ctype = (data, "application/octet-stream") if on_github() else multipart(name, data)
-        got = api("POST", "/repos/%s/releases/%d/assets?name=%s" % (repo, rel["id"], urllib.parse.quote(name)), data=form,
-                  content_type=ctype, upload=True)
-        if got.get("size") != len(data):
-            fail("%s: uploaded %s bytes of %d" % (name, got.get("size"), len(data)))
+        upload_file(repo, rel["id"], name, data)
         print("uploaded %s (%d MB)" % (name, len(data) >> 20))
     api("PATCH", "/repos/%s/releases/%d" % (repo, rel["id"]), {"draft": False, "prerelease": not stable})
     print("published %s: %s/%s/releases/tag/%s" % (tag, "https://github.com" if on_github() else SERVER, repo, tag))

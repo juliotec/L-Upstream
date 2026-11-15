@@ -223,16 +223,22 @@ means a guess, not a known virus.
 
 ## Still stuck?
 
-1. **Make a bug report.** Open the menu (<kbd>F1</kbd>), go to **Gameplay** and choose **Bug report**. It saves a folder
+1. **After a crash, click Report.** When Longshot closes unexpectedly, at the start or while you play, a window says what
+   happened and, where it can tell, why (update the graphics driver: Longshot needs Vulkan 1.3; out of memory; build
+   the game again). **Report** copies a report to your clipboard (the error, your PC's hardware and the end of the log,
+   with your home folder and user name taken out; no saves or game files) and opens the issue form in your browser:
+   paste it into the form's `longshot_log.txt` box, then say what you were doing. The game sends nothing itself.
+   **Open the log folder** shows the logs. The report is also saved in the game folder's `bug-reports/pending` folder.
+2. **Make a bug report.** Open the menu (<kbd>F1</kbd>), go to **Gameplay** and choose **Bug report**. It saves a folder
    in `bug-reports` in the game folder with the log, a picture and `report.txt`, which ends with a link that opens the
    report form already filled in. Your home folder and user name are taken out.
-2. **Or find the log yourself,** if the game doesn't get that far: `longshot_log.txt` in the game folder's `logs` folder is the last
+3. **Or find the log yourself,** if the game doesn't get that far: `longshot_log.txt` in the game folder's `logs` folder is the last
    run, and `longshot_log.1.txt` to `.4.txt` the four before it. On Linux, `longshot_startup.log` has the startup
    errors.
-3. **Search the reports.** [Someone may have had it already](https://longshot.magicbean.dev/progress/#problem-search),
+4. **Search the reports.** [Someone may have had it already](https://longshot.magicbean.dev/progress/#problem-search),
    with a workaround.
-4. **Ask on [Discord](https://discord.gg/magicbean).** The team and other players are there.
-5. **Report it** with the [report form](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new): your version,
+5. **Ask on [Discord](https://discord.gg/magicbean).** The team and other players are there.
+6. **Report it** with the [report form](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new): your version,
    where you were in the game, your graphics card and driver, the log and a screenshot.
    [What to include](reporting-and-contributing.md) has the details.
 

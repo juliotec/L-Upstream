@@ -15,6 +15,7 @@ export function publicGameText(text: string): string {
     .replace(/\bKokiri Forest\b/gi, 'the starting forest')
     .replace(/\bKokiri\b/gi, 'starting-area')
     .replace(/\b(?:the )?(?:Great )?Deku Tree\b/gi, 'the first dungeon')
+    .replace(/\bDeku Sticks?\b/gi, 'wooden stick')
     .replace(/\bHyrule Field\b/gi, 'the main outdoor area')
     .replace(/\bHyrule Castle\b/gi, 'the castle')
     .replace(/\bHyrule\b/gi, 'the game world') // Some archived runs use only the world name.

@@ -18,7 +18,11 @@ will. That includes:
 - `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
 - `longshot.exe`, `longshot_vk.dll` and other build output, and the game folder's `cache/` (`longshot_programs.bin` and
   its `.idx`, `longshot_pipelines.bin`, `longshot_vk_pipelines.bin`);
-- saves (`user/`), `longshot_options.ini`, `longshot_env.txt` and `language.txt`.
+- saves (`user/`), `longshot_options.ini`, `longshot_env.txt` and `language.txt`. The one exception: scrubbed saves
+  under `assets/saves/` ([the rules](assets/saves/README.md)): one slot each (`progress.sav` and `caption.sav` only),
+  its picture made grey and its date reset by `scripts/longshot_saves.py scrub`, passing `check-repo-saves`, made fresh
+  for the farm (never someone's own adventure), and added through a pull request two maintainers approve.
+  `account.sav`, `option.sav`, `longshot_options.ini`, `longshot_env.txt` and the rest of `user/` stay banned.
 
 Don't ask in an issue, a pull request or the chat where to get the game, how to decrypt it, or for someone else's
 files. A screenshot, a video and `longshot_log.txt` are fine and often necessary: the log holds no game data.
@@ -276,6 +280,11 @@ for scripted input, screenshots, frame dumps and profiles are in the development
 - New code has to be GPL-compatible ([Licensing](#licensing)).
 
 ## Commits and pull requests
+
+Changes to recorded menu, Launcher, font or shared renderer inputs also trigger the
+[user-guide screenshot source review](docs/images/guide/README.md#developer-maintenance-plan).
+Run the check and review the affected image and written steps before updating its fingerprints;
+even an implementation-only header change needs a recorded decision to retain or recapture it.
 
 Every pull request uses the [pull request template](.forgejo/pull_request_template.md): its sections are the
 description, its checklist stays whole, and `forge.py pr ready` checks it before review.

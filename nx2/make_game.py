@@ -1009,6 +1009,38 @@ def _cleanup_build_child(child, parent):
             (_cleanup_path(script) == _cleanup_path(expected) or ntpath.normcase(script) == "nx2\\build.py"))
 
 
+WORK_LOCK = "make_game.lock"   # (in the work folder: held by the build using it, lock_work)
+_WORK_LOCK = []   # ([its path, the open lock file], kept open for the whole run: closing it, or the process ending, lets it go)
+
+
+def lock_work(work):
+    """One build at a time in a work folder. Two builds in one share its lift, its object cache and its lists: a player's second
+    build, started 7.5 minutes after the first into the same work folder, found the lift done and compiled again every object the
+    first had not cached yet (197 of 480 files, 451 s of compiling, the two ending 19 s apart), and one can delete or cut short the
+    other's files (issue 1197). The second now stops at once, saying so. A lock, not a file that says so: it goes with the process
+    that held it, however that ended, so a stopped build never keeps the next one out. A second main() in the same process (the
+    tests) keeps the lock it holds on that folder, and lets go of one on another"""
+    path = os.path.join(os.path.abspath(work), WORK_LOCK)
+    if _WORK_LOCK and _WORK_LOCK[0] == path:
+        return
+    if _WORK_LOCK:
+        _WORK_LOCK[1].close()
+        _WORK_LOCK.clear()
+    f = open(path, "a+b")
+    try:
+        f.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        fail("Another build is using the work folder %s. Wait for it to end (or stop it), then build again." % work)
+    _WORK_LOCK[:] = [path, f]
+
+
 def stop_stray_compilers(work, default_work):
     """Best-effort cleanup for issues 501/530, restricted to proven target outputs/work.
     An interrupted Builder update can leave a compiler holding a64_fpx.h (Errno 22)
@@ -2095,6 +2127,13 @@ def warn_slow_disk(*folders):
 
 
 
+def stale_copies(found, parents, visible):
+    """The copies end_stale_games ends: those with no visible window, but not the crash window's helper of a game still open
+    (host/hos_crash_dialog.c: longshot --crash-watch, a windowless child of the game it waits on). Ending it would lose that
+    run's watcher, and the game's own window stops the update anyway; a helper showing its window is visible, so left alone"""
+    return [pid for pid in found if pid not in visible and parents.get(pid) not in visible]
+
+
 def end_stale_games(folders):
     """(Windows) The running processes whose exe is in one of folders (the game being updated): those with no visible window, a
     copy left behind (a shader preparation that hung, a game whose window closed but whose process did not end), are ended and
@@ -2120,7 +2159,7 @@ def end_stale_games(folders):
     snap = k32.CreateToolhelp32Snapshot(0x2, 0)
     if not snap or snap == wintypes.HANDLE(-1).value:
         return []
-    found = []
+    found, parents = [], {}
     try:
         e = Entry()
         e.dwSize = ctypes.sizeof(Entry)
@@ -2134,6 +2173,7 @@ def end_stale_games(folders):
                         path = os.path.normcase(buf.value)
                         if any(path.startswith(r) for r in roots) and os.path.dirname(path) + os.sep in roots:
                             found.append(e.th32ProcessID)
+                            parents[e.th32ProcessID] = e.th32ParentProcessID
                     k32.CloseHandle(h)
             ok = k32.Process32NextW(snap, ctypes.byref(e))
     finally:
@@ -2151,9 +2191,7 @@ def end_stale_games(folders):
                 visible.add(pid.value)
         return True
     u32.EnumWindows(proc(each), 0)
-    for pid in found:
-        if pid in visible:
-            continue
+    for pid in stale_copies(found, parents, visible):
         h = k32.OpenProcess(0x0001 | 0x00100000, False, pid)   # (PROCESS_TERMINATE | SYNCHRONIZE)
         if h:
             print("A copy of Longshot left running without a window (process %d) was ended so the update can replace it" % pid,
@@ -2182,6 +2220,7 @@ def main(a=None):
         fail("needs --out, and --nup or --romfs with --exefs")
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
+    lock_work(work)   # (before anything is read or cleared in it: stop_stray_compilers, drop_stale_objects, the lift)
     a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     check_writable(out)
@@ -2532,8 +2571,10 @@ def main(a=None):
     if importlib.util.find_spec("fontTools") is None:
         shutil.rmtree(prompts, ignore_errors=True)
         print("the button prompts of other controllers were not made (no fontTools): the game shows its own", flush=True)
-    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts] +
-             ([] if launcher else ["--incremental"]), check=False, output=sys.stderr):
+    # (kept when nothing they are made from changed, in a packaged builder too: the stamp has the builder's release, so the
+    # first build after a builder update draws them again)
+    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts, "--incremental"],
+             check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
         shutil.rmtree(prompts, ignore_errors=True)
     icon = os.path.join(ROOT, "assets", "longshot.png")

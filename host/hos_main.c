@@ -442,7 +442,7 @@ static int env_line_allowed(const char *name, const char *value) {
        the file select) */
     static const char *const by_name[] = {
         "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
-        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_CHAIN", "HOS_WATCH", "LONGSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
+        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_CHAIN", "HOS_WATCH", "HOS_CRASH_TEST", "LONGSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
         "RX_WGSL_OVERRIDE"};
@@ -1744,6 +1744,11 @@ int main(int argc, char **argv) {
 static int game_main(int argc, char **argv) {
 #endif
 #ifdef _WIN32
+    {   /* (longshot) the crash window's helper of this run (host/hos_crash_dialog.c): first, so it starts nothing of the game */
+        int hos_crash_helper_main(int argc, char **argv);
+        const int helper = hos_crash_helper_main(argc, argv);
+        if (helper >= 0) return helper;
+    }
     if (!narrow_paths_ok(argc, argv)) return 1;
     hos_game_layout();   /* (the game folder's cache/ and logs/, before anything writes there: host/game_layout.c) */
     {
@@ -1813,6 +1818,10 @@ static int game_main(int argc, char **argv) {
     removed_switch_notes();
     void hos_control_start(const char *version);
     hos_control_start(LONGSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
+    /* (longshot) the window after a crash: a helper that waits for this run to end (host/hos_crash_dialog.c), started before
+       the guest, the renderer, the sound and the input; none for --prepare-shaders, HOS_HEADLESS or HOS_CRASH_WATCH=0 */
+    void hos_crash_watch_start(int argc, char **argv);
+    hos_crash_watch_start(argc, argv);
     const char *image = NULL;
     /* (longshot) --compile-shaders all or most: what a preparation of this run builds (gpu/vk/vk_draw.cpp compile_all), over
        compile_shaders= in longshot_options.ini; as RX_VK_COMPILE_SHADERS, set before --prepare-shaders runs, wherever it stands */
@@ -1892,6 +1901,8 @@ static int game_main(int argc, char **argv) {
         fprintf(stderr, "cannot reserve the guest window\n");
         return 1;
     }
+    void hos_crash_test_arm(void);
+    hos_crash_test_arm();   /* (HOS_CRASH_TEST: a crash on purpose, once the crash handlers are set up: host/hos_crash_dialog.c) */
 #ifdef A64_MEM_ZERO
     web_fs_init(NULL, hos_romfs_dir);
     /* (the whole file, no range: the server sends it brotli-compressed, 85 -> 26 MB) */
@@ -2084,6 +2095,11 @@ static void driver_cache_folder(void) {
     }
 }
 int main(int argc, char **argv) {
+    {   /* (longshot) the crash window's helper of this run (host/hos_crash_dialog.c): first, so it starts nothing of the game */
+        int hos_crash_helper_main(int argc, char **argv);
+        const int helper = hos_crash_helper_main(argc, argv);
+        if (helper >= 0) return helper;
+    }
     int hos_display_init(void);
     void hos_display_loop(void);
     hos_game_layout();   /* (the game folder's cache/ and logs/, before anything writes there, --prepare-shaders too: host/game_layout.c) */

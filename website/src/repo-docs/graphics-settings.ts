@@ -73,6 +73,14 @@ export function readMenuRows(menu) {
     if (depth > 0) field += c;
   }
   if (depth !== 0 || !rows.length) throw new Error('Unreadable menu row table');
+  // Text fields have no integer option pointer. Their maintained registration and help
+  // identify them; keep rejecting arbitrary null-valued Graphics actions.
+  const fieldTable = menu.match(/const FieldRow field_rows\[\]\s*=\s*\{([\s\S]*?)\};/)?.[1] || '';
+  const textFields = new Set([...fieldTable.matchAll(/\{\s*"([^"]+)"\s*,\s*&\w+\s*,\s*\w+\s*\}/g)].map(match => match[1]));
+  for (const row of rows) {
+    row.textField = row.value === 'nullptr' && textFields.has(row.name);
+    if (row.textField) row.restart = /Applies after (?:a )?restart\./.test(row.help);
+  }
   const shown = menu.match(/bool row_shown\(int i\) \{([\s\S]*?)\n\}/)?.[1];
   if (!shown) throw new Error('Missing menu row_shown');
   const conditional = new Set([...shown.matchAll(/&opts\.\w+/g)].map(match => match[0]));
@@ -132,7 +140,7 @@ export function readGraphicsSettings(readme, menu) {
       groups.push({ name: row.name, settings: [] });
       continue;
     }
-    if (!row.value.startsWith('&opts.')) throw new Error(`README/menu graphics coverage mismatch at ${row.name}`);
+    if (!row.value.startsWith('&opts.') && !row.textField) throw new Error(`README/menu graphics coverage mismatch at ${row.name}`);
     const setting = settings[at++];
     if (setting?.name !== row.name) throw new Error(`README/menu graphics order mismatch at ${row.name}`);
     groups.at(-1).settings.push({ ...withSource(setting, 'Graphics'), id: `setting-${slug(row.name)}` });

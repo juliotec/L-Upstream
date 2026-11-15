@@ -291,6 +291,7 @@ None of this is done yet. In order (the org secret is shared by both repositorie
 | `release.yml` fails at *SHA256SUMS, signed*: "no RELEASE_SIGNING_KEY" | the secret is not set or not visible to the repository | One-time setup, step 2 |
 | ... "not signed by a trusted key" at `verify` | the secret's key is not the one in `ReleaseTrust.cs` / `release_keys.json` | put the matching key in the secret, or rotate (above) |
 | *Publish* fails with HTTP 413 or a cut connection | an upload over Cloudflare's 100 MB limit | set `RELEASE_UPLOAD_API` (One-time setup, step 3) |
+| *Publish* warns "upload N of 4 failed" with HTTP 5xx, or fails after four | the server's own trouble taking the file (its storage, or the proxy in front of it): `release.py` makes the upload again by itself, four times in all | if all four fail, look at Forgejo's log at that time, then run the job again: the draft it left is reused |
 | *Publish* fails with HTTP 400/422 on an upload | the attachment size or type limits | One-time setup, step 4 |
 | *Publish* fails with HTTP 401/403 | the job's token is read-only: the run is not a push to this repository (a pull request from a fork, or another repository's workflow) | release from a push or a tag here only |
 | "is already published" | a run for a version that is out (a re-run of an old run) | nothing: a version's files never change |

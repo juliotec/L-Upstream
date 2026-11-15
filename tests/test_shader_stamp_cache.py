@@ -18,6 +18,8 @@ import warnings
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = ROOT / "nx2" / "build.py"
+# (the Vulkan back end's third-party parts, built for nx2/third_party_objects.py's set)
+THIRD_PARTY = ("gpu/vk/eden/", "gpu/vk/sirit/", "third_party/imgui/", "third_party/zbic/")
 
 
 def production_code(path):
@@ -101,11 +103,13 @@ class ShaderStampCacheTests(unittest.TestCase):
             self.translator_files = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(self.translator_files)
 
-    def jobs(self, linux, version="fixture", release=False, ngx="", mingw="llvm-mingw", fsr=False, pgo=""):
+    def jobs(self, linux, version="fixture", release=False, ngx="", mingw="llvm-mingw", fsr=False, pgo="", stamp="fixture"):
         namespace = {
             "os": os, "hashlib": hashlib,
             "GPU": str(self.root / "gpu"), "POSIX": str(self.root / "host/posix"), "HOST": str(self.root / "host"),
-            "LINUX": linux, "CPU": ["-march=x86-64"],
+            "LINUX": linux, "CPU": ["-march=native", "-DLONGSHOT_NATIVE_CPU=fixture"],
+            # (the third-party parts' CPU level and the stamp their keys end with: nx2/third_party_objects.py)
+            "THIRD_PARTY_CPU": ["-march=x86-64-v3", "-ffp-contract=off"], "tp_deps": b"third-party " + stamp.encode(),
             "kit": SimpleNamespace(ROOT=str(self.root), HERE=str(self.root / "nx2")),
             "toolchain": SimpleNamespace(find=lambda name: name, need=lambda name: name, mingw=lambda: mingw),
             "target": lambda: ["--target=x86_64-linux-gnu" if linux else "--target=x86_64-w64-mingw32"],
@@ -130,7 +134,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             warnings.simplefilter("ignore", ResourceWarning)
             exec(self.code, namespace)
             return {str(Path(src).relative_to(self.root)).replace("\\", "/"):
-                    {"key": namespace["object_key"](src, flags, deps), "flags": flags}
+                    {"key": namespace["object_key"](src, flags, deps), "flags": flags, "deps": deps}
                     for _, src, _, flags, deps in namespace["vk_jobs"]}
 
     def changed(self, before, after):
@@ -196,10 +200,35 @@ class ShaderStampCacheTests(unittest.TestCase):
                     version = [f for f in job["flags"] if f.startswith("-DLONGSHOT_VERSION=")]
                     self.assertEqual(len(shader), int(name == "gpu/vk/vk_shader.cpp"))
                     self.assertEqual(len(version), int(name == "gpu/vk/vk_menu.cpp"))
-                    if not name.startswith(("host/posix/", "third_party/zstd/", "third_party/zbic/", "gen/")):   # (plain C libraries, the fonts' bytes)
+                    if name.startswith(THIRD_PARTY):   # (none of them reads it: a set made for players fits any build)
+                        self.assertNotIn("-DLONGSHOT_RELEASE", job["flags"])
+                    elif not name.startswith(("host/posix/", "third_party/zstd/", "third_party/zbic/", "gen/")):   # (plain C libraries, the fonts' bytes)
                         self.assertIn("-DLONGSHOT_RELEASE", job["flags"])
                 self.assertEqual(self.changed(before, self.jobs(linux, version="new", release=True)),
                                  {"gpu/vk/vk_menu.cpp"})
+
+    def test_third_party_parts_are_built_for_x86_64_v3_with_the_stamp(self):
+        """(nx2/third_party_objects.py) Eden's recompiler, sirit, Dear ImGui and zbic's zstd at THIRD_PARTY_CPU, with the stamp at
+        the end of their headers, so the release's set fits every CPU with v3's features; the back end's own files (and suyu's
+        texture decoders, built with its profile) at the game's CPU, without it"""
+        for linux in (False, True):
+            with self.subTest(linux=linux):
+                plain = self.jobs(linux)
+                third = {n for n in plain if n.startswith(THIRD_PARTY)}
+                self.assertEqual(third, {"gpu/vk/eden/translate.cpp", "gpu/vk/sirit/src/sirit.cpp", "third_party/zbic/zstd.c"} |
+                                 {n for n in plain if n.startswith("third_party/imgui/")})
+                for name, job in plain.items():
+                    marked = job["deps"].endswith(b"third-party fixture")
+                    self.assertEqual(marked, name in third, name)
+                    self.assertEqual("-march=x86-64-v3" in job["flags"], name in third, name)
+                    if name in third:
+                        self.assertFalse([f for f in job["flags"] if "native" in f.lower()], name)
+                # (another compiler or other system headers: the third-party objects' keys change, and nothing else's)
+                self.assertEqual(self.changed(plain, self.jobs(linux, stamp="another compiler")), third)
+                # (the release's own define and a renderer profile do not reach them)
+                with mock.patch("builtins.print"):
+                    release = self.jobs(linux, release=True, pgo="gen")
+                self.assertFalse(self.changed(plain, {n: release[n] for n in plain}) & third)
 
     def test_ngx_sdk_reaches_only_vk_dlss_and_the_mingw_runtime_shims(self):
         sdk = str(self.root / "ngx-sdk")

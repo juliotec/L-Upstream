@@ -4,7 +4,7 @@ import { publicGameText, publicProgressItem } from '../src/lib/public-copy.ts';
 
 test('public descriptions use neutral game, platform, place and character wording', () => {
   for (const text of ['The Legend of Zelda: Ocarina of Time', 'Nintendo Switch 2', 'OoT',
-    'Kokiri Forest', 'the Great Deku Tree', 'Hyrule Field', 'Kakariko Village',
+    'Kokiri Forest', 'the Great Deku Tree', 'Deku Stick', 'Deku Sticks', 'Hyrule Field', 'Kakariko Village',
     'Navi waking Link', 'Navi', 'Kokiri camera turns', 'adult Link', 'Nintendo (Def)', 'Switch Pro controllers', 'the Switch', 'Auto, Switch, Xbox']) {
     assert.doesNotMatch(publicGameText(text), /zelda|ocarina|nintendo|\boot\b|kokiri|deku|hyrule|kakariko|navi|\bLink\b|\bSwitch\b/i);
   }

@@ -37,9 +37,27 @@ bool astc_native() {
     }
     return known == 1;
 }
+
+/// A 24-bit depth format, or its 32-bit float twin where the GPU cannot render to it or sample it (AMD's GPUs have
+/// neither X8_D24_UNORM_PACK32 nor D24_UNORM_S8_UINT as depth attachments: RDNA 2, 3 and 4)
+VkFormat depth24_or_32(VkFormat d24, VkFormat d32) {
+    static signed char known[2] = {-1, -1};
+    signed char& k = known[d24 == VK_FORMAT_D24_UNORM_S8_UINT ? 1 : 0];
+    if (k < 0) {
+        VkFormatProperties p{};
+        vkGetPhysicalDeviceFormatProperties(dev.physical, d24, &p);
+        k = (p.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
+                    (p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ? 1 : 0;
+        if (!k) logf("vk: depth format %d not supported by this GPU: %d used instead", (int)d24, (int)d32);
+    }
+    return k ? d24 : d32;
+}
 } // namespace
 
 VkFormatInfo vk_format(int nvn_format) {
+    // (with VK_KHR_maintenance5, RGB5A1 and RGB5 are A1B5G5R5 bit for bit, and their view swaps nothing: vk_texture.cpp)
+    if (dev.maintenance5 && (nvn_format == NVN_FORMAT_RGB5A1 || nvn_format == NVN_FORMAT_RGB5))
+        return {VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR, false, 1, 1};
     if (nvn_format >= 0x79 && nvn_format <= 0x94) {
         const int i = (nvn_format - 0x79) % 14;
         const bool srgb = nvn_format >= 0x87;
@@ -95,7 +113,10 @@ VkFormatInfo vk_format(int nvn_format) {
     case NVN_FORMAT_RGBA8I: return {VK_FORMAT_R8G8B8A8_SINT, false, 1, 1};
     case NVN_FORMAT_RGBX8_SRGB: return {VK_FORMAT_R8G8B8A8_SRGB, false, 1, 1};
     case NVN_FORMAT_RGBA8_SRGB: return {VK_FORMAT_R8G8B8A8_SRGB, false, 1, 1};
-    case NVN_FORMAT_RGB5: return {VK_FORMAT_B5G5R5A1_UNORM_PACK16, false, 1, 1};
+    // (the 5-5-5 formats, low bits first as RGB565's: BGR5A1 has B in the low bits, A1BGR5 A)
+    case NVN_FORMAT_BGR5A1: return {VK_FORMAT_A1R5G5B5_UNORM_PACK16, false, 1, 1};
+    case NVN_FORMAT_BGR5: return {VK_FORMAT_A1R5G5B5_UNORM_PACK16, false, 1, 1};
+    case NVN_FORMAT_A1BGR5: return {VK_FORMAT_R5G5B5A1_UNORM_PACK16, false, 1, 1};
     case NVN_FORMAT_RGBA16: return {VK_FORMAT_R16G16B16A16_UNORM, false, 1, 1};
     case NVN_FORMAT_RGBA16SN: return {VK_FORMAT_R16G16B16A16_SNORM, false, 1, 1};
     case NVN_FORMAT_RGBA16UI: return {VK_FORMAT_R16G16B16A16_UINT, false, 1, 1};
@@ -105,12 +126,14 @@ VkFormatInfo vk_format(int nvn_format) {
     case NVN_FORMAT_RGBA32I: return {VK_FORMAT_R32G32B32A32_SINT, false, 1, 1};
     case NVN_FORMAT_STENCIL8: return {VK_FORMAT_S8_UINT, false, 1, 1};
     case NVN_FORMAT_DEPTH16: return {VK_FORMAT_D16_UNORM, false, 1, 1};
-    case NVN_FORMAT_DEPTH24: return {VK_FORMAT_X8_D24_UNORM_PACK32, false, 1, 1};
+    case NVN_FORMAT_DEPTH24: return {depth24_or_32(VK_FORMAT_X8_D24_UNORM_PACK32, VK_FORMAT_D32_SFLOAT), false, 1, 1};
     case NVN_FORMAT_DEPTH32F: return {VK_FORMAT_D32_SFLOAT, false, 1, 1};
-    case NVN_FORMAT_DEPTH24_STENCIL8: return {VK_FORMAT_D24_UNORM_S8_UINT, false, 1, 1};
+    case NVN_FORMAT_DEPTH24_STENCIL8: return {depth24_or_32(VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT), false, 1, 1};
     case NVN_FORMAT_DEPTH32F_STENCIL8: return {VK_FORMAT_D32_SFLOAT_S8_UINT, false, 1, 1};
     case NVN_FORMAT_RGBA4: return {VK_FORMAT_A4B4G4R4_UNORM_PACK16, false, 1, 1};
+    // (RGB5A1 and RGB5 have R in the low bits: the sampled view swaps R and B, and reads RGB5's alpha as one, vk_texture.cpp)
     case NVN_FORMAT_RGB5A1: return {VK_FORMAT_A1R5G5B5_UNORM_PACK16, false, 1, 1};
+    case NVN_FORMAT_RGB5: return {VK_FORMAT_A1R5G5B5_UNORM_PACK16, false, 1, 1};
     case NVN_FORMAT_RGB565: return {VK_FORMAT_B5G6R5_UNORM_PACK16, false, 1, 1};
     case NVN_FORMAT_BGR565: return {VK_FORMAT_R5G6B5_UNORM_PACK16, false, 1, 1};
     case NVN_FORMAT_RGB10A2: return {VK_FORMAT_A2B10G10R10_UNORM_PACK32, false, 1, 1};
@@ -133,6 +156,8 @@ VkFormatInfo vk_format(int nvn_format) {
     case NVN_FORMAT_BPTC_UFLOAT: return {VK_FORMAT_BC6H_UFLOAT_BLOCK, false, 1, 1};
     case NVN_FORMAT_BGRX8: return {VK_FORMAT_B8G8R8A8_UNORM, false, 1, 1};
     case NVN_FORMAT_BGRX8_SRGB: return {VK_FORMAT_B8G8R8A8_SRGB, false, 1, 1};
+    case NVN_FORMAT_BGRA8: return {VK_FORMAT_B8G8R8A8_UNORM, false, 1, 1};
+    case NVN_FORMAT_BGRA8_SRGB: return {VK_FORMAT_B8G8R8A8_SRGB, false, 1, 1};
     default: return {VK_FORMAT_UNDEFINED, false, 1, 1};
     }
 }

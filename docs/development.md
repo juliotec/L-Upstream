@@ -161,11 +161,35 @@ meter read late is the white flashes the wait is there for. `RX_VK_LOG_READBACK_
 every 3,000 calls (calls, waits and their time, how many had the newest submission as their writer, how many were read
 late), which is how the ranges worth a rule are found on a PC.
 
-`RX_VK_PSYCHOV35_DLSS=1` enables the experimental RGBA16F scene path for DLSS/DLAA and AMD FSR 4 (and its Native AA)
-with Native HDR and PsychoV35. The successful upscale supplies NVIDIA frame generation with depth, camera and actor
+Native HDR PsychoV35 automatically enables the compatible RGBA16F scene path for DLSS/DLAA, AMD FSR 4 (and its Native AA), and FSR 3.1 on the shared chain.
+`RX_VK_PSYCHOV35_DLSS=0` disables that route for troubleshooting; unset, empty or nonzero enables it. The value is read
+once per process, so restart after changing `longshot_env.txt`. The existing flag name is retained for existing
+configurations. The successful upscale supplies NVIDIA frame generation with depth, camera and actor
 motion as usual. It requires the engine's native-HDR context: DLSS's HDR feature (`RX_VK_DLSS_HDR=0` prevents this
-path) or FSR 4's HDR context (`RX_VK_FSR4_HDR=0` prevents it). FSR 3.1 and TAAU are not enabled by this switch.
-See [the format and history rules](temporal-history.md#psychov35-with-dlssdlaa-and-fsr-4-opt-in) for validation and shader regeneration.
+path), FSR 4's HDR context (`RX_VK_FSR4_HDR=0` prevents it), or FSR 3.1's already-HDR-capable passes. FSR 3.1 keeps
+Vanilla's existing colour path; its linear HDR path is limited to Native PsychoV35. Its legacy own-input route
+(`RX_VK_FSR3_CHAIN=0`) is not enabled by this switch. Off and the TAAU replacement have independent format support.
+See [the format and history rules](temporal-history.md#psychov35-with-temporal-upscalers) for validation and shader regeneration.
+
+Upscaler Off supports Native HDR PsychoV35 independently of that switch: matching RGBA16F views and a typed output pass bypass
+the game's network at 100% render resolution, or spatially scale its input below 100%. The output pass decodes the
+network input once; it supplies neither temporal anti-aliasing nor the temporal engines' NVIDIA FG input handoff.
+
+The gameplay TAAU replacement supports Native HDR PsychoV35 directly. It is the spatial/FXAA fallback used where the
+game network cannot run, not restored temporal AA. Its RGBA16F shader and history match the scene's format and decode
+the perceptual input once. `RX_VK_TAAU_KEYS=fd029a317a9a4b94` exercises that replacement on hardware that otherwise
+runs the native network; this is a test override, not a requirement for GPUs already using the fallback.
+
+
+
+For **FSR 3.1 frame generation**, use Frame generation **2x** and `RX_VK_FSR_FG=1`. Native HDR PsychoV35
+automatically enables the compatible independent RGBA16F depth/motion input path unless `RX_VK_PSYCHOV35_DLSS=0`.
+This does not enable the legacy FSR
+upscaler. To isolate FSR generation on NVIDIA hardware, select Frame generation by **Built-in FG** or use
+`RX_VK_DLSS_FG=0`; confirm actual `fsr3fi` made-frame counts, not only the menu selection. FSR generation remains off by default.
+The captured present's actual PQ/sRGB encoding and HDR peak are given to both AMD interpolation and optical flow;
+format, tone mapper, encoding and luminance changes reset the corresponding histories. See
+[FSR frame generation](temporal-history.md#native-hdr-and-fsr-31-frame-generation) for limits and validation.
 
 ### Running a test
 
@@ -181,6 +205,8 @@ See [the format and history rules](temporal-history.md#psychov35-with-dlssdlaa-a
 | `HOS_OUTPUT_RES=<width>x<height>`, `HOS_HANDHELD=1`, `HOS_ASPECT=<ratio>` | Over the options file: the output resolution (a size, as `output_res`), the handheld profile, a picture wider than 16:9 (2.3889 for 3440x1440) |
 | `HOS_DISPLAY_MODES=<w>x<h>,<w>x<h>,...` | The screen's display modes for this run, in place of Windows' (`gpu/vk/display_modes.h`): the Insert menu's Aspect ratio and Output resolution rows offer these sizes and the common sizes of their shapes (`display_modes.h` `common_sizes`), for checking a screen you do not have |
 | `HOS_WIDE_MAX_PX=<pixels>` | The most pixels a picture wider or narrower than 16:9 takes (`host/hos_wide_size.h`): 5120x2160's by default; 8294400 is 3840x2160's, the cap before |
+| `HOS_WIDE_UI=0` | The HUD on a screen that is not 16:9 as before (`host/hos_wide_ui.c`): in the middle 16:9 of a wider screen, fitted to a narrower one's width, instead of at the screen's edges. `HOS_WIDE_UI_LOG=<n>` logs the plan's first n changes (each pane with its layout and move), each root layout (the HUD's, a menu's, over the whole picture, or held at the HUD's size) and the plan's time |
+| `HOS_HUD_MAX_RATIO=<ratio>`, `HOS_HUD_FULL_RATIO=<ratio>` | The HUD's limits (`host/hos_wide_ui.c`): its sides reach a screen's edges up to 12:5 (2.4; `0`: at any width), and it keeps its 16:9 size down to 3:2 (1.5), smaller below |
 | `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
@@ -279,6 +305,68 @@ stacks; a typical game-dump size has not been measured. The game-free Windows
 fixture prints its tiny child's actual dump size, not a game-size estimate.
 [Microsoft recommends a separate process, or a dedicated thread](https://learn.microsoft.com/en-us/windows/win32/api/minidumpapiset/nf-minidumpapiset-minidumpwritedump);
 even the dedicated worker can fail or stall after heap/loader corruption.
+
+### The window after a crash
+
+Right after the game crashes, at start or in play, a window says so: **Longshot closed unexpectedly** (or **Longshot
+couldn't start**), when (during the start, while it prepared the shaders, while playing; nothing when the run's log
+isn't found), what went wrong where that is known, and **Report**, **Open the log folder**, **Close** (`host/hos_crash_dialog.c`; what decides is
+`host/hos_crash_dialog.h`).
+
+It is shown by a helper the game starts early in `game_main`, once the crash record and its run id are set up and before
+the guest, the renderer, the sound and the input: the same executable, `longshot --crash-watch <pid> <run id> <game
+folder> <log>`. `main()` hands that command line to `hos_crash_helper_main` first thing, so the helper starts nothing of
+the game; it loads SDL3 or SDL2 for its message box (Windows' `MessageBoxW` without one) and nothing else. On Windows it
+is started with `CREATE_NO_WINDOW`, no inherited handles and out of the launcher's job where the job allows it; on Linux
+its input and output are `/dev/null` (never the game's log or a launcher's pipe) and it closes any other file it
+inherited. It waits for the game's process to end
+(Windows: the process handle, with its exit code; Linux: a pidfd, else its parent changing), turns a marker left behind
+into an unclean-end record as a start would, then decides:
+
+| How the run ended | The window |
+|---|---|
+| a crash record of the run (`bug-reports/pending/crash-*.txt`), a quit before it included | yes |
+| the log says the start could not go on, before a save was loaded: the game's files (`cannot open`, `usage:`, `lift and image do not match`), Vulkan (`did not load ... nothing is drawn`, `vkCreateInstance failed`, `no Vulkan 1.3 GPU`, ...), the window, `cannot reserve the guest window` | yes, **Longshot couldn't start**, a quit included (a black window closed) |
+| the marker left with no crash record (killed, out of memory, a handler that could not run) | yes, unless the player had asked to quit, or Windows' exit code is 0 |
+| a quit, then the process ended while it closes (a second close of a window that stopped answering) | no: `rx_close_asked` notes the quit first in the marker, and the unclean record says `quit_asked: yes` (the same rule as the renderer's crash markers, [PR 498](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/498)) |
+| a clean end: a quit, a return, the menu's restart (Windows: a new process with its own helper; Linux: the same process, whose new run's marker ends the old helper) | no |
+| Windows is signing out or shutting down | no (a window would hold it up); a crash record of the run is shown at the next start |
+
+The cause is the first that holds: the game's files, Vulkan, the window (before play), memory (`cannot reserve`,
+Windows out of memory, `0xC0000017`, or an unclean end after the start's low-memory warning), the graphics driver
+(`device lost`, a Vulkan fatal, a crash in the driver's own module), ended from outside; else "an unexpected error".
+
+**Report** builds a plain-text report: what happened, the version and its channel, the GPU and driver (from the log's
+`vk:` lines), CPU, RAM and system, what the game was built for, the log's first DLSS and FSR 4 lines,
+`longshot_options.ini`'s settings and the switches set (a value only when it is a number, a size or on/off, never for a
+name with TOKEN, KEY, ROOM, SECRET, PASS, SERVER or USER; not the controls' bindings), the crash and unclean records of
+the last day, the run's crash record, and the last 200 lines of the run's log with the home folder and the user's name
+taken out as the Insert menu's Bug report does. Never saves, game files, the executable or caches, memory dumps, keys,
+the options file itself or the home folder's path. It is put on the clipboard (Windows' own; on Linux through `wl-copy` on
+Wayland, else `xclip` or `xsel`, which keep it after the helper ends, and SDL's X11 clipboard only as a last resort, given
+while the next box is open: Wayland takes a selection only from a focused window, which the helper no longer has), written to `bug-reports/pending/report-<UTC>.txt` (the newest ten kept), and the game-problem issue form
+opens in the browser with the version, GPU, system and a title filled in. The box that follows says whether the report is
+on the clipboard, never that it is when nothing took it, and names the saved file, which **Open the report** opens to copy it
+from. Nothing is sent by the game: the player pastes the report.
+
+Under gamescope (the Steam Deck's Game Mode: `GAMESCOPE_WAYLAND_DISPLAY` set, or `XDG_CURRENT_DESKTOP=gamescope`) there
+is no helper and no box of an earlier crash at the start, until someone has tested that gamescope shows a child process's
+box: one nobody sees would keep the helper, and so the game in Steam's eyes, running. The records are still written.
+
+A start that finds a crash record of the last day that no helper showed (the helper could not run, or was ended with the
+game) shows it once, before it goes on (`--crash-show`); `bug-reports/shown.txt` lists the records shown. The first
+start with this window lists what was pending already. Unclean ends are shown only by the helper, never at a start: a
+launcher or a logout that stopped the game is no crash.
+
+| Switch | What it does |
+|---|---|
+| `HOS_CRASH_WATCH=0` | No helper and no window after a crash, for development runs; on by default. None either for `--prepare-shaders`, `HOS_HEADLESS`, a profile-guided training run (`HOS_PGO`) or under gamescope |
+| `HOS_CRASH_TEST=start` or `=<seconds>` | A developer's test: the game crashes on purpose (a write to address 16) just after its crash handlers are set up, before the renderer, or that many seconds after the start, on a thread of its own. Off unless set; taken from the environment only, never from `longshot_env.txt` |
+
+To test it: start the game with `HOS_CRASH_TEST=start` (the window says *during the start*), with `HOS_CRASH_TEST=60`
+and a save loaded within the minute (*while you were playing*), end it from Task Manager or with `kill -9` (*ended
+without a crash report*), and quit normally and with the Insert menu's Restart now (no window). `tests/test_crash_dialog.py`
+checks the decisions game-free, and on Linux runs the real helper against real processes with the window stood in for.
 
 ### Input for scripted runs
 
@@ -441,6 +529,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `LONGSHOT_OBJ_STORE=<dir>` | One store of compiled objects for every work folder (`nx2/object_store.py`): a build in a new `--work` folder compiles only what no other folder built with the same compiler and headers. Hard links (a copy across drives), so keep it on the work folders' drive. Off when unset, empty or `0`; `scripts/dev_packs.py` turns it on (below) |
 | `LONGSHOT_LIFT_STORE=<dir>` | Translations kept for every work folder (`nx2/lift_store.py`): after a lift, its C, image, chunk boundaries and hot pieces are saved under the lift key without the work and game folders' paths (`make_game.py lift_share_key`), and a new `--work` folder whose key matches copies them (copy-on-write clones on btrfs and XFS) instead of translating the game. Never hard links. `LONGSHOT_LIFT_STORE_KEEP=<n>` keeps the newest n (3). Off when unset, empty or `0`; `scripts/dev_packs.py` turns it on |
 | `LONGSHOT_OBJ_STORE_GB=<n>`, `LONGSHOT_OBJ_STORE_DAYS=<n>` | The store's own clean-up after each `make_game.py` build: an object no work folder holds goes once nobody used it for 14 days, and the oldest first while those come to more than 8 GB. One a work folder holds stays: it costs no space of its own |
+| `LONGSHOT_THIRD_PARTY_OBJECTS=0` or `=<dir>` | The third-party code's objects a release ships compiled (`nx2/third_party_objects.py`: Eden's shader recompiler, sirit, Dear ImGui, zstd, libopus, and on Windows suyu's code under the WebGPU renderer), which a build copies into its object cache instead of compiling them. Each is taken only by its object key, which holds its source, flags and headers and, for these objects, the compiler's version and what the system headers, the C++ library and the Vulkan, SPIR-V and VMA headers preprocess to: anything else (another compiler, a checkout's edit, a CPU below `x86-64-v3`) compiles as before. Default: the tools' own `third_party_objects/` (the AppImage's and the Windows zip's; a checkout has none). `0` turns it off; a folder uses that set (`python -I nx2/third_party_objects.py make <dir>` makes one with this PC's tools). A player's dry run says how many of them the set holds (`scripts/linux/check_player_build.sh` requires all) |
 | `LONGSHOT_FORCE_PROMPTS=1` | Regenerates button-prompt assets even when unchanged. Unset, empty, `0`, `false`, `off` and `no` (case-insensitive, surrounding spaces ignored) are off |
 | `LONGSHOT_MINGW=<dir>`, `LONGSHOT_MSVC=1` | The llvm-mingw to build with; the Visual Studio route instead |
 | `RX_CPM=<dir>`, `WGPU_NATIVE=<dir>` | The CPM cache (Vulkan and SPIR-V headers, VMA, FFmpeg) and wgpu-native |
@@ -450,7 +539,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_VK_PGO=gen` or `RX_VK_PGO=<file>` | The Vulkan back end's own files counting their branches for a profile, or built with one (`make_game.py` passes `work/longshot_vk.profdata` when it is there, else the committed `assets/profiles/longshot_vk.profdata.xz`; a compiler that can't read it builds without): [the renderer's play profile](#the-renderers-play-profile) |
 | `RX_HOT_OPT=<level>` | The hot pieces' optimisation level (default `O2`); `O1` for [a faster build for development](#a-faster-build-for-development) |
 | `LONGSHOT_SPLIT_GIANTS=<KB>` | Compiles each lifted function of 256 KB of C or more as pieces of about `<KB>` (8 is the measured best) cut at its labels, with a dispatch loop under its own name (`nx2/split_giants.py`). Measured on a Ryzen 5 5600, 16 GB: the 15 giant-function chunks compile 2.6x faster one at a time (their largest compile's peak memory 2,263 -> 586 MB; a single 2-6 MB function's peak falls to about a fifth), and a whole first build's compile (`--jobs 4`) takes ~21% less time, with ~6% less summed compiler memory. The lifted files are not changed (`build.py` compiles a copy). On by default at 8; `0` turns it off |
-| `RX_MARCH=<level>` | The CPU level to build for. Default: `native` (this PC's own CPU) on a CPU with `x86-64-v3`'s features, else `x86-64-v2`, else `x86-64`; `x86-64-v3` if clang can't say what `native` is here. With `native` the CPU clang finds goes into the object keys (`-DLONGSHOT_NATIVE_CPU=`, in the build log), so another CPU compiles again ([issue 182](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/182)). `RX_MARCH=x86-64-v3` builds as before. `native` also tunes for this CPU (the Steam Deck's Zen 2 too), so there is no tuning switch |
+| `RX_MARCH=<level>` | The CPU level to build for. Default: `native` (this PC's own CPU) on a CPU with `x86-64-v3`'s features, else `x86-64-v2`, else `x86-64`; `x86-64-v3` if clang can't say what `native` is here. With `native` the CPU clang finds goes into the object keys (`-DLONGSHOT_NATIVE_CPU=`, in the build log), so another CPU compiles again ([issue 182](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/182)). `RX_MARCH=x86-64-v3` builds as before. `native` also tunes for this CPU (the Steam Deck's Zen 2 too), so there is no tuning switch. The third-party code is built for `x86-64-v3` on every CPU that has it, not `native`, so the objects a release ships fit (`LONGSHOT_THIRD_PARTY_OBJECTS`); with an `RX_MARCH`, or below v3, it is built as the rest |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
@@ -460,15 +549,15 @@ memory and are not always faster. **Build memory**: Automatic keeps the free-mem
 `LONGSHOT_MEM_LIMIT_GB`, so the compilers may reserve that much together whatever is free now (the ones that always run,
 up to 4 on Windows, still run under a smaller number). The builders' `--cli` passes both on as it finds them.
 
-Source-checkout builds keep the button prompts when their source, fonts, game assets, button tables, image overrides,
+Builds keep the button prompts when their source, fonts, game assets, button tables, image overrides,
 Python, package/library versions and generation options still match, and every generated file still has its recorded
 size and content hash. The inputs are checked before and after generation; changed or unreadable inputs leave no reusable
-stamp. The log says `prompts: unchanged, kept` or why it regenerated. Packaged builders (the finish stage's launcher
-path) still regenerate every time; `RX_RELEASE` does not distinguish them from source builds. Generation uses a fresh
-directory and publishes only a complete set. A failed generator still removes the prompts, so the game shows its own
+stamp. The log says `prompts: unchanged, kept` or why it regenerated. Packaged builders keep them too: the stamp has the builder's release, so the first build after a builder update draws
+them again whatever changed in it. `LONGSHOT_FORCE_PROMPTS=1` draws them in any build.
+Generation uses a fresh directory and publishes only a complete set. A failed generator still removes the prompts, so the game shows its own
 icons, as before. An interrupted builder can leave the old set without a stamp; the next build regenerates it.
-The files the game derives at run time are still cleared by every build, including a cache hit; they are not part of
-the stamp. If those files cannot be cleared, the build regenerates rather than trusting them.
+The files the game derives at run time (`host/prompts.c`) are kept with them: the stamp covers `host/prompts.c`, so they
+were made by the same code, and a game running from the folder keeps its files.
 Before checking the cache, builds sweep `.prompts-*` staging directories without following links or Windows reparse
 points. POSIX uses checked directory descriptors and owner locks, with a 24-hour grace period for unmarked legacy
 directories; it skips cleanup if descriptor-safe removal is unavailable. Windows uses only the 24-hour age rule,
@@ -530,8 +619,8 @@ its place, and `RX_VK_PGO` set by hand (`gen`, or another file) in place of both
 
 1. **Build a renderer that counts**, `RX_VK_PGO=gen`: the back end's own files (`gpu/vk/*.cpp` and suyu's texture
    decoders; not Eden's recompiler, sirit, Dear ImGui or zstd) are built with `-fprofile-instr-generate`, still at
-   `-O2`, and the module gets its own copy of `host/pgo_rt.c`. As a pack of a change (`base` takes it the same way),
-   or the renderer alone:
+   `-O2`, and the module gets its own copy of `host/pgo_rt.c`. As a pack of a change (`base` takes it the same way;
+   `pack` builds the renderer for `RX_VK_PGO` even when no file changed since the base), or the renderer alone:
    ```
    RX_VK_PGO=gen python -I scripts/dev_packs.py pack <dir> vk-count
    RX_VK_PGO=gen OOT_WORK=<work> RX_RELEASE=1 RX_VK_ONLY=1 python -I nx2/build.py --standalone
@@ -541,9 +630,23 @@ its place, and `RX_VK_PGO` set by hand (`gen`, or another file) in place of both
 2. **Record a run**: start the game with `RX_VK_PGO_FILE=<file>` in the environment. Create `<file>.reset` once the
    place has loaded (the counters start again), play the places the profile should know, then create `<file>.dump`:
    the counters are written to `<file>` within half a second and the `.dump` file goes. Several places can each be
-   dumped to a file of their own.
+   dumped to a file of their own. [The pipeline tour](#the-pipeline-tour) does this on its whole route (on Linux), with
+   a runtime of the counting pack as its game folder:
+   ```
+   RX_VK_PGO=gen python -I scripts/dev_packs.py pack <dir> vk-count     (step 1, if not done)
+   python -I scripts/dev_packs.py rt <dir> <runtime> vk-count
+   python -I scripts/pipeline_tour.py tour --game <runtime> --out <tour dir> --name play --vk-profile <tour dir>/vk
+   ```
+   Each of its games runs with `RX_VK_PGO_FILE` set, clears the counters once it has control of Link (the loading, the
+   prepare and the title left out) and writes them at its end, failed or not, as `<tour dir>/vk/<game>.profraw`, with a
+   `.json` beside it saying where it was recorded. A renderer that doesn't count is refused before the game starts, and
+   one that takes neither request fails the run, so a recording never ends with nothing in it.
 3. **Merge** with the `llvm-profdata` of the compiler that built it:
-   `llvm-profdata merge -o work/longshot_vk.profdata <file> [<file> ...]`.
+   `llvm-profdata merge -o work/longshot_vk.profdata <file> [<file> ...]`, or for the tour's
+   `python -I scripts/pipeline_tour.py merge-profile <tour dir>/vk` (the toolchain's `llvm-profdata`, or
+   `--llvm-profdata <path>`; `--out <file>` for another place than `work/longshot_vk.profdata`). With `--publish` it also
+   writes `assets/profiles/longshot_vk.profdata.xz` (xz -9e) and the lines for `assets/profiles/README.md` (when, the
+   GPU and driver, the build, the route's parts, the compiler) to `<tour dir>/vk/README-note.md`.
 4. **Build with it**: `make_game.py` copies `work/longshot_vk.profdata` to its work folder and passes it
    (`RX_VK_PGO=<file>`), unless `RX_VK_PGO` is set already; without one it unpacks the committed profile there
    (`longshot_vk.shipped.profdata`) and passes that. Either only when this compiler reads it, on every system (a
@@ -770,6 +873,80 @@ compiles in play. When the record's format changes (its magic and record size, `
 `nx2/pipeline_states.py`), the old lists no longer read and the release checks stop. Convert each source in place, or
 record it again, and make a new tour list. The folder's layout stays the same.
 
+### The pipeline tour
+
+`scripts/pipeline_tour.py` plays the game for the tour's list, unattended, on Linux, and writes `tour.bin.xz` with its note
+(ported from Hookshot's draft [pull request 2048](https://github.com/NotRexed/Hookshot/pull/2048), now driven through the
+[control bridge](control.md)):
+
+```sh
+python -I scripts/pipeline_tour.py tour --game <game folder> --out <tour dir> --name play --publish
+python -I scripts/pipeline_tour.py run --game <game folder copy> --out <dir> --part child-overworld --first "Market" --stops 3 --skip-opening
+python -I scripts/pipeline_tour.py run --game x --out x --dry-run          # the route, without the game
+python -I scripts/pipeline_tour.py compare <new tour dir>/play.bin <old tour dir>/play.bin   # what the new list lost, and gained
+```
+
+`tour` runs its parts (the opening; the child overworld; the dungeons at both ages; the adult overworld) one after another,
+one game at a time, in a reflinked copy of the game folder (`<game folder>-tour`: on btrfs or XFS, and refused when one is
+there from an earlier tour), at nice 19 (on `--cpus` if given), in games of `--chunk` stops
+(8; a fresh game each, as one game's memory only grows), and merges their lists; `--publish` then runs
+`nx2/pipeline_states.py tour` with the GPU and build the bridge reported and the settings and route the runs used
+(`merge` merges any lists). Each game runs under a memory guard (the script's `MEM`, `--mem key=value`): it starts only with
+8 GB available and at most 16 GB of swap in use (else it waits, 30 minutes at most); a game holding more than 9 GB after a
+stop ends there and a fresh one goes on from the next stop; past 12 GB, under 3 GB available or past 20 GB of swap it is
+stopped at once and a fresh game goes on from the stop it was at (a stop that does it twice is left out). With systemd the
+game also runs in a scope of its own with `MemoryMax` (16 GB).
+
+Each game starts with no save, in a data and `--user` folder of its own and with none of the shell's or `longshot_env.txt`'s
+switches (`HOS_*`, `RX_*`, `A64_*`, `OOT_*`; an empty `HOS_ENV_FILE`), only the run's: the title, New Game and the opening (watched whole by the
+opening part, skipped by the game itself, `HOS_SKIP_OPENING`, in the others), until the bridge's `status` says Link is in a
+map with no event playing and nothing loading; then every item from the Debug tab's inventory but the story's (medallions,
+stones and songs start scenes that wait for the player), and each Teleport destination: the camera all around, at Lake
+Hylia a dive (and, as the adult, the iron boots and the Zora tunic on the lake's bottom), and on to the next once no new
+pipeline came for 60 frames, a second of game time (`--settle-quiet`; 600 frames at most, `--settle-max`; it was 150, 2.5 s).
+The sword, the shield and an item from the pause menu's Items page are used once an age (the script's `ITEMS_ONCE`: Kokiri
+Forest as the child, Hyrule Field as the adult) and at the stops with passes of their own an item's draws could combine with
+(`ITEMS_PASSES`: Zora's Domain and the Water Temple for water, the Shadow Temple for the Lens of Truth, Death Mountain Crater
+and the Fire Temple for the heat haze), a different pause menu pick at each: a pipeline is a program and its fixed draw state, and a
+scene's light and fog are inputs to the same pipelines, so the sword drawn in one more field is no new pipeline. A few stops
+are left out: one starts a scene the tour cannot finish, others added almost nothing (the script's `LEFT_OUT`). `value <run
+dirs>` measures that: each step's pipelines that neither the players' lists (`contrib/`) nor any other step has, its
+seconds, and the steps under `--floor` (10) cut (`--sub`: a stop's arrival, look around, item use and settling apart).
+
+It is driven through the bridge (`HOS_CONTROL`, a socket in the run's folder): `teleport` by the destination's index and
+`age`, asked again while the game answers `refused` (an event playing, a map loading; another teleport in the last 8 s of wall
+time, which is waited out and never pressed at),
+`timeout` or `cancelled`, with A or B now and then when a conversation holds the game; given up on when the refusal is one
+asking again cannot change (no map for Link's age) or a request is sent five times without Link moving (the Haunted
+Wasteland, visited last). Arrival is `wait map` (`loading_end` after the age switch and the teleport to the lake's bottom, the map Link is in), then
+`status` until the arrival's event is over in a fresh snapshot (`game.frame` within 10 presents of the reply's); the presses are `sequence` in game frames, the waits `wait present`. Only the Debug tab's inventory, which
+the bridge does not do, goes through `HOS_INPUT_LIVE`'s `!cheat` lines (`HOS_OOT_CHEATS=1`). No controller is opened
+(`HOS_NO_SDL`) and nothing reaches the desktop. It runs as fast as the game goes, with settings that change no pipeline's
+key (formats and draw state, not sizes or rates): headless, 640x360 with the game's own upscaler at 50%, the cap Uncapped
+(`HOS_FPS_MAX=1000`) with every frame a 60th of a second of game time (`HOS_FPS_STEP=0`, Game speed Per frame), pacing and
+V-Sync off, text at once, no frame generation, sharpening or HDR, in the run's own copy of the options file (restored
+after, or removed when the folder had none). Every wait on the game counts its frames, so a faster game waits less wall time; the inventory's `!cheat` lines alone
+are also 32 ms apart (the game reads the live file every 30 ms), then three frames. `run` is one part (`--part`, `--first <stop>`
+to start again at a stop, `--stops N`, `--dry-run`); `--env` and
+`--ini` change the settings (a list for the mesh fallback: `--env RX_VK_FORCE_MESH_FALLBACK=1`), and `--window WxH` shows
+it. Each run writes `states.bin`, `report.txt` and `report.json` (each step's pipelines, the new ones it added, its frames,
+seconds and the game's memory: a flattening curve says the list is nearly whole; and the settle's frames), `log.txt`,
+`steps.txt` (each request, at
+its frame) and a small picture every 600 frames (`shots/`). The game folder's pipeline notes and lists, and
+`longshot_computes.bin` (the compute programs earlier play dispatched, which the game writes into a new list), are put
+aside for a run and back after it, failed, stopped (Ctrl+C or SIGTERM: a tour gives its run two minutes to end its game
+and put them back) or not; a file that could not go back is named in the run's output. `tests/test_pipeline_tour.py` checks it without the game,
+against a fake bridge.
+
+A changed route or wait is checked by the lists, not the clock alone: a tour each way on the same PC and game folder, then
+`compare <new tour dir>/<name>.bin <old tour dir>/<name>.bin` (or `tour --compare-to <old list>`, after its merge), which
+prints how many pipelines the old list has that the new lacks (lost; none, for a change that only saves time) and the other
+way round. The wait as it was is `--settle-quiet 150`; `report.txt` says which a run used.
+
+`--vk-profile <dir>` (`run` and `tour`) records [the renderer's play profile](#the-renderers-play-profile) on the same
+route, with a counting renderer (`RX_VK_PGO=gen`): each game's counters, from control of Link to its end, go to
+`<dir>/<game>.profraw`, and `merge-profile <dir> [--publish]` merges them. The lists are made as without it.
+
 ## The options file
 
 A new row on the Graphics, Audio, Gameplay or Controls tab needs a line in the README's option table too, in the
@@ -842,6 +1019,11 @@ rupees, A-button prompt and music. `subscribe` with `events:["oot"]`, `every`, `
 samples and optional watched/changed flags. There is no separate state file; off unless `HOS_CONTROL` is set.
 See [control.md](control.md) for the fields, sampling, bounds and examples.
 
+`HOS_CONTROL_PEER_SID=<SID>` (Windows) also lets one other local user account open the bridge's pipe: the Test Farm
+agent sets it when it runs the game as its low-rights user. Only a local user account's SID is taken (`S-1-5-21-...`, a
+RID of 1000 or more); a group such as Everyone or Users is refused and logged. Unset, the pipe is the game's user's
+alone. See [control.md](control.md#security).
+
 ## Layout
 
 | Path | What |
@@ -852,7 +1034,7 @@ See [control.md](control.md) for the fields, sampling, bounds and examples.
 | `gpu/vk/` | the Vulkan back end (`longshot_vk.dll`, `longshot_vk.so`), with Eden's shader recompiler and sirit |
 | `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the Windows exe falls back to when it was built with wgpu-native, its op stream (`rx_nvn.h`), suyu's decoders |
 | `builder/` | Longshot Builder, command-line only (players use the Longshot Launcher): the Windows `--cli` program (.NET 8), its setup (also a game folder's `longshot.exe`), and the Linux AppImage's `AppRun`, tools and game folder scripts |
-| `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), release tooling, `scripts/linux` (dependencies, AppImage) |
+| `scripts/` | test runs, the profile and log readers, the save copier (`longshot_saves.py`), release tooling, `scripts/linux` (dependencies, AppImage) |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | a64-kit (with Hookshot's changes, marked `(hookshot)`, and Longshot's, `(longshot)`: its PROVENANCE.md), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |
 

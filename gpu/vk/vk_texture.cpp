@@ -966,14 +966,25 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
     return scratch.data();
 }
 
-void widen_rows(uint8_t* dst, const uint8_t* src, size_t texels, int from, int to) {
-    const int comp = from / 3;
+/// The alpha an RGB format widened to RGBA gets: one in the format's own encoding (by component size alone, SNORM8 read
+/// -0.008, UNORM16 0.23 and the integer formats 255, 15360 or 0x3F800000)
+uint32_t widen_alpha(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8_SNORM: return 0x7F;
+    case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R16G16B16_UINT:
+    case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32_SINT: return 1;
+    case VK_FORMAT_R16G16B16_SFLOAT: return 0x3C00;
+    case VK_FORMAT_R16G16B16_UNORM: return 0xFFFF;
+    case VK_FORMAT_R16G16B16_SNORM: return 0x7FFF;
+    case VK_FORMAT_R32G32B32_SFLOAT: return 0x3F800000;
+    default: return 0xFF;
+    }
+}
+void widen_rows(uint8_t* dst, const uint8_t* src, size_t texels, int from, int to, uint32_t alpha) {
+    const int n = to - from;
     for (size_t i = 0; i < texels; i++) {
         std::memcpy(dst + i * to, src + i * from, from);
-        uint8_t* a = dst + i * to + from;
-        if (comp == 1) a[0] = 0xFF;
-        else if (comp == 2) a[0] = 0x00, a[1] = 0x3C;   // (half 1.0; UNORM16 would want 0xFFFF: close enough for alpha)
-        else { const float one = 1.0f; std::memcpy(a, &one, 4); }
+        std::memcpy(dst + i * to + from, &alpha, n);   // (little endian: the low n bytes)
     }
 }
 
@@ -1020,7 +1031,15 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         if (overlaps(dirty, (uint64_t)layer * layer_size + tail0, (uint64_t)(layer + 1) * layer_size)) layers.push_back(layer);
     if (layers.empty()) return true;
     const bool all = layers.size() == tex.layers;
-    const Staging s = staging(tail * layers.size(), std::max<uint64_t>(256, dev.props.limits.minStorageBufferOffsetAlignment));
+    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    // (each layer staged at an aligned pitch: at k * tail, a layer's storage buffer offset could miss
+    // minStorageBufferOffsetAlignment, VUID-VkWriteDescriptorSet-descriptorType-00328)
+    const uint64_t pitch = (tail + align - 1) / align * align;
+    if (pitch > UINT32_MAX) {
+        astc_fail = "its layout";
+        return false;
+    }
+    const Staging s = staging(pitch * layers.size(), std::max<uint64_t>(256, align));
     if (!s.buffer) {
         astc_fail = "no staging memory for its ASTC blocks";
         return false;
@@ -1028,16 +1047,16 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     std::vector<uint8_t> scratch;
     for (size_t k = 0; k < layers.size(); k++) {
         const uint64_t at = (uint64_t)layers[k] * layer_size + tail0;
-        if (at >= total) continue;
-        const uint64_t n = std::min(tail, total - at);
-        std::memcpy(s.data + k * tail, guest_bytes(tex.gpu + at, n, scratch), n);
+        const uint64_t n = at < total ? std::min(tail, total - at) : 0;
+        if (n) std::memcpy(s.data + k * pitch, guest_bytes(tex.gpu + at, n, scratch), n);
+        if (n < pitch) std::memset(s.data + k * pitch + n, 0, pitch - n);   // (zeros past the guest's bytes, not the staging's old ones)
     }
-    const uint64_t staged = tail * layers.size();
+    const uint64_t staged = pitch * layers.size();
     flush_mapped_range(s.allocation, s.offset, staged);   // (encoded blocks read by the GPU decoder, not necessarily coherent)
     st_bytes += (int64_t)staged;
     VkCommandBuffer cmd = upload_cmd();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    descriptors_disturbed();   // (the next draw or dispatch binds its own pipeline and descriptors again)
     if (tex.bc) {   // (decoded into the scratch a run of consecutive layers at a time, re-encoded, copied in)
         if (!bc_scratch_layout(cmd, tex.bc_resized)) {
             astc_fail = "no memory for the BC3 scratch";
@@ -1051,7 +1070,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             // (longshot-amd: a resized BC3 image: the level decodes at the game's size, g.w x g.h, and is encoded at iw x ih)
             AstcPush pc{};
             pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-            pc.layer_stride = (uint32_t)tail;
+            pc.layer_stride = (uint32_t)pitch;
             const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
             pc.x_shift = 9 + g.tile_h + g.tile_d;
             pc.block_size = gobs_x << pc.x_shift;
@@ -1068,7 +1087,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 while (k1 < layers.size() && k1 - k0 < run && layers[k1] == layers[k1 - 1] + 1) k1++;
                 const uint32_t n = (uint32_t)(k1 - k0);
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-                const uint64_t from = k0 * tail + off;
+                const uint64_t from = k0 * pitch + off;
                 VkDescriptorBufferInfo bi{s.buffer, s.offset + from, staged - from};
                 VkDescriptorImageInfo ii{VK_NULL_HANDLE, bc_scratch_view, VK_IMAGE_LAYOUT_GENERAL};
                 VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -1095,7 +1114,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         if (g.offset < tail0 || off >= tail || (off % align)) continue;
         AstcPush pc{};
         pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-        pc.layer_stride = (uint32_t)tail;
+        pc.layer_stride = (uint32_t)pitch;
         const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
         pc.x_shift = 9 + g.tile_h + g.tile_d;
         pc.block_size = gobs_x << pc.x_shift;
@@ -1108,7 +1127,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 astc_fail = "no view of a level";
                 return false;
             }
-            const uint64_t from = (all ? 0 : k * tail) + off;
+            const uint64_t from = (all ? 0 : k * pitch) + off;
             VkDescriptorBufferInfo bi{s.buffer, s.offset + from, staged - from};
             VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -1180,7 +1199,8 @@ bool unswizzle_ready() {
 
 /// The whole texture (every level and layer dirty overlaps) unswizzled on the GPU; false: not a texture for it
 bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
-    if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
+    // (not a sparse image: nothing here binds its blocks, and a store into an unbound one is dropped)
+    if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || tex.sparse || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
         is_bc(tex.format) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
         return false;
     if (total < (8u << 20) || tex.block_w != 1 || tex.block_h != 1) return false;
@@ -1210,6 +1230,7 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, unsw_pipe);
+    descriptors_disturbed();   // (also when a view fails and the CPU path takes over)
     for (uint32_t level = 0; level < tex.levels; level++) {
         const LevelGeo g = level_geo(tex, level);
         bool any = false;
@@ -1246,7 +1267,6 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         st_bytes += (int64_t)g.swizzled * tex.layers;
     }
     full_barrier(cmd);
-    descriptors_disturbed();
     return true;
 }
 
@@ -1534,8 +1554,11 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
     const uint64_t total = tex.guest_size;
     if (!total || (total > (1ull << 31) && !tex.sparse)) return false;   // (a sparse image: only what holds texels)
     // (depth-stencil: the depth aspect only; packed D24S8 storage is not copied into it as is: such targets are
-    // rendered, not uploaded)
-    if (tex.aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return false;
+    // rendered, not uploaded. A DEPTH24_STENCIL8 kept as D32_SFLOAT_S8_UINT, vk_formats.cpp depth24_or_32, is: its
+    // words split into the depth's floats and the stencil's bytes, two copies)
+    const bool d24s8_as_d32 = tex.nvn_format == NVN_FORMAT_DEPTH24_STENCIL8 && tex.format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+                              tex.bpb == 4 && !tex.sparse;
+    if (tex.aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) && !d24s8_as_d32) return false;
     st_uploads++;
     {   // RX_VK_LOG_UPLOADS=<present>: the uploads from that present on (200 of them; what churns)
         static const int64_t from = getenv("RX_VK_LOG_UPLOADS") ? atoll(getenv("RX_VK_LOG_UPLOADS")) : -1;
@@ -1560,12 +1583,13 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
         return up_route = UP_GPU, true;
     const bool linear = nvn_tex_is_linear(&tex.d);
     int widen_from = 0;
-    widened(tex.d.format ? vk_format(tex.nvn_format).format : tex.format, &widen_from);
+    const VkFormat src_vf = tex.d.format ? vk_format(tex.nvn_format).format : tex.format;
+    widened(src_vf, &widen_from);
     if (upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
     const int src_bpb = tex.bpb;
     const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
     const uint32_t copy_layers = tex.type == VK_IMAGE_TYPE_3D ? 1 : tex.layers;
-    const VkImageAspectFlags aspect = tex.aspect;
+    const VkImageAspectFlags aspect = d24s8_as_d32 ? VK_IMAGE_ASPECT_DEPTH_BIT : tex.aspect;
     std::vector<VkBufferImageCopy> copies;
     std::vector<uint8_t> scratch, lin;
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -1607,7 +1631,9 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                 const uint64_t block_bytes = (uint64_t)g.tw * th * g.td * src_bpb;
                 const uint32_t px_h = std::min(g.h - y0 * (uint32_t)tex.block_h, th * (uint32_t)tex.block_h);
                 const uint64_t out_bytes = tex.astc ? (uint64_t)g.w * px_h * g.d * 4 : (uint64_t)g.tw * th * g.td * out_bpb;
-                const Staging st = staging((out_bytes + 15) & ~15ull, 16);
+                // (the stencil's bytes after the depth's floats, in the same staging: one byte a texel)
+                const uint64_t s_off = (out_bytes + 15) & ~15ull, s_bytes = d24s8_as_d32 ? out_bytes / 4 : 0;
+                const Staging st = staging(d24s8_as_d32 ? s_off + ((s_bytes + 15) & ~15ull) : (out_bytes + 15) & ~15ull, 16);
                 if (!st.buffer) {
                     // (the sparse binds queued by the rows before are this image's: bound now, not left in sparse_binds
                     // for the next flush, which binds them into another texture's image)
@@ -1709,7 +1735,26 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                                            (u32)tex.block_w, (u32)tex.block_h,
                                                            std::span<uint8_t>(out, (size_t)g.w * px_h * g.d * 4));
                 } else if (widen_from) {
-                    widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb);
+                    widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb, widen_alpha(src_vf));
+                } else if (tex.nvn_format == NVN_FORMAT_DEPTH24 && tex.format == VK_FORMAT_D32_SFLOAT) {
+                    // (DEPTH24 kept as D32_SFLOAT, vk_formats.cpp depth24_or_32: the guest's 24-bit unorm depth, the low
+                    // 24 bits of each word, as the float the image holds)
+                    for (uint64_t i = 0; i + 4 <= out_bytes; i += 4) {
+                        uint32_t v;
+                        std::memcpy(&v, out + i, 4);
+                        const float f = (float)(v & 0xffffffu) / 16777215.0f;
+                        std::memcpy(out + i, &f, 4);
+                    }
+                } else if (d24s8_as_d32) {
+                    // (the guest's words: depth in the low 24 bits, stencil in the top 8)
+                    uint8_t* sten = out + s_off;
+                    for (uint64_t i = 0; i + 4 <= out_bytes; i += 4) {
+                        uint32_t v;
+                        std::memcpy(&v, out + i, 4);
+                        const float f = (float)(v & 0xffffffu) / 16777215.0f;
+                        std::memcpy(out + i, &f, 4);
+                        sten[i / 4] = (uint8_t)(v >> 24);
+                    }
                 }
                 st_bytes += (int64_t)out_bytes;
                 // (a sparse image: only its blocks this holds texels other than zero get memory; the others read
@@ -1759,7 +1804,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                             }
                     if (!some) continue;
                 }
-                flush_mapped_range(st.allocation, st.offset, out_bytes);   // (all CPU conversion workers joined before publication)
+                flush_mapped_range(st.allocation, st.offset, d24s8_as_d32 ? s_off + s_bytes : out_bytes);   // (all CPU conversion workers joined before publication)
                 VkBufferImageCopy c{};
                 c.bufferOffset = st.offset;
                 c.bufferRowLength = tex.astc ? g.w : g.tw * tex.block_w;
@@ -1768,6 +1813,11 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                 c.imageOffset = {0, (int32_t)(y0 * (uint32_t)tex.block_h), 0};
                 c.imageExtent = {g.w, px_h, g.d};
                 copies.push_back(c);
+                if (d24s8_as_d32) {
+                    c.bufferOffset = st.offset + s_off;
+                    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+                    copies.push_back(c);
+                }
             }
         }
     }
@@ -2849,12 +2899,17 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
         case NVN_FORMAT_RGBX8: case NVN_FORMAT_RGBX8SN: case NVN_FORMAT_RGBX8UI: case NVN_FORMAT_RGBX8I:
         case NVN_FORMAT_RGBX16F: case NVN_FORMAT_RGBX16: case NVN_FORMAT_RGBX16SN: case NVN_FORMAT_RGBX16UI:
         case NVN_FORMAT_RGBX16I: case NVN_FORMAT_RGBX32F: case NVN_FORMAT_RGBX32UI: case NVN_FORMAT_RGBX32I:
-        case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_BGRX8: case NVN_FORMAT_BGRX8_SRGB:
+        case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_BGRX8: case NVN_FORMAT_BGRX8_SRGB: case NVN_FORMAT_BGR5:
+        case NVN_FORMAT_RGB5:
             for (unsigned& s : sw)
                 if (s == NVN_TEXTURE_SWIZZLE_A) s = NVN_TEXTURE_SWIZZLE_ONE;
             break;
         default: break;
         }
+        // (RGB5A1 and RGB5 have R in the low bits, their A1R5G5B5 image B; A1B5G5R5 with VK_KHR_maintenance5 needs no swap)
+        if ((nf == NVN_FORMAT_RGB5A1 || nf == NVN_FORMAT_RGB5) && !dev.maintenance5)
+            for (unsigned& s : sw)
+                s = s == NVN_TEXTURE_SWIZZLE_R ? NVN_TEXTURE_SWIZZLE_B : s == NVN_TEXTURE_SWIZZLE_B ? NVN_TEXTURE_SWIZZLE_R : s;
         static const bool swap_9e5 = env_on("RX_VK_9E5_SWAP");   // (longshot, diagnosis: R and B swapped)
         if (swap_9e5 && nf == NVN_FORMAT_RGB9E5F) std::swap(sw[0], sw[2]);
         cm = {component(sw[0]), component(sw[1]), component(sw[2]), component(sw[3])};
@@ -3039,8 +3094,11 @@ constexpr uint64_t kFlushMax = 16ull << 20;   // (the small ones: render targets
 std::mutex vw_mu;
 std::map<uint64_t, uint64_t> vw;   // (storage start -> end of the GPU-written textures of virtual pools that may be flushed)
 bool flushable(const Texture& t) {
+    // (a DEPTH24 kept as D32_SFLOAT, vk_formats.cpp: read back and converted to 24-bit unorm in flush_finish)
+    const bool d24_as_d32 = t.nvn_format == NVN_FORMAT_DEPTH24 && t.format == VK_FORMAT_D32_SFLOAT &&
+                            t.aspect == VK_IMAGE_ASPECT_DEPTH_BIT;
     if (!t.guest_size || t.guest_size > kFlushMax || t.astc || t.bc || t.sparse || t.skip ||
-        t.samples != VK_SAMPLE_COUNT_1_BIT || t.aspect != VK_IMAGE_ASPECT_COLOR_BIT || t.bpb <= 0 || !t.image ||
+        t.samples != VK_SAMPLE_COUNT_1_BIT || (t.aspect != VK_IMAGE_ASPECT_COLOR_BIT && !d24_as_d32) || t.bpb <= 0 || !t.image ||
         (nvn_tex_is_linear(&t.d) && (t.levels != 1 || t.type == VK_IMAGE_TYPE_3D)))   // (linear: one level, rows)
         return false;
     int from = 0;
@@ -3188,7 +3246,8 @@ bool flush_record(Flush& f, VkCommandBuffer cmd = VK_NULL_HANDLE) {
         r.bufferOffset = p.at;
         r.bufferRowLength = p.g.tw * (uint32_t)t.block_w;
         r.bufferImageHeight = p.g.th * (uint32_t)t.block_h;
-        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, p.level, t.type == VK_IMAGE_TYPE_3D ? 0 : p.layer, 1};
+        r.imageSubresource = {t.aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                              p.level, t.type == VK_IMAGE_TYPE_3D ? 0 : p.layer, 1};
         r.imageExtent = {p.g.w, p.g.h, p.g.d};
         c.push_back(r);
     }
@@ -3224,6 +3283,20 @@ bool flush_finish(Flush& f, bool gpu_ok) {
     void* map = f.map;
     bool ok = f.ok && gpu_ok;
     if (ok && !flush_uncached()) invalidate_mapped(f.alloc, total);
+    if (ok && t.nvn_format == NVN_FORMAT_DEPTH24 && t.format == VK_FORMAT_D32_SFLOAT) {
+        // (the floats back to the game's 24-bit unorm words, the inverse of upload's conversion; the top 8 bits, unused
+        // by DEPTH24, are zero)
+        for (const Part& p : parts) {
+            uint8_t* w = (uint8_t*)map + p.at;
+            for (uint64_t k = 0; k + 4 <= p.n; k += 4) {
+                float v;
+                std::memcpy(&v, w + k, 4);
+                v = v > 0.0f ? (v < 1.0f ? v : 1.0f) : 0.0f;   // (NaN to 0 too)
+                const uint32_t u = (uint32_t)(v * 16777215.0 + 0.5);   // (double: in float 1.0 rounds to 1 << 24)
+                std::memcpy(w + k, &u, 4);
+            }
+        }
+    }
     // (only_untouched: the memory as it is now, whatever the page generations know of it yet. The texels are staged
     // against this snapshot and go in at the end, compared with it word by word: publish below)
     std::vector<uint8_t> was, staged;
@@ -3814,9 +3887,13 @@ bool sparse_flush(Texture* tex) {
     {   // (bound before any work that writes the blocks is submitted: waited for here, on the recording thread. And
         // after the work submitted before is done: a sparse bind is not ordered with command buffers by their
         // barriers, and one that landed while a pass sampled the image changed what the pass read part-way through
-        // its tiles. Opt-in, RX_VK_SPARSE_IDLE=1: MKW binds hundreds of blocks a race, and the replay's stalls at
-        // each made its other races worse)
-        static const bool no_idle = !env_on("RX_VK_SPARSE_IDLE");
+        // its tiles. Opt-in elsewhere, RX_VK_SPARSE_IDLE=1: MKW binds hundreds of blocks a race, and the replay's
+        // stalls at each made its other races worse. On by default on AMD, whose sparse binds land while earlier
+        // passes still sample; RX_VK_SPARSE_IDLE=0 turns it off there)
+        static const bool no_idle = [] {
+            if (getenv("RX_VK_SPARSE_IDLE")) return !env_on("RX_VK_SPARSE_IDLE");
+            return dev.props.vendorID != 0x1002;
+        }();
         static int64_t binds;
         std::lock_guard qk(dev.present_mu);
         queue_flush_locked();

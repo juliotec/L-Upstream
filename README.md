@@ -327,7 +327,9 @@ line with the video memory in use against what the driver allows, and DLSS's det
 | **Other** | |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set. |
 
-Still stuck? [Report it](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) with the version, where you were in
+After a crash, at the start or in play, a window says what happened; its **Report** button copies a report (no saves or
+game files, your home folder and user name taken out) and opens the issue form, for you to paste it into. Still stuck?
+[Report it](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) with the version, where you were in
 the game, your graphics card, `longshot_log.txt` and a screenshot or video, and never game files. **Gameplay → Bug
 report** in the [in-game menu](#in-game-menu) gathers all of it in one press.
 
@@ -443,7 +445,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | HDR paper white | 80 to 400 nits, in steps of 10 (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits, in steps of 100 (while HDR is on) | 1000 nits |
 | | HDR contrast | 50% to 200% around mid grey, in steps of 5 (while HDR is on) | 100% |
-| | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native. DLSS/DLAA with their NVIDIA frame-generation inputs, and AMD FSR 4, can be tried with `RX_VK_PSYCHOV35_DLSS=1`; FSR 3.1, TAAU and Upscaler Off still fall back to the game's network) | Vanilla |
+| | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native). Compatible DLSS/DLAA, FSR 4/native AA and shared-chain FSR 3.1 upscaling run automatically; `RX_VK_PSYCHOV35_DLSS=0` disables that compatibility route. Off and the spatial/FXAA TAAU replacement support PsychoV35 directly. FSR 3.1 FG remains separately opt-in and 2x only; legacy own-input FSR upscaling remains unsupported | Vanilla |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | Threaded rendering | Auto, On, Off (after a restart). Auto is On with 12 or more processor threads for the game | Auto |

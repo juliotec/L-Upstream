@@ -798,8 +798,8 @@ bool fsr3_wanted() { return !fsr3_on_chain() && fsr3_chosen(); }
 // The chain's frame into the passes above: its colour (the network's input as it samples it), its depth reversed for FSR
 // (the chain's prep takes it so for an engine with fsr_depth), its motion toward the frame before in render pixels with the
 // skinned draws' own drawn over the camera's (vk_temporal.cpp actor_motion), and the jitter the host gave the camera. The
-// passes' picture (RGBA16F at the output size) is copied into the chain's output, which the chain squares back into the
-// network's output with dlss_out.comp, as fsr3_upscale's own last pass does.
+// passes' picture (RGBA16F at the output size) is copied into the chain's output. The existing perceptual path squares it
+// into the network's packed output; PsychoV35's linear HDR path writes it unchanged into matching RGBA16F output.
 namespace {
 struct ChainState {
     std::chrono::steady_clock::time_point last{};
@@ -865,12 +865,18 @@ bool chain_evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
 }
 void chain_release() { fsr3::release(); }   // (the passes stay; their images are made again when FSR 3.1 draws next)
 uint64_t chain_memory() { return fsr3::memory(); }   // (its internal images, for the chain's status line)
+// The vendored passes are already compiled with HDR_COLOR_INPUT=1. Only PsychoV35 opts into
+// the chain's linear HDR preparation/output; keep Vanilla's existing perceptual path unchanged.
+bool chain_hdr() {
+    static const bool enabled = upscaler_rows::psychov35_compatibility(env_switch("RX_VK_PSYCHOV35_DLSS"));
+    return enabled && scene_tonemap_on();
+}
 // (fsr_depth: its passes are built with FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH, scripts/fsr3_shaders.py; retry: an
 // evaluation that fails (no room for its constants in the frame's stream) leaves that frame to the network, and the next one
 // tries again. Named, so a field added to TemporalEngine cannot shift these into another)
 const TemporalEngine kChainEngine{.name = "AMD FSR 3.1", .short_name = "FSR 3.1", .start = chain_start,
                                   .prepare = chain_prepare, .evaluate = chain_evaluate, .release = chain_release,
-                                  .memory = chain_memory, .fsr_depth = true, .retry = true};
+                                  .memory = chain_memory, .hdr = chain_hdr, .fsr_depth = true, .retry = true};
 } // namespace
 
 const TemporalEngine* fsr3_engine() { return &kChainEngine; }
@@ -880,10 +886,10 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     const bool upscaling = fsr3_wanted();
     if (!upscaling && !fsr3_inputs::wanted()) return false;
     if (!in || !in_view || !out || !out_view) return false;
+    if (!fsr3_inputs::colour_pair(in->format, out->format)) return false;
     // (another network of the upscale's shape, as temporal_upscale takes them: only the scene into the picture. The gameplay
     // networks sample the scene's B10G11R11 colour and write the B10G11R11 picture)
-    if (!known && (in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
-                   (out->width >> out_level) <= in->width || !fsr3_inputs::is_scene(in)))
+    if (!known && ((out->width >> out_level) <= in->width || !fsr3_inputs::is_scene(in)))
         return false;
     fsr3_inputs::Frame f;
     if (!fsr3_inputs::prepare(cmd, in, in_view, f)) return upscaling ? fail("its inputs could not be made") : false;

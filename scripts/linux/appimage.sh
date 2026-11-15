@@ -94,6 +94,13 @@ cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/lice
 cp third_party/fidelityfx/LICENSE.md third_party/fidelityfx/PROVENANCE.md "$T/licenses/fidelityfx/"   # (with AMD FSR 4)
 # ---- end of the licences ----
 
+# ---- the third-party code's objects, compiled here with the build tools every player's build uses (tools.lock's clang,
+# sysroot and CPM headers), so a player's build links them instead of compiling them: Eden's shader recompiler, sirit, Dear
+# ImGui, zstd, libopus. Their sources are in the image too (above); nothing of the game's, and none of the renderer's own
+# files, which every build compiles. A build whose keys differ (another compiler, other headers, another CPU level) compiles
+# them as before (nx2/third_party_objects.py); scripts/linux/check_player_build.sh checks that a player's build finds them all ----
+LONGSHOT_SYSROOT=$S "$PY" -I -B nx2/third_party_objects.py make "$T/third_party_objects" --jobs "$(nproc)"
+
 # ---- check: tools.lock's compiler builds and links a program against its sysroot, and it runs ----
 cat > "$B/t.c" <<'EOF'
 #include <pthread.h>

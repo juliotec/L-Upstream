@@ -39,9 +39,10 @@ Session storage prevents an immediate repeat across reloads in the same tab when
 available. Blocked storage still allows a random line; no JavaScript keeps the
 original “Slightly emotional beans.” There is no timed rotation or animation.
 
-At narrower widths the main links use an Explore Longshot disclosure, including a
-no-JavaScript fallback. With JavaScript, Escape, an outside click or choosing a link
-closes it. Shared-memory GPUs have a separate checker choice; their memory remains
+On mobile, guide pages use Starlight's hamburger sidebar without a duplicate Menu
+button. Pages without a sidebar, including the home page, use a hamburger disclosure
+for the main links, including a no-JavaScript fallback. With JavaScript, Escape, an
+outside click or choosing a link closes it. Shared-memory GPUs have a separate checker choice; their memory remains
 a caution rather than being compared to dedicated VRAM. GPU changes update the
 automatic choice until the user chooses a memory type themselves; Reset restores it.
 

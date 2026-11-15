@@ -126,11 +126,21 @@ jobs:
           --runtime win-x64 -p:EnableWindowsTargeting=true
           -p:Version="$VERSION" -p:NuGetAudit=false --output "$RUNNER_TEMP/publish"
 
+      # (the third-party code's objects a player's build links instead of compiling (nx2/third_party_objects.py): made with
+      # what a player's build compiles them with, llvm-mingw's same release and tools.lock's cpm (the Vulkan, SPIR-V and VMA
+      # headers) and wgpu-native (the WebGPU renderer's suyu code). Found by their keys alone: a set that does not fit is not used)
+      - name: The third-party objects
+        run: |
+          python -I scripts/tools.py install "$RUNNER_TEMP/win-tools" --system windows-x64 --only cpm wgpu-native --cache "$RUNNER_TEMP/tools-cache"
+          W="$RUNNER_TEMP/win-tools/LongshotBuilder/tools"
+          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" RX_CPM="$W/cpm" WGPU_NATIVE="$W/wgpu-native" \
+            python -I -B nx2/third_party_objects.py make "$RUNNER_TEMP/third_party_objects" --jobs "$(nproc)"
       # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
       - name: Package folder
         run: >-
           python -I scripts/builder_package.py package "$RUNNER_TEMP/package"
           --publish "$RUNNER_TEMP/publish" --setup "$RUNNER_TEMP/LongshotBuilder-Setup.exe"
+          --third-party-objects "$RUNNER_TEMP/third_party_objects"
       # (the release's file: the setup as LongshotBuilder.exe, the package, tools.lock, VERSION and recomplauncher.json)
       - name: The zip
         run: |

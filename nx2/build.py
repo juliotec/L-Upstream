@@ -47,6 +47,7 @@ import logo_rgba
 import object_store
 import ui_fonts
 import toolchain
+import third_party_objects
 import translator_files
 import version
 import win_manifest
@@ -249,12 +250,13 @@ def vk_sources():
     return sorted(out)
 
 
-def zstd_jobs(cc, flags, obj_dir, prefix):
+def zstd_jobs(cc, flags, obj_dir, prefix, extra=b""):
     """zstd's decoder (third_party/zstd, plain C) as compile jobs, objects <prefix><name>.o: in the Vulkan back end (the game's
     fonts, vk_imgui.cpp) and in the runtime (a mod's resource size table, host/prompts.c)"""
     deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (ZSTD, os.path.join(ZSTD, "common"), os.path.join(ZSTD, "decompress"))
                     for f in sorted(os.listdir(d)) if f.endswith(".h"))
-    return [(cc, os.path.join(ZSTD, *f.split("/")), os.path.join(obj_dir, prefix + os.path.basename(f)[:-2] + ".o"), flags, deps)
+    return [(cc, os.path.join(ZSTD, *f.split("/")), os.path.join(obj_dir, prefix + os.path.basename(f)[:-2] + ".o"), flags,
+             deps + extra)
             for f in ("common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c",
                       "common/xxhash.c", "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c",
                       "decompress/zstd_decompress.c", "decompress/zstd_decompress_block.c")]
@@ -669,6 +671,11 @@ if MARCH == "native" and not _native:
 if _native:
     print("build: the game is built for this PC's CPU (%s)" % _native, flush=True)
     CPU += ["-DLONGSHOT_NATIVE_CPU=" + _native]
+# The third-party code (nx2/third_party_objects.py SOURCES: Eden's recompiler, sirit, Dear ImGui, zstd, libopus) is built for
+# x86-64-v3 on every CPU that has it, not -march=native: the release ships it compiled for that level, so a player's build
+# links it instead of compiling it (its keys name no CPU). A CPU below v3, or an RX_MARCH, builds it as the rest
+THIRD_PARTY_CPU = ["-march=x86-64-v3", "-ffp-contract=off"] if not os.environ.get("RX_MARCH") and MARCH in ("native", "x86-64-v3") \
+    else list(CPU)
 OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
 
 
@@ -1036,6 +1043,9 @@ def main():
     # (CI: a player's build started from the tree the AppImage carries, with no game. Everything up to the compile, without the
     # lift's files; every other file the compile would read must be there, and nothing is compiled. scripts/linux/check_player_build.sh)
     p.add_argument("--dry-run", action="store_true")
+    # (the release: the third-party code's objects only, into this folder with their manifest, and nothing linked. No game
+    # needed: nx2/third_party_objects.py make runs it)
+    p.add_argument("--third-party-objects", metavar="OUT", help=argparse.SUPPRESS)
     p.add_argument("--kept-lift", metavar="LIST", help="(make_game.py) the lifted C was let go after the last build: its objects "
                    "by this list (KEPT_LIST); exit status KEPT_STALE when it no longer fits")
     a = p.parse_args()
@@ -1046,10 +1056,13 @@ def main():
     gen_dir = os.path.join(out, "gen")   # (the logo and the fonts the Vulkan back end compiles in: made with it, below)
     os.makedirs(obj_dir, exist_ok=True)
     load_hashes(out)
-    if kit.env_on("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
+    if kit.env_on("RX_VK_ONLY") or a.dry_run or a.third_party_objects:   # (the Vulkan back end needs no game: built so with no lift)
         os.makedirs(gen, exist_ok=True)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
+    # (the third-party objects' keys hold the compiler and the headers outside the tree as well: nx2/third_party_objects.py stamp)
+    tp_stamp = third_party_objects.stamp(cc, toolchain.find("clang++"), target(), THIRD_PARTY_CPU, vulkan_headers())
+    tp_deps = b"third-party " + tp_stamp.encode()
     fl = flags(gen, rt64, OPT, True) + (["-DA64_POLL_CTX"] if a.dll else [])   # (the shim's poll takes the context: rtgen.py)
     # (which Longshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
     # release name rebuilds them and nothing else)
@@ -1093,7 +1106,7 @@ def main():
         srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     if kit.env_on("RX_VK_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
-    if a.dry_run:   # (the lift's files: there is no game here)
+    if a.dry_run or a.third_party_objects:   # (the lift's files: there is no game here)
         srcs = [s for s in srcs if os.path.dirname(s) != gen]
     # the longest first, so the long ones do not end up alone at the end (compile_cost)
     costs = chunk_costs(gen)
@@ -1165,16 +1178,17 @@ def main():
     # (longshot: built for the same CPU target as the rest (CPU), so its float code can be vectorized where the target has
     # AVX2: the vendored copy has no x86 intrinsics files of its own)
     if host_srcs:
-        oflags = target() + CPU + ["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA",
+        oflags = target() + THIRD_PARTY_CPU + ["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA",
                                               "-DHAVE_LRINTF", "-DHAVE_LRINT"] +             ["-I" + os.path.join(OPUS, d) for d in ("include", "celt", "silk", "silk/float", "src")]
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
-                         oflags, b"opus-1.5.2"))
+                         oflags, b"opus-1.5.2" + tp_deps))
     # zstd's decoder (as in the Vulkan back end): host/prompts.c reads a mod's resource size table to merge the prompts' into it,
     # host/hos_zstd.c decodes the game's streams with it (HOS_NATIVE_ZSTD)
     if host_srcs:
-        jobs += zstd_jobs(cc, target() + CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
-                                                "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"], obj_dir, "zstd_")
+        jobs += zstd_jobs(cc, target() + THIRD_PARTY_CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
+                                                            "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"], obj_dir, "zstd_",
+                          tp_deps)
     # the renderer (C++20, NDEBUG: no asserts in it or suyu), when a wgpu-native release is there
     wgpu = a.standalone and not LINUX and os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
     if a.standalone and not wgpu and not LINUX:
@@ -1188,7 +1202,9 @@ def main():
         gdeps = tree_headers(GPU, HOST, skip=("vk",)) + open(os.path.join(WGPU, "include", "webgpu", "webgpu.h"), "rb").read()
         for src in gpu_sources():
             name = os.path.relpath(src, GPU).replace(os.sep, "_")[:-4]
-            jobs.append((cxx, src, os.path.join(obj_dir, "gpu_" + name + ".o"), gflags, gdeps))
+            # (suyu's recompiler and texture code are third-party: nx2/third_party_objects.py; the renderer itself is not)
+            jobs.append((cxx, src, os.path.join(obj_dir, "gpu_" + name + ".o"), gflags,
+                         gdeps + tp_deps if third_party_objects.is_third_party(src) else gdeps))
     # the Vulkan back end, a DLL of its own (RX_BACKEND=vulkan): CPM cache, LONGSHOT_*_HEADERS, or system includes
     vk_jobs = []
     vk_headers, spirv_headers, vma_headers = vulkan_headers()
@@ -1233,6 +1249,9 @@ def main():
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include"),
             "-I" + vk, "-I" + gen_dir,
             "-I" + os.path.join(kit.ROOT, "third_party", "zbic")]
+        # (the third-party parts' flags: the same, at THIRD_PARTY_CPU, and without the release's define, which none of them
+        # reads, so a set made for players fits a developer's build too)
+        tp_vflags = target() + THIRD_PARTY_CPU + [f for f in vflags[len(target()) + len(CPU):] if f != "-DLONGSHOT_RELEASE"]
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DLONGSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
@@ -1261,7 +1280,8 @@ def main():
         imgui_users = ("vk_imgui.cpp", "vk_menu.cpp")
         for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
             vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
-                            os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), vflags + imgui_flags, imgui_deps))
+                            os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), tp_vflags + imgui_flags,
+                            imgui_deps + tp_deps))
         # (zstd's decoder and encoder: third_party/zbic's single file, built below with the program cache's zstd; it serves
         # the game's font files too, so the decompression-only third_party/zstd is not built as well)
         # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
@@ -1287,13 +1307,13 @@ def main():
             name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
-                            vflags + ([] if lib else vk_pgo_flags) +
+                            (tp_vflags if lib else vflags + vk_pgo_flags) +
                             ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
-                            vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
+                            vk_lib_deps + tp_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
                             (imgui_deps if os.path.basename(src) in imgui_users else b"")))
         # (longshot) the program cache's zstd compression (RX_VK_PROGRAM_CACHE_ZSTD): third_party/zbic's single-file
@@ -1301,8 +1321,8 @@ def main():
         zstd_src = os.path.join(kit.ROOT, "third_party", "zbic", "zstd.c")
         zstd_deps = b"".join(open(os.path.join(zbic, f), "rb").read() for f in ("zstd.h", "zstd_errors.h"))
         vk_jobs.append((cc, zstd_src, os.path.join(obj_dir, "vk_zstd.o"),
-                        target() + CPU + (["-fPIC"] if LINUX else []) +
-                        ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden", "-I" + zbic], zstd_deps))
+                        target() + THIRD_PARTY_CPU + (["-fPIC"] if LINUX else []) +
+                        ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden", "-I" + zbic], zstd_deps + tp_deps))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
             # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)
@@ -1323,12 +1343,33 @@ def main():
     vk_only = kit.env_on("RX_VK_ONLY")   # (the renderer alone, the game's objects as they are)
     if vk_only:
         jobs = list(vk_jobs)
+    # (the third-party code's objects the release compiled: into the object cache by their keys, so compile_one links them.
+    # Only an object of the same key is taken, which a set made with other sources, flags, compiler or headers does not have:
+    # nx2/third_party_objects.py)
+    tp_jobs = [j for j in jobs if j[4].endswith(tp_deps) and third_party_objects.is_third_party(j[1])]
+    tp_folder = None if a.third_party_objects else third_party_objects.folder()
+    if a.third_party_objects:
+        if not tp_stamp:
+            print("the compiler did not preprocess the probe (nx2/third_party_objects.py stamp): no set made", flush=True)
+            return 1
+        jobs = tp_jobs
     if a.dry_run:   # (the compile starts here: what it would read, said and checked, and nothing compiled)
         missing = sorted({j[1] for j in jobs if not os.path.isfile(j[1])})
         print("dry run: %d files to compile besides the lift's, %d missing" % (len(jobs), len(missing)), flush=True)
         for f in missing:
             print("    missing: " + f)
+        if tp_jobs and tp_folder and os.path.isdir(tp_folder):
+            held = third_party_objects.matching(tp_folder, [key_of(j[1], j[3], j[4]) for j in tp_jobs if os.path.isfile(j[1])])
+            print("dry run: the third-party objects: %d of %d in %s" % (len(held), len(tp_jobs), tp_folder), flush=True)
         return 1 if missing else 0
+    if tp_jobs and tp_folder and os.path.isdir(tp_folder):
+        for _, src, obj, tfl, tdeps in tp_jobs:
+            PLANNED.setdefault((src, obj), key_of(src, tfl, tdeps))
+        copied, held, made = third_party_objects.fetch(tp_folder, OBJ_CACHE, [PLANNED[(j[1], j[2])] for j in tp_jobs])
+        print("the third-party objects: %d of %d from %s (%d copied)%s" % (
+            held, len(tp_jobs), tp_folder, copied,
+            "" if held or made is None or made == tp_stamp else
+            ": made with another compiler or other headers, compiled here instead"), flush=True)
     # (the builder's compile timer: LONGSHOT_TIMES is make_game.py's record of the earlier builds on this PC. With it,
     # this run says which files it really rebuilds and how long each took before, and the builder shows the rest of the
     # compile as a countdown that follows this PC's own measurements. Run by hand, it prints none of these lines.)
@@ -1393,6 +1434,11 @@ def main():
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
     if still:
         return 1
+    if a.third_party_objects:   # (the release's set: these objects and their keys, nothing linked)
+        made = third_party_objects.write(a.third_party_objects, [(PLANNED[(j[1], j[2])], j[2], j[1]) for j in jobs], tp_stamp)
+        print("the third-party objects: %d in %s (%d MB), stamp %s" % (
+            len(made), a.third_party_objects, sum(e["size"] for e in made.values()) >> 20, tp_stamp[:16]), flush=True)
+        return 0
     if OBJ_STORE:
         print("object store: %d new objects to it" % object_store.share(OBJ_CACHE, OBJ_STORE), flush=True)
     if a.standalone and not vk_only:
