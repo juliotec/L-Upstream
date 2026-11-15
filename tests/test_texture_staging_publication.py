@@ -30,9 +30,13 @@ def main():
     start = tex.index(marker)
     actual += "\n" + tex[start:tex.index(";", start) + 1] + "\n"
     # The actual gather, publication and command-buffer request. Decoder shaders are outside this cache fixture.
-    stop = astc.index("    const uint64_t align =", astc.index("    const uint64_t staged ="))
-    astc = astc[:stop].replace("    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);", "    consume(cmd);")
-    actual += "\n" + astc + "    (void)all; return true;\n}\n"
+    stop = astc.index("    if (tex.bc) {", astc.index("    const uint64_t staged ="))
+    bind = "    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);\n"
+    # The decoder's own pipeline and push descriptors replace the draw's: the next draw or dispatch must bind its again.
+    assert astc[:stop].count(bind + "    descriptors_disturbed();") == 1, "upload_astc_gpu does not call descriptors_disturbed after binding astc_pipe"
+    astc = astc[:stop].replace(bind, "    consume(cmd);\n")
+    astc = "".join(line for line in astc.splitlines(True) if not line.startswith("    descriptors_disturbed();"))
+    actual += "\n" + astc + "    (void)all; (void)align; return true;\n}\n"
     cpu = block(tex, "bool upload_inner(Texture& tex, const Ranges* dirty) {")
     start = cpu.index("                    if (!some) continue;")
     start = cpu.index("\n", start) + 1
@@ -51,7 +55,7 @@ def main():
                         str(cpp), "-o", str(exe)], check=True)
         for cache in ["coherent", "noncoherent"]:
             for case in ["cpu", "astc", "atom", "reuse", "multiple", "failure", "empty-range",
-                         "small-fallback", "unmapped-fallback", "unmapped-both", "fallback-astc", "fallback-reuse"]:
+                         "small-fallback", "unmapped-fallback", "unmapped-both", "fallback-astc", "fallback-reuse", "astc-pitch"]:
                 subprocess.run([str(exe), case, cache], check=True, timeout=15)
 
 
