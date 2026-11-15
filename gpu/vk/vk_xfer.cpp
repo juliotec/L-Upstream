@@ -10,6 +10,7 @@
 #include "vk_draw.h"   // (end_pass: a pass cannot stay open across a transfer)
 #include "vk_texture.h"
 #include "vk_gprof.h"
+#include "shaders/d32_to_d24_comp_spv.h"
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "longshot_env.h"
 #endif
@@ -167,6 +168,49 @@ bool size_compatible(const Sub& a, const Sub& b) {
     return a.bpb == b.bpb && a.bw == b.bw && a.bh == b.bh;
 }
 
+/// (shaders/d32_to_d24.comp) A DEPTH24 texture kept as D32_SFLOAT copied to a buffer: its floats turned in place into
+/// the 24-bit unorm words the game reads. Made the first time it is needed
+struct D32ToD24Push {
+    uint64_t base;
+    uint32_t width, height, row, layer;
+};
+void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const VkBufferImageCopy& c) {
+    static VkPipelineLayout layout = VK_NULL_HANDLE;
+    static const VkPipeline pipe = [] {
+        VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(D32ToD24Push)};
+        VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        li.pushConstantRangeCount = 1, li.pPushConstantRanges = &pr;
+        if (vkCreatePipelineLayout(dev.device, &li, nullptr, &layout) != VK_SUCCESS) return VkPipeline(VK_NULL_HANDLE);
+        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mi.codeSize = sizeof D32_TO_D24_COMP_SPV, mi.pCode = D32_TO_D24_COMP_SPV;
+        VkShaderModule mod = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(dev.device, &mi, nullptr, &mod) != VK_SUCCESS) return VkPipeline(VK_NULL_HANDLE);
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT, ci.stage.module = mod, ci.stage.pName = "main";
+        ci.layout = layout;
+        VkPipeline p = VK_NULL_HANDLE;
+        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &p) != VK_SUCCESS) p = VK_NULL_HANDLE;
+        vkDestroyShaderModule(dev.device, mod, nullptr);
+        return p;
+    }();
+    if (!pipe || !span.address) {
+        warn(11, "DEPTH24 (D32_SFLOAT) copied to a buffer: no conversion pipeline, floats left");
+        return;
+    }
+    warn(11, "DEPTH24 (D32_SFLOAT) copied to a buffer: converted to 24-bit unorm on the GPU");
+    full_barrier(cmd);
+    D32ToD24Push pc{};
+    pc.base = span.address;
+    pc.width = s.w, pc.height = s.h;
+    pc.row = c.bufferRowLength;
+    pc.layer = c.bufferRowLength * c.bufferImageHeight;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+    vkCmdDispatch(cmd, (s.w + 7) / 8, (s.h + 7) / 8, s.layers * s.d);
+    descriptors_disturbed();
+}
+
 } // namespace
 
 void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to_image) {
@@ -174,6 +218,13 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
     // copied on the GPU: the buffer may hold what the GPU wrote this submission (not yet in guest memory), and the image
     // it fills is kept (texture_frame: a texture the GPU filled once is not evicted))
     const bool astc = to_image && p.tex && vk_format(view_nvn_format(p.tex, p.has_view ? &p.view : nullptr)).astc;
+    // (DEPTH24 kept as D32_SFLOAT, vk_formats.cpp: the buffer's 24-bit unorm words go through the texture's storage,
+    // whose upload converts them to floats; to a buffer, d32_to_d24 turns the floats back)
+    const bool d24_as_d32 = p.tex && p.tex->d.format == NVN_FORMAT_DEPTH24 &&
+                            vk_format(NVN_FORMAT_DEPTH24).format == VK_FORMAT_D32_SFLOAT;
+    // (DEPTH24_STENCIL8 kept as D32_SFLOAT_S8_UINT: its depth aspect copied to a buffer is turned back the same way)
+    const bool d24s8_as_d32 = !to_image && p.tex && p.tex->d.format == NVN_FORMAT_DEPTH24_STENCIL8 &&
+                              vk_format(NVN_FORMAT_DEPTH24_STENCIL8).format == VK_FORMAT_D32_SFLOAT_S8_UINT;
     if (to_image && p.tex) {   // (RX_VK_LOG_BIG_COPY)
         if (Texture* t = texture_get(p.tex, false))
             log_big_copy(!astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
@@ -194,7 +245,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
                  p.r.yoffset, st.copy_stride);
         }
     }
-    if (astc) {
+    if (to_image && p.tex && (astc || d24_as_d32)) {
         uint64_t avail = 0;
         const uint8_t* src = host->gpu_ptr(p.buf, &avail);
         if (src && !texels_fit(p.tex, &p.r, st.copy_stride > 0 ? (uint64_t)st.copy_stride : 0, avail)) {
@@ -207,7 +258,11 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
                                 st.copy_stride > 0 ? (uint64_t)st.copy_stride : 0, 0, true);
             return;
         }
-        return;   // (no CPU access to the buffer: nothing to decode from)
+        if (astc) return;   // (others without CPU access to the buffer: on the GPU, below)
+        if (d24_as_d32) {
+            warn(12, "copy of an unmapped buffer into a DEPTH24 texture kept as D32_SFLOAT: skipped");
+            return;
+        }
     }
     Sub s;
     if (!resolve(p.tex, &p.view, p.has_view != 0, p.r, s)) return;
@@ -232,6 +287,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
         texture_written(s.tex, "a buffer-to-texture copy");
     } else {
         vkCmdCopyImageToBuffer(cmd, s.tex->image, VK_IMAGE_LAYOUT_GENERAL, span.buffer, 1, &c);
+        if (d24_as_d32 || d24s8_as_d32) d32_to_d24(cmd, s, span, c);
         const uint64_t guest = host->gpu_guest(p.buf);
         if (guest) memory_stamp_gpu(guest, size);   // (textures over that memory are uploaded again)
         texture_gpu_wrote(p.buf, size);           // (and once the copy is done: the stamp came before it ran)
