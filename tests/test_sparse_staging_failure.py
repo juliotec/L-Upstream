@@ -22,7 +22,7 @@ def main():
         raise SystemExit("upload_inner no longer queues sparse binds: this test needs updating")
     queued = body.index("texture_resident_queue(&tex")
     # (every return false after the first staging call can leave binds queued by the rows before)
-    loop = body[body.index("const Staging st = staging((out_bytes"):queued]
+    loop = body[body.index("const Staging st = staging("):queued]
     at = 0
     while True:
         at = loop.find("return false;", at)
