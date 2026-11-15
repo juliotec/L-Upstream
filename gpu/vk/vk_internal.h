@@ -77,6 +77,7 @@ struct Device {
          view_2d_of_3d = false, // (VK_EXT_image_2d_view_of_3d: a 3D texture a 2D sample instruction reads)
          memory_priority = false, // (VK_EXT_memory_priority with its feature, asked for by RX_VK_MEMORY_PRIORITY: vk_vma.cpp)
          coop_matrix = false,   // (VK_KHR_cooperative_matrix with its feature)
+         depth_bias_control = false, // (VK_EXT_depth_bias_control: a D24 kept as D32 biased in D24 units)
          native_mma = false;    // (HMMA on it: the cooperative matrix test passed, vk_coopmat.cpp)
     bool float_atomic_add = false;   // (longshot) VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd: the translator's float adds
     bool eds3_polygon = false, eds3_clamp = false, eds3_blend = false, eds3_a2c = false;
