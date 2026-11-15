@@ -3,10 +3,24 @@ name: team-chat
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: "post = send message; read = print the room's latest messages to the log"
+        required: false
+        type: choice
+        options:
+          - post
+          - read
+        default: post
       message:
-        description: "Text to post (several fixes in one message)"
-        required: true
+        description: "Text to post (several fixes in one message; empty for read)"
+        required: false
         type: string
+        default: ""
+      limit:
+        description: "read: how many messages (default 20)"
+        required: false
+        type: string
+        default: "20"
       room:
         description: "Room alias (empty = #agent-updates:magicbean.dev)"
         required: false
@@ -42,7 +56,20 @@ jobs:
           MATRIX_TOKEN: ${{ secrets.MATRIX_TOKEN }}
         run: printf '%s\n' "$MATRIX_TOKEN" | python3 -I scripts/team_chat.py login --access-token-stdin
 
+      - name: Read
+        if: inputs.action == 'read'
+        env:
+          ROOM: ${{ inputs.room }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          if [ -n "$ROOM" ]; then
+            python3 -I scripts/team_chat.py read --limit "${LIMIT:-20}" --room "$ROOM"
+          else
+            python3 -I scripts/team_chat.py read --limit "${LIMIT:-20}"
+          fi
+
       - name: Post
+        if: inputs.action != 'read'
         env:
           MESSAGE: ${{ inputs.message }}
           ROOM: ${{ inputs.room }}
@@ -60,7 +87,7 @@ jobs:
           [ -f "$f" ] && python3 -I -c "import json,sys; p=sys.argv[1]; c=json.load(open(p)); [c.pop(k,None) for k in ('access_token','device_id')]; json.dump(c,open(p,'w'))" "$f" || true
 
       - name: Save last post time
-        if: success()
+        if: success() && inputs.action != 'read'
         uses: actions/cache/save@v4
         with:
           path: .team-chat
