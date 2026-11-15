@@ -234,14 +234,19 @@ void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const 
         vkDestroyShaderModule(dev.device, mod, nullptr);
         return p;
     }();
-    if (!pipe || !span.address) {
+    // (gpu_buffer_bind gives no address: the written span is a pool's or its mirror's, both made with
+    // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vk_memory.cpp kUsage)
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = span.buffer;
+    const VkDeviceAddress base = pipe && span ? vkGetBufferDeviceAddress(dev.device, &da) : 0;
+    if (!base) {
         warn(11, "DEPTH24 (D32_SFLOAT) copied to a buffer: no conversion pipeline, floats left");
         return;
     }
     warn(11, "DEPTH24 (D32_SFLOAT) copied to a buffer: converted to 24-bit unorm on the GPU");
     full_barrier(cmd);
     D32ToD24Push pc{};
-    pc.base = span.address;
+    pc.base = base + span.offset;
     pc.width = s.w, pc.height = s.h;
     pc.row = c.bufferRowLength;
     pc.layer = c.bufferRowLength * c.bufferImageHeight;
