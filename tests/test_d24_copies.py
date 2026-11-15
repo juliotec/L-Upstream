@@ -86,6 +86,8 @@ def main():
     if "span.address" in conv or "vkGetBufferDeviceAddress(dev.device, &da)" not in conv or \
             "pc.base = base + span.offset;" not in conv:
         raise SystemExit("d32_to_d24 takes the span's address from gpu_buffer_bind, which gives none: never converted")
+    if "(base + span.offset) % 4" not in conv:
+        raise SystemExit("d32_to_d24 reads 4-byte words through an address it never checked is 4-byte aligned")
     if "NVN_FORMAT_DEPTH24_STENCIL8" not in b2t or "VK_FORMAT_D32_SFLOAT_S8_UINT" not in b2t:
         raise SystemExit("copy_b2t leaves floats in the buffer when a DEPTH24_STENCIL8 kept as D32_SFLOAT_S8_UINT is copied out")
     shaders = a.source / "gpu/vk/shaders"
