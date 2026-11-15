@@ -3916,8 +3916,8 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
             break;
         default: break;
         }
-        // (RGB5A1 and RGB5 have R in the low bits, their A1R5G5B5 image B)
-        if (nf == NVN_FORMAT_RGB5A1 || nf == NVN_FORMAT_RGB5)
+        // (RGB5A1 and RGB5 have R in the low bits, their A1R5G5B5 image B; A1B5G5R5 with VK_KHR_maintenance5 needs no swap)
+        if ((nf == NVN_FORMAT_RGB5A1 || nf == NVN_FORMAT_RGB5) && !dev.maintenance5)
             for (unsigned& s : sw)
                 s = s == NVN_TEXTURE_SWIZZLE_R ? NVN_TEXTURE_SWIZZLE_B : s == NVN_TEXTURE_SWIZZLE_B ? NVN_TEXTURE_SWIZZLE_R : s;
         static const bool swap_9e5 = env_on("RX_VK_9E5_SWAP");   // (longshot, diagnosis: R and B swapped)
