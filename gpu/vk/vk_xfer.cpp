@@ -217,7 +217,9 @@ void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const 
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = span.buffer;
     const VkDeviceAddress base = pipe && span ? vkGetBufferDeviceAddress(dev.device, &da) : 0;
-    if (!base || (base + span.offset) % 4) {
+    const uint32_t* most = dev.props.limits.maxComputeWorkGroupCount;
+    const uint64_t gx = ((uint64_t)s.w + 7) / 8, gy = ((uint64_t)s.h + 7) / 8, gz = (uint64_t)s.layers * s.d;
+    if (!base || (base + span.offset) % 4 || gx > most[0] || gy > most[1] || gz > most[2]) {
         warn(11, "DEPTH24 (D32_SFLOAT) copied to a buffer: no conversion pipeline, floats left");
         return;
     }
@@ -230,7 +232,7 @@ void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const 
     pc.layer = c.bufferRowLength * c.bufferImageHeight;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
-    vkCmdDispatch(cmd, (s.w + 7) / 8, (s.h + 7) / 8, s.layers * s.d);
+    vkCmdDispatch(cmd, (uint32_t)gx, (uint32_t)gy, (uint32_t)gz);
     descriptors_disturbed();
 }
 
