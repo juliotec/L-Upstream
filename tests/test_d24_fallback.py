@@ -34,11 +34,11 @@ FIXTURE = r"""
 #include <cstdio>
 
 struct Dev { VkPhysicalDevice physical = VK_NULL_HANDLE; } dev;
-static VkFormatFeatureFlags g_feats = 0;
+static VkFormatFeatureFlags g_feats = 0, g_twin = 0;
 static int g_logs = 0;
-static void vkGetPhysicalDeviceFormatProperties_(VkPhysicalDevice, VkFormat, VkFormatProperties* p) {
+static void vkGetPhysicalDeviceFormatProperties_(VkPhysicalDevice, VkFormat f, VkFormatProperties* p) {
     *p = {};
-    p->optimalTilingFeatures = g_feats;
+    p->optimalTilingFeatures = f == VK_FORMAT_D32_SFLOAT || f == VK_FORMAT_D32_SFLOAT_S8_UINT ? g_twin : g_feats;
 }
 #define vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties_
 static void logf(const char*, ...) { g_logs++; }
@@ -49,10 +49,15 @@ namespace amd {
 namespace nv {
 /* ACTUAL */
 }
+namespace nt {
+/* ACTUAL */
+}
 
 int main() {
     int bad = 0;
     g_feats = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;   // (sampled, not a depth attachment: AMD)
+    g_twin = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+             VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if (amd::depth24_or_32(VK_FORMAT_X8_D24_UNORM_PACK32, VK_FORMAT_D32_SFLOAT) != VK_FORMAT_D32_SFLOAT) {
         std::printf("X8_D24 kept where the GPU cannot render to it\n");
         bad++;
@@ -67,8 +72,14 @@ int main() {
         std::printf("a D24 format the GPU supports was replaced\n");
         bad++;
     }
-    if (g_logs != 2) {
-        std::printf("%d fallback lines logged, wanted 2\n", g_logs);
+    g_feats = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    g_twin = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (nt::depth24_or_32(VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT) != VK_FORMAT_D24_UNORM_S8_UINT) {
+        std::printf("D32_SFLOAT_S8_UINT used where the GPU cannot copy into it\n");
+        bad++;
+    }
+    if (g_logs != 3) {
+        std::printf("%d fallback lines logged, wanted 3\n", g_logs);
         bad++;
     }
     return bad ? 1 : 0;
