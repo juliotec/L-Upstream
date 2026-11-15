@@ -23,7 +23,7 @@ FIXTURE = r"""
 #include <vector>
 
 template <class T> T handle(uintptr_t v) { return reinterpret_cast<T>(v); }
-struct { VkDevice device = handle<VkDevice>(1); VkQueue queue = handle<VkQueue>(2); std::mutex present_mu; } dev;
+struct { VkDevice device = handle<VkDevice>(1); VkQueue queue = handle<VkQueue>(2); std::mutex present_mu; VkPhysicalDeviceProperties props{}; } dev;
 struct Texture {
     uint64_t gpu = 0x1000;
     VkImage image = handle<VkImage>(3);
