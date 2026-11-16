@@ -147,7 +147,7 @@ jobs:
           MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
         shell: python3 -I {0}
         run: |
-          import json, os, urllib.request
+          import json, os, urllib.error, urllib.request
           api = "https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot"
           n = os.environ["NUMBER"]
           def get(path):
@@ -156,9 +156,12 @@ jobs:
                   sep = "&" if "?" in path else "?"
                   req = urllib.request.Request("%s%s%spage=%d&limit=50" % (api, path, sep, page),
                                                headers={"Authorization": "token " + os.environ["MAGICBEAN_TOKEN"],
-                                                        "Accept": "application/json"})
-                  with urllib.request.urlopen(req, timeout=60) as r:
-                      got = json.load(r)
+                                                        "Accept": "application/json", "User-Agent": "longshot-forge-pr"})
+                  try:
+                      with urllib.request.urlopen(req, timeout=60) as r:
+                          got = json.load(r)
+                  except urllib.error.HTTPError as e:
+                      raise SystemExit("%s: HTTP %s %s" % (req.full_url, e.code, e.read()[:500].decode("utf-8", "replace")))
                   if not isinstance(got, list):
                       return got
                   out += got
