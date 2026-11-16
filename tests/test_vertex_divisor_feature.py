@@ -27,9 +27,15 @@ def main():
     create = text.find("vkCreateDevice(dev.physical, &ci, nullptr, &dev.device)")
     if not 0 <= query < at < create:
         raise SystemExit("the vertexAttributeInstanceRateDivisor check is not between the feature query and vkCreateDevice")
-    if "if (dev.vertex_divisor) vdivs.push_back(" not in DRAW.read_text(encoding="utf-8"):
+    draw = DRAW.read_text(encoding="utf-8")
+    if "if (dev.vertex_divisor) vdivs.push_back(" not in draw:
         raise SystemExit("the pipelines chain vertex divisors without dev.vertex_divisor")
-    print("vertex divisors over 1 are used only with vertexAttributeInstanceRateDivisor: ok")
+    # VUID-VkVertexInputBindingDivisorDescriptionKHR-divisor-01870: divisor <= maxVertexAttribDivisor (only 2^16-1 required)
+    if "std::min(s.vstream[b].divisor, dev.max_vertex_divisor)" not in draw:
+        raise SystemExit("the game's divisor is chained without clamping it to maxVertexAttribDivisor (VUID 01870)")
+    if "dev.max_vertex_divisor = vp.maxVertexAttribDivisor;" not in text:
+        raise SystemExit("maxVertexAttribDivisor is not queried")
+    print("vertex divisors over 1 are used only with vertexAttributeInstanceRateDivisor, up to maxVertexAttribDivisor: ok")
 
 
 if __name__ == "__main__":
