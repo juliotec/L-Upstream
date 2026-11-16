@@ -55,6 +55,7 @@ void console_c(int t, int e, int& r, int& n) { const int g = t / 4, i = t % 4; r
 struct TestShader {
     Sirit::Module m{0x00010600};
     Sirit::Id u32, f16, f16x2, buf, u32_ptr, lane, ta, tb, tc, zero;
+    std::vector<Sirit::Id> extra_interfaces;   // (variables the body adds: test_multiply_wmma16's workgroup tiles)
     Sirit::Id c32(uint32_t v) { return m.Constant(u32, v); }
     Sirit::Id word_ptr(Sirit::Id index) { return m.OpAccessChain(u32_ptr, buf, c32(0), index); }
     Sirit::Id word(Sirit::Id index) { return m.OpLoad(u32, word_ptr(index)); }
@@ -105,7 +106,9 @@ std::vector<uint32_t> build_shader(const std::function<void(TestShader&)>& body)
     body(s);
     m.OpReturn();
     m.OpFunctionEnd();
-    m.AddEntryPoint(spv::ExecutionModel::GLCompute, main, "main", s.buf, lid);
+    std::vector<Id> interfaces{s.buf, lid};
+    interfaces.insert(interfaces.end(), s.extra_interfaces.begin(), s.extra_interfaces.end());
+    m.AddEntryPoint(spv::ExecutionModel::GLCompute, main, "main", interfaces);
     m.AddExecutionMode(main, spv::ExecutionMode::LocalSize, 32U, 1U, 1U);
     return m.Assemble();
 }
@@ -335,6 +338,86 @@ bool test_multiply() {
     return bad == 0;
 }
 
+// (AMD RDNA 3/4) the multiply as DefineWmma16MatrixFunction (emit_spirv_warp.cpp) emits it, for one subgroup: lane
+// t's fragment words at 8t (A 4, B 2, C 2), D's 2 out at 256 + 2t, through 512 words of workgroup tiles
+bool test_multiply_wmma16() {
+    using namespace Shader::Backend::SPIRV;
+    std::vector<uint32_t> data(320, 0xffffffffu);
+    const auto pack = [](float lo, float hi) { return (uint32_t)to_half(lo) | ((uint32_t)to_half(hi) << 16); };
+    for (int t = 0; t < 32; t++) {
+        int r0, c0, r1, c1;
+        for (int e = 0; e < 8; e += 2) console_a(t, e, r0, c0), console_a(t, e + 1, r1, c1), data[t * 8 + e / 2] = pack(a_val(r0, c0), a_val(r1, c1));
+        for (int e = 0; e < 4; e += 2) console_b(t, e, r0, c0), console_b(t, e + 1, r1, c1), data[t * 8 + 4 + e / 2] = pack(b_val(r0, c0), b_val(r1, c1));
+        for (int e = 0; e < 4; e += 2) console_c(t, e, r0, c0), console_c(t, e + 1, r1, c1), data[t * 8 + 6 + e / 2] = pack(c_val(r0, c0), c_val(r1, c1));
+    }
+    const auto code = build_shader([](TestShader& s) {
+        auto& m = s.m;
+        const auto c = [&](uint32_t v) { return s.c32(v); };
+        const Sirit::Id scope = c((uint32_t)spv::Scope::Subgroup);
+        const auto mat = [&](spv::CooperativeMatrixUse use) {
+            return m.TypeCooperativeMatrixKHR(s.f16, scope, c(16), c(16), c((uint32_t)use));
+        };
+        const Sirit::Id ta = mat(spv::CooperativeMatrixUse::MatrixAKHR), tb = mat(spv::CooperativeMatrixUse::MatrixBKHR),
+                        tc = mat(spv::CooperativeMatrixUse::MatrixAccumulatorKHR);
+        const Sirit::Id wptr = m.TypePointer(spv::StorageClass::Workgroup, s.u32);
+        const Sirit::Id tiles = m.AddGlobalVariable(
+            m.TypePointer(spv::StorageClass::Workgroup, m.TypeArray(s.u32, c(mma_wmma16_tile_words))),
+            spv::StorageClass::Workgroup);
+        s.extra_interfaces.push_back(tiles);
+        const auto at = [&](Sirit::Id index) { return m.OpAccessChain(wptr, tiles, index); };
+        const auto put = [&](Sirit::Id index, Sirit::Id value) { m.OpStore(at(index), value, spv::MemoryAccessMask::NonPrivatePointer); };
+        const auto get = [&](Sirit::Id index) { return m.OpLoad(s.u32, at(index), spv::MemoryAccessMask::NonPrivatePointer); };
+        const auto barrier = [&] {
+            m.OpControlBarrier(scope, scope, c((uint32_t)(spv::MemorySemanticsMask::AcquireRelease | spv::MemorySemanticsMask::WorkgroupMemory |
+                                                          spv::MemorySemanticsMask::MakeAvailable | spv::MemorySemanticsMask::MakeVisible)));
+        };
+        const Sirit::Id in = m.OpIMul(s.u32, s.lane, c(8));
+        const Sirit::Id g = m.OpShiftRightLogical(s.u32, s.lane, c(2)), i = m.OpBitwiseAnd(s.u32, s.lane, c(3));
+        const Sirit::Id gi = m.OpIAdd(s.u32, m.OpShiftLeftLogical(s.u32, g, c(3)), i);
+        const auto word = [&](uint32_t region, uint32_t rows, uint32_t words) { return s.at(gi, region * 128 + rows * 8 + words); };
+        const Sirit::Id zero = c(0);
+        const bool fast = mma_wmma16_fast;
+        put(word(0, 0, 0), s.word(s.at(in, 0))), put(word(0, 8, 0), s.word(s.at(in, 1)));
+        put(word(0, 0, 4), s.word(s.at(in, 2))), put(word(0, 8, 4), s.word(s.at(in, 3)));
+        put(word(1, 0, 0), s.word(s.at(in, 4))), put(word(1, 0, 4), fast ? s.word(s.at(in, 5)) : zero);
+        put(word(1, 8, 0), zero), put(word(1, 8, 4), zero);
+        if (!fast) {
+            put(word(2, 0, 0), zero), put(word(2, 0, 4), s.word(s.at(in, 5)));
+            put(word(2, 8, 0), zero), put(word(2, 8, 4), zero);
+        }
+        put(word(3, 0, 0), s.word(s.at(in, 6))), put(word(3, 8, 0), s.word(s.at(in, 7)));
+        put(word(3, 0, 4), zero), put(word(3, 8, 4), zero);
+        barrier();
+        const auto tile = [&](Sirit::Id type, uint32_t region, uint32_t layout) {
+            return m.OpCooperativeMatrixLoadKHR(type, at(c(region * 128)), c(layout), c(8), spv::MemoryAccessMask::NonPrivatePointer);
+        };
+        const Sirit::Id a = tile(ta, 0, 0);
+        Sirit::Id d = m.OpCooperativeMatrixMulAddKHR(tc, a, tile(tb, 1, 1), tile(tc, 3, 0));
+        if (!fast) d = m.OpCooperativeMatrixMulAddKHR(tc, a, tile(tb, 2, 1), d);
+        barrier();
+        m.OpCooperativeMatrixStoreKHR(at(c(3 * 128)), d, c(0), c(8), spv::MemoryAccessMask::NonPrivatePointer);
+        barrier();
+        const Sirit::Id out = m.OpIAdd(s.u32, c(256), m.OpIMul(s.u32, s.lane, c(2)));
+        s.store(s.at(out, 0), get(word(3, 0, 0)));
+        s.store(s.at(out, 1), get(word(3, 8, 0)));
+    });
+    if (!run_shader(code, data)) return false;
+    int bad = 0;
+    for (int t = 0; t < 32; t++)
+        for (int e = 0; e < 4; e++) {
+            int r, n;
+            console_c(t, e, r, n);
+            float want_d = c_val(r, n);
+            for (int k = 0; k < 16; k++) want_d += a_val(r, k) * b_val(k, n);
+            const uint32_t w = data[256 + t * 2 + e / 2];
+            const float got = from_half((uint16_t)(e & 1 ? w >> 16 : w & 0xffff));
+            if (got != want_d && bad++ < 4)
+                logf("vk: WMMA 16x16x16 test: lane %d element %d (D[%d][%d]) %g, the CPU %g", t, e, r, n, got, want_d);
+        }
+    if (bad) logf("vk: WMMA 16x16x16 test: %d of 128 elements differ", bad);
+    return bad == 0;
+}
+
 } // namespace
 
 // (vk_main.cpp, once the device is made: dev.coop_matrix says the extension and its feature are on)
@@ -352,6 +435,34 @@ void software_multiplies(const char* why) {
 /// (tests/test_global_table_loop.py)
 bool table_loop_wanted(VkDriverId driver, bool dynamic_indexing, const char* env) {
     return (env ? !env_value_off(env) : driver == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA) && dynamic_indexing;
+}
+/// (longshot, AMD RDNA 3/4) cooperative matrices of 16x16x16 only: HMMA_nx2 through workgroup tiles (emit_spirv_warp.cpp
+/// DefineWmma16MatrixFunction).
+void wmma16_init() {
+    using namespace Shader::Backend::SPIRV;
+    if (!dev.vk12.shaderFloat16) {
+        software_multiplies("no f16 shaders");
+        return;
+    }
+    if (!(dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT)) {   // (the tiles are per 32-lane subgroup)
+        software_multiplies("cooperative matrices of 16x16x16 only, and no 32-lane compute subgroups");
+        return;
+    }
+    if (!dev.vk13.computeFullSubgroups) {   // (a subgroup with lanes missing would run the tiles: vk_draw.cpp pin_subgroup)
+        software_multiplies("cooperative matrices of 16x16x16 only, and no full compute subgroups");
+        return;
+    }
+    mma_wmma16_full_subgroups = true;
+    mma_wmma16_fast = false;
+    mma_wmma16_shared_limit = dev.props.limits.maxComputeSharedMemorySize;
+    if (!test_multiply_wmma16()) {
+        mma_wmma16_fast = false;
+        software_multiplies("the 16x16x16 cooperative matrix test failed");
+        return;
+    }
+    mma_wmma16 = true;
+    dev.native_mma = true;
+    logf("vk: native matrix multiplies on (WMMA 16x16x16 through workgroup tiles)");
 }
 } // namespace
 
@@ -395,11 +506,18 @@ void coopmat_init() {
     vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(dev.physical, &n, nullptr);
     std::vector<VkCooperativeMatrixPropertiesKHR> props(n, VkCooperativeMatrixPropertiesKHR{VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
     vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(dev.physical, &n, props.data());
-    bool shape = false;
-    for (const auto& p : props)
-        shape |= p.MSize == 16 && p.NSize == 8 && p.KSize == 16 && p.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
-                 p.BType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.CType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
-                 p.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.scope == VK_SCOPE_SUBGROUP_KHR;
+    bool shape = false, shape16 = false;
+    for (const auto& p : props) {
+        const bool f16 = p.AType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                         p.CType == VK_COMPONENT_TYPE_FLOAT16_KHR && p.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                         p.scope == VK_SCOPE_SUBGROUP_KHR;
+        shape |= f16 && p.MSize == 16 && p.NSize == 8 && p.KSize == 16;
+        shape16 |= f16 && p.MSize == 16 && p.NSize == 16 && p.KSize == 16;
+    }
+    if (!shape && shape16) {   // (AMD RDNA 3/4: WMMA 16x16x16 only)
+        wmma16_init();
+        return;
+    }
     if (!shape) {
         software_multiplies("the cooperative matrices lack 16x8x16 f16");
         return;
