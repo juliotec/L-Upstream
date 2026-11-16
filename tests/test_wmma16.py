@@ -3,8 +3,11 @@
 Checks that the pieces are wired (Sirit's store, the probe, the emitter, the program cache's stamp, the network gate),
 and runs the tile layout DefineWmma16MatrixFunction emits: the lanes' stores are read from the source, a 16x16x16
 multiply is done on the tiles as the device would (row major A and C, column major B, stride 8 words), and each lane's
-two words of D must be the console's fragment (PTX m16n8k16) of A*B+C.
+two words of D must be the console's fragment (PTX m16n8k16) of A*B+C. The tiles are used only where every subgroup is
+full (32 lanes): the device has computeFullSubgroups and the workgroup's X width is a multiple of 32, as pin_subgroup
+then creates the pipeline with REQUIRE_FULL_SUBGROUPS; otherwise the software multiply.
 """
+import argparse
 from pathlib import Path
 import re
 
@@ -58,6 +61,21 @@ def wiring():
     need("(mma_wmma16 ? 2048u : 0u)" in shader and "(mma_wmma16_fast ? 4096u : 0u)" in shader,
          "the program cache's stamp does not tell WMMA16 programs apart")
     need("!Shader::Backend::SPIRV::mma_wmma16)" in shader, "the networks are still left out on AMD with WMMA16")
+    need("inline bool mma_wmma16_full_subgroups = false;" in layout, "mma_layout.h lacks mma_wmma16_full_subgroups")
+    wi = block(coop, "void wmma16_init(")
+    need(re.search(r"if \(!dev\.vk13\.computeFullSubgroups\) \{[^}]*software_multiplies", wi) and
+         wi.index("computeFullSubgroups") < wi.index("mma_wmma16_full_subgroups = true;") < wi.index("mma_wmma16 = true;"),
+         "wmma16_init turns the tiles on without full compute subgroups")
+    fn = block(warp, "bool DefineWmma16MatrixFunction(")
+    gate = fn[:fn.index("const u32 threads")] if "const u32 threads" in fn else ""
+    need("!mma_wmma16_full_subgroups" in gate and "program.workgroup_size[0] % 32 != 0" in gate and "return false;" in gate,
+         "DefineWmma16MatrixFunction runs the tiles in a workgroup whose subgroups may lack lanes")
+    draw = (VK / "vk_draw.cpp").read_text(encoding="utf-8")
+    pin = block(draw, "void pin_subgroup(")
+    need("!(workgroup_x % 32) && dev.vk13.computeFullSubgroups" in pin and "REQUIRE_FULL_SUBGROUPS_BIT" in pin,
+         "pin_subgroup no longer asks for full subgroups where the tiles are used")
+    need(draw.count("pin_subgroup(ci.stage, q.workgroup[0]);") == 1 and draw.count("pin_subgroup(ci.stage, p.workgroup[0]);") == 1,
+         "a compute pipeline is not pinned with its workgroup width")
     return warp
 
 
@@ -113,6 +131,12 @@ def tiles(warp):
 
 
 def main():
+    global VK, SPIRV
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--source", type=Path, default=ROOT)
+    a = p.parse_args()
+    VK = a.source / "gpu/vk"
+    SPIRV = VK / "eden/shader_recompiler/backend/spirv"
     tiles(wiring())
     print("HMMA_nx2 through 16x16x16 cooperative matrices: wired, and the tiles give A*B+C at the console's positions: ok")
 
