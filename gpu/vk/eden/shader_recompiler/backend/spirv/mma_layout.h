@@ -28,6 +28,9 @@ inline constexpr uint32_t mma_wmma16_tile_words = 4 * 128;
 inline constexpr uint32_t mma_wmma16_tile_bytes = mma_wmma16_tile_words * 4;
 // the device's maxComputeSharedMemorySize (vk_coopmat.cpp): a program whose tiles would pass it multiplies in software
 inline uint32_t mma_wmma16_shared_limit = 0;
+// the device's computeFullSubgroups (vk_coopmat.cpp): with it a workgroup X width that is a multiple of 32 is created with
+// REQUIRE_FULL_SUBGROUPS (vk_draw.cpp pin_subgroup), so no subgroup has lanes missing; without it no program uses the tiles
+inline bool mma_wmma16_full_subgroups = false;
 // (amd-fix) float colour outputs carry no NaN or infinity to their target (EmitSetFragColor): one NaN texel spreads
 // through bloom/blur/downsample averages into glowing blocks (OoT's flowers on AMD, Longshot issue 606). On for every
 // card since v2.0.6 (vk_coopmat.cpp coopmat_init); RX_VK_NAN_GUARD=0 turns it off. Idea from NX2navi patch 0027.
