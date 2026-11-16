@@ -532,7 +532,11 @@ bool create_device() {
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     // (VK_KHR_maintenance5 needs dynamic rendering; kept only where A1B5G5R5, NVN's RGB5A1 bit for bit, is sampled and
     // rendered to: vk_formats.cpp. Else RGB5A1 stays A1R5G5B5 with the view's R/B swap, vk_texture.cpp)
-    dev.maintenance5 = dev.maintenance5 && m5.maintenance5 && f13.dynamicRendering;
+    // (nor where custom border colors are made without a format, below: a sampler with one must not sample an A1B5G5R5
+    // view, VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015)
+    const bool formatless_borders = dev.custom_border_color && border.customBorderColors &&
+                                    border.customBorderColorWithoutFormat;
+    dev.maintenance5 = dev.maintenance5 && m5.maintenance5 && f13.dynamicRendering && !formatless_borders;
     if (dev.maintenance5) {
         VkFormatProperties fp{};
         vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR, &fp);
