@@ -2447,7 +2447,15 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // which the driver did not say it can make sparse; as a compressed image refused without them, below)
         if (is_bc(x.format))
             ci.usage &= ~(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT), x.usage = ci.usage;
-        bool ok = vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;
+        // (the sparse flags and usage within the device's limits for them: extent, levels, layers, samples)
+        VkImageFormatProperties ifp{};
+        const bool fits =
+            vkGetPhysicalDeviceImageFormatProperties(dev.physical, ci.format, ci.imageType, ci.tiling, ci.usage, ci.flags,
+                                                     &ifp) == VK_SUCCESS &&
+            ci.extent.width <= ifp.maxExtent.width && ci.extent.height <= ifp.maxExtent.height &&
+            ci.extent.depth <= ifp.maxExtent.depth && ci.mipLevels <= ifp.maxMipLevels &&
+            ci.arrayLayers <= ifp.maxArrayLayers && (ci.samples & ifp.sampleCounts);
+        bool ok = fits && vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;
         if (ok) {
             VkMemoryRequirements mr{};
             vkGetImageMemoryRequirements(dev.device, x.image, &mr);
