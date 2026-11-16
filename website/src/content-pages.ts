@@ -7,6 +7,7 @@ export const contentPages: Record<string, string> = {
   'tested-configurations': 'docs/tested-configurations.md',
   'saves': 'docs/updates-and-saves.md',
   'saves/transfer': 'docs/saves.md',
+  'mods': 'docs/using-mods.md',
   'help': 'docs/common-issues.md',
   'help/report': 'docs/reporting-and-contributing.md',
   'help/performance': 'docs/performance-report.md',

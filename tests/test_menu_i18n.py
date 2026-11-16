@@ -90,11 +90,11 @@ class MenuI18nTests(unittest.TestCase):
             "Output device", "Where the game plays sound. Changes apply without restarting the game.",
             "Where the game plays sound. A change briefly restarts only the audio stream.",
             "HOS_AUDIO_DEVICE overrides this run. The saved device choice is kept.",
-            "Named playback selection is Windows-only in this build. Default uses the system output.",
             "No playback output could be opened. The game keeps trying.",
             "Default is used temporarily. The selected output is remembered and retried when available.",
             "This playback device. Speaker layout changes still require a game restart.",
             "Follow the Windows default playback device.", "Overridden by HOS_AUDIO_DEVICE",
+            "Follow the system default playback device.",
             "Selected output", "Default", " (not connected)",
         )
         self.assertEqual(len(self.tables), 13)

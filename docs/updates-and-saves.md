@@ -46,7 +46,7 @@ guide](versioning.md) explains the numbers.
 ## Mods
 
 Mods go in a `mods` folder in the game folder, and an update keeps them. A mod made for an older version may need
-updating too. The [mods reference](../README.md#mods) covers installing them and how they're loaded.
+updating too. The [mods guide](using-mods.md) covers installing them, turning them off and checking that they loaded.
 
 ## Moving saves
 

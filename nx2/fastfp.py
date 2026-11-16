@@ -20,9 +20,21 @@ import re
 import a64_lift
 import a64emit
 # (the kit's names the copied method reads; nothing in nx2 rebinds them: nx2/insn.py replaces a64_lift.classify and
-# a64emit.translate, which the method does not name, or names through the module)
+# a64emit.translate, which the method does not name, or names through the module. fp_is_frame is the kit's, its answers
+# kept below)
 from a64_lift import (COND, FLAG_REF, REG_REF, SYNC_ALL, SYNC_BACK, SYNC_CALL, SYNC_RELOAD, SYNC_RET, drop_flag_stores,
-                      fp_is_frame, frame_stores, local_regs, localize_regs, pc_relative)
+                      frame_stores, local_regs, localize_regs, pc_relative)
+
+_frame = {}
+
+
+def fp_is_frame(text):
+    """a64_lift.fp_is_frame, kept by the text: the copied method below asks it of every instruction (14 million in a lift
+    of OoT, two regex searches each), of far fewer distinct texts"""
+    f = _frame.get(text)
+    if f is None:
+        f = _frame[text] = a64_lift.fp_is_frame(text)
+    return f
 
 KIT_TREE = "6164061ea8dc7896da53490df9ebc5e43b50faa50c1da61cdf9fc5e207773f7d"   # (a64-kit's tree-sha256 the copy was taken at)
 
@@ -73,17 +85,44 @@ def ff_min():
 
 def ff_eligible(text):
     """an instruction's C text may sit inside a fast float region: no store, control flow or system state; only pure calls"""
-    if any(b in FF_FP_OK.sub("", text) for b in FF_BAD):
+    rest = FF_FP_OK.sub("", text)
+    if any(b in rest for b in FF_BAD):
         return False
     return all(n in FF_PURE or n.startswith(("a64_fpx_", "a64_vfpx_")) for n in FF_CALL.findall(text))
 
 
-def ff_region(items):
+# (the emit asks these of every instruction of every function, ~13 million times in a lift of OoT, but there are far fewer
+# distinct instruction texts: each answer is kept by its text. Before, ff_eligible ran its FF_FP_OK.sub once for each of
+# FF_BAD's 13 words, on every instruction, and emit and write took 106 s where it took ~46 s without the regions)
+_joins = {}
+_convs = {}
+
+
+def ff_joins(text, dead):
+    """ff_eligible of an instruction's text with the flag stores dead there (dead_flags' mask) dropped, by (text, dead)"""
+    j = _joins.get((text, dead))
+    if j is None:
+        j = _joins[(text, dead)] = ff_eligible(drop_flag_stores(text, dead) if dead else text)
+    return j
+
+
+def ff_convs(text):
+    """the float ops ff_region can make fast in one instruction's text (FF_CONV's matches)"""
+    n = _convs.get(text)
+    if n is None:
+        n = _convs[text] = len(FF_CONV.findall(text))
+    return n
+
+
+def ff_region(items, least=None):
     """a run's C text ([(pc, text)], every text ff_eligible): the fast and exact copies, or the exact text alone when the
-    run has too few float ops to pay for its check. (text, number of ops made fast)"""
+    run has too few float ops to pay for its check. (text, number of ops made fast). least: ff_min(), read once by the
+    caller (emit_function: once a function, not for each of the 3.8 million runs of OoT)"""
     exact = "\n".join(t for _, t in items)
-    n = len(FF_CONV.findall(exact))
-    if n < ff_min():
+    # (FF_CONV's matches are in one instruction's text each, so the run's count is their sum: most runs are a few
+    # instructions with no float op, and only a run with enough of them is searched again below)
+    n = sum(ff_convs(t) for _, t in items)
+    if n < (ff_min() if least is None else least):
         return exact, 0
     fast = FF_CONV.sub(lambda m: "a64_ff_v%s(" % m.group(1) if m.group(1) else "a64_ff_%s(" % m.group(2), exact)
     xs = sorted({int(r) for r in REG_REF.findall(exact)})
@@ -285,10 +324,11 @@ def emit_function(self, e, texts):
     dirty = self.dirty_regs(body, pcs, texts) if local else None
     # (the run of joinable instructions so far, [(pc, text)]: ff_region)  # (fastfp)
     ff = bool(fastfp_mode()) and (ff_only() is None or self.fname(e) in ff_only())  # (fastfp)
+    least = ff_min()  # (fastfp)
     run = []  # (fastfp)
     def flush():  # (fastfp)
         if run:  # (fastfp)
-            text, n = ff_region(run)  # (fastfp)
+            text, n = ff_region(run, least)  # (fastfp)
             out.append(text)  # (fastfp)
             if n:  # (fastfp)
                 self.stats["ff_regions"] = self.stats.get("ff_regions", 0) + 1  # (fastfp)
@@ -304,7 +344,7 @@ def emit_function(self, e, texts):
         if ff and kind == "op" and pc not in self.after and not (pc in labels or (pc == e and e in labels)):  # (fastfp)
             t, f = texts[(w, pc) if pc_relative(w) else w]  # (fastfp)
             if not f & (a64emit.UNHANDLED | a64emit.TERMINATOR):  # (fastfp)
-                joins = ff_eligible(drop_flag_stores(t, dead[pc]) if pc in dead else t)  # (fastfp)
+                joins = ff_joins(t, dead.get(pc, 0))  # (fastfp)
         if not joins:  # (fastfp)
             flush()  # (fastfp)
         mark = len(out)  # (fastfp)

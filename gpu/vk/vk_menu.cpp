@@ -888,15 +888,15 @@ const char* hn_output_device(int, int variant) {
     if (variant > 0) return nullptr;
     if (variant < 0) return "Where the game plays sound. A change briefly restarts only the audio stream.";
     if (output_forced()) return "HOS_AUDIO_DEVICE overrides this run. The saved device choice is kept.";
-#ifndef _WIN32
-    return "Named playback selection is Windows-only in this build. Default uses the system output.";
-#else
     const int state = can_outputs() ? host->audio_output_state() : 0;
     if (state & HOS_OUTPUT_UNAVAILABLE) return "No playback output could be opened. The game keeps trying.";
     if (output_missing || (state & HOS_OUTPUT_FALLBACK))
         return "Default is used temporarily. The selected output is remembered and retried when available.";
     return output_pick ? "This playback device. Speaker layout changes still require a game restart."
+#ifdef _WIN32
                        : "Follow the Windows default playback device.";
+#else
+                       : "Follow the system default playback device.";
 #endif
 }
 

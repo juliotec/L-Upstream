@@ -1,4 +1,4 @@
-/* Windows playback endpoint metadata and a locked preference mailbox. Linux retains default output. */
+/* Playback endpoint metadata and a locked preference mailbox. Discovery never opens a stream. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdlib.h>
@@ -12,6 +12,11 @@
 #include <mmdeviceapi.h>
 #include <propsys.h>
 #include <objbase.h>
+#else
+/* Preference-only fixtures and the renderer need no SDL implementation. */
+extern int hos_sdl_output_count(void) __attribute__((weak));
+extern int hos_sdl_output_info(int, char *, int, char *, int) __attribute__((weak));
+extern int hos_sdl_output_resolve(const char *) __attribute__((weak));
 #endif
 typedef struct { char *id, *name; } OutputDevice;
 static OutputDevice *devices;
@@ -117,6 +122,22 @@ int hos_audio_output_count(void) {
     }
     if (e) e->lpVtbl->Release(e);
     if (SUCCEEDED(com)) CoUninitialize();
+#else
+    const int total = hos_sdl_output_count ? hos_sdl_output_count() : 0;
+    if (total >= 0 && (!total || sizeof *fresh <= SIZE_MAX / (size_t)total))
+        fresh = (OutputDevice *)calloc(total ? (size_t)total : 1, sizeof *fresh);
+    for (int i = 0; fresh && hos_sdl_output_info && i < total; i++) {
+        char id[HOS_OUTPUT_ID_CAP], name[HOS_OUTPUT_NAME_CAP];
+        if (!hos_sdl_output_info(i, id, sizeof id, name, sizeof name)) continue;
+        fresh[count].id = (char *)malloc(strlen(id) + 1);
+        fresh[count].name = (char *)malloc(strlen(name) + 1);
+        if (!fresh[count].id || !fresh[count].name) {
+            free(fresh[count].id), free(fresh[count].name);
+            continue;
+        }
+        strcpy(fresh[count].id, id), strcpy(fresh[count].name, name);
+        count++;
+    }
 #endif
     AcquireSRWLockExclusive(&devices_lock);
     for (int i = 0; i < device_count; i++) { free(devices[i].id); free(devices[i].name); }
@@ -153,7 +174,7 @@ int hos_audio_output_resolve(const char *id) {
         if (match && i <= INT_MAX) return (int)i;
     }
 #else
-    (void)id;
+    return hos_sdl_output_resolve ? hos_sdl_output_resolve(id) : -1;
 #endif
     return -1;
 }

@@ -38,6 +38,7 @@ export default defineConfig({
         { label: 'Settings', slug: 'settings' },
         { label: 'Updates & saves', slug: 'saves' },
         { label: 'Transfer a save', slug: 'saves/transfer' },
+        { label: 'Mods', slug: 'mods' },
       ] },
       { label: 'Help', items: [
         { label: 'Common problems', slug: 'help' },

@@ -718,10 +718,12 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   follow a curve so they sound about even: 50% is a quarter of the level (-12 dB). **Mute in background** silences the
   game while another window has the focus; an overlay such as Steam's or Discord's does not count as another window
   while the game was in front.
-- **Output device**, under Audio, selects the Windows playback endpoint by its persistent ID, with Default following
+- **Output device**, under Audio, selects a playback endpoint, with Default following
   the system output. Changes briefly restart the audio stream. A missing endpoint falls back to Default and is retried;
   its saved choice is retained. `HOS_AUDIO_DEVICE` overrides selection for that run without changing the saved choice.
-  Named playback selection is Windows-only; Linux retains the default output.
+  Windows saves the endpoint's persistent ID. Linux uses the loaded SDL2/SDL3 backend and device name, resolved again
+  when opening playback; device numbers are not saved. A renamed device is treated as missing. Identically named
+  Linux outputs are ambiguous and are not offered; use Default and the system mixer to route those.
 - **Speaker layout** is the speakers the game mixes its sound for. Auto is 5.1 when the selected/default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
   down). Mono averages the stereo channels into both ears, for one-sided hearing or one earbud. Mono/Stereo
@@ -890,7 +892,8 @@ format, or a zstd frame that does not give its size) is used as it is, with the 
 If a mod includes tables for several game versions, the prompts use the table name from the game's own RomFS,
 not the first table found in the mod. Other versions' tables do not change the prompts' font or its size entries.
 
-For authors: the [existing file contract and game-free example](docs/mods.md) cover discovery, conflicting files,
+Players: the [mods guide](docs/using-mods.md) covers installing, turning off and checking mods. For authors: the
+[existing file contract and game-free example](docs/mods.md) cover discovery, conflicting files,
 disabling and what this loader does not provide. The example contains only invented text, not a seed or game data.
 
 ## Build from source

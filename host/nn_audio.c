@@ -760,7 +760,7 @@ static void au_opened(HWAVEOUT w) {
     (void)w;
 #endif
 }
-/* The selected/default output's channels (its shared-mode mix format on Windows, SDL's default device on Linux); 2 when
+/* The selected/default output's channels (its shared-mode mix format on Windows, SDL's playback format on Linux); 2 when
    unknown. */
 #ifdef _WIN32
 static int au_device_channels(void) {

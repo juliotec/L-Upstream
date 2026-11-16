@@ -169,6 +169,10 @@ thread_local bool pcache_save_between = false;
 std::atomic<bool> pcache_save_owed{false};
 bool serial_builds_on() { return false; }
 [[maybe_unused]] static void helper_thread_start() {}   // (vk_texture.cpp: registers a thread made inside a ReplayPin on Linux)
+// (vk_draw.cpp: what the last save on this thread did, for the precompile's line before the title)
+#include "precompile_save.h"
+thread_local precompile_save::Outcome pcache_save_outcome;
+using SaveOutcome = precompile_save::Outcome;
 #include "pipeline_cache_save.inc"
 #ifdef CACHE_VECTOR_BASELINE
 #undef fwrite
@@ -239,10 +243,13 @@ int run(const std::string& name) {
             fault = f;
             pipeline_cache_save(true);
             CHECK(old_file() && replacements == 0 && save_errors == 0 && start_errors == 0);
+            // (the driver gave no usable data, or data the file could not take: said as not written, never as written)
+            CHECK(pcache_save_outcome.what == SaveOutcome::kFetchFailed || pcache_save_outcome.what == SaveOutcome::kWriteFailed);
         }
         fault = NONE;
         pipeline_cache_save(true);
         CHECK(new_file() && replacements == 1);
+        CHECK(pcache_save_outcome.what == SaveOutcome::kWritten && pcache_save_outcome.bytes == cache_size);
     } else if (name == "actual-size") {
         fault = COPY_SHORT;
         pipeline_cache_save(true);
@@ -279,6 +286,7 @@ int run(const std::string& name) {
         pcache_saved_size = 64;  // As pcache_init leaves it: the driver's size for the data read from the file.
         pipeline_cache_save(true);  // At exit, nothing taken in.
         CHECK(queries == 1 && copies == 0 && writes == 0 && old_file());
+        CHECK(pcache_save_outcome.what == SaveOutcome::kSame && pcache_save_outcome.bytes == 64);
         CHECK(play_saves == 1);  // What play made is saved apart, the cache unchanged or not.
         pcache_built_since_save = 32;  // In play: the precompile's pipelines, all found in the cache, still count.
         pipeline_cache_save(false);
@@ -290,6 +298,7 @@ int run(const std::string& name) {
             fault = f;
             pipeline_cache_save(true);
             CHECK(old_file() && pcache_saved_size == 64);
+            CHECK(pcache_save_outcome.what == SaveOutcome::kWriteFailed && !pcache_save_outcome.detail.empty());
         }
         fault = NONE;
         pipeline_cache_save(true);

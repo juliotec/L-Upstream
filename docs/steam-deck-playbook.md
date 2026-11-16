@@ -90,10 +90,12 @@ echo high | sudo tee /sys/class/drm/card0/device/power_dpm_force_performance_lev
 ```
 
 It lasts until the next boot. CPU governor tuning adds little on top of the GPU pin.
-Making the game do this itself when launched from Game mode (through gamemoderun's GPU
-optimisations) is what #716 asks for — until that lands, the one line above is the Deck
-performance lever. Do not leave the level pinned if the Deck is in a bag or a child is
-playing: `high` keeps the fan up and costs battery; `auto` is the sane default and this
+The game now does part of this itself (#716): while it runs, it holds the GPU at amdgpu's
+peak power state, 1300 MHz, unless a level was chosen by hand (`RX_VK_GPU_CLOCK=0` turns
+that off). The pin above, or Steam's GPU clock slider at 1600 MHz, still reaches higher,
+and the game leaves such a level alone.
+
+Do not leave the level pinned if the Deck is in a bag or a child is playing: `high` keeps the fan up and costs battery; `auto` is the sane default and this
 line returns it:
 
 ```

@@ -17,6 +17,7 @@
 #include <windows.h>
 #include <psapi.h>
 #if defined(__linux__)
+#include <dlfcn.h>
 #include <malloc.h>
 #endif
 #include <atomic>
@@ -60,6 +61,7 @@
 #include "evict_reason.h"
 #include "wrote_regions.h"
 #include "keep_rendered.h"
+#include "guest_holes.h"
 #include "target_overlap.h"
 #include "target_pool.h"
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
@@ -500,6 +502,9 @@ struct Arena {
 };
 std::vector<Arena> arenas;
 constexpr uint64_t kArena = 64ull << 20;
+// (every arena staging() made, and the time making them took: the memory line's "made so far")
+std::atomic<uint64_t> st_arena_makes{0};
+std::atomic<int64_t> st_arena_make_ns{0};
 
 struct Staging {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -569,6 +574,8 @@ Staging staging(uint64_t n, uint64_t align = 256) {
     {   // (longshot: what making a staging arena costs the replay thread: on a card with resizable BAR it is VRAM the driver hands
         // out, and a scene change made several right after the idle ones were freed)
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_make).count();
+        st_arena_makes.fetch_add(1, std::memory_order_relaxed);
+        st_arena_make_ns.fetch_add((int64_t)(ms * 1e6), std::memory_order_relaxed);
         static int slow_logged;
         if (ms > 5 && slow_logged++ < 24) logf_at(log_debug, "vk: a staging arena of %llu MB took %.1f ms to make", (unsigned long long)(a.size >> 20), ms);
     }
@@ -720,6 +727,12 @@ VkPipeline bc_pipe = VK_NULL_HANDLE;
 VkPipeline bc7_pipe = VK_NULL_HANDLE;
 bool bc7_ok = true;   // (false once BC7 is unsupported or its pipeline could not be made: BC3 from then on)
 constexpr uint32_t kBcDim = 2048, kBcLayers = 8;   // the scratch: the largest level a BC texture may have
+/// The scratch's layers, which are the layers one run decodes and encodes: 1, or RX_VK_BC_LAYERS=<n> up to kBcLayers
+/// (upload_astc_gpu says why one). It had kBcLayers whatever the runs used: 140 of its 160 MB held and never written.
+uint32_t bc_layers() {
+    static const uint32_t n = getenv("RX_VK_BC_LAYERS") ? std::clamp<uint32_t>((uint32_t)atoi(getenv("RX_VK_BC_LAYERS")), 1u, kBcLayers) : 1u;
+    return n;
+}
 /// (longshot) RX_VK_ASTC_BC7=1: big ASTC textures as BC7 instead of BC3. Both are 8 bits a texel; BC7's mode 6 keeps
 /// the colours' gradients and alpha much better (the encoder is host_shaders/bc7_encoder.comp).
 bool bc7_enabled() {
@@ -742,7 +755,7 @@ VkImage bc_scratch2 = VK_NULL_HANDLE;
 VmaAllocation bc_scratch2_alloc = nullptr;
 VkImageView bc_scratch2_view = VK_NULL_HANDLE;
 bool bc_scratch2_fresh = false;
-// (the scratch and its buffer, 160 MB, are made when an upload first needs them and given back after RX_VK_BC_IDLE_S seconds
+// (the scratch and its buffer, 20 MB a layer, are made when an upload first needs them and given back after RX_VK_BC_IDLE_S seconds
 // (20) without one: a title or a load decodes hundreds of textures through them, steady gameplay few (the "given back" line says
 // whether it did).
 // 0: kept for good once made. They have memory objects of their own, so that freeing gives the VRAM back: VMA keeps the empty
@@ -754,8 +767,8 @@ std::atomic<bool> bc_have{false};
 uint32_t bc_idle_s() {
     // (longshot) 0 by default again, kept once made: given back after 20 s, the garbled/rainbow textures of 4-8 GB cards followed
     // (issue 993): every such log has the "given back" line, an RTX 3050 4 GB player's went away with RX_VK_BC_IDLE_S=0 and not with
-    // RX_VK_NO_EVICT=1, and they began with v2.0.3, which brought this give-back. Its cost: 160-288 MB of VRAM held after the first
-    // decode. RX_VK_BC_IDLE_S=<seconds>: given back as before
+    // RX_VK_NO_EVICT=1, and they began with v2.0.3, which brought this give-back. Its cost: 20-36 MB of VRAM held after the first
+    // decode (160-288 while the scratch had 8 layers). RX_VK_BC_IDLE_S=<seconds>: given back as before
     static const uint32_t v = getenv("RX_VK_BC_IDLE_S") ? (uint32_t)atoi(getenv("RX_VK_BC_IDLE_S")) : 0;
     return v;
 }
@@ -765,7 +778,7 @@ bool bc_scratch_make() {   // (bc_mu held)
     ii.format = VK_FORMAT_R8G8B8A8_UNORM;
     ii.extent = {kBcDim, kBcDim, 1};
     ii.mipLevels = 1;
-    ii.arrayLayers = kBcLayers;
+    ii.arrayLayers = bc_layers();
     ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     static const bool pool = env_on("RX_VK_BC_POOL");
@@ -774,8 +787,8 @@ bool bc_scratch_make() {   // (bc_mu held)
     vi.image = bc_scratch;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     vi.format = VK_FORMAT_R8G8B8A8_UNORM;
-    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kBcLayers};
-    const uint64_t out = (uint64_t)(kBcDim / 4) * (kBcDim / 4) * kBcLayers * 16;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, bc_layers()};
+    const uint64_t out = (uint64_t)(kBcDim / 4) * (kBcDim / 4) * bc_layers() * 16;
     const VkBufferUsageFlags out_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     const auto make_out = [&] {
         if (create_device_buffer(out, out_usage, bc_out, bc_out_alloc, !pool)) return true;
@@ -866,7 +879,7 @@ bool bc_scratch2_make() {
     ii.format = VK_FORMAT_R8G8B8A8_UNORM;
     ii.extent = {kBcDim, kBcDim, 1};
     ii.mipLevels = 1;
-    ii.arrayLayers = kBcLayers;
+    ii.arrayLayers = bc_layers();
     ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     static const bool pool = env_on("RX_VK_BC_POOL");
@@ -875,7 +888,7 @@ bool bc_scratch2_make() {
     vi.image = bc_scratch2;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     vi.format = VK_FORMAT_R8G8B8A8_UNORM;
-    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kBcLayers};
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, bc_layers()};
     if (vkCreateImageView(dev.device, &vi, nullptr, &bc_scratch2_view) != VK_SUCCESS) {
         destroy_image(bc_scratch2, bc_scratch2_alloc);
         bc_scratch2 = VK_NULL_HANDLE, bc_scratch2_view = VK_NULL_HANDLE;
@@ -946,7 +959,7 @@ bool bc_scratch_layout(VkCommandBuffer cmd, bool resized = false) {
         b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         b.image = bc_scratch2;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kBcLayers};
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, bc_layers()};
         VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         di.imageMemoryBarrierCount = 1;
         di.pImageMemoryBarriers = &b;
@@ -961,7 +974,7 @@ bool bc_scratch_layout(VkCommandBuffer cmd, bool resized = false) {
     b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = bc_scratch;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kBcLayers};
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, bc_layers()};
     VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
@@ -979,11 +992,12 @@ void bc_scratch_idle() {
     bc_scratch = VK_NULL_HANDLE, bc_scratch_alloc = nullptr, bc_scratch_view = VK_NULL_HANDLE, bc_out = VK_NULL_HANDLE, bc_out_alloc = nullptr;
     bc_have = false, bc_scratch_fresh = false;
     const bool second = bc_scratch2 != VK_NULL_HANDLE;
-    if (second) {   // (longshot-amd: the second scratch, 128 MB, with it)
+    if (second) {   // (longshot-amd: the second scratch, 16 MB a layer, with it)
         dead.push_back(Dead{bc_last_value, bc_scratch2, bc_scratch2_alloc, {bc_scratch2_view}, {}});
         bc_scratch2 = VK_NULL_HANDLE, bc_scratch2_alloc = nullptr, bc_scratch2_view = VK_NULL_HANDLE, bc_scratch2_fresh = false;
     }
-    logf("vk: the BC3 scratch (%s) unused for %u s: given back", second ? "288 MB, both" : "160 MB", bc_idle_s());
+    logf("vk: the BC3 scratch (%u MB%s) unused for %u s: given back", (second ? 36 : 20) * bc_layers(), second ? ", both" : "",
+         bc_idle_s());
 }
 
 /// The storage view of one level (every layer) the ASTC decoder writes
@@ -1170,8 +1184,8 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 // (one layer a run: with runs of up to kBcLayers, an array's layers past the run's first came out wrong in the
                 // smaller levels, and Hyrule Field's ground, which samples the terrain's material arrays (1365 x 1365 x 90, ASTC
                 // 8x8) at those levels from a distance, had its tiles outlined in dark lines (RX 6600: none with one layer a run,
-                // nor with the arrays kept as RGBA8). RX_VK_BC_LAYERS=<n>: up to n a run)
-                static const uint32_t run = getenv("RX_VK_BC_LAYERS") ? std::clamp<uint32_t>((uint32_t)atoi(getenv("RX_VK_BC_LAYERS")), 1u, kBcLayers) : 1u;
+                // nor with the arrays kept as RGBA8). RX_VK_BC_LAYERS=<n>: up to n a run, the scratch's layers: bc_layers)
+                const uint32_t run = bc_layers();
                 while (k1 < layers.size() && k1 - k0 < run && layers[k1] == layers[k1 - 1] + 1) k1++;
                 const uint32_t n = (uint32_t)(k1 - k0);
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
@@ -1588,25 +1602,58 @@ bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool wid
     const uint8_t* p = host->gpu_ptr(tex.gpu, &avail);
     if (!p || avail < total) return false;
     const auto t0 = std::chrono::steady_clock::now();
+    // (longshot) only the parts of the storage that hold pages: a page of the guest window's memfd nothing wrote is a hole, zero,
+    // and reading it made the kernel give it a page (guest_holes.h). The 12288 x 12288 D16 shadow map, 284 of its 288 MB outside
+    // any import and never written, became guest memory that way at each Hyrule Field load on a Steam Deck (checked in 203-353 ms,
+    // against 5.5 ms for a 32 MB storage already in memory), and went to swap with the rest of the load. RX_VK_ZERO_HOLES=0: the
+    // whole storage read, as before
+    guest_holes::Extents scan;
+    bool holes_used = false;
+#if defined(__linux__)
+    {
+        static const bool holes = [] {
+            const char* e = getenv("RX_VK_ZERO_HOLES");
+            return !(e && env_value_off(e));
+        }();
+        static const int memfd = [] {
+            typedef int (*MemfdFn)(void);
+            const MemfdFn fn = (MemfdFn)dlsym(RTLD_DEFAULT, "hos_posix_guest_memfd");
+            return fn ? fn() : -1;
+        }();
+        const uint8_t* base = host->guest_base();
+        const uint64_t window = host->guest_size();
+        const bool in_window = base && p >= base && (uint64_t)(p - base) <= window && total <= window - (uint64_t)(p - base);
+        holes_used = holes && memfd >= 0 && in_window && guest_holes::fd_data_extents(memfd, (uint64_t)(p - base), total, scan);
+        if (!holes_used) scan.assign(1, {0, total});
+    }
+#else
+    scan.assign(1, {0, total});
+#endif
+    uint64_t scanned = 0;
+    for (const auto& [a, b] : scan) scanned += b - a;
     std::atomic<bool> found{false};
+    std::atomic<uint64_t> nread{0};
     const uint32_t nthreads = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u);
-    const uint64_t per = ((total / nthreads) + 4095) & ~4095ull;
-    auto part = [&](uint32_t t) {
-        const uint64_t a = std::min<uint64_t>(total, (uint64_t)t * per), b = std::min<uint64_t>(total, a + per);
-        for (uint64_t at = a; at < b && !found.load(std::memory_order_relaxed); at += 65536) {
-            const uint64_t end = std::min<uint64_t>(b, at + 65536);
-            uint64_t acc = 0;
-            uint64_t k = at;
-            for (; k + 8 <= end; k += 8) {
-                uint64_t w;
-                std::memcpy(&w, p + k, 8);
-                acc |= w;
+    auto part = [&](uint32_t t) {   // (the threads share the data, not the storage: guest_holes::share)
+        uint64_t mine = 0;
+        for (const auto& [lo, hi] : guest_holes::share(scan, t, nthreads)) {
+            for (uint64_t at = lo; at < hi && !found.load(std::memory_order_relaxed); at += 65536) {
+                const uint64_t end = std::min<uint64_t>(hi, at + 65536);
+                uint64_t acc = 0;
+                uint64_t k = at;
+                for (; k + 8 <= end; k += 8) {
+                    uint64_t w;
+                    std::memcpy(&w, p + k, 8);
+                    acc |= w;
+                }
+                for (; k < end; k++) acc |= p[k];
+                mine += end - at;
+                if (acc) found.store(true, std::memory_order_relaxed);
             }
-            for (; k < end; k++) acc |= p[k];
-            if (acc) found.store(true, std::memory_order_relaxed);
         }
+        nread.fetch_add(mine, std::memory_order_relaxed);
     };
-    if (nthreads > 1) {
+    if (nthreads > 1 && scanned) {   // (no helper threads when it is all holes: nothing to read)
         std::vector<std::thread> th;
         for (uint32_t t = 1; t < nthreads; t++) th.emplace_back([&part, t] { helper_thread_start(), part(t); });
         part(0);
@@ -1616,10 +1663,18 @@ bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool wid
     }
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     static std::atomic<int> told{0};
+    char what[64];   // (what the check read: "4 MB read, the rest holes", "512 KB read", "nothing read, all holes")
+    if (const uint64_t n = nread.load(); !n && holes_used) {
+        snprintf(what, sizeof what, "nothing read, all holes");
+    } else {
+        const bool mb = n >= (1ull << 20);
+        snprintf(what, sizeof what, "%llu %s read%s", (unsigned long long)(mb ? n >> 20 : n >> 10), mb ? "MB" : "KB",
+                 holes_used && scanned < total ? ", the rest holes" : "");
+    }
     if (found.load()) {
         if (told.fetch_add(1) < 4)
-            logf("vk: upload: %ux%u NVN %#x (%llu MB) is not all zero (checked in %.1f ms): unswizzled as before", tex.width,
-                 tex.height, tex.nvn_format, (unsigned long long)(total >> 20), ms);
+            logf("vk: upload: %ux%u NVN %#x (%llu MB) is not all zero (checked in %.1f ms, %s): unswizzled as before", tex.width,
+                 tex.height, tex.nvn_format, (unsigned long long)(total >> 20), ms, what);
         return false;
     }
     texture_resident_flush(&tex);
@@ -1633,8 +1688,8 @@ bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool wid
         vkCmdClearColorImage(upload_cmd(), tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &range);
     }
     if (told.fetch_add(1) < 4)
-        logf("vk: upload: %ux%u NVN %#x (%llu MB) is all zero: cleared on the GPU (checked in %.1f ms)", tex.width, tex.height,
-             tex.nvn_format, (unsigned long long)(total >> 20), ms);
+        logf("vk: upload: %ux%u NVN %#x (%llu MB) is all zero: cleared on the GPU (checked in %.1f ms, %s)", tex.width, tex.height,
+             tex.nvn_format, (unsigned long long)(total >> 20), ms, what);
     return true;
 }
 bool upload_inner(Texture& tex, const Ranges* dirty) {
@@ -3165,8 +3220,8 @@ bool texture_copy_into_bc(VkCommandBuffer cmd, Texture* src, uint32_t src_level,
     // another size, from an ASTC 6x6 or 10x10 source, is left to the copy's other paths)
     if (!dst->bc_resized && (((w & 3) && dx + w != ow) || ((h & 3) && dy + h != oh))) return false;
     if (!bc_scratch_layout(cmd, dst->bc_resized)) return false;
-    for (uint32_t l0 = 0; l0 < layers; l0 += kBcLayers) {
-        const uint32_t n = std::min(kBcLayers, layers - l0);
+    for (uint32_t l0 = 0; l0 < layers; l0 += bc_layers()) {   // (a run is the scratch's layers: one, as an upload's)
+        const uint32_t n = std::min(bc_layers(), layers - l0);
         full_barrier(cmd);
         const VkImageCopy cp{{VK_IMAGE_ASPECT_COLOR_BIT, src_level, src_layer + l0, n}, {sx, sy, 0},
                              {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, n}, {0, 0, 0}, {w, h, 1}};
@@ -4477,7 +4532,16 @@ void texture_frame(uint64_t completed) {
             static const int64_t idle_s = getenv("RX_VK_STAGING_IDLE_S") ? atoll(getenv("RX_VK_STAGING_IDLE_S")) : 30;
             const int64_t wait_s = linux_pressed && idle_s > 5 ? 5 : idle_s;
             const bool stale = wait_s && std::chrono::steady_clock::now() - it->used_at > std::chrono::seconds(wait_s);
-            if (idle && (it->size > kArena || kept + it->size > keep || stale || linux_entered_pressure)) {
+            // (and up to 256 MB of the ones staged into in the last 2 s stay whatever `keep` is. An arena is free for reuse once
+            // the GPU finished the submission that read it, which is after the next frame staged, so frames that stage in a row
+            // need two taking turns: with 64 MB kept, the idle one of the two went at every second present and the frame after
+            // made a 64 MB arena again, 9 to 41 ms each on a Steam Deck. RX_VK_STAGING_BURST_S=<n>: that long, 0: as before)
+            // (not while VRAM is near what the driver allows, pool_pressed as the frame before left it: on a card of 6.5 GB or
+            // less the arenas are VRAM behind the BAR, and the 192 MB more would come off what the load's textures need)
+            static const int64_t burst_s = getenv("RX_VK_STAGING_BURST_S") ? atoll(getenv("RX_VK_STAGING_BURST_S")) : 2;
+            const bool recent = burst_s && !pool_pressed && std::chrono::steady_clock::now() - it->used_at < std::chrono::seconds(burst_s);
+            const uint64_t allowed = recent ? std::max<uint64_t>(keep, 256ull << 20) : keep;
+            if (idle && (it->size > kArena || kept + it->size > allowed || stale || linux_entered_pressure)) {
                 destroy_buffer(it->buffer, it->allocation);
                 it = arenas.erase(it);
                 continue;
@@ -4490,9 +4554,11 @@ void texture_frame(uint64_t completed) {
             PROCESS_MEMORY_COUNTERS_EX pm{};
             pm.cb = sizeof pm;
             if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm, sizeof pm))
-                logf("vk: memory: working set %llu MB (peak %llu), private %llu MB, staging %llu MB in %zu arenas",
+                logf("vk: memory: working set %llu MB (peak %llu), private %llu MB, staging %llu MB in %zu arenas, %llu made "
+                     "so far (%.0f ms)",
                      (unsigned long long)(pm.WorkingSetSize >> 20), (unsigned long long)(pm.PeakWorkingSetSize >> 20),
-                     (unsigned long long)(pm.PrivateUsage >> 20), (unsigned long long)(kept >> 20), arenas.size());
+                     (unsigned long long)(pm.PrivateUsage >> 20), (unsigned long long)(kept >> 20), arenas.size(),
+                     (unsigned long long)st_arena_makes.load(), st_arena_make_ns.load() / 1e6);
         }
 #if defined(__linux__) && defined(__GLIBC__)
         // (glibc's heap: what its arenas hold free. The shader translation and the loads' decoding leave their garbage spread through

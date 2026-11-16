@@ -44,7 +44,7 @@ def main():
     mem = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     take = block(mem, "bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed)")
     # (the counter is fed by the wait itself, after it)
-    if not take.index("vk_timeline_wait(c->late_value);") < take.index("st_late_wait_ns.fetch_add("):
+    if not take.index("vk_timeline_wait(wait);") < take.index("st_late_wait_ns.fetch_add("):
         raise SystemExit("vk_memory.cpp: take_capture() does not time its wait for the GPU into st_late_wait_ns")
     tex = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     if "const TraceTimer timed{st_readback_wait_ns};" not in block(tex, "bool readback_submit_wait()"):

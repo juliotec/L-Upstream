@@ -78,6 +78,7 @@ void full_barrier(VkCommandBuffer, const char*) {}
 void logf(const char*, ...) {}
 void device_lost() { need(false, "unexpected device loss"); }
 void note_timeline_sent(uint64_t) {}
+void rec_close() {}   // (RX_VK_READBACK_EARLY: the recording finished, for the early reads' writers; none here)
 bool memory_sparse_wait(VkSemaphoreSubmitInfo*) { return false; }   // (vk_memory.cpp: no sparse mirror binds here)
 uint64_t oldest_unfinished() { return oldest; }
 #define PROF(x) ((void)0)

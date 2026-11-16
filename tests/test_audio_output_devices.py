@@ -33,7 +33,7 @@ def source_contracts():
     assert 'hos_game_path_a' not in devices
     assert re.search(r'\{TAB_AUDIO, "Speaker layout", &opts\.audio_output, 0, 3,', menu)
     assert 'audio_mono(pcm, FRAME, out_channels, rx_option(HOS_OPT_AUDIO_OUTPUT, 0) == 3);' in audio
-    assert '"vk_api.h"' in build and 'LONGSHOT_SHADER_STAMP' in build
+    assert 'translator_files.stamp(vk)' in build and 'LONGSHOT_SHADER_STAMP' in build
     assert 'DRV_QUERYFUNCTIONINSTANCEID' in devices and 'calloc(total ? total : 1' in devices
     assert 'waveOutOpen' not in devices and 'SDL_OpenAudio' not in devices
     mixer = audio[audio.index('static DWORD WINAPI renderer_main'):]

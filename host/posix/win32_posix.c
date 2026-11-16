@@ -1307,13 +1307,16 @@ int MessageBoxA(HWND w, LPCSTR text, LPCSTR caption, UINT type) {
 
 /* ---- waveOut on SDL's audio (host/hos_sdl.c): a callback takes the written blocks in order and marks them done ---- */
 /* (the executable's: this file is in the Vulkan back end too, which plays no sound and has no hos_sdl.c) */
-int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user)
+void *hos_sdl_audio_open(unsigned device, int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user)
     __attribute__((weak));
+void hos_sdl_audio_close(void *audio) __attribute__((weak));
+int hos_sdl_audio_alive(void *audio) __attribute__((weak));
 typedef struct {
     pthread_mutex_t mu;
     WAVEHDR *q[64];
     int head, count;
     DWORD pos;
+    void *audio;
 } WaveOut;
 static void wave_pull(void *user, uint8_t *out, int len) {
     WaveOut *w = (WaveOut *)user;
@@ -1333,12 +1336,14 @@ static void wave_pull(void *user, uint8_t *out, int len) {
     if (len > 0) memset(out, 0, (size_t)len);   /* (behind: silence) */
 }
 MMRESULT waveOutOpen(HWAVEOUT *out, UINT device, const WAVEFORMATEX *f, DWORD_PTR cb, DWORD_PTR inst, DWORD flags) {
-    (void)device, (void)cb, (void)inst, (void)flags;
+    (void)cb, (void)inst, (void)flags;
     /* (the same SDL as the window's and the controllers', beside the executable first: hos_sdl.c) */
-    if (!hos_sdl_audio_open) return MMSYSERR_ERROR;
+    if (!hos_sdl_audio_open || !hos_sdl_audio_close || !hos_sdl_audio_alive || !out || !f) return MMSYSERR_ERROR;
     WaveOut *w = (WaveOut *)calloc(1, sizeof *w);
-    pthread_mutex_init(&w->mu, NULL);
-    if (!hos_sdl_audio_open((int)f->nSamplesPerSec, (int)f->nChannels, f->wBitsPerSample == 16, wave_pull, w)) {
+    if (!w) return MMSYSERR_ERROR;
+    if (pthread_mutex_init(&w->mu, NULL)) { free(w); return MMSYSERR_ERROR; }
+    w->audio = hos_sdl_audio_open(device, (int)f->nSamplesPerSec, (int)f->nChannels, f->wBitsPerSample == 16, wave_pull, w);
+    if (!w->audio) {
         pthread_mutex_destroy(&w->mu);
         free(w);
         return MMSYSERR_ERROR;
@@ -1351,6 +1356,7 @@ MMRESULT waveOutUnprepareHeader(HWAVEOUT w, WAVEHDR *h, UINT size) { (void)w, (v
 MMRESULT waveOutWrite(HWAVEOUT hw, WAVEHDR *h, UINT size) {
     (void)size;
     WaveOut *w = (WaveOut *)hw;
+    if (!hos_sdl_audio_alive(w->audio)) return MMSYSERR_NODRIVER;
     pthread_mutex_lock(&w->mu);
     if (w->count >= 60) {
         WAVEHDR *old = w->q[w->head];
@@ -1376,4 +1382,13 @@ MMRESULT waveOutReset(HWAVEOUT hw) {
     pthread_mutex_unlock(&w->mu);
     return 0;
 }
-MMRESULT waveOutClose(HWAVEOUT hw) { waveOutReset(hw); return 0; }
+MMRESULT waveOutClose(HWAVEOUT hw) {
+    WaveOut *w = (WaveOut *)hw;
+    if (!w) return MMSYSERR_ERROR;
+    /* Closing synchronizes callbacks before their queue/userdata are destroyed. Holding mu would deadlock. */
+    hos_sdl_audio_close(w->audio);
+    waveOutReset(hw);
+    pthread_mutex_destroy(&w->mu);
+    free(w);
+    return MMSYSERR_NOERROR;
+}

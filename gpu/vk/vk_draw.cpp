@@ -61,6 +61,7 @@
 #include "driver_faults.h"
 #include "fallback_size_policy.h"
 #include "translate_wait.h"
+#include "precompile_save.h"   // (the pipeline cache written before the title after a long precompile)
 #include "quick_pipe.h"
 
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
@@ -730,6 +731,8 @@ void ensure_layout(Program& p) {
 // ---- the pipeline cache, on disk ----
 VkPipelineCache pcache = VK_NULL_HANDLE;
 std::string pcache_path;
+/// (longshot) What the last save on this thread did: a forced save runs on its caller's thread, which reads it (precompile_save.h)
+thread_local precompile_save::Outcome pcache_save_outcome;
 std::atomic<int64_t> pcache_built_since_save{0};
 // (longshot) The size of the cache's data when it was last read or written. The count above takes in every pipeline made
 // with the cache, the ones it already held too: the precompile's ~13,000 at each start, all found in the cache, made the
@@ -3392,6 +3395,12 @@ thread_local uint64_t grid_patch_at = UINT64_MAX;
 thread_local VkBuffer grid_patch_buf = VK_NULL_HANDLE;   // (the stream c0 went to: PR 585's streams can move on)
 
 int desc_reuse_level();   // (below: RX_VK_DESC_REUSE and the Descriptor reuse row)
+/// (longshot) Whether a uniform buffer is copied into the stream as submitted rather than bound where the game keeps it
+/// (RX_VK_UB_SNAPSHOT; the reason in uniform_range). On by default on Intel, its iGPUs and its discrete Arc cards alike
+bool ub_snapshot_wanted() {
+    if (const char* e = getenv("RX_VK_UB_SNAPSHOT")) return !env_value_off(e);
+    return dev.props.vendorID == 0x8086;
+}
 VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_t index) {
     VkDescriptorBufferInfo bi{VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
@@ -3486,28 +3495,43 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                 return {cur->stream, at, n};
             }
         // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
-        // (on by default on Intel when the pools have no VRAM mirror (vk_memory.cpp mirror_on() off): the GPU then reads the
-        // game's memory itself when it runs the frame, and by then the game has written the next frame's uniforms over the ones
-        // submitted (the per-object matrices are in memory it reuses frame after frame). The depth prepass drew the Kokiri ground
-        // with other objects' matrices, out of sight: the depth there stayed far, and the fog pass painted sky over the ground
-        // (the white forest on Intel Core Ultra iGPUs, still there after the split-submission fence fix #2419). A mirror is made
-        // at the submission and does not see the rewrite. Other GPUs with no mirror (AMD APUs, GCN since #2343, RX_VK_MIRROR=0)
-        // keep the default off until it is measured there. RX_VK_UB_SNAPSHOT=0: off)
-        static const bool snapshot = [] {
-            const char *e = getenv("RX_VK_UB_SNAPSHOT");
-            return e ? env_on("RX_VK_UB_SNAPSHOT") : dev.props.vendorID == 0x8086 && !pools_mirrored();
-        }();
-        BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
+        // (on by default on Intel: when the GPU reads the game's memory itself as it runs the frame, the game has by then
+        // written the next frame's uniforms over the ones submitted (the per-object matrices are in memory it reuses frame
+        // after frame). The depth prepass drew the Kokiri ground with other objects' matrices, out of sight: the depth there
+        // stayed far, and the fog pass painted sky over the ground (the white forest on Intel Core Ultra iGPUs, still there
+        // after the split-submission fence fix #2419). An Arc B580 (101.9154), whose pools have VRAM mirrors, showed the same
+        // (the forest floor and the treehouses gone to sky, white glowing blocks and pots that came and went) for another reason:
+        // bind_descriptors' delta push. There a push that carries some of a draw's uniform buffer writes and leaves others out
+        // as unchanged draws with wrong data; the snapshot's copies are new at every draw, so every one of them is pushed (with
+        // the snapshot off, RX_VK_PUSH_ALL=1 draws it right too: PR 446, ub_snapshot_wanted). Other GPUs
+        // with no mirror (AMD APUs, GCN since #2343, RX_VK_MIRROR=0) keep the default off until it is measured there.
+        // RX_VK_UB_SNAPSHOT=0: off)
+        static const bool snapshot = ub_snapshot_wanted();
+        // (but a range the GPU writes earlier in this submission, in any of its parts, or in an earlier submission the GPU
+        // has not done yet, is bound in place, where the GPU reads it after that write: guest memory and the captures, which
+        // the copy is made from, do not have the GPU's bytes yet. Not asked while a parallel replay records segments
+        // (RX_VK_PARALLEL), whose writes are not noted: memory_gpu_written)
+        const int gpu_written = snapshot && memory_gpu_writes_any() && !par_active.load(std::memory_order_relaxed)
+                                    ? memory_gpu_written(u.addr < (1ull << 40) ? u.addr : host->gpu_guest(u.addr), n) : 0;
+        BufferRef b = snapshot && !gpu_written ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
+        // (the guard's: after a write in this submission, then in an earlier one; bound in place, copied all the same)
+        static std::atomic<int64_t> after_gpu[2][2];
+        if (gpu_written) after_gpu[gpu_written - 1][b && b.offset % align == 0 ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
         if (at == UINT64_MAX) return bi;
         FINE_N(FC_UBO_STREAM, 1);
-        // (as the submission had it, not as the game has rewritten it since: the captures' pages)
+        // (as the submission had it, not as the game has rewritten it since: the captures' pages. A range the GPU wrote that
+        // can't be bound in place, unaligned or outside the pools, is copied all the same, without that write, as before)
         memory_read_as_submitted(u.addr, cur->mapped + at, n);
         static int64_t copied;
         if (++copied % 5000 == 1)
-            logf("vk: uniform buffer %#llx +%#llx copied into the stream (%s; %lld so)", (unsigned long long)u.addr,
-                 (unsigned long long)n, b ? "unaligned" : "outside the pools", (long long)copied);
+            logf("vk: uniform buffer %#llx +%#llx copied into the stream (%s; %lld so; after a GPU write in the submission: "
+                 "%lld bound in place, %lld copied all the same; after one in a submission still on the GPU: %lld bound in "
+                 "place, %lld copied all the same)", (unsigned long long)u.addr, (unsigned long long)n,
+                 b ? "unaligned" : snapshot && !gpu_written ? "a snapshot" : "outside the pools", (long long)copied,
+                 (long long)after_gpu[0][0].load(std::memory_order_relaxed), (long long)after_gpu[0][1].load(std::memory_order_relaxed),
+                 (long long)after_gpu[1][0].load(std::memory_order_relaxed), (long long)after_gpu[1][1].load(std::memory_order_relaxed));
         return {cur->stream, at, n};
     }
     return bi;
@@ -3864,6 +3888,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     if (!sized && end > addr)
                         size = std::min<uint64_t>(end - addr, d.is_written ? (1ull << 20) : (8ull << 20)) & ~3ull, bare = true;
                 }
+                if (d.is_written) memory_writer_key(p.key);   // (RX_VK_LOG_RB_WRITERS: the program a written page is from)
                 const uint64_t base = addr & ~(salign - 1);
                 uint64_t n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
                 {   // (longshot, RX_VK_SSBO_STRETCH=1: a read-only buffer bound to its pool's end, up to 64 MB. Lichii bf3f395c9: the grass's
@@ -4218,6 +4243,10 @@ struct Pushed {
 TLS_OBJECT(pushed, std::array<Pushed, 2>)   // [graphics, compute]
 } // namespace
 std::string state_list_snapshot(bool* present) { return state_list_bytes(present); }   // (vk_draw.h: the menu's)
+bool uniform_snapshot_on() {   // (vk_internal.h: ub_snapshot_wanted's answer for vk_memory.cpp's guard and vk_replay.cpp's parallel replay)
+    static const bool on = ub_snapshot_wanted();
+    return on;
+}
 /// (longshot) A compute pipeline of the back end's own, made elsewhere (vk_fsr3.cpp), through the pipeline cache the game's are kept
 /// in across runs (longshot_vk_pipelines.bin), as theirs are: in play through the play caches (create_cached), so that it does not grow
 /// the start's cache; before the cache is loaded, with none. (Outside the unnamed namespace: vk_fsr3.cpp links to it)
@@ -7714,7 +7743,18 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
     // as they were: stale addresses, like the one RADV faulted on in Hyrule Field (#792))
     const bool slotgen = desc_slotgen_on();
-    const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
+    // (RX_VK_READBACK_EARLY, once a read of pages written in place has waited: a program that writes a storage buffer builds its
+    // descriptors at each draw, so each write is noted
+    // with the part it is recorded in (vk_memory.cpp early_in_place_write); a draw that kept the set before noted nothing, and a
+    // read could have gone on after an earlier writer's part)
+    static const bool early = readback_early_on();
+    const bool early_rebind = early && memory_readback_early_active() && [&] {
+        for (const Stage& st : p.stages)
+            for (const auto& d : st.info.storage_buffers_descriptors)
+                if (d.is_written) return true;
+        return false;
+    }();
+    const bool same_desc = !no_reuse && !early_rebind && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
                            last_desc_ub == ub_gen && last_desc_dgen == dgen &&
                            (slotgen ? last_desc_fp_on && desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
                            (!p.fallback || dw().prog == &p);
@@ -9356,8 +9396,8 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
         prepare_saving_now.store(true, std::memory_order_relaxed);
         pipeline_cache_save(true);   // (in the file before the marker says they are there)
         prepare_saving_now.store(false, std::memory_order_relaxed);
-        logf("vk: precompile: the pipeline cache written out in %.1f s",
-             std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count());
+        logf("vk: precompile: the pipeline cache %s, in %.0f ms", precompile_save::said(pcache_save_outcome).c_str(),
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
         // (not by the preparation's own process: warm_bounded.h leaves_marker)
         if (warm_bounded::leaves_marker(prepare_only, all, prepare_stopped())) precompile_built_write(total);
         crash_markers::end(warming);
@@ -9447,6 +9487,60 @@ void precompile_at_create() {
     predicted_check();
 }
 
+/// (longshot) Whether the driver's own shader cache has lost what the notes name, at a start that would load at create calls: a
+/// sample of the notes asked without a compile, of the driver alone (an empty scratch pipeline cache: on NVIDIA ours only refers
+/// to the driver's). NVIDIA's cache is shared with every other game and evicts what it holds past its size, and a driver update
+/// empties it; the marker (precompile_built_write) still said every note had been built, so each listed pipeline was compiled in
+/// play with its draws left out (the gate route with NVIDIA's cache pointed at an empty folder: 10,263 in no cache, 702,312 draws
+/// left out in 140 s, 21 s of waits), and only the next start built them before the title (load_default's marker, which keeps
+/// them all for good). Now the warm pass runs again at this start, behind its progress. RX_VK_COLD_CHECK=0: not asked
+bool notes_lost_by_driver() {
+    static const bool off = getenv("RX_VK_COLD_CHECK") && atoi(getenv("RX_VK_COLD_CHECK")) == 0;
+    if (off || !dev.vk13.pipelineCreationCacheControl) return false;
+    constexpr size_t kSample = 48;
+    const std::vector<NoteRef> refs = pipe_notes_refs();
+    if (refs.size() < kSample) return false;
+    FILE* f = fopen(pipe_notes_path().c_str(), "rb");
+    if (!f) return false;
+    const auto t0 = std::chrono::steady_clock::now();
+    VkPipelineCacheCreateInfo cci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    VkPipelineCache scratch = VK_NULL_HANDLE;
+    if (vkCreatePipelineCache(dev.device, &cci, nullptr, &scratch) != VK_SUCCESS) scratch = VK_NULL_HANDLE;
+    // (the thread's driver-only asking, the scratch cache and the file put back and let go however this ends: a throw from a
+    // borrow or a build would otherwise leave the thread asking the scratch cache's driver alone from then on)
+    struct Restore {
+        FILE* f;
+        VkPipelineCache scratch;
+        ~Restore() {
+            driver_cache_only = false, driver_ask_cache = VK_NULL_HANDLE;
+            if (scratch) vkDestroyPipelineCache(dev.device, scratch, nullptr);
+            fclose(f);
+        }
+    } restore{f, scratch};
+    driver_cache_only = true, driver_ask_cache = scratch;
+    size_t asked = 0, cold_n = 0;
+    auto note = std::make_unique<PipeNote>();
+    for (size_t i = 0; i < kSample; i++) {
+        const NoteRef& r = refs[i * refs.size() / kSample];
+        if (!pipe_note_at(f, r.at, note.get())) continue;
+        program_cache_borrow(note->prog, [&](Program& p) {
+            if (p.variant != note->variant) return;
+            ensure_layout(p);
+            bool cold = false;
+            const VkPipeline pl = build_graphics(p, note->s, note_targets(*note),
+                                                 pipeline_topology(p, (VkPrimitiveTopology)note->topo), -1, &cold);
+            if (pl) asked++, vkDestroyPipeline(dev.device, pl, nullptr);
+            else if (cold) asked++, cold_n++;
+        });
+    }
+    const bool lost = asked >= kSample / 3 && cold_n * 2 > asked;
+    logf("vk: the driver's shader cache has %zu of %zu noted pipelines asked (a sample, in %.0f ms)%s", asked - cold_n, asked,
+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+         lost ? ": it lost them (a driver update, or evicted): they are built again before the title (RX_VK_COLD_CHECK=0: not asked)"
+              : "");
+    return lost;
+}
+
 void precompile_run(void (*progress)(size_t done, size_t total)) {
     // (longshot, RX_VK_LOAD=create: only once every note has been built into the pipeline cache, so that a load from the
     // caches alone never meets a pipeline the prepare should have compiled. The first start after a preparation builds them
@@ -9454,6 +9548,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     if (programs_load_at_create()) {
         // (the pipeline cache's files dropped at this start, pcache_drop_stale: what the marker says is in them is gone)
         if (pcache_drop_stale()) remove(precompile_built_path().c_str());
+        // (and where the driver's own cache lost what the marker says was built: notes_lost_by_driver)
+        if (precompile_covers_notes() && !env_on("LONGSHOT_PREPARE_ONLY") && notes_lost_by_driver())
+            remove(precompile_built_path().c_str());
         if (!precompile_covers_notes()) precompile_warm(progress);
         if (precompile_covers_notes()) return precompile_at_create();
         // (the window was closed in it; or this is the preparation's own process, which leaves no marker: its warm filled
@@ -9647,6 +9744,19 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
          cs_cached + cs_compiled, cs_cached, cs_compiled, cs_failed);
     // (every note built, by a run that got to its end: RX_VK_LOAD=create may load them from the caches from the next start on)
     if (!gone_on && !prepare_stopped()) precompile_built_write(graphics_n);
+    // (pipelines that took this long were compiled, not found: written before the title, the start-up screen saying so, as
+    // precompile_warm does under RX_VK_LOAD=create; in play it would wait for 64 MB of growth: precompile_save.h)
+    static const int save_s = precompile_save::after_s(getenv("RX_VK_PRECOMPILE_SAVE_S"));
+    const double build_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - built0).count();
+    if (precompile_save::due(build_s, save_s, gone_on, prepare_stopped(), env_on("LONGSHOT_PREPARE_ONLY"))) {
+        const auto s0 = std::chrono::steady_clock::now();
+        prepare_saving_now.store(true, std::memory_order_relaxed);
+        pipeline_cache_save(true);
+        prepare_saving_now.store(false, std::memory_order_relaxed);
+        logf("vk: precompile: its pipelines took %.0f s (compiled, not found in the caches): the pipeline cache %s, in %.0f ms, "
+             "before the title (RX_VK_PRECOMPILE_SAVE_S=0: not)", build_s, precompile_save::said(pcache_save_outcome).c_str(),
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
+    }
     predicted_check();
 }
 
@@ -10823,7 +10933,11 @@ void pipeline_cache_between_builds() {
     pipeline_cache_save(false);
 }
 void pipeline_cache_save(bool force) {
+    using Outcome = precompile_save::Outcome;
+    pcache_save_outcome = {};
     const bool between = pcache_save_between;
+    if (!pcache) pcache_save_outcome.what = Outcome::kNoCache;
+    else if (pcache_no_save) pcache_save_outcome.what = Outcome::kOff;
     if (!pcache || pcache_no_save || (!force && !between && pcache_built_since_save < 32)) return;
     const int64_t built = pcache_built_since_save.exchange(0);
     // (on a thread of its own unless forced, at exit: ~100 MB fetched and written took the replay thread 100+ ms at
@@ -10871,8 +10985,11 @@ void pipeline_cache_save(bool force) {
                 pcache_built_since_save += built;   // (still to save: the next request writes them, not only after 32 more)
                 if (serial_builds_on()) pcache_save_owed = true;
             };
-            bool write = fetch(&n, nullptr) && n && n != pcache_saved_size;
+            const bool sized = fetch(&n, nullptr);
+            bool write = sized && n && n != pcache_saved_size;
             if (!had) return put_off_now();
+            pcache_save_outcome.what = !sized || !n ? Outcome::kFetchFailed : write ? Outcome::kNotRun : Outcome::kSame;
+            pcache_save_outcome.bytes = n;
             if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
                 write = false;
                 static std::atomic<int> told{0};
@@ -10882,15 +10999,21 @@ void pipeline_cache_save(bool force) {
             }
             if (write) {
                 auto data = PipelineCacheFile::writable(pcache_path, n);
-                if (!data.empty() && fetch(&n, data.data()) && data.publish(n)) {
+                const bool fetched = !data.empty() && fetch(&n, data.data());
+                if (fetched && data.publish(n)) {
                     pcache_saved_size = n;
+                    pcache_save_outcome.what = Outcome::kWritten, pcache_save_outcome.bytes = n;
                     logf("vk: pipeline cache saved (%zu KB)%s", n >> 10, between ? ", between two serial builds" : "");
                 } else if (!had) {
                     return put_off_now();   // (the size had, the data not: put off as well, not lost)
+                } else {
+                    pcache_save_outcome.what = data.empty() || fetched ? Outcome::kWriteFailed : Outcome::kFetchFailed;
+                    pcache_save_outcome.detail = pcache_path;
                 }
             }
             put_off = 0;
         } catch (const std::exception& e) {
+            pcache_save_outcome.what = Outcome::kError, pcache_save_outcome.detail = e.what();
             logf("vk: pipeline cache save failed: %s", e.what());
         }
         try {

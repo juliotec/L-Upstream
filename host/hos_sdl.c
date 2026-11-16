@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include "audio_output_devices.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -370,10 +372,131 @@ int hos_sdl_poll_event(HosSdlEvent *e) {
 }
 
 /* ---- sound ---- */
+
+/* SDL's physical IDs and list positions are not durable identities. Intern backend-qualified names instead:
+   a token never changes meaning during this process, even if enumeration reorders while a stream is opening.
+   SDL exposes no persistent hardware ID here. A renamed device is missing; duplicate names are ambiguous. */
+typedef struct PlaybackEndpoint {
+    struct PlaybackEndpoint *next;
+    char id[HOS_OUTPUT_ID_CAP], name[HOS_OUTPUT_NAME_CAP];
+    unsigned token;
+    uint32_t physical;
+    int present;
+} PlaybackEndpoint;
+static PlaybackEndpoint *playback_endpoints;
+static unsigned playback_next;
+static int playback_loaded, playback_initialized;
+static SRWLOCK playback_lock = SRWLOCK_INIT;
+static struct {
+    void *Devices, *Name, *Driver, *Free, *Close, *Destroy, *Format, *DefaultInfo, *Status;
+} playback;
+
+static int playback_ready(void) {   /* playback_lock held */
+    if (playback_loaded) return 1;
+    if (!hos_sdl_load()) return 0;
+    if (!playback_initialized) {
+        if (!hos_sdl_init(HOS_SDL_AUDIO)) return 0;
+        playback_initialized = 1;
+    }
+    HMODULE m = load_one(version == 3 ? "SDL3.dll" : "SDL2.dll");
+    if (!m) return 0;
+#define PLAY_GET(field, symbol) (*(FARPROC *)&playback.field = GetProcAddress(m, symbol))
+    PLAY_GET(Devices, version == 3 ? "SDL_GetAudioPlaybackDevices" : "SDL_GetNumAudioDevices");
+    PLAY_GET(Name, "SDL_GetAudioDeviceName");
+    PLAY_GET(Driver, "SDL_GetCurrentAudioDriver");
+    PLAY_GET(Free, "SDL_free");
+    PLAY_GET(Close, "SDL_CloseAudioDevice");
+    PLAY_GET(Destroy, "SDL_DestroyAudioStream");
+    PLAY_GET(Format, version == 3 ? "SDL_GetAudioDeviceFormat" : "SDL_GetAudioDeviceSpec");
+    PLAY_GET(DefaultInfo, "SDL_GetDefaultAudioInfo");
+    PLAY_GET(Status, "SDL_GetAudioDeviceStatus");
+#undef PLAY_GET
+    playback_loaded = playback.Devices && playback.Name && playback.Driver && playback.Free &&
+                      (version == 3 ? playback.Destroy != NULL : playback.Close != NULL);
+    return playback_loaded;
+}
+static const char *playback_name(uint32_t physical) {
+    return version == 3 ? ((const char *(*)(uint32_t))playback.Name)(physical)
+                        : ((const char *(*)(int, int))playback.Name)((int)physical, 0);
+}
+static int playback_refresh(void) {   /* playback_lock held; no stream opened */
+    for (PlaybackEndpoint *p = playback_endpoints; p; p = p->next) p->present = 0;
+    if (!playback_ready()) return 0;
+    const char *driver = ((const char *(*)(void))playback.Driver)();
+    if (!driver) return 0;
+    int total = 0, count = 0;
+    uint32_t *all = NULL;
+    if (version == 3) all = ((uint32_t *(*)(int *))playback.Devices)(&total);
+    else total = ((int (*)(int))playback.Devices)(0);
+    for (int i = 0; i < total && (version == 2 || all); i++) {
+        const uint32_t physical = version == 3 ? all[i] : (uint32_t)i;
+        const char *name = playback_name(physical);
+        char id[HOS_OUTPUT_ID_CAP], valid[HOS_OUTPUT_ID_CAP];
+        if (!name || !*name || strlen(name) >= HOS_OUTPUT_NAME_CAP) continue;
+        int n = snprintf(id, sizeof id, "sdl:%s:%s", driver, name);
+        if (n < 0 || (size_t)n >= sizeof id || !audio_output_copy_id(valid, sizeof valid, id)) continue;
+        int duplicates = 0;
+        for (int j = 0; j < total; j++) {
+            const char *other = playback_name(version == 3 ? all[j] : (uint32_t)j);
+            if (other && !strcmp(name, other)) duplicates++;
+        }
+        if (duplicates != 1) continue;   /* opening SDL2 by this name would silently select the first */
+        PlaybackEndpoint *p;
+        for (p = playback_endpoints; p && strcmp(p->id, id); p = p->next) {}
+        if (!p) {
+            if (playback_next >= INT_MAX) continue;
+            p = (PlaybackEndpoint *)calloc(1, sizeof *p);
+            if (!p) continue;
+            strcpy(p->id, id), strcpy(p->name, name);
+            p->token = playback_next++;
+            p->next = playback_endpoints, playback_endpoints = p;
+        }
+        p->physical = physical, p->present = 1;
+        count++;
+    }
+    if (all) ((void (*)(void *))playback.Free)(all);
+    return count;
+}
+int hos_sdl_output_count(void) {
+    AcquireSRWLockExclusive(&playback_lock);
+    int count = playback_refresh();
+    ReleaseSRWLockExclusive(&playback_lock);
+    return count;
+}
+int hos_sdl_output_info(int index, char *id, int id_capacity, char *name, int name_capacity) {
+    if (index < 0 || !id || !name || id_capacity <= 0 || name_capacity <= 0) return 0;
+    int ok = 0;
+    AcquireSRWLockShared(&playback_lock);
+    for (PlaybackEndpoint *p = playback_endpoints; p; p = p->next) if (p->present && index-- == 0) {
+        if (strlen(p->name) < (size_t)name_capacity && audio_output_copy_id(id, (size_t)id_capacity, p->id)) {
+            strcpy(name, p->name);
+            ok = 1;
+        }
+        break;
+    }
+    ReleaseSRWLockShared(&playback_lock);
+    return ok;
+}
+int hos_sdl_output_resolve(const char *id) {
+    int token = -1;
+    if (!id || !*id) return -1;
+    AcquireSRWLockExclusive(&playback_lock);
+    playback_refresh();
+    for (PlaybackEndpoint *p = playback_endpoints; p; p = p->next)
+        if (p->present && !strcmp(p->id, id)) { token = (int)p->token; break; }
+    ReleaseSRWLockExclusive(&playback_lock);
+    return token;
+}
 typedef struct {
     void (*pull)(void *user, uint8_t *out, int len);
     void *user;
     int frame;   /* bytes a sample frame (all channels) */
+    void *stream;
+    uint32_t device;
+    unsigned token;
+    uint32_t physical;
+    uint64_t checked;
+    int alive;
 } Pull;
 static void pull3(void *p, void *stream, int want, int total) {   /* (SDL3: a stream asks for want more bytes) */
     (void)total;
@@ -392,19 +515,36 @@ static void pull2(void *p, uint8_t *out, int len) {   /* (SDL2: a device callbac
     const Pull *s = (const Pull *)p;
     s->pull(s->user, out, len);
 }
-int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user) {
-    if (!hos_sdl_load()) return 0;
+void *hos_sdl_audio_open(unsigned device, int freq, int channels, int s16,
+                        void (*pull)(void *user, uint8_t *out, int len), void *user) {
+    uint32_t physical = 0xFFFFFFFFu;
+    const char *name = NULL;
+    AcquireSRWLockExclusive(&playback_lock);
+    int ready = playback_ready();
+    if (ready && device != UINT_MAX) {
+        playback_refresh();
+        ready = 0;
+        for (PlaybackEndpoint *p = playback_endpoints; p; p = p->next) if (p->token == device && p->present) {
+            physical = p->physical, name = p->name;   /* interned strings live for the process */
+            ready = 1;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&playback_lock);
+    if (!ready) return NULL;
     const uint16_t format = s16 ? 0x8010 /* S16LE */ : 0x8120 /* F32LE */;   /* (both's numbers) */
     const char *env_samples = getenv("SDL_AUDIO_DEVICE_SAMPLE_FRAMES");
     if (version == 3 && !env_samples) hos_sdl_hint("SDL_AUDIO_DEVICE_SAMPLE_FRAMES", "480");   /* (SDL2's device buffer below) */
-    if (!hos_sdl_init(HOS_SDL_AUDIO)) return 0;
     Pull *p = (Pull *)calloc(1, sizeof *p);
+    if (!p) return NULL;
     p->pull = pull, p->user = user, p->frame = channels * (s16 ? 2 : 4);
+    p->token = device, p->physical = physical, p->alive = 1;
     if (version == 3) {
         const struct { uint32_t format; int channels, freq; } spec = {format, channels, freq};
-        void *stream = CALL(void *(*)(uint32_t, const void *, void (*)(void *, void *, int, int), void *), OpenAudioDeviceStream)(
-            0xFFFFFFFFu /* the default output */, &spec, pull3, p);
-        if (stream && CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(stream)) return 1;
+        p->stream = CALL(void *(*)(uint32_t, const void *, void (*)(void *, void *, int, int), void *), OpenAudioDeviceStream)(
+            physical, &spec, pull3, p);
+        if (p->stream && CALL(_Bool (*)(void *), ResumeAudioStreamDevice)(p->stream)) return p;
+        if (p->stream) ((void (*)(void *))playback.Destroy)(p->stream);
         free(p);
         return 0;
     }
@@ -422,29 +562,68 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
     want.samples = (uint16_t)(env_samples && atoi(env_samples) > 0 ? atoi(env_samples) : 512);   /* (SDL2 asks for a power of two) */
     want.callback = pull2, want.userdata = p;
     /* (no changes allowed: SDL converts to what the device wants) */
-    const uint32_t dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(NULL, 0, &want, &have, 0);
+    const uint32_t dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(name, 0, &want, &have, 0);
     if (!dev) {
         free(p);
         return 0;
     }
     CALL(void (*)(uint32_t, int), PauseAudioDevice)(dev, 0);
-    return 1;
+    p->device = dev;
+    return p;
+}
+void hos_sdl_audio_close(void *audio) {
+    Pull *p = (Pull *)audio;
+    if (!p) return;
+    /* Both close operations wait for an in-flight callback. Do not hold the WaveOut queue mutex here. */
+    if (p->stream) ((void (*)(void *))playback.Destroy)(p->stream);
+    else ((void (*)(uint32_t))playback.Close)(p->device);
+    free(p);
+}
+int hos_sdl_audio_alive(void *audio) {
+    Pull *p = (Pull *)audio;
+    if (!p) return 0;
+    uint64_t now = (uint64_t)GetTickCount64();
+    if (now - p->checked < 1000) return p->alive;
+    p->checked = now;
+    if (p->token != UINT_MAX) {
+        AcquireSRWLockExclusive(&playback_lock);
+        playback_refresh();
+        p->alive = 0;
+        for (PlaybackEndpoint *e = playback_endpoints; e; e = e->next)
+            if (e->token == p->token && e->present && (version == 2 || e->physical == p->physical)) {
+                p->alive = 1;
+                break;
+            }
+        ReleaseSRWLockExclusive(&playback_lock);
+    }
+    if (version == 2 && playback.Status &&
+        ((int (*)(uint32_t))playback.Status)(p->device) == 0) p->alive = 0;   /* SDL_AUDIO_STOPPED */
+    return p->alive;
 }
 /* SDL3's format of the default device; SDL2's default audio info (2.24 on: the bundled 2.32 has it). Looked up here,
    not at load: an SDL without it still plays, in stereo. */
 int hos_sdl_audio_channels(void) {
-    if (!hos_sdl_load() || !hos_sdl_init(HOS_SDL_AUDIO)) return 2;
-    HMODULE m = load_one(version == 3 ? "SDL3.dll" : "SDL2.dll");   /* (the one loaded: the same handle back) */
-    if (!m) return 2;
+    char wanted[HOS_OUTPUT_ID_CAP] = {0};
+#ifndef _WIN32
+    unsigned generation = 0;
+    const char *forced = getenv("HOS_AUDIO_DEVICE");
+    if (!forced || !*forced) hos_audio_output_preference(wanted, sizeof wanted, &generation);
+#endif
+    AcquireSRWLockExclusive(&playback_lock);
+    if (!playback_ready()) { ReleaseSRWLockExclusive(&playback_lock); return 2; }
+    uint32_t physical = UINT32_MAX;
+    if (*wanted) {
+        playback_refresh();
+        for (PlaybackEndpoint *p = playback_endpoints; p; p = p->next)
+            if (p->present && !strcmp(p->id, wanted)) { physical = p->physical; break; }
+    }
     int n = 0;
     if (version == 3) {
-        void *get = (void *)GetProcAddress(m, "SDL_GetAudioDeviceFormat");
         struct { uint32_t format; int channels, freq; } spec = {0, 0, 0};
         int frames = 0;
-        if (get && ((_Bool (*)(uint32_t, void *, int *))get)(0xFFFFFFFFu /* the default output */, &spec, &frames))
+        if (playback.Format && ((_Bool (*)(uint32_t, void *, int *))playback.Format)(physical, &spec, &frames))
             n = spec.channels;
     } else {
-        void *get = (void *)GetProcAddress(m, "SDL_GetDefaultAudioInfo"), *release = (void *)GetProcAddress(m, "SDL_free");
         struct {
             int freq;
             uint16_t format;
@@ -455,9 +634,14 @@ int hos_sdl_audio_channels(void) {
         } spec;
         memset(&spec, 0, sizeof spec);
         char *name = NULL;
-        if (get && ((int (*)(char **, void *, int))get)(&name, &spec, 0) == 0) n = spec.channels;
-        if (name && release) ((void (*)(void *))release)(name);
+        if (physical != UINT32_MAX) {
+            if (playback.Format && ((int (*)(int, int, void *))playback.Format)((int)physical, 0, &spec) == 0)
+                n = spec.channels;
+        } else if (playback.DefaultInfo && ((int (*)(char **, void *, int))playback.DefaultInfo)(&name, &spec, 0) == 0)
+            n = spec.channels;
+        if (name) ((void (*)(void *))playback.Free)(name);
     }
+    ReleaseSRWLockExclusive(&playback_lock);
     return n > 0 ? n : 2;
 }
 

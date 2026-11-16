@@ -29,6 +29,8 @@ import kit
 import nso2  # noqa: F401  (DT_RELR)
 import insn
 import fastfp   # (longshot) fast float regions (A64_FASTFP): its emit_function, under lift_fixes' and poll's wrappers
+import dead_flags   # (longshot) the kit's dead_flags, answered at once for a function that writes no flag
+import walk   # (longshot) the kit's walk, with one shared entry per plain op's word
 import lift_fixes
 import suyu_rt_fixes
 import chunks
@@ -44,6 +46,8 @@ import a64_rtgen
 
 insn.install()
 fastfp.install()   # (before lift_fixes and poll wrap emit_function: theirs go around this one)
+dead_flags.install()
+walk.install()
 lift_fixes.install()
 suyu_rt_fixes.install()
 
@@ -180,23 +184,27 @@ def main():
     L.discover(max_insns=a.max_func)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
     last[0] = time.time()
-    total = coverage(L, img, img_dir)
-    took("coverage")
-    jt = L.stats
-    print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
-        len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
-    if jt["jt_table_reg_reused"]:
-        print("jump tables whose table register is reused before the br: %d" % jt["jt_table_reg_reused"])
-    for pc, reg in sorted(L.jt_missing.items()):
-        print("  BR without a table: %#x (x%d)" % (pc, reg))
-    with open(os.path.join(img_dir, "functions.json"), "w") as f:
-        json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
-    if a.write:
+
+    def report():   # (reads the functions, writes none: with --write, run while the emit's new processes already work)
+        coverage(L, img, img_dir)
+        took("coverage")
+        jt = L.stats
+        print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
+            len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
+        if jt["jt_table_reg_reused"]:
+            print("jump tables whose table register is reused before the br: %d" % jt["jt_table_reg_reused"])
+        for pc, reg in sorted(L.jt_missing.items()):
+            print("  BR without a table: %#x (x%d)" % (pc, reg))
+        with open(os.path.join(img_dir, "functions.json"), "w") as f:
+            json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
+    if not a.write:
+        report()
+    else:
         if not a.no_polls:
             poll.install()
         gen = os.path.join(out_dir, "gen")
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
-                             counters=[] if a.no_polls else [poll.stats], took=took)
+                             counters=[] if a.no_polls else [poll.stats], took=took, beside=report)
         import oot_patches
         main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
         def tables():   # (the runtime tables and the standalone files: they read the image, not the lifted C)

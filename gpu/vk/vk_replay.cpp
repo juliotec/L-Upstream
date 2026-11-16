@@ -1385,6 +1385,7 @@ namespace {
 /// their overlay copies)
 void flush_ub_updates(VkCommandBuffer cmd) {
     if (ub_first_of_recording >= ub_updates.size()) return;
+    memory_writer_note(kRbWriterUb, 0);   // (RX_VK_LOG_RB_WRITERS: what these write is the uniform updates')
     GprofSpan gp(cmd, "ubupd (the stream's uniform updates -> guest memory, with its barriers)");
     gp.items = (int)(ub_updates.size() - ub_first_of_recording);
     full_barrier(cmd);
@@ -1403,6 +1404,9 @@ void maybe_split(VkCommandBuffer& cmd);
 // (longshot) A part's end that waits for the next plain draw (maybe_split, split_part): see part_ends_before_draw
 void split_part(VkCommandBuffer& cmd);
 bool part_end_wanted = false;
+void early_split(VkCommandBuffer& cmd);   // (RX_VK_READBACK_EARLY: a part's end after a readback's writer)
+bool early_split_pending = false;   // (RX_VK_READBACK_EARLY: a writer of a waited-for range is in the part being recorded)
+extern int64_t part_work;
 extern uint64_t rec_cur_value;   // (the submission being recorded: the occlusion queries' value)
 
 /// The handles already stored, so a rebind of the same ones does not rebuild descriptors
@@ -1427,10 +1431,14 @@ bool op_is_work(uint32_t op) {
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
+    // (RX_VK_LOG_RB_WRITERS, RX_VK_READBACK_EARLY: each op said, as the writer of what it writes)
+    static const bool rb_writers = rb_writers_on(), early = readback_early_on(), note_ops = rb_writers || early;
     for (;;) {
         if (p == end) return;
         nvn_op_hdr h;
         std::memcpy(&h, p, sizeof h);
+        if (note_ops && !dry) memory_writer_note(h.op, 0);
+        bool split_after = false;   // (RX_VK_READBACK_EARLY: an update of uniforms the CPU reads back: its part ends after it)
         const uint8_t* a = p + 8;
         const uint32_t avail = h.size - 8;
         // (the part's end maybe_split asked for: here, right before a draw with a vertex stage that will be recorded, so that
@@ -1643,6 +1651,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 ub_list_epoch.fetch_add(1, std::memory_order_relaxed);
                 ub_gen++;
                 st_ub_updates++;
+                if (early && !dry && memory_rb_waited_range(host->gpu_guest(u.dst), u.size)) split_after = true;
             }
             break;
         }
@@ -1972,8 +1981,17 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 if (s.render_enabled && (compute || !s.raster_discard)) dry_mark_written(s, compute, dry_work == 0);
                 if (++dry_work % 64 == 0) par_points.push_back({p + h.size, s, ub_updates.size(), par_conds.size(), dry_work});
             } else if (!worker) {
+                if (rb_writers) memory_count_work();
                 maybe_split(cmd);
             }
+        }
+        // (RX_VK_READBACK_EARLY: this op wrote a page the CPU reads back and has waited for: its part ends here, so the read
+        // waits for the GPU's work up to its writer, not for the ~120 draws a part runs on to. At least early_gap draws into
+        // a part: writers in a row (four dispatches within ten draws) end one part, not four, each end a submit and barriers)
+        if (early && !dry && !worker) {
+            static const int64_t early_gap = std::max<int64_t>(0, env_int("RX_VK_READBACK_EARLY_GAP", 16));
+            if (split_after || memory_split_wanted()) early_split_pending = true;
+            if (early_split_pending && part_work >= early_gap) early_split(cmd);
         }
         p += h.size;
     }
@@ -1987,6 +2005,15 @@ Recording* rec_cur = nullptr;
 uint64_t rec_cur_value = 0;
 int rec_parts = 0;
 int64_t part_work = 0;
+// (RX_VK_READBACK_EARLY) the value the recording being made writes back with (rec_cur_value while rec_cur is set, 0 between
+// recordings), for the other threads: a read whose writer's submission is still being recorded has not seen all of its
+// writers yet (early_recorded_wait). Set where a recording opens (rec_open) and cleared where it is finished (rec_close)
+std::atomic<uint64_t> rec_open_tag{0};
+bool rec_tags_on() { return readback_early_on() || rb_writers_on(); }   // (their only readers: unset, nothing is kept)
+void rec_open(uint64_t tag) {
+    if (rec_tags_on()) rec_open_tag.store(tag, std::memory_order_release);
+}
+void rec_close();   // (below, with the recordings' timeline it wakes the waiters of)
 // (a slot is used again once its own submit is done (recording_wait): a submission's parts may outnumber the slots,
 // which a wait on the timeline value it signals at its end kept them from. A parallel replay's segments are recorded
 // at once, kMaxBatch of them at most: fewer than the slots)
@@ -2027,6 +2054,9 @@ void maybe_split(VkCommandBuffer& cmd) {
     split_part(cmd);
 }
 
+std::atomic<int64_t> st_early_splits{0};   // (RX_VK_READBACK_EARLY: parts ended after a readback's writer)
+bool early_end_asked = false;   // (early_split asked for the part's end: counted in st_early_splits once it is made)
+
 /// The recording's part ends here and the submission goes on in a new one (maybe_split says when)
 void split_part(VkCommandBuffer& cmd) {
     part_end_wanted = false;
@@ -2056,12 +2086,30 @@ void split_part(VkCommandBuffer& cmd) {
     submit_recording(*rec_cur, false);
     if (part_flush) ub_first_of_recording = ub_updates.size();
     Recording& r = begin_recording(rec_cur_value);
-    memory_begin_submission();
+    memory_begin_submission();   // (not memory_gpu_writes_begin: the submission's GPU writes so far stay noted, vk_memory.cpp)
     full_barrier(r.cmd, "barrier (recording start)");
     rec_cur = &r;
     cmd = r.cmd;
     part_work = 0;
     rec_parts++;
+    if (early_end_asked) st_early_splits++;
+    early_split_pending = early_end_asked = false;   // (the writer's part has ended, by its count or after it)
+    if (readback_early_on()) (void)memory_split_wanted();
+}
+
+/// (RX_VK_READBACK_EARLY) The part ends after a writer of a range a read has waited for (replay(), at least
+/// RX_VK_READBACK_EARLY_GAP draws into the part), so that the read waits for the GPU's work up to its writer. Where a part
+/// ends only right before a plain draw (part_ends_before_draw: Intel by default, RX_VK_SPLIT_BEFORE_DRAW), this end waits
+/// for that draw too, as maybe_split's does: the writer's part runs on over the mesh draws and dispatches after it, so a
+/// read waits for a little more than its writer, never less, and no part begins with a mesh draw or a dispatch. With no
+/// plain draw left in the submission its end comes first, and the read waits for the whole submission, as without the switch
+void early_split(VkCommandBuffer& cmd) {
+    early_end_asked = true;
+    if (part_ends_before_draw()) {   // (at the next plain draw: replay())
+        part_end_wanted = true;
+        return;
+    }
+    split_part(cmd);
 }
 
 // ---- parallel replay: the threads and a command buffer's segments ----
@@ -2166,9 +2214,25 @@ int64_t stream_work(const uint8_t* p, int64_t most) {
     }
 }
 
+/// (longshot) RX_VK_PARALLEL with the uniform snapshot on (RX_VK_UB_SNAPSHOT: every Intel GPU by default): each command
+/// buffer recorded on the replay thread, as with RX_VK_PARALLEL off (logged once). A segment is recorded on its thread
+/// while those before it still are, so the snapshot's guard there (uniform_range: a uniform range the GPU writes earlier
+/// in the submission is bound in place, vk_memory.cpp's memory_gpu_written) could not know their GPU writes, nor the ones
+/// before the segments, and the segment's uniform copy would not have the GPU's bytes
+static bool par_snapshot_serial(int threads) {
+    static const bool on = [threads] {
+        if (threads < 2 || !uniform_snapshot_on()) return false;
+        logf("vk: parallel replay (RX_VK_PARALLEL=%d): command buffers recorded on the replay thread, the uniform snapshot "
+             "is on (RX_VK_UB_SNAPSHOT): a segment's uniform copies could not see the GPU writes before them",
+             threads);
+        return true;
+    }();
+    return on;
+}
+
 /// A command buffer of the submission from h (its start, or where it stopped at a wait): on the replay thread alone
-/// (RX_VK_PARALLEL off, one too short for two segments, dumps and profiles), or its dry pass there and its segments on
-/// the threads. may_stop: up to a wait not met, which it returns (null: the command buffer done)
+/// (RX_VK_PARALLEL off, one too short for two segments, dumps and profiles, the uniform snapshot on), or its dry pass
+/// there and its segments on the threads. may_stop: up to a wait not met, which it returns (null: the command buffer done)
 const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false) {
     const int threads = par_threads();
     NvnState& state = *cur_state;
@@ -2181,7 +2245,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         const NvnState& s;
         ~OccEnd() { occ_end_buffer(s); }
     } occ_end{state};
-    if (threads < 2 || !rec_cur || dump_on() || gprof_on() || probe_serial()) {
+    if (threads < 2 || !rec_cur || dump_on() || gprof_on() || probe_serial() || par_snapshot_serial(threads)) {
         suspend_ok = may_stop;
         replay(cmd, state, h);
         suspend_ok = false;
@@ -2416,8 +2480,10 @@ void bench_replay(const std::vector<uint64_t>& handles) {
     ub_first_of_recording = ub_updates.size();
     Recording& first = begin_recording(value);
     memory_begin_submission();
+    memory_gpu_writes_begin();   // (RX_VK_UB_SNAPSHOT's guard: a submission's start, not a part's: split_part)
     full_barrier(first.cmd);
     rec_cur = &first, rec_cur_value = value, rec_parts = 0, part_work = 0, part_end_wanted = false;
+    rec_open(value);
     VkCommandBuffer cmd = first.cmd;
     for (uint64_t h : handles)
         if (h) {
@@ -2432,6 +2498,7 @@ void bench_replay(const std::vector<uint64_t>& handles) {
     memory_end_submission(r.cmd, r.part);
     full_barrier(r.cmd);
     submit_recording(r, false);
+    rec_close();
 }
 
 void bench_frame(int64_t presents) {
@@ -2702,12 +2769,13 @@ void burst_begin(uint64_t value) {
     }
 }
 void finish_recording(uint64_t value);
+void rb_span_close();   // (RX_VK_LOG_RB_WRITERS: below, with the readback's)
 void burst_end() {
     if (!burst_open) return;
     burst_open = false;
     {
         std::lock_guard lk(replay_mu);
-        if (rec_cur) finish_recording(burst_value);
+        if (rec_cur) rb_span_close(), finish_recording(burst_value);
     }
     // (the looks taken in this burst count only now: what they let on is recorded, its write-backs are in the page table
     // and its recording is submitted. Said at the look's end, a readback that came before this point found the counts
@@ -2715,6 +2783,8 @@ void burst_end() {
     if (ev_looked_any) ev_cpu_settled.store(ev_looked, std::memory_order_release), ev_looked_any = false;
 }
 
+void rb_span_begin(uint64_t value, uint64_t part);   // (RX_VK_LOG_RB_WRITERS: below, with the readback's)
+void rb_span_end(uint64_t value, uint64_t part);
 /// The recording being made: ended and submitted, the timeline signalled as far as no older submission is unfinished
 void finish_recording(uint64_t value) {
     (void)value;
@@ -2730,6 +2800,7 @@ void finish_recording(uint64_t value) {
     const bool signal = at > signaled;
     if (signal) signaled = at;
     submit_recording(r, signal, at);
+    rec_close();   // (its last part is on the recordings' timeline now: an early read's writers are all known)
 }
 
 // ---- (longshot) the synchronous replay on the core kept for the replay ----
@@ -2780,6 +2851,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
     ReplayPin pin;
     SlowWatch slow("submit");
     PROF(PROF_SUBMIT);
+    if (readback_early_on()) (void)memory_split_wanted(), early_split_pending = early_end_asked = false;   // (the last op's: its part has ended since)
     if (memory_work) {
         if (frame_submits.empty()) frame_first_value = value;
         frame_submits.emplace_back(handles, handles + std::max(n, 0));
@@ -2797,8 +2869,11 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         ub_first_of_recording = ub_updates.size();
         Recording& first = begin_recording(tag);
         memory_begin_submission();
+        memory_gpu_writes_begin();   // (RX_VK_UB_SNAPSHOT's guard: a submission's start, not a part's: split_part)
         full_barrier(first.cmd, "barrier (recording start)");
         rec_cur = &first, rec_cur_value = tag, rec_parts = 0, part_work = 0, part_end_wanted = false;
+        rec_open(tag);
+        if (rb_writers_on()) rb_span_begin(tag, first.part);
     }
     VkCommandBuffer cmd = rec_cur->cmd;
     const uint8_t* stop = nullptr;
@@ -2827,7 +2902,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         done_max = std::max(done_max, value);
         rec_open_values.push_back(value);
     }
-    if (!burst_open) finish_recording(value);   // (a burst's: at its end)
+    if (!burst_open) rb_span_close(), finish_recording(value);   // (a burst's: at its end)
     if (stop) return false;
     if (pushed.load() < value) pushed = value;
     st_submits++;
@@ -2855,7 +2930,7 @@ void resume_queue(uint64_t queue, bool forced) {
             }
             if (cpu_event) {
                 std::lock_guard lk(replay_mu);
-                if (rec_cur) finish_recording(burst_open ? burst_value : q.value);   // (its mirrors synced again after)
+                if (rec_cur) rb_span_close(), finish_recording(burst_open ? burst_value : q.value);   // (its mirrors synced again after)
                 memory_capture_now(q.value, completed());
                 st_resume_captures++;
             }
@@ -3091,6 +3166,39 @@ bool wait_recorded_part(uint64_t part, uint64_t timeout_ns, int* ok) {
     wait_rec_seq(seq, timeout_ns, ok);
     return true;
 }
+/// (RX_VK_READBACK_EARLY) The recording being made is finished: no more of its writers will be noted (rec_open_tag)
+void rb_release_close(uint64_t value);   // (RX_VK_LOG_RB_WRITERS: below, with the readback's)
+void rec_close() {
+    if (!rec_tags_on()) return;
+    if (rb_writers_on()) rb_release_close(rec_open_tag.load(std::memory_order_relaxed));
+    rec_open_tag.store(0, std::memory_order_release);
+    { std::lock_guard mk(rec_map_mu); }   // (a waiter in early_recorded_wait looks under rec_map_mu: it is asleep or sees 0)
+    rec_map_cv.notify_all();
+}
+/// (RX_VK_READBACK_EARLY) Waits, at most 250 ms, until the submission whose value a read's pages were last written back with
+/// (whole) is no longer being recorded; true when it is not. A read let go at its writer's part while the rest of that
+/// submission was still being recorded took the newest writer recorded so far, not the range's last: on the Steam Deck in
+/// Kokiri Forest, the Market, Kakariko and Hyrule Field, 269 of 745 reads of the culling camera block (+0x3980) were let go at
+/// dispatch 7984161db3e053b5's part (or another of the first writers), and dispatch fd958faab99f20a2, recorded after the read,
+/// wrote ~1170 of its bytes later in the same submission. Once the recording is finished every write of that submission is
+/// noted (memory_in_place_writer_part), the uniform updates of its last part's flush too. *ms: the time waited.
+/// RX_VK_READBACK_EARLY_RECORDED=0 (for an A/B): not waited for, as before
+bool early_recorded_wait(uint64_t whole, double* ms) {
+    *ms = 0;
+    static const bool off = [] {
+        const char* e = getenv("RX_VK_READBACK_EARLY_RECORDED");
+        const bool v = e && env_value_off(e);
+        if (v) logf("vk: RX_VK_READBACK_EARLY_RECORDED=0: an early read may go while its writer's submission is still recorded");
+        return v;
+    }();
+    if (off || rec_open_tag.load(std::memory_order_acquire) != whole) return true;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::unique_lock mk(rec_map_mu);
+    const bool done = rec_map_cv.wait_for(mk, std::chrono::milliseconds(250),
+                                          [whole] { return rec_open_tag.load(std::memory_order_acquire) != whole; });
+    *ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return done;
+}
 static void wait_rec_seq(uint64_t seq, uint64_t timeout_ns, int* ok) {
     // (longshot) reached already: nothing to wait for, and nothing to flush for it. The flush below took dev.present_mu,
     // which a present holds for as long as it takes: a readback whose recording was long done waited there for the
@@ -3287,6 +3395,235 @@ bool tex_pages_any(uint64_t gpu, uint64_t size) {
 }
 void texture_created_of(const nvn_tex* t) { tex_pages_add(t, +1); }
 uint64_t fence();
+// ---- (longshot, diagnostics) RX_VK_LOG_RB_WRITERS=1 (with RX_VK_LOG_READBACK_WAITS=1 for a line a wait) ----
+// What wrote the pages a readback waits for (memory_rb_writers: the op, the program, the part, the draw), where that is in its
+// submission, and how long the read would have waited for the part its last writer was recorded in rather than for its whole
+// submission: the readback waits for that part first, timed, then as before (the same wait in two steps). Every 3000
+// readbacks, by the size read: the waits, the part's share of them, and the writers
+struct SubSpan { uint64_t first_part = 0, last_part = 0, w0 = 0, w1 = 0; };
+std::mutex rb_span_mu;
+std::map<uint64_t, SubSpan> rb_spans;   // (submission value -> its first and last parts, its draws' and dispatches' count then)
+void rb_span_begin(uint64_t value, uint64_t part) {
+    std::lock_guard lk(rb_span_mu);
+    SubSpan& s = rb_spans[value];
+    if (!s.first_part) s.first_part = part, s.w0 = memory_work_count();
+    while (rb_spans.size() > 4096) rb_spans.erase(rb_spans.begin());
+}
+void rb_span_end(uint64_t value, uint64_t part) {
+    std::lock_guard lk(rb_span_mu);
+    SubSpan& s = rb_spans[value];
+    if (!s.first_part) s.first_part = part, s.w0 = memory_work_count();
+    s.last_part = std::max(s.last_part, part), s.w1 = memory_work_count();
+}
+/// The recording about to be finished closes its submission's span: on every path that finishes one (run_submit's, a burst's
+/// end, a resumed queue's capture). Closed only outside a burst before, a burst's span kept no last part or total work: the
+/// log took the last writer's count for the total and printed a last part of 0
+void rb_span_close() {
+    if (rb_writers_on() && rec_cur) rb_span_end(rec_cur->value, rec_cur->part);
+}
+const char* rb_what_name(uint32_t what) {
+    switch (what) {
+    case kRbWriterUb: return "uniform-updates";
+    case kRbWriterWb: return "write-back";
+    case NOP_SIGNAL_EVENT: return "event";
+    case NOP_COPY_B2B: return "copy";
+    case NOP_CLEAR_BUF: return "clear";
+    case NOP_COPY_T2B: return "texture->buffer";
+    case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH: return "draw";
+    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: return "dispatch";
+    default: return "other";
+    }
+}
+struct RbDiag {
+    bool on = false;
+    RbWriter first, last;
+    int pages = 0;
+    SubSpan span;
+    double part_ms = -1;   // (when the last writer's part was done, into the wait; -1: not waited for apart)
+    // (the bytes read, up to 1 MB: before the wait, once the last writer's part was done, after the whole wait. What changed
+    // after the part says whether waiting for the part alone would have given the CPU the same bytes)
+    bool snap = false;
+    int64_t changed_before_part = 0, changed_after_part = 0;
+};
+thread_local std::vector<uint8_t> rb_snap[3];
+uint64_t rb_diag_early_part(uint64_t early, uint64_t part, bool allowed) {
+    return allowed && early ? std::max(early, part) : 0;
+}
+void rb_diag_wait(uint64_t gpu, uint64_t size, RbDiag& d, uint64_t whole, uint64_t part, bool early_allowed) {
+    d.on = memory_rb_writers(host->gpu_guest(gpu), size, d.first, d.last, &d.pages);
+    if (!d.on) return;
+    // with RX_VK_READBACK_EARLY on, the part the early wait lets the read go at (its own writers' record, which holds
+    // the writes over 1 MiB and the bare and wide bindings the diagnostics' record has not), or no check at all where the early
+    // wait would take the whole submission: "bytes changed after the part" is then what an early read would have missed. (Any
+    // CPU write to the range in the wait is counted too: the game's other threads run)
+    if (readback_early_on() && whole) {
+        double rec_ms = 0;   // (as invalidate: its writer's submission recorded to its end first, then its last writer's part)
+        const bool recorded = !early_allowed || early_recorded_wait(whole, &rec_ms);
+        const uint64_t early = recorded ? memory_in_place_writer_part(host->gpu_guest(gpu), size, whole) : 0;
+        d.last.part = rb_diag_early_part(early, part, early_allowed);   // (exactly invalidate's target, or 0 for the whole)
+    }
+    if (size <= (1u << 20)) {
+        rb_snap[0].resize(size);
+        d.snap = host->gpu_read(gpu, rb_snap[0].data(), size);
+    }
+    {
+        std::lock_guard lk(rb_span_mu);
+        if (auto it = rb_spans.find(d.last.value); it != rb_spans.end()) d.span = it->second;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    int ok = 0;
+    if (d.last.part && wait_recorded_part(d.last.part, UINT64_MAX, &ok))
+        d.part_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (d.snap && d.part_ms >= 0) {
+        rb_snap[1].resize(size);
+        d.snap = host->gpu_read(gpu, rb_snap[1].data(), size);
+    } else {
+        d.snap = false;   // (no part waited for apart: nothing to tell)
+    }
+}
+int64_t rb_bytes_differ(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+    int64_t n = 0;
+    for (size_t i = 0; i < a.size() && i < b.size(); i++) n += a[i] != b[i];
+    return n;
+}
+struct RbAgg {
+    int64_t n = 0, parted = 0;
+    double ms = 0, part_ms = 0, whole_ms = 0;   // (part_ms, whole_ms: the waits whose part was waited for apart)
+    int64_t snaps = 0, changed = 0, changed_after = 0, after_waits = 0;   // (bytes changed in the wait, after the part; waits with any after)
+    std::map<std::pair<uint32_t, uint64_t>, int> writers;
+};
+std::mutex rb_agg_mu;
+std::map<uint64_t, RbAgg> rb_agg;   // (by the size read)
+void rb_diag_done(uint64_t gpu, uint64_t size, RbDiag& d, double ms, bool log_line) {
+    if (!d.on) return;
+    if (d.snap) {
+        rb_snap[2].resize(size);
+        if ((d.snap = host->gpu_read(gpu, rb_snap[2].data(), size))) {
+            d.changed_before_part = rb_bytes_differ(rb_snap[0], rb_snap[1]);
+            d.changed_after_part = rb_bytes_differ(rb_snap[1], rb_snap[2]);
+        }
+    }
+    {
+        std::lock_guard lk(rb_agg_mu);
+        RbAgg& a = rb_agg[size];
+        a.n++, a.ms += ms;
+        if (d.part_ms >= 0) a.parted++, a.part_ms += d.part_ms, a.whole_ms += ms;
+        a.writers[{d.last.what, d.last.key}]++;
+        if (d.snap) {
+            a.snaps++, a.changed += d.changed_before_part + d.changed_after_part, a.changed_after += d.changed_after_part;
+            a.after_waits += d.changed_after_part != 0;
+        }
+    }
+    if (!log_line) return;
+    const uint64_t w0 = d.span.w0, w1 = std::max(d.span.w1, d.last.work);
+    logf("vk: readback writers %#llx +%#llx: last %s %016llx (part %llu, draw %llu of %llu in submission %llu), first %s %016llx "
+         "(part %llu, draw %llu), %d pages; the submission's parts %llu..%llu; its last writer's part done %.2f ms into the wait "
+         "of %.2f; bytes changed %lld by then, %lld after%s", (unsigned long long)gpu, (unsigned long long)size, rb_what_name(d.last.what), (unsigned long long)d.last.key,
+         (unsigned long long)d.last.part, (unsigned long long)(d.last.work >= w0 ? d.last.work - w0 : 0),
+         (unsigned long long)(w1 - w0), (unsigned long long)d.last.value, rb_what_name(d.first.what),
+         (unsigned long long)d.first.key, (unsigned long long)d.first.part,
+         (unsigned long long)(d.first.work >= w0 ? d.first.work - w0 : 0), d.pages, (unsigned long long)d.span.first_part,
+         (unsigned long long)d.span.last_part, d.part_ms, ms, (long long)d.changed_before_part, (long long)d.changed_after_part,
+         d.snap ? "" : " (not read)");
+}
+void rb_diag_report() {
+    std::lock_guard lk(rb_agg_mu);
+    for (auto& [size, a] : rb_agg) {
+        if (a.n < 3) continue;
+        std::vector<std::pair<int, std::pair<uint32_t, uint64_t>>> top;
+        for (const auto& [k, c] : a.writers) top.push_back({c, k});
+        std::sort(top.rbegin(), top.rend());
+        std::string who;
+        for (size_t i = 0; i < top.size() && i < 4; i++) {
+            char one[96];
+            snprintf(one, sizeof one, "%s%s %016llx x%d", i ? ", " : "", rb_what_name(top[i].second.first),
+                     (unsigned long long)top[i].second.second, top[i].first);
+            who += one;
+        }
+        logf("vk: readback writers, size %#llx: %lld waits, %.2f ms each; %lld with the last writer's part known: done %.2f ms into "
+             "their %.2f ms (%.2f ms of each wait after it); bytes the wait changed: %.1f each, %.1f of them after the part (%lld of "
+             "%lld waits); last writers: %s", (unsigned long long)size, (long long)a.n, a.ms / a.n,
+             (long long)a.parted, a.parted ? a.part_ms / a.parted : 0.0, a.parted ? a.whole_ms / a.parted : 0.0,
+             a.parted ? (a.whole_ms - a.part_ms) / a.parted : 0.0, a.snaps ? (double)a.changed / a.snaps : 0.0,
+             a.snaps ? (double)a.changed_after / a.snaps : 0.0, (long long)a.after_waits, (long long)a.snaps, who.c_str());
+    }
+    rb_agg.clear();
+}
+// ---- (diagnostics) RX_VK_LOG_RB_WRITERS: what a read was let go with, at the game's own timing ----
+// Each read whose range's newest writer's submission was not done keeps that writer's draw count and part as the diagnostics'
+// record had them (memory_rb_writers), and whether that submission was still being recorded; once its recording is finished
+// (rec_close, after its last part's uniform updates) the record says whether a writer of the range recorded after the read
+// followed in the same submission: bytes the read was let go without, the game's to wait for. And whether the same thread read
+// the range again for that submission, as a poll does. Every 3000 readbacks, by the size read. No wait and no copy here: with
+// RX_VK_LOG_RB_WRITERS=2 this is all it does, and the replay's and the game's timing are their own (=1 adds the timed waits
+// and the snapshots above). Not seen: the writes the record does not hold (bindings over 1 MiB, bare and wide bindings)
+struct RbRelease {
+    uint64_t gpu = 0, size = 0, value = 0, part = 0, work = 0;
+    uint32_t tid = 0;
+    bool open = false, early = false, closed = false, later = false, again = false, seen = false;
+};
+std::mutex rb_rel_mu;
+std::vector<RbRelease> rb_rels;   // (rb_rel_mu)
+bool rb_probe_only() {
+    static const bool v = getenv("RX_VK_LOG_RB_WRITERS") && atoi(getenv("RX_VK_LOG_RB_WRITERS")) == 2;
+    return v;
+}
+uint32_t rb_tid() {
+    static std::atomic<uint32_t> next{0};
+    thread_local const uint32_t id = ++next;
+    return id;
+}
+/// A read of [gpu, gpu + size) whose newest write-back is value, let go now; pending: that submission was not done
+void rb_release_note(uint64_t gpu, uint64_t size, uint64_t value, bool pending, bool early) {
+    if (!value) return;
+    const uint32_t tid = rb_tid();
+    RbWriter first, last;
+    int pages = 0;
+    const bool known = pending && memory_rb_writers(host->gpu_guest(gpu), size, first, last, &pages) && last.value == value;
+    const bool open = known && rec_open_tag.load(std::memory_order_acquire) == value;
+    std::lock_guard lk(rb_rel_mu);
+    for (RbRelease& r : rb_rels)
+        if (r.gpu == gpu && r.size == size && r.value == value && r.tid == tid) r.again = true;
+    if (!known) return;
+    if (rb_rels.size() >= 4096) rb_rels.erase(rb_rels.begin());   // (bounded: a diagnostic's memory)
+    RbRelease r;
+    r.gpu = gpu, r.size = size, r.value = value, r.part = last.part, r.work = last.work, r.tid = tid, r.open = open, r.early = early;
+    r.closed = !open;   // (its recording finished already: every writer of the range in it was in the record at the read)
+    rb_rels.push_back(r);
+}
+/// The recording of value finished (rec_close): the reads let go before it, against the range's last writer in it
+void rb_release_close(uint64_t value) {
+    std::lock_guard lk(rb_rel_mu);
+    for (RbRelease& r : rb_rels) {
+        if (r.closed || r.value != value) continue;
+        r.closed = true;
+        RbWriter first, last;
+        int pages = 0;
+        if (memory_rb_writers(host->gpu_guest(r.gpu), r.size, first, last, &pages) && last.value == value)
+            r.later = last.part > r.part || last.work > r.work;
+    }
+}
+void rb_release_report() {
+    struct Agg { int64_t n = 0, open = 0, early = 0, later = 0, later_early = 0, later_last = 0; };
+    std::map<uint64_t, Agg> agg;
+    {
+        std::lock_guard lk(rb_rel_mu);
+        std::erase_if(rb_rels, [&](RbRelease& r) {
+            if (!r.closed) return false;
+            if (!r.seen) return !(r.seen = true);   // (one more interval: a read again of it comes after its recording too)
+            Agg& a = agg[r.size];
+            a.n++, a.open += r.open, a.early += r.early, a.later += r.later, a.later_early += r.later && r.early;
+            a.later_last += r.later && !r.again;
+            return true;
+        });
+    }
+    for (const auto& [size, a] : agg)
+        if (a.n >= 3)
+            logf("vk: readback releases, size %#llx: %lld let go before their writer's submission was done (%lld by the early wait), "
+                 "%lld of them while it was still recorded; %lld before a writer of the range recorded later in it (%lld by the early "
+                 "wait), %lld of those the thread's last read of the range for it", (unsigned long long)size, (long long)a.n,
+                 (long long)a.early, (long long)a.open, (long long)a.later, (long long)a.later_early, (long long)a.later_last);
+}
 /// (longshot) invalidate's wait for a write-back's value, at most RX_VK_READBACK_WAIT_MS (default 250; 0: no limit, as before).
 /// On the Steam Deck (RADV, no buffer mirrors, queues replayed in submit order) the game's main thread and one of its jobs
 /// waited here, right after Kokiri Forest's save loaded, for a value the timeline never reached while they waited (it had been
@@ -3312,6 +3649,14 @@ bool readback_wait_value(uint64_t v) {
              (unsigned long long)v, (long long)limit_ms, (unsigned long long)completed(), (unsigned long long)pushed.load(),
              (unsigned long long)q_values.load());
     return false;
+}
+// The diagnostic's second snapshot must be after the whole submission even if the normal path succeeded at an early part.
+// A failed wait makes the comparison invalid; it must not be reported as an unchanged range.
+void rb_diag_finish(RbDiag& d, uint64_t value) {
+    if (!d.snap) return;
+    // value_rec can still name an earlier part while the rest is being recorded. The submission timeline advances only
+    // when the whole value is finished; a timeout leaves no valid second snapshot.
+    d.snap = readback_wait_value(value);
 }
 /// (longshot) RX_VK_READBACK_LATE (readback_late.h): whether a readback of that size, written by the newest submission or
 /// not, is read without its wait. Off unless the switch is set
@@ -3402,6 +3747,218 @@ void rb_ranges_log() {
          (long long)late, s.c_str());
 }
 void readback_fell_back(int what = 0);   // (the render thread's log)
+// ---- (longshot) RX_VK_LOG_EARLY_CHECK: what a read RX_VK_READBACK_EARLY let go would have missed against main's wait ----
+// sheep's probe (Bunny Hood #2: the reader held at the early part, then for the whole submission) saw the 0x3980 camera block change
+// after the early boundary in 269 of 745 compares, and could not tell the game's own writes from the GPU's; and the whole submission
+// is more than main waits for. Here, for one read let go early in RX_VK_LOG_EARLY_CHECK (1: every one; 4: one in four):
+//  - s1: the range as the early wait returns it;
+//  - sm: the range right after the wait main makes for the same read (invalidate's usual choice for pages written in place: the
+//    newest part of its submission submitted so far, wait_recorded, else the whole submission), made by this read now (the sampled
+//    reads come back as main's would: a check run is not a measurement). s1 -> sm is what the early wait let the game miss;
+//  - s2: the range once the read's submission is done on the main timeline, copied by a thread of its own after it waits (later,
+//    informative only: a copy after a host wait is not at the GPU's boundary). sm -> s2 is the parts recorded after the read, which
+//    main misses too.
+// The game's own writes: the soft write watch (only CPU stores, and the host's marked writes, mark a page; the GPU's writes in place
+// never do). A page the collections report from the read until the second full collection begun after a copy (memory_collect_written:
+// a mark published late) is the CPU's in that interval. A change on a page the CPU wrote is ambiguous (the GPU may have written the
+// same page): what proves a missed GPU write is a change on a page the CPU did not write, and the clean intervals (no CPU page) are
+// counted. A host write into guest memory that is not marked (some nvn getters) would show as the GPU's. The GPU writes the replay
+// records after the read in a later part of the read's submission are counted by kind
+struct EcDiff {
+    int64_t words_gpu = 0, words_cpu = 0;   // (changed 4-byte words on pages the CPU did not write, and on pages it did)
+    int64_t first_gpu = -1;                 // (the offset of the first such word on a page the CPU did not write)
+};
+/// a -> b over [guest, guest + size): changed words, by whether the CPU wrote a page they are on (bit k of cpu: the range's k-th page)
+EcDiff ec_compare(const uint8_t* a, const uint8_t* b, uint64_t guest, uint64_t size, uint64_t cpu) {
+    EcDiff d;
+    const auto touched = [&](uint64_t off) {
+        const uint64_t k = ((guest + off) >> 12) - (guest >> 12);
+        return k < 64 && ((cpu >> k) & 1);
+    };
+    for (uint64_t off = 0; off < size; off += 4) {
+        const uint64_t n = std::min<uint64_t>(4, size - off);
+        if (!std::memcmp(a + off, b + off, n)) continue;
+        if (touched(off) || touched(off + n - 1)) {   // (a word across a page's end: either page)
+            d.words_cpu++;
+        } else {
+            if (d.first_gpu < 0) d.first_gpu = (int64_t)off;
+            d.words_gpu++;
+        }
+    }
+    return d;
+}
+/// the pages of [guest, guest + size) among the collected ones (in any order), as bits by the range's page
+uint64_t ec_pages_hit(uint64_t guest, uint64_t size, const uint32_t* pages, int64_t n) {
+    const uint64_t p0 = guest >> 12, p1 = (guest + size - 1) >> 12;
+    uint64_t m = 0;
+    for (int64_t i = 0; i < n; i++)
+        if (pages[i] >= p0 && pages[i] <= p1 && pages[i] - p0 < 64) m |= 1ull << (pages[i] - p0);
+    return m;
+}
+int early_check_every() {   // (RX_VK_LOG_EARLY_CHECK=<n>: one read in n let go early is checked; 0, unset or RX_VK_READBACK_EARLY off: none)
+    static const int n = [] {
+        const char* e = getenv("RX_VK_LOG_EARLY_CHECK");
+        return readback_early_on() && e ? std::max(0, atoi(e)) : 0;
+    }();
+    return n;
+}
+bool early_check_on() { return early_check_every() > 0; }
+struct EarlyCheck {
+    uint64_t gpu = 0, guest = 0, size = 0, value = 0, part = 0;
+    std::vector<uint8_t> s1, sm, s2;
+    uint64_t cpu1 = 0, cpu2 = 0;      // (pages the CPU wrote: s1..sm, sm..s2)
+    uint32_t gen_m = 0, gen_2 = 0;    // (the full collections begun when sm, s2 had been copied)
+    bool closed1 = false, closed2 = false, valid1 = false, valid2 = false;
+    int stage = 0;                    // (0: sm being taken by the read, 1: s2 to take, 2: the collections to close the intervals)
+    uint64_t wb_2 = 0;                // (the range's newest write-back noted when s2 was taken: a newer submission's?)
+    int gpu_noted = 0, kinds = 0;     // (the replay's own GPU writes after the read, later parts: bit 0 binding, 1 over 1 MiB, 2 bare or wide)
+};
+std::mutex ec_mu;
+std::condition_variable ec_cv;
+std::deque<std::unique_ptr<EarlyCheck>> ec_pending;   // (ec_mu; in the order of the reads)
+std::atomic<uint32_t> ec_full_begun{0};
+struct EcStats {
+    int64_t n = 0, lost1 = 0, same1 = 0, gpu1 = 0, amb1 = 0, clean1 = 0, clean_gpu1 = 0;
+    int64_t lost2 = 0, same2 = 0, gpu2 = 0, amb2 = 0, newer2 = 0, noted = 0;
+    int64_t kinds[3] = {};
+};
+EcStats ec_st;                               // (ec_mu)
+std::map<uint64_t, EcStats> ec_by_size;      // (ec_mu)
+std::atomic<int64_t> ec_skipped{0};
+bool ec_wait(VkSemaphore s, uint64_t v) {
+    if (!s || !v) return false;
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &s;
+    wi.pValues = &v;
+    return vkWaitSemaphores(dev.device, &wi, 3000000000ull) == VK_SUCCESS;
+}
+void ec_finish(EarlyCheck& e) {   // (ec_mu held) one check's counts
+    EcStats* ss[2] = {&ec_st, &ec_by_size[e.size]};
+    const EcDiff d1 = e.valid1 ? ec_compare(e.s1.data(), e.sm.data(), e.guest, e.size, e.cpu1) : EcDiff{};
+    const EcDiff d2 = e.valid2 ? ec_compare(e.sm.data(), e.s2.data(), e.guest, e.size, e.cpu2) : EcDiff{};
+    const bool newer = e.wb_2 > e.value;   // (a later submission was recorded writing the range before s2: its changes may be in it)
+    for (EcStats* s : ss) {
+        s->n++;
+        if (!e.valid1) s->lost1++;
+        else if (d1.words_gpu) s->gpu1++;
+        else if (d1.words_cpu) s->amb1++;
+        else s->same1++;
+        if (e.valid1 && !e.cpu1) s->clean1++, s->clean_gpu1 += d1.words_gpu != 0;
+        if (!e.valid2) s->lost2++;
+        else if (newer && (d2.words_gpu || d2.words_cpu)) s->newer2++;
+        else if (d2.words_gpu) s->gpu2++;
+        else if (d2.words_cpu) s->amb2++;
+        else s->same2++;
+        s->noted += e.gpu_noted != 0;
+        for (int k = 0; k < 3; k++) s->kinds[k] += (e.kinds >> k) & 1;
+    }
+    static int told1, told2;
+    if (d1.words_gpu && told1++ < 16)
+        logf("vk: early-read check: %#llx +%#llx (submission %llu, let go at part %llu): %lld words changed by main's release on pages "
+             "the CPU did not write, the first at +%#llx (%lld on pages it wrote); GPU writes recorded after the read: %d (kinds %#x)",
+             (unsigned long long)e.gpu, (unsigned long long)e.size, (unsigned long long)e.value, (unsigned long long)e.part,
+             (long long)d1.words_gpu, (unsigned long long)d1.first_gpu, (long long)d1.words_cpu, e.gpu_noted, e.kinds);
+    if (d2.words_gpu && !newer && told2++ < 16)
+        logf("vk: early-read check: %#llx +%#llx (submission %llu, let go at part %llu): %lld words changed after main's release, before "
+             "the submission's end, on pages the CPU did not write, the first at +%#llx; GPU writes recorded after the read: %d (kinds %#x)",
+             (unsigned long long)e.gpu, (unsigned long long)e.size, (unsigned long long)e.value, (unsigned long long)e.part,
+             (long long)d2.words_gpu, (unsigned long long)d2.first_gpu, e.gpu_noted, e.kinds);
+    if (ec_st.n >= 100) {
+        std::string sizes;
+        for (const auto& [sz, s] : ec_by_size) {
+            char b[200];
+            snprintf(b, sizeof b, " | %#llx: %lld, missed %lld (clean %lld, missed of them %lld), ambiguous %lld, after main's %lld",
+                     (unsigned long long)sz, (long long)s.n, (long long)s.gpu1, (long long)s.clean1, (long long)s.clean_gpu1,
+                     (long long)s.amb1, (long long)s.gpu2);
+            sizes += b;
+        }
+        logf("vk: early-read check (RX_VK_LOG_EARLY_CHECK=%d), %lld reads (%lld skipped): early -> main's release: %lld unchanged, %lld "
+             "changed on a page the CPU did not write (a GPU write main waits for and the early wait missed: should be 0), %lld changed "
+             "only on pages the CPU wrote (ambiguous), %lld lost; %lld with no CPU page written (clean), %lld of them missed; main's "
+             "release -> the submission's end: %lld unchanged, %lld GPU (parts recorded after the read), %lld ambiguous, %lld a newer "
+             "submission's, %lld lost; GPU writes the replay recorded after the read in a later part: %lld reads (bindings %lld, over "
+             "1 MiB %lld, bare or wide %lld)%s",
+             early_check_every(), (long long)ec_st.n, (long long)ec_skipped.exchange(0), (long long)ec_st.same1, (long long)ec_st.gpu1,
+             (long long)ec_st.amb1, (long long)ec_st.lost1, (long long)ec_st.clean1, (long long)ec_st.clean_gpu1, (long long)ec_st.same2,
+             (long long)ec_st.gpu2, (long long)ec_st.amb2, (long long)ec_st.newer2, (long long)ec_st.lost2, (long long)ec_st.noted,
+             (long long)ec_st.kinds[0], (long long)ec_st.kinds[1], (long long)ec_st.kinds[2], sizes.c_str());
+        ec_st = EcStats{};
+        ec_by_size.clear();
+    }
+}
+void ec_reap() {   // (ec_mu held) the checks done, in the order of their reads
+    while (!ec_pending.empty() && ec_pending.front()->stage == 2 && ec_pending.front()->closed1 && ec_pending.front()->closed2) {
+        ec_finish(*ec_pending.front());
+        ec_pending.pop_front();
+    }
+}
+void early_check_thread() {   // (s2: once each check's submission is done on the main timeline)
+    for (;;) {
+        EarlyCheck* e = nullptr;
+        {
+            std::unique_lock lk(ec_mu);
+            ec_cv.wait(lk, [] {
+                for (auto& x : ec_pending) if (x->stage == 1) return true;
+                return false;
+            });
+            for (auto& x : ec_pending)
+                if (x->stage == 1) { e = x.get(); break; }
+        }
+        // (the entry stays in ec_pending, and only reaches stage 2, which may be reaped, below: its address holds)
+        const bool ok = ec_wait(timeline, e->value);
+        std::vector<uint8_t> snap(e->size);
+        const bool read = ok && host->gpu_read(e->gpu, snap.data(), e->size);
+        const uint64_t wb = read ? memory_writeback_value(e->guest, e->size, nullptr) : 0;
+        std::lock_guard lk(ec_mu);
+        e->s2 = std::move(snap), e->valid2 = read, e->wb_2 = wb, e->stage = 2;
+        e->gen_2 = ec_full_begun.load();   // (after the copy: a collection begun after this saw any CPU write before it)
+        e->cpu2 |= e->cpu1;   // (pages collected while sm was copied are in cpu1 only)
+        if (!read) e->closed2 = true;
+        ec_reap();
+    }
+}
+/// (invalidate) one read in RX_VK_LOG_EARLY_CHECK let go at its writer's part: what it returns, then main's wait for it and what that
+/// returns. v: the range's newest write-back; checked only when it is the in-place writer's (no mirror's part in it), up to 64 KiB
+void early_check_read(uint64_t gpu, uint64_t size, uint64_t v, uint64_t whole, uint64_t part, bool unforced) {
+    static std::atomic<int64_t> reads{0};
+    if (reads.fetch_add(1, std::memory_order_relaxed) % early_check_every()) return;
+    if (size > 0x10000 || v != whole) {
+        ec_skipped++;
+        return;
+    }
+    static std::once_flag started;
+    std::call_once(started, [] { std::thread(early_check_thread).detach(); });
+    EarlyCheck* e = nullptr;
+    bool ok1 = false;
+    {
+        std::lock_guard lk(ec_mu);
+        if (ec_pending.size() >= 32) {
+            ec_skipped++;
+            return;
+        }
+        auto x = std::make_unique<EarlyCheck>();
+        x->gpu = gpu, x->guest = host->gpu_guest(gpu), x->size = size, x->value = whole, x->part = part;
+        // (copied under ec_mu and listed before it is let go: a collection that finds a CPU write made after the copy reports it after
+        // it scanned, so after this, and finds the check)
+        x->s1.resize(size);
+        ok1 = host->gpu_read(gpu, x->s1.data(), size);
+        e = x.get();
+        ec_pending.push_back(std::move(x));
+    }
+    // (main's wait for this read: invalidate's usual choice for a page written in place whose submission is pending)
+    int ok = 0;
+    if (!(unforced && wait_recorded(v, UINT64_MAX, &ok))) {
+        if (unforced && replay_behind()) wait_queue_empty();
+        readback_wait_value(v);
+    }
+    std::vector<uint8_t> sm(size);
+    const bool okm = host->gpu_read(gpu, sm.data(), size);
+    std::lock_guard lk(ec_mu);
+    e->sm = std::move(sm), e->valid1 = ok1 && okm, e->stage = 1;
+    e->gen_m = ec_full_begun.load();   // (after the copy)
+    ec_cv.notify_one();
+}
 void invalidate(uint64_t gpu, uint64_t size) {
     static const bool log_inv = env_on("RX_VK_LOG_INVALIDATE");
     static std::atomic<int> logged{0};
@@ -3475,6 +4032,8 @@ void invalidate(uint64_t gpu, uint64_t size) {
             // the ranges over 16 KiB (tables the CPU acts on, not meters: Hyrule Field's 0x8b040 and 0x9b040 bytes)
             static const int exact_env = getenv("RX_VK_READBACK_EXACT") ? atoi(getenv("RX_VK_READBACK_EXACT")) : 0;
             const bool exact = behind && (exact_env == 1 || (exact_env == 2 && size > 0x4000));
+            static std::atomic<int64_t> st_early_waits{0}, st_early_ns{0}, st_early_whole{0};   // (RX_VK_READBACK_EARLY)
+            static std::atomic<int64_t> st_early_rec{0}, st_early_rec_ns{0}, st_early_rec_late{0};   // (and the waits for the writer's recording first)
             if (behind0 && !no_catchup) {   // (work handed over may write it back too)
                 if (!unforced) wait_queue_empty();
                 else if (behind) {   // (the render thread: neither, see above; but an exact range)
@@ -3496,6 +4055,7 @@ void invalidate(uint64_t gpu, uint64_t size) {
             uint64_t part = 0, whole = 0;
             const uint64_t v = memory_writeback_value(host->gpu_guest(gpu), size, nullptr, &part, &whole);
             static const bool log_each = env_on("RX_VK_LOG_READBACK_WAITS");
+            RbDiag rbd;   // (RX_VK_LOG_RB_WRITERS: its writers, and its last writer's part waited for first, timed: below)
             uint64_t l_part = 0, l_last = 0, l_sent = 0, l_done = 0;   // (the log's: recordings, on their timeline)
             if (log_each && v > completed() && rec_timeline) {
                 std::lock_guard mk(rec_map_mu);
@@ -3506,7 +4066,47 @@ void invalidate(uint64_t gpu, uint64_t size) {
             }
             const bool pending = v > completed(), newest = pending && v >= f0;
             const bool late = pending && readback_late_wanted(size, newest);   // (RX_VK_READBACK_LATE: read without its wait)
-            if (pending && !late) {
+            if (rb_writers_on() && pending && !late && !rb_probe_only())
+                rb_diag_wait(gpu, size, rbd, whole, part, unforced && by_part && whole > completed());
+            // (longshot) RX_VK_READBACK_EARLY (on where no pool has a mirror): pages written in place (the Steam Deck's every page) wait for
+            // up to the part their last writer was recorded in, not their whole submission. There the game's job polled ~18 ms a frame
+            // for its camera block's read while the GPU finished the rest of a 22-26 ms submission after the writer. The parts after
+            // it may still read guest memory in place, which the game, let go, may write: as on the console, whose GPU reaches the
+            // writer before the rest of its command buffer too, but the replay's GPU runs later than the console's (issue 997 was
+            // reads let go before their writer: value_rec). Pages whose reads waited end their writer's part right after it
+            // (memory_split_wanted). Not known (0: written before it was on, or its part not mapped): the whole submission, as before. A
+            // range RX_VK_READBACK_LATE reads late is not waited for at all, here either
+            bool early_done = false;
+            // (only a read with a page written in place pending: with VRAM mirrors (a dGPU) a page is written back by part already,
+            // and nothing is noted, split or rebuilt for it: on an RTX 5090 the switch cost ~2 fps doing that and waited early 0 times.
+            // A sparse mirror's block with no memory yet is written in place for a submission: those pages take the early wait)
+            if (pending && !late && readback_early_on() && unforced && by_part && whole > completed()) {
+                memory_rb_waited(host->gpu_guest(gpu), size);
+                // (its writer's submission recorded to its end first: the part found below is then its last writer's, not the
+                // newest recorded so far. Past 250 ms, the whole submission as before)
+                double rec_ms = 0;
+                const bool recorded = early_recorded_wait(whole, &rec_ms);
+                if (rec_ms > 0) {
+                    st_early_rec.fetch_add(1, std::memory_order_relaxed);
+                    st_early_rec_ns.fetch_add((int64_t)(rec_ms * 1e6), std::memory_order_relaxed);
+                }
+                if (!recorded) st_early_rec_late.fetch_add(1, std::memory_order_relaxed);
+                const uint64_t writer = recorded ? memory_in_place_writer_part(host->gpu_guest(gpu), size, whole) : 0;
+                const uint64_t target = std::max(writer, part);   // (a mirror's part as well, when pages of both kinds are read)
+                int ok = 0;
+                const auto e0 = std::chrono::steady_clock::now();
+                if (writer && wait_recorded_part(target, UINT64_MAX, &ok)) {
+                    early_done = true, w = true;
+                    if (early_check_on()) early_check_read(gpu, size, v, whole, target, unforced);   // (RX_VK_LOG_EARLY_CHECK)
+                    st_early_waits.fetch_add(1, std::memory_order_relaxed);
+                    st_early_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - e0).count(),
+                                          std::memory_order_relaxed);
+                } else {
+                    st_early_whole.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            if (early_done) {
+            } else if (pending && !late) {
                 int ok = 0;
                 // (and not when a part after it reads guest memory in place, on a card whose pools are not all mirrored
                 // or whose mirrors take pages no capture holds: the game, let go after the first part, would write what
@@ -3524,18 +4124,22 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 w = true;
             }
             if (w) {
+                rb_diag_finish(rbd, v);
                 waited++;
                 const int64_t d = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - w0).count();
                 ns += d;
                 static std::atomic<int> logged{0};
-                if (log_each && presents_now > 4000 && logged++ < 300)
+                const bool line = log_each && presents_now > 4000 && logged++ < 300;
+                if (line)
                     logf("vk: readback wait %lld %#llx +%#llx: %.2f ms (catch-up %.2f) value %llu, fence %llu, done %llu, behind %d; "
                          "recordings: its part's %llu, its submission's last %llu (in place: value %llu), %llu submitted, %llu done",
                          (long long)presents_now, (unsigned long long)gpu, (unsigned long long)size, d / 1e6,
                          std::chrono::duration_cast<std::chrono::nanoseconds>(w1 - w0).count() / 1e6, (unsigned long long)v,
                          (unsigned long long)f0, (unsigned long long)c0, (int)behind0, (unsigned long long)l_part,
                          (unsigned long long)l_last, (unsigned long long)whole, (unsigned long long)l_sent, (unsigned long long)l_done);
+                if (presents_now > 4000) rb_diag_done(gpu, size, rbd, d / 1e6, line);
             }
+            if (rb_writers_on() && presents_now > 4000) rb_release_note(gpu, size, v, pending, early_done);
             static const bool log_ranges = env_on("RX_VK_LOG_READBACK_RANGES");
             if (log_ranges) {
                 rb_range_note(gpu, size, w,
@@ -3552,6 +4156,16 @@ void invalidate(uint64_t gpu, uint64_t size) {
                      "%lld waited for their whole submission (their pages written in place, no mirror)",
                      (long long)n, n ? ns.exchange(0) / (double)n / 1e6 : 0.0, (long long)settled.exchange(0),
                      (long long)held_back.exchange(0), (long long)in_place.exchange(0));
+                if (rb_writers_on()) rb_diag_report(), rb_release_report();
+                if (readback_early_on()) {
+                    const int64_t e = st_early_waits.exchange(0), r = st_early_rec.exchange(0);
+                    logf("vk: readbacks waited for their writer's part (RX_VK_READBACK_EARLY): %lld, %.2f ms each; %lld for their whole "
+                         "submission (writer not known); %lld parts ended after a readback's writer; %lld waited for their writer's "
+                         "submission to be recorded first, %.2f ms each (%lld of them past 250 ms: their whole submission)", (long long)e,
+                         e ? st_early_ns.exchange(0) / (double)e / 1e6 : 0.0, (long long)st_early_whole.exchange(0),
+                         (long long)st_early_splits.exchange(0), (long long)r, r ? st_early_rec_ns.exchange(0) / (double)r / 1e6 : 0.0,
+                         (long long)st_early_rec_late.exchange(0));
+                }
             }
         }
     }
@@ -3823,6 +4437,12 @@ uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
     return c;
 }
 } // namespace
+/// Whether the storage of a texture the game made reaches [gpu, gpu + size) (tex_pages_any: true where it is not
+/// tracked), for vk_memory.cpp's late pages left to their reads (RX_VK_LATE_DEFER)
+bool texture_storage_any(uint64_t gpu, uint64_t size) { return tex_pages_any(gpu, size); }
+/// Whether the replay runs on the render thread (async_on: RX_VK_ASYNC, or the Threaded rendering row), for
+/// vk_memory.cpp's RX_VK_READBACK_EARLY, which is left off with it
+bool replay_render_thread_on() { return async_on(); }
 
 // (vk_internal.h) One part of a submission done on the GPU: the late pages' fix reads a page of the capture whose fix an earlier
 // part of this submission recorded (vk_memory.cpp, late_fix_cpu_read), after that part's fix has run
@@ -4400,6 +5020,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         ub_first_of_recording = ub_updates.size();
         Recording& r = begin_recording(value);
         memory_begin_submission();
+        memory_gpu_writes_begin();   // (RX_VK_UB_SNAPSHOT's guard: a submission's start, not a part's: split_part)
         Texture* tex = t ? texture_for_present(t) : nullptr;
         static int logged_p;
         if (logged_p++ < 4)
@@ -6258,6 +6879,32 @@ bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
 }
 
 } // namespace
+
+/// (RX_VK_LOG_EARLY_CHECK, vk_internal.h) a GPU write the replay records now, in place: counted for the pending checks of reads of its
+/// submission let go at an earlier part (kind: 0 a binding, a copy or clear; 1 over 1 MiB; 2 a bare or wide storage range)
+void early_check_gpu_write(uint64_t lo, uint64_t hi, uint64_t value, uint64_t part, int kind) {
+    if (!early_check_on()) return;
+    std::lock_guard lk(ec_mu);
+    for (auto& e : ec_pending)
+        if (e->value == value && part > e->part && lo < e->guest + e->size && e->guest < hi) e->gpu_noted++, e->kinds |= 1 << kind;
+}
+/// (RX_VK_LOG_EARLY_CHECK, vk_internal.h) pages the soft write watch reported (the CPU's writes); full: memory_collect_written's,
+/// over every range, begun as collection gen
+void early_check_cpu_pages(const uint32_t* pages, int64_t n, bool full, uint32_t gen) {
+    if (!early_check_on()) return;
+    std::lock_guard lk(ec_mu);
+    for (auto& e : ec_pending) {
+        if (e->stage == 2 && e->closed1 && e->closed2) continue;
+        const uint64_t m = n > 0 ? ec_pages_hit(e->guest, e->size, pages, n) : 0;
+        if (!e->closed1) e->cpu1 |= m;
+        if (e->stage >= 1 && !e->closed2) e->cpu2 |= m;
+        // (the second full collection begun after a copy: a mark the game's store published late is in one of them)
+        if (full && e->stage >= 1 && gen > e->gen_m + 1) e->closed1 = true;
+        if (full && e->stage == 2 && gen > e->gen_2 + 1) e->closed2 = true;
+    }
+    ec_reap();
+}
+uint32_t early_check_collect_begin() { return early_check_on() ? ++ec_full_begun : 0; }
 
 bool replay_start() {
     menu_init();

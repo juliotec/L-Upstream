@@ -23,7 +23,11 @@ class CaptureWaitLogTests(unittest.TestCase):
 
     def test_the_late_page_wait_is_timed_on_its_own(self):
         late = block(self.take, "if (c->late_value && c->map)")
-        wait = late.index("vk_timeline_wait(c->late_value);")
+        # (the write-back waited for: c->late_value, or the texture storage's alone when the rest is left to its reads,
+        # RX_VK_LATE_DEFER)
+        self.assertIn("uint64_t wait = c->late_value;", late)
+        self.assertIn("wait = late_defer_split(*c, deferred, deferred_pv);", late)
+        wait = late.index("vk_timeline_wait(wait);")
         self.assertRegex(late[:wait], r"const auto (\w+) = std::chrono::steady_clock::now\(\);")
         self.assertIn("st_tk_late +=", late[wait:])
         self.assertIn("st_tk_late_n++", late[wait:])

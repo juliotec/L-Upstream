@@ -321,6 +321,41 @@ void memory_drop_shadow(uint64_t guest, uint64_t size);   // (a write the captur
 /// when any write-back ever did
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
 void memory_note_readback(uint64_t guest, uint64_t size);   // (PR 430) a CPU read of GPU results: see memory_rb_refresh
+bool texture_storage_any(uint64_t gpu, uint64_t size);   // (vk_replay.cpp) a texture the game made has its storage there
+bool replay_render_thread_on();   // (vk_replay.cpp) the replay runs on the render thread (RX_VK_ASYNC, Threaded rendering)
+// (longshot, diagnostics) RX_VK_LOG_RB_WRITERS=1: what wrote the pages a readback waits for. The replay says what it is recording
+// (memory_writer_note: the op, kRbWriterUb for the uniform updates written at a recording's end, a program's key for a storage
+// buffer it writes) and counts its draws and dispatches (memory_count_work); every page a write-back is noted for keeps the
+// first and the last such writer of its newest submission. memory_rb_writers: those of a range (false: none known)
+constexpr uint32_t kRbWriterUb = 0x10000, kRbWriterWb = 0x10001;
+struct RbWriter {
+    uint64_t value = 0, part = 0, work = 0, key = 0;
+    uint32_t what = 0;
+};
+bool rb_writers_on();
+void memory_writer_note(uint32_t what, uint64_t key);
+void memory_writer_key(uint64_t key);   // (the program of the draw or dispatch noted: its key)
+void memory_count_work();
+uint64_t memory_work_count();
+bool memory_rb_writers(uint64_t guest, uint64_t size, RbWriter& first, RbWriter& last, int* pages);
+// (longshot) RX_VK_READBACK_EARLY=1 (opt-in): a CPU read of pages the GPU wrote in place (no mirror: the Steam Deck) waits for the
+// part their last writer was recorded in, not for the whole submission. The ranges whose reads waited are noted
+// (memory_rb_waited); a GPU write in place to them keeps its part (early_in_place_write, note_direct_write's) and asks for that
+// part to end right after it (memory_split_wanted; memory_rb_waited_range for a uniform update the stream makes).
+// memory_in_place_writer_part: that part, when the newest write in place it knows is the range's newest (whole), else 0
+bool readback_early_on();
+/// (RX_VK_LOG_EARLY_CHECK, vk_replay.cpp: log only) a GPU write in place the replay records now (kind 0 a binding, a copy or clear;
+/// 1 over 1 MiB; 2 a bare or wide storage range); the pages the soft write watch reported (full: memory_collect_written's, begun as
+/// collection gen, from early_check_collect_begin: 0 when the check is off)
+void early_check_gpu_write(uint64_t lo, uint64_t hi, uint64_t value, uint64_t part, int kind);
+void early_check_cpu_pages(const uint32_t* pages, int64_t n, bool full, uint32_t gen);
+uint32_t early_check_collect_begin();
+void early_in_place_write(uint64_t lo, uint64_t hi, uint64_t value);
+uint64_t memory_in_place_writer_part(uint64_t guest, uint64_t size, uint64_t whole);
+void memory_rb_waited(uint64_t guest, uint64_t size);
+bool memory_rb_waited_range(uint64_t guest, uint64_t size);
+bool memory_split_wanted();
+bool memory_readback_early_active();   // (a read of pages written in place has waited: the tracking is in use)
 void memory_note_cpu_read(uint64_t guest, uint64_t size);   // (invalidate) a CPU read: a large binding over it keeps its write-back
 void memory_note_cpu_access(uint64_t guest, uint64_t size, bool write);   // (and a CPU write a mirror sync copies: wb_learn.h)
 bool memory_wb_followed(uint64_t lo, uint64_t hi);   // (whether a large binding wb_learn.h follows overlaps [lo, hi))
@@ -329,6 +364,15 @@ void memory_rb_recording_begun();   // (longshot) at a recording's start, on its
 void memory_rb_segments_begin(uint64_t base, uint64_t n);   // (and a parallel replay's segments: their order, base on)
 /// (longshot) a range a program may write in the mirror that is not bound as written (not copied back): memory_rb_refresh
 void memory_note_gpu_write(uint64_t gpu, uint64_t size);
+/// (longshot, RX_VK_UB_SNAPSHOT's guard, vk_memory.cpp) the GPU writes this thread's recordings have noted that guest memory
+/// may not have yet: the submission being recorded's, in all its parts, and earlier submissions' until the GPU has done them.
+/// Begun at a submission's start (not at a part's); asked by uniform_range for a uniform range (0 none, 1 in the submission
+/// being recorded, 2 in an earlier one the GPU has not done)
+void memory_gpu_writes_begin();
+int memory_gpu_written(uint64_t guest, uint64_t size);
+bool memory_gpu_writes_any();
+/// (vk_draw.cpp) whether uniform buffers are copied into the stream as submitted (RX_VK_UB_SNAPSHOT; every Intel GPU)
+bool uniform_snapshot_on();
 /// (vk_replay.cpp) The GPU's progress on the recordings' timeline, and a wait for it to reach v
 uint64_t vk_timeline_completed();
 /// A future submission completion covering images retired during replay; zero: no safe value.

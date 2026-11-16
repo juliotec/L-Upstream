@@ -38,6 +38,9 @@ FIXTURE = r'''// tests/test_quit_not_crash.py: a start's steps that count the st
 #if __has_include("crash_markers.h")
 #include "crash_markers.h"   // (a checkout from before it builds too: its quits are then counted as crashes)
 #endif
+#if __has_include("precompile_save.h")
+#include "precompile_save.h"   // (precompile_warm's save says what it did: a checkout from before it builds too)
+#endif
 
 namespace mkwvk {
 std::string dir, fate;
@@ -79,6 +82,9 @@ void precompile_built_write(size_t n) {
 void pcache_init() {}
 void pipeline_cache_save(bool) {}
 std::atomic<bool> prepare_saving_now{false};   // (vk_draw.cpp, main's #721: precompile_warm says its pipeline cache save is under way)
+#if __has_include("precompile_save.h")
+thread_local precompile_save::Outcome pcache_save_outcome;   // (vk_draw.cpp: what the last save on this thread did)
+#endif
 struct NoteRef {};
 std::vector<NoteRef> pipe_notes_refs() { return std::vector<NoteRef>(3); }
 

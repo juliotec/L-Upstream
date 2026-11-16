@@ -667,8 +667,8 @@ COMPILER_MB = 1500
 # lift wrote them, so its patches, cuts and lists never see the pieces). On by default at split_giants.PIECE_KB (8): a whole
 # first build's compile 1,347 -> 1,057 s on a Ryzen 5 5600. "0": off; a number: the pieces' size in KB
 def split_giants_flags():
-    """The flag the lifted chunks carry when their giants are split (split_giants.FLAG: the piece size and the splitter's own
-    hash, so a change of either builds them again); [] when off"""
+    """The flag the lifted chunks and the hot pieces carry when their giants are split (split_giants.FLAG: the piece size and
+    the splitter's own hash, so a change of either builds them again); [] when off"""
     raw = os.environ.get("LONGSHOT_SPLIT_GIANTS", "").strip()
     if raw == "0":
         return []
@@ -1072,6 +1072,13 @@ def lifted_flags(src, fl, deps, bar_kb):
     if src in KEPT and not os.path.exists(src):
         return light if KEPT[src][2] == kept_part(light, deps) else fl
     return light if lifted_largest(src) < bar_kb * 1024 else fl
+
+
+def hot_flags(fl):
+    """The hot pieces' flags (code_hot*.c): fl at RX_HOT_OPT (default O2), so the hot callees inline into their hot callers, and
+    the split (split_giants_flags) the lifted chunks carry: a hot function of split_giants.MIN_KB or more compiles as pieces too
+    (f_81b8c000, 4.79 MB of C, was one -O2 translation unit: 346 s of a from-scratch build's 369 s compile)"""
+    return [("-" + os.environ.get("RX_HOT_OPT", "O2")) if f == "-" + OPT else f for f in fl] + split_giants_flags()
 
 
 def source_flags(src, gen, fl, split_fl, hot_fl, deps, bar_kb):
@@ -1561,8 +1568,8 @@ def main():
     costs = chunk_costs(gen)
     srcs.sort(key=lambda s: -compile_cost(s, costs))
     # (longshot) code_hot.c, the lift's hot functions together (A64_HOT_FUNCS + A64_HOT_CHUNK=1): at RX_HOT_OPT
-    # (default O2), so the hot callees inline into their hot callers
-    hot_fl = [("-" + os.environ.get("RX_HOT_OPT", "O2")) if f == "-" + OPT else f for f in fl]
+    # (default O2, so the hot callees inline into their hot callers) and with the giants split, as the lifted chunks are
+    hot_fl = hot_flags(fl)
     # (longshot) RX_PGO=gen: code_hot.c counts its branches (host/pgo_rt.c writes them; -O1 builds much sooner, and the counters are
     # placed before the optimiser, so a profile from it fits the -O2 build). RX_PGO=<merged .prof>: built with that profile
     if PGO == "gen":
@@ -1572,7 +1579,7 @@ def main():
         # new profile kept the hot code built from the old one)
         with open(PGO, "rb") as f:
             hot_fl = hot_fl + ["-fprofile-instr-use=" + PGO, "-DLONGSHOT_PROFILE_SHA1=" + hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()[:16]]
-    split_fl = fl + split_giants_flags()   # (the lifted chunks; not the hot pieces, whose profile was counted on the whole functions)
+    split_fl = fl + split_giants_flags()   # (the lifted chunks; the hot pieces carry their own split in hot_fl)
     bar_kb = light_passes_kb()
     if bar_kb is not None and not light_flags_work(cc):
         bar_kb = None
