@@ -92,6 +92,7 @@ struct Device {
     DeviceFacts facts{};
     DevicePolicy policy{};
     uint32_t max_push_descriptors = 0;
+    uint32_t max_vertex_divisor = 0;   // (maxVertexAttribDivisor, with dev.vertex_divisor)
     // no window (HOS_HEADLESS): presents go to an image of their own, which RX_VK_SHOTS can write out
     bool offscreen = false;
     // the window
