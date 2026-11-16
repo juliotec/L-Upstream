@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ""
+      tested_in_game:
+        description: "Where the change ran in the game and what was seen (create)"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: forge-pr
@@ -61,6 +66,7 @@ jobs:
       TITLE: ${{ inputs.title }}
       BODY: ${{ inputs.body }}
       COMMENT: ${{ inputs.comment }}
+      TESTED_IN_GAME: ${{ inputs.tested_in_game }}
     steps:
       - name: Check the inputs
         run: |
@@ -120,11 +126,10 @@ jobs:
           printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
           case "$ACTION" in
             create)
-              if [ -n "$BODY" ]; then
-                python3 -I scripts/forge.py pr create "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"
-              else
-                python3 -I scripts/forge.py pr create "$BRANCH" --title "$TITLE"
-              fi ;;
+              set -- pr create "$BRANCH" --title "$TITLE"
+              [ -z "$BODY" ] || set -- "$@" --body-file "$RUNNER_TEMP/body.md"
+              [ -z "$TESTED_IN_GAME" ] || set -- "$@" --tested-in-game "$TESTED_IN_GAME"
+              python3 -I scripts/forge.py "$@" ;;
             update)
               set -- pr update "$NUMBER"
               [ -z "$BODY" ] || set -- "$@" --body-file "$RUNNER_TEMP/body.md"
