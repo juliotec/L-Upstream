@@ -10,17 +10,17 @@ on:
         options: [longshot]
         default: longshot
       action:
-        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status = on PR number"
+        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status / reviews = on PR number"
         required: true
         type: choice
-        options: [push, create, update, comment, ready, status]
+        options: [push, create, update, comment, ready, status, reviews]
       branch:
         description: "Branch on juliotec/L-Upstream (push, create, update with push)"
         required: false
         type: string
         default: ""
       number:
-        description: "PR number on MagicBeanDev/Longshot (update, comment, ready, status)"
+        description: "PR number on MagicBeanDev/Longshot (update, comment, ready, status, reviews)"
         required: false
         type: string
         default: ""
@@ -72,7 +72,7 @@ jobs:
         run: |
           case "$ACTION" in
             push|create) [ -n "$BRANCH" ] || { echo "branch is required"; exit 1; } ;;
-            update|comment|ready|status) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
+            update|comment|ready|status|reviews) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
           esac
           [ "$ACTION" != create ] || [ -n "$TITLE" ] || { echo "title is required"; exit 1; }
           case "$ACTION" in comment|update) [ -n "$COMMENT" ] || { echo "comment is required"; exit 1; } ;; esac
@@ -120,7 +120,7 @@ jobs:
           git -c http.extraheader="AUTHORIZATION: basic $auth" push --force "$FORK_URL" "HEAD:refs/heads/$BRANCH"
 
       - name: PR on MagicBeanDev/Longshot
-        if: inputs.action != 'push'
+        if: inputs.action != 'push' && inputs.action != 'reviews'
         working-directory: tools
         run: |
           printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
@@ -139,6 +139,49 @@ jobs:
             ready)   python3 -I scripts/forge.py pr ready "$NUMBER" ;;
             status)  python3 -I scripts/forge.py pr status "$NUMBER" ;;
           esac
+
+      # (every review, each comment on the code with its file, line and diff, and every PR comment, in full)
+      - name: Reviews and comments on the PR
+        if: inputs.action == 'reviews'
+        env:
+          MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
+        shell: python3 -I {0}
+        run: |
+          import json, os, urllib.request
+          api = "https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot"
+          n = os.environ["NUMBER"]
+          def get(path):
+              out, page = [], 1
+              while True:
+                  sep = "&" if "?" in path else "?"
+                  req = urllib.request.Request("%s%s%spage=%d&limit=50" % (api, path, sep, page),
+                                               headers={"Authorization": "token " + os.environ["MAGICBEAN_TOKEN"],
+                                                        "Accept": "application/json"})
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      got = json.load(r)
+                  if not isinstance(got, list):
+                      return got
+                  out += got
+                  if len(got) < 50:
+                      return out
+                  page += 1
+          pr = get("/pulls/%s" % n)
+          print("#%s %s (%s, head %s)" % (n, pr.get("title"), pr.get("state"), (pr.get("head") or {}).get("sha", "")[:8]))
+          for rv in get("/pulls/%s/reviews" % n):
+              print("\n== review %s by %s, %s, %s (commit %s)" % (rv["id"], (rv.get("user") or {}).get("login"),
+                    rv.get("state"), rv.get("submitted_at"), (rv.get("commit_id") or "")[:8]))
+              if rv.get("body"):
+                  print(rv["body"])
+              for c in get("/pulls/%s/reviews/%s/comments" % (n, rv["id"])):
+                  print("\n-- %s:%s (old line %s) by %s, %s%s" % (c.get("path"), c.get("position"), c.get("original_position"),
+                        (c.get("user") or {}).get("login"), c.get("created_at"), ", resolved" if c.get("resolver") else ""))
+                  if c.get("diff_hunk"):
+                      print(c["diff_hunk"])
+                  print(">> " + (c.get("body") or "").replace("\n", "\n>> "))
+          print("\n== PR comments")
+          for c in get("/issues/%s/comments" % n):
+              print("\n-- %s, %s" % ((c.get("user") or {}).get("login"), c.get("created_at")))
+              print(c.get("body") or "")
 
       - name: Forget the session
         if: always()
