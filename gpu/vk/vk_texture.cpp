@@ -3276,8 +3276,12 @@ bool readback_begin() {
         ai.commandBufferCount = 1;
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         if (vkAllocateCommandBuffers(dev.device, &ai, &rb_cmd) != VK_SUCCESS ||
-            vkCreateFence(dev.device, &fi, nullptr, &rb_fence) != VK_SUCCESS)
+            vkCreateFence(dev.device, &fi, nullptr, &rb_fence) != VK_SUCCESS) {
+            // (made again next time, not used half made: a null rb_cmd or rb_fence with rb_pool set)
+            vkDestroyCommandPool(dev.device, rb_pool, nullptr);
+            rb_pool = VK_NULL_HANDLE, rb_cmd = VK_NULL_HANDLE, rb_fence = VK_NULL_HANDLE;
             return false;
+        }
     }
     vkResetCommandPool(dev.device, rb_pool, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
