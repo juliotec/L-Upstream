@@ -93,6 +93,7 @@ jobs:
           echo "::add-mask::$auth"
           git -c http.extraheader="AUTHORIZATION: basic $auth" clone --depth 1 https://git.magicbean.dev/MagicBeanDev/Tooling.git "$MAGICBEAN_TOOLING"
           git -C "$MAGICBEAN_TOOLING" log -1 --format='Tooling @ %h %s'
+          git -C tools remote set-url origin https://git.magicbean.dev/MagicBeanDev/Longshot.git
 
       - name: Sign in to git.magicbean.dev
         env:
