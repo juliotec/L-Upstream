@@ -177,7 +177,8 @@ jobs:
                   print(rv["body"])
               for c in get("/pulls/%s/reviews/%s/comments" % (n, rv["id"])):
                   print("\n-- %s:%s (old line %s) by %s, %s%s" % (c.get("path"), c.get("position"), c.get("original_position"),
-                        (c.get("user") or {}).get("login"), c.get("created_at"), ", resolved" if c.get("resolver") else ""))
+                        (c.get("user") or {}).get("login"), c.get("created_at"),
+                        ", resolved by %s" % (c.get("resolver") or {}).get("login") if c.get("resolver") else ", not resolved"))
                   if c.get("diff_hunk"):
                       print(c["diff_hunk"])
                   print(">> " + (c.get("body") or "").replace("\n", "\n>> "))
@@ -185,6 +186,12 @@ jobs:
           for c in get("/issues/%s/comments" % n):
               print("\n-- %s, %s" % ((c.get("user") or {}).get("login"), c.get("created_at")))
               print(c.get("body") or "")
+          print("\n== timeline (events other than comments)")
+          for ev in get("/issues/%s/timeline" % n):
+              if ev.get("type") == "comment":
+                  continue
+              print("-- %s by %s, %s%s" % (ev.get("type"), (ev.get("user") or {}).get("login"), ev.get("created_at"),
+                    (": " + ev["body"][:200]) if ev.get("body") else ""))
 
       - name: Forget the session
         if: always()
