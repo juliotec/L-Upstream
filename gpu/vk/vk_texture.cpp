@@ -1710,7 +1710,12 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                 // (the stencil's bytes after the depth's floats, in the same staging: one byte a texel)
                 const uint64_t s_off = (out_bytes + 15) & ~15ull, s_bytes = d24s8_as_d32 ? out_bytes / 4 : 0;
                 const Staging st = staging(d24s8_as_d32 ? s_off + ((s_bytes + 15) & ~15ull) : (out_bytes + 15) & ~15ull, 16);
-                if (!st.buffer) return false;
+                if (!st.buffer) {
+                    // (the sparse binds queued by the rows before are this image's: bound now, not left in sparse_binds
+                    // for the next flush, which binds them into another texture's image)
+                    texture_resident_flush(&tex);
+                    return false;
+                }
                 if (buffer && st.buffer != buffer && !copies.empty()) {   // (a new arena: copy what the last one holds)
                     texture_resident_flush(&tex);
                     checkpoint_mark(upload_cmd(), tex.gpu, 'u');
