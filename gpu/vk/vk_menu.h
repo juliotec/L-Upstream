@@ -70,6 +70,7 @@ struct Options {
     int walk_speed = 45;  // (longshot) how far the movement keys tilt the left stick while Link walks, percent, 15 to 90
                           // (host/nn_hid.c: HOS_OPT_WALK_SPEED, 50)
     int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)
+    int transition_autosave = 1;
     int damage_taken = 1; // 0 Half, 1 Normal, 2 Double, 3 Quadruple (host/oot_damage.c)
     int fov = 100;        // vertical gameplay field of view, 50..150% of the game's current angle (host/oot_fov.c)
     int text_size = 0;    // dialogue and signs' text size: 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% (host/oot_text_size.c,
@@ -131,6 +132,7 @@ int menu_vsync();
 bool menu_threaded_rendering();
 void menu_set_gpu_count(int count);
 std::string driver_text();   // (vk_main.cpp: the driver as it names itself, for the log and Save my pipeline list)
+std::string device_name_text();   // (vk_main.cpp: the GPU the game runs on, as its driver names it)
 void menu_tick();             // (each frame shown: the keys, while the game's window has the focus)
 bool menu_is_open();
 /// (longshot) The game's scene tone mapped by PsychoV35: HDR set to Native on an HDR display, and the Tone mapper row so
@@ -144,6 +146,7 @@ int menu_heart_protection();
 int menu_player_flight();
 int menu_free_camera();
 int menu_link_speed();   // (Movement speed in percent, 100 while the tools are off)
+int menu_transition_autosave();
 int menu_damage_taken();   // (Damage taken, HOS_OPT_DAMAGE_TAKEN: 1, Normal, while the tools are off)
 int menu_take_cheat_action();
 void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)

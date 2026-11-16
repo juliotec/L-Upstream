@@ -640,6 +640,13 @@ Shader::Profile make_profile() {
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
     p.support_multi_viewport = true;
     p.support_sampled_image_array_nonuniform_indexing = true;
+    // (storage images, image buffers and texture buffers picked by an index that can differ between invocations: NonUniform on the
+    // index and what it reaches, as for sampled images, where the GPU indexes that kind of array nonuniformly (Vulkan 1.2's
+    // descriptor indexing; vk_main.cpp creates the device with every feature it reports). Without the feature the index is taken
+    // as the same in every invocation, as before: there an index that differs is undefined. In the cache's stamp)
+    p.support_storage_image_array_nonuniform_indexing = dev.vk12.shaderStorageImageArrayNonUniformIndexing;
+    p.support_uniform_texel_buffer_array_nonuniform_indexing = dev.vk12.shaderUniformTexelBufferArrayNonUniformIndexing;
+    p.support_storage_texel_buffer_array_nonuniform_indexing = dev.vk12.shaderStorageTexelBufferArrayNonUniformIndexing;
     // Unpinned SPIR-V 1.6 stages can use any supported subgroup size, even when the default is 32.
     // The stage-specific profiles below keep the short path only where pin_subgroup actually pins 32 lanes.
     p.warp_size_potentially_larger_than_guest = dev.subgroup_max > 32;
@@ -1070,6 +1077,12 @@ const std::vector<Code>& codes_of(const NvnState& s) {
 }
 
 std::atomic<int64_t> st_translated, st_failed, st_translate_ns;
+// (longshot) The "not translated" lines name 30 programs each, so that a log is not flooded; these count every program each
+// line stands for, the ones past its 30 too, and shader_fail_lines logs them after the preparation's "N failed". Each failure
+// st_failed counts is in exactly one of them: a Mac start's "70 failed" named 31 programs, and the other 39 networks left out
+// were counted nowhere
+constexpr int64_t kFailNamed = 30;
+std::atomic<int64_t> st_left_out, st_not_translated, st_mesh_not_translated, st_stage_failed;
 
 } // namespace
 
@@ -1319,6 +1332,15 @@ uint64_t translator_stamp() {
     // without it, nor one made with RX_VK_NATIVE_FADD=0's loop wanted back once it is native again)
     const uint32_t float_add = profile().support_float32_atomic_add ? 1u : 0u;
     add(&float_add, sizeof float_add);
+    // (and which descriptor arrays the GPU indexes nonuniformly (make_profile): a program made with NonUniform on a storage image,
+    // image buffer or texture buffer array and that kind's capability is no use to a GPU without the feature, nor one made
+    // without them to a GPU that has it. Only when one is missing, so the GPUs that have all three keep one cache)
+    if (const uint32_t missing = (profile().support_storage_image_array_nonuniform_indexing ? 0u : 1u) |
+                                 (profile().support_uniform_texel_buffer_array_nonuniform_indexing ? 0u : 2u) |
+                                 (profile().support_storage_texel_buffer_array_nonuniform_indexing ? 0u : 4u)) {
+        const uint32_t no_nonuniform[] = {0x6e6e7561u, missing};   // ("nnua", and which)
+        add(no_nonuniform, sizeof no_nonuniform);
+    }
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
     // (and every other switch the translation reads: the storage buffer pass's (RX_VK_NO_CBUF_LOAD_RULE, RX_VK_PTR_SPLIT_FALLBACK,
@@ -1527,10 +1549,9 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
         const bool trial = forced && !forced->want.empty();   // (an answer seed_compute tries: it may well not translate)
         if (!trial) st_failed++;
         // (a network left out on purpose is a trace line, counted apart: the dozen of them on every AMD card took the 30 lines a failure gets)
-        static std::atomic<int> logged, left_out;
         if (!strcmp(e.what(), network_left_out)) {
-            if (!trial && left_out++ < 30) logf_at(log_trace, "vk: program %016llx not translated: %s", (unsigned long long)p.key, e.what());
-        } else if (!trial && logged++ < 30) logf("vk: program %016llx not translated: %s", (unsigned long long)p.key, e.what());
+            if (!trial && st_left_out++ < kFailNamed) logf_at(log_trace, "vk: program %016llx not translated: %s", (unsigned long long)p.key, e.what());
+        } else if (!trial && st_not_translated++ < kFailNamed) logf("vk: program %016llx not translated: %s", (unsigned long long)p.key, e.what());
     }
     st_translate_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
     p.ready.store(true, std::memory_order_release);
@@ -1762,8 +1783,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
     } catch (const std::exception& e) {
         p.failed = true;
         st_failed++;
-        static std::atomic<int> logged;
-        if (logged++ < 30) logf("vk: mesh program %016llx not translated: %s", (unsigned long long)p.key, e.what());
+        if (st_mesh_not_translated++ < kFailNamed) logf("vk: mesh program %016llx not translated: %s", (unsigned long long)p.key, e.what());
     }
     st_translate_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
     p.ready.store(true, std::memory_order_release);
@@ -2140,8 +2160,7 @@ Code stage_of_seed(const SeedStage& st) {
 }
 /// (longshot) A seed stage that does not parse fails its program: which one, and why (the prepare's "1 failed" named nothing)
 void seed_stage_failed(const Code& c, uint64_t program) {
-    static std::atomic<int> logged{0};
-    if (logged++ < 30)
+    if (st_stage_failed++ < kFailNamed)
         logf("vk: program %016llx not translated: its NVN stage %d (code %016llx) %s", (unsigned long long)program, c.stage,
              (unsigned long long)c.key, c.why.empty() ? "does not parse" : c.why.c_str());
 }
@@ -2160,6 +2179,7 @@ size_t seed_open() {
         fclose(f);
     }
     if (seed.blob.empty()) return 0;
+    static const bool seed_check = env_on("RX_VK_SEED_CHECK");
     disk_init();
     disk_listing = true;
     size_t at = 16;
@@ -2188,7 +2208,9 @@ size_t seed_open() {
             continue;
         }
         st.key = code_key(seed.blob.data() + st.control, seed.blob.data() + st.code, st.end);
-        seed_keys.insert(st.key);
+        // (only for RX_VK_SEED_CHECK, whose miss_note reads it: a seed opened in play (prepare_background) filled it while the
+        // replay's misses read it, an unordered_set rehashed under a reader)
+        if (seed_check) seed_keys.insert(st.key);
         seed.index.emplace(st.key, (uint32_t)(&st - seed.stages.data()));
         std::memcpy(st.sph, seed.blob.data() + st.code, std::min<size_t>(sizeof st.sph, st.end));
     }
@@ -2563,6 +2585,21 @@ void shader_stats(int64_t* translated, int64_t* failed) {
     static int64_t hits_logged;
     if (st_cache_hits.load() >= hits_logged + 500) logf("vk: %lld programs from the program cache", (long long)(hits_logged = st_cache_hits.load()));
     *translated = st_translated, *failed = st_failed;
+}
+/// (longshot) After the preparation's "N failed" (vk_draw.cpp prepare_run): how many programs each "not translated" line stands
+/// for, whenever it stood for any. Those lines stop at kFailNamed programs each; these add up to N, so no failure goes uncounted.
+/// where: where those lines are, as a reader at the default level sees it (the networks' are trace lines, hidden there)
+void shader_fail_lines() {
+    const auto line = [](const char* what, int64_t n, const char* where) {
+        if (n > kFailNamed)
+            logf("vk: not translated%s: %lld programs (the first %lld named %s)", what, (long long)n, (long long)kFailNamed, where);
+        else if (n)
+            logf("vk: not translated%s: %lld program%s (named %s)", what, (long long)n, n == 1 ? "" : "s", where);
+    };
+    line(", a network left out on this card", st_left_out.load(), "at trace level");
+    line("", st_not_translated.load(), "above");
+    line(", mesh", st_mesh_not_translated.load(), "above");
+    line(", a seed stage that does not parse", st_stage_failed.load(), "above");
 }
 double shader_translate_ms() {
     return st_translate_ns.load() / 1e6;

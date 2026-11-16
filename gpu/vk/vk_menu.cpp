@@ -47,6 +47,7 @@
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
 #include "vk_fsr4.h"
+#include "vk_xess.h"
 #include "vk_temporal.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
@@ -205,24 +206,26 @@ const char* hn_antilag(int v, int variant) {
     return variant <= 0 ? t[v ? 1 : 0] : nullptr;
 }
 // The Upscaler (opts.dlss): what scales the 3D up to the output. DLSS and DLAA only where dlss_why() lets them run, FSR 3.1
-// only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does, Off (no upscaler: vk_temporal.cpp
-// temporal_off) everywhere; the menu shows (and steps from) what runs, and keeps the saved choice for a PC where it can
+// only where vk_fsr3.cpp says it does, FSR 4 and its native AA only where fsr4_why() does, Intel XeSS and its Native AA only
+// where xess_why() does, Off (no upscaler: vk_temporal.cpp temporal_off) everywhere; the menu shows (and steps from) what runs,
+// and keeps the saved choice for a PC where it can
 namespace ur = upscaler_rows;
 /// One bit per upscaler that runs here (upscaler_rows.h bit). Each backend caches its own answer, so this costs nothing
 unsigned upscalers_available() {
     return ur::bit(ur::GAME) | ur::bit(ur::OFF) | ur::dlss_bits(dlss_why() == DLSS_OK) |
-           (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) | ur::fsr4_bits(fsr4_why() == FSR_OK);
+           (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) | ur::fsr4_bits(fsr4_why() == FSR_OK) |
+           ur::xess_bits(xess_why() == XESS_OK);
 }
-/// (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share, temporal_mode; Off is neither)
+/// (FSR 3.1 has inputs of its own; DLSS, FSR 4 and XeSS run on the frame chain they share, temporal_mode; Off is neither)
 int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_off() ? (int)ur::OFF : temporal_mode(); }
 const char* tx_upscaler(int) {
     static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4",
-                                            "AMD FSR 4 Native AA", "Off (no upscaling)"};
-    // (by engine: DLAA and FSR 4's native AA are the Render resolution row's Native, upscaler_rows.h engine)
+                                            "AMD FSR 4 Native AA", "Off (no upscaling)", "Intel XeSS", "Intel XeSS Native AA"};
+    // (by engine: DLAA and FSR 4's and XeSS's native AA are the Render resolution row's Native, upscaler_rows.h engine)
     return t[std::clamp(ur::engine(upscaler()), 0, ur::kUpscalers - 1)];
 }
-/// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS and FSR are not offered. Variants
-/// (every one): each value, then the game's own with each of DLSS's reasons, then with each of FSR's
+/// The Upscaler: the one shown (what runs, upscaler()), and with the game's own, why DLSS, FSR and XeSS are not offered.
+/// Variants (every one): each value, then the game's own with each of DLSS's reasons, then with each of FSR's, then XeSS's
 const char* hn_upscaler(int v, int variant) {
     static const char* const t[ur::kUpscalers] = {
         "The game's own network.",
@@ -237,6 +240,9 @@ const char* hn_upscaler(int v, int variant) {
         "AMD's machine-learned upscaler, the 3D at full size with its edges smoothed; the slowest.",
         "No upscaler, not even the game's network: the 3D is stretched to the output with a plain linear filter. The "
         "fastest choice and the roughest picture: no edge smoothing, and softer below 100%.",
+        "Intel's machine-learned upscaler, from a smaller 3D, with Intel's libxess.dll beside the game. Things that move by "
+        "themselves can trail for now.",
+        "Intel's machine-learned upscaler, the 3D at full size with its edges smoothed; the slowest.",
     };
     static const char* const dlss_no[DLSS_WHY_COUNT] = {
         nullptr,
@@ -254,25 +260,37 @@ const char* hn_upscaler(int v, int variant) {
         "AMD FSR 4: AMD's files were not found beside the game (see the readme).",
         "AMD FSR 4: AMD's files have no FSR 4 for this GPU.",
     };
-    // (now: the value shown and what runs here, with both engines' reasons; every one: as said above)
-    int d = 0, f = 0;
+    static const char* const xess_no[XESS_WHY_COUNT] = {
+        nullptr,
+        "Intel XeSS: Windows only (Intel makes no XeSS library for Linux).",
+        "Intel XeSS: off for this run (RX_VK_XESS=0).",
+        "Intel XeSS: Intel's libxess.dll was not found beside the game (see the readme).",
+        "Intel XeSS: the GPU or its Vulkan driver lacks what XeSS needs.",
+        "Intel XeSS: Intel's library does not run on this GPU or driver.",
+    };
+    // (now: the value shown and what runs here, with every engine's reasons; every one: as said above)
+    int d = 0, f = 0, x = 0;
     if (variant < 0) {
-        v = std::clamp(upscaler(), 0, ur::kUpscalers - 1), d = (int)dlss_why(), f = (int)fsr4_why();
+        v = std::clamp(upscaler(), 0, ur::kUpscalers - 1), d = (int)dlss_why(), f = (int)fsr4_why(), x = (int)xess_why();
     } else if (v == ur::GAME) {
         if (variant < DLSS_WHY_COUNT) d = variant;
         else if (variant < DLSS_WHY_COUNT + FSR_WHY_COUNT - 1) f = variant - DLSS_WHY_COUNT + 1;
+        else if (variant < DLSS_WHY_COUNT + FSR_WHY_COUNT + XESS_WHY_COUNT - 2) x = variant - DLSS_WHY_COUNT - FSR_WHY_COUNT + 2;
         else return nullptr;
     } else if (variant > 0) {
         return nullptr;
     }
     v = std::clamp(v, 0, ur::kUpscalers - 1);
-    // (the reasons are said only where the engine is in the build: one without FSR does not tell an NVIDIA user why)
+    // (the reasons are said only where the engine is in the build: one without FSR does not tell an NVIDIA user why, and a
+    // Linux build does not tell anyone that XeSS is Windows only)
     const char* dn = dlss_built() || variant >= 0 ? dlss_no[d] : nullptr;
     const char* fn = fsr4_built() || variant >= 0 ? fsr_no[f] : nullptr;
-    if (v != ur::GAME || (!dn && !fn)) return t[v];
-    static char b[DLSS_WHY_COUNT][FSR_WHY_COUNT][320];
-    snprintf(b[d][f], sizeof b[d][f], "%s%s%s%s%s", t[0], dn ? " " : "", dn ? dn : "", fn ? " " : "", fn ? fn : "");
-    return b[d][f];
+    const char* xn = xess_built() || variant >= 0 ? xess_no[x] : nullptr;
+    if (v != ur::GAME || (!dn && !fn && !xn)) return t[v];
+    static char b[DLSS_WHY_COUNT][FSR_WHY_COUNT][XESS_WHY_COUNT][400];
+    snprintf(b[d][f][x], sizeof b[d][f][x], "%s%s%s%s%s%s%s", t[0], dn ? " " : "", dn ? dn : "", fn ? " " : "", fn ? fn : "",
+             xn ? " " : "", xn ? xn : "");
+    return b[d][f][x];
 }
 /// The DLSS model row (opts.dlss_model): NVIDIA's network by its preset, or RX_VK_DLSS_PRESET's for this run
 const char* dlss_preset_env() {
@@ -633,16 +651,17 @@ const char* tx_resolution(int v) {
     const int up = upscaler();
     // (each stop with the 3D's real size, the render input: a twelfth of the picture (game_size), Native
     // the picture itself)
-    if (up == ur::DLAA || up == ur::FSR4_AA) {
+    if (up == ur::DLAA || up == ur::FSR4_AA || up == ur::XESS_AA) {
         const Out o = shown_output();
-        snprintf(b, sizeof b, "Native (%s, %ux%u)", up == ur::DLAA ? "DLAA" : "FSR 4", o.w, o.h);
+        snprintf(b, sizeof b, "Native (%s, %ux%u)", up == ur::DLAA ? "DLAA" : up == ur::FSR4_AA ? "FSR 4" : "XeSS", o.w, o.h);
         return b;
     }
     v = ur::snap_render(up, v);   // (show the active engine's size without overwriting the player's saved scale)
     if (!ur::percent(v)) return "Auto (dynamic)";
     uint32_t w, h;
     game_size(ur::percent(v) / 100.0f, w, h);
-    if (const char* mode = ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
+    // (XeSS: the preset whose range holds the share, upscaler_rows.h xess_mode_name)
+    if (const char* mode = up == ur::XESS ? ur::xess_mode_name(v) : ur::scales_by_mode(up) ? ur::dlss_mode_name(v) : nullptr) {
         snprintf(b, sizeof b, "%s %d%% (%ux%u)", mode, ur::percent(v), w, h);
         return b;
     }
@@ -656,6 +675,7 @@ const char* hn_resolution(int v, int variant) {
     // (Native is the slider's top: the 3D at the picture's full size)
     if (up == ur::DLAA) return "DLAA: the 3D at the picture's full size, anti-aliased by DLSS. The sharpest, and the heaviest.";
     if (up == ur::FSR4_AA) return "FSR 4's native AA: the 3D at the picture's full size. The sharpest, and the heaviest.";
+    if (up == ur::XESS_AA) return "XeSS's Native AA: the 3D at the picture's full size. The sharpest, and the heaviest.";
     const int p = ur::percent(ur::snap_render(up, v));
     if (up == ur::DLSS) {
         switch (p) {
@@ -679,6 +699,18 @@ const char* hn_resolution(int v, int variant) {
         case 50: return "FSR's Performance mode, 2x: faster, and softer.";
         case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
         default: return nullptr;   // (not one of FSR's steps: the row moves to one)
+        }
+    }
+    if (up == ur::XESS) {   // (each stop under the XeSS preset whose range holds it: xess_rules.h)
+        switch (p) {
+        case 0: return "The game lowers it when the GPU is busy, and XeSS follows.";
+        case 92: case 83: return "XeSS's Ultra Quality Plus mode, 1.3x: sharper than Ultra Quality, a little slower.";
+        case 75: return "Between Ultra Quality Plus and Ultra Quality, under XeSS's Ultra Quality mode.";
+        case 67: return "XeSS's Ultra Quality mode, 1.5x.";
+        case 58: return "Between XeSS's Quality and Balanced, under its Balanced mode.";
+        case 50: return "XeSS's Balanced mode, 2x: faster, and softer.";
+        case 33: return "XeSS's Ultra Performance mode, 3x: its fastest, and its softest.";
+        default: return nullptr;   // (not one of the slider's stops: the row moves to one)
         }
     }
     if (up == ur::OFF) {   // (no upscaler: the 3D stretched to the output as it is drawn)
@@ -1152,12 +1184,13 @@ const char* hn_intel_compiles(int v, int variant) {
 }
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the game's own rate too.",
-           "And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.",
+           "And the game's frame time, with its 1% low: the mean time of its slowest 1% of frames over the last 10 seconds.",
            "And a graph of the last 4 seconds' frame times, with a line at the Game frame rate cap's.",
-           "And where each frame's time goes: the game, the renderer, waiting for the GPU, waiting for its turn (frame pacing, "
-           "vsync); the GPU's own time; red marks where shaders were built or draws left out.",
-           "And the renderer's own numbers, for debugging: video memory, textures, draws, dispatches and render passes a "
-           "frame, draws skipped, texture uploads and pipelines built.")
+           "And where each frame's time goes, as colours in the graph: the game, the renderer, its waits on the render thread "
+           "and the GPU, pacing (frame rate cap, vsync); with threaded rendering, a lane for the render thread's time; the "
+           "GPU's own time; red marks where shaders were built or draws left out.",
+           "And, for debugging, the CPU, GPU and driver, and the renderer's own numbers: video memory, textures, draws, "
+           "dispatches and render passes a frame, draws skipped, texture uploads and pipelines built.")
 MENU_HINTS(hn_menu_size, 1, "Smaller, for a desk.", "The usual size.", "Larger, for a TV across the room.")
 MENU_HINTS(hn_speed, 0, "A step each frame: the game slows down whenever it runs below 60 fps.",
            "Normal speed down to 15 fps, by taking longer steps.")
@@ -1475,6 +1508,8 @@ Row rows[] = {
      "movement speed. Off puts flight, the free camera and heart protection away and Link back to his own speed and damage.", nullptr, false, true},
     {TAB_DEBUG, "Heart protection", nullptr, 0, 0, 0, nullptr,
      "Protects Link's hearts. Hits can still knock him back.", nullptr, false, true, 0},
+    {TAB_DEBUG, "Autosave:", &opts.transition_autosave, 0, 1, 1, tx_onoff,
+     "Works with Debug tools off. Turning it off skips supported autosaves. You can still save manually.", nullptr, false, true},
     {TAB_DEBUG, "Damage taken", &opts.damage_taken, 0, 3, 1, tx_damage_taken,
      "How much health Link loses from a hit. Normal is unchanged. Half rounds up to the next quarter heart. "
      "Changes apply at once; healing is unchanged. Heart protection takes priority. Debug tools Off makes it Normal "
@@ -1552,6 +1587,10 @@ const Row* pending = nullptr;   // (Restart or Quit: shows Confirm until its sec
 bool cheats_env = false;   // (HOS_OOT_CHEATS=1: on whatever the Debug tab says)
 /// The debug tools: the Debug tab's row, or HOS_OOT_CHEATS=1
 bool cheats_on() { return cheats_env || opts.debug_tools; }
+std::atomic<bool> transition_autosave_enabled{true};
+void sync_transition_autosave() {
+    transition_autosave_enabled.store(opts.transition_autosave != 0, std::memory_order_relaxed);
+}
 std::atomic<int> protect_hearts{-1};
 // -1 disables the shortcut, 0 enables it on the ground, and 1 means flying.
 std::atomic<int> player_flight{-1};
@@ -1842,6 +1881,7 @@ int tab_row_to_global(int t, int local_idx) {
 
 std::atomic<bool> open_now{false};
 bool tune_mode = false;
+bool quick_debug = false;
 bool menu_refresh = false;
 // (a value too long for its row, a GPU's name: the selected row's slides through it, a character a step, resting at
 // each end; the other rows end it with "...". The drawing (fit) says how far it can slide, menu_tick moves it)
@@ -2579,7 +2619,16 @@ void share_pipeline_list() {
 
 /// A row's new value v, as the arrows set it (dir: 1 up, -1 down, for the rows that skip or wrap), saved unless !keep
 /// (a slider's drag: saved once it is let go)
+bool debug_warning = false;
+int debug_warning_choice = 0;
+
 void set_row(Row& r, int v, int dir, bool keep = true) {
+    if (r.value == &opts.debug_tools && !opts.debug_tools && v > 0) {
+        debug_warning = true;
+        debug_warning_choice = 0;
+        menu_refresh = true;
+        return;
+    }
     // (nothing else to choose: no change, no save. A saved choice that cannot run here is kept)
     if (row_fixed(r.value)) return;
     // (the scaling rows: only what can run here; the Render resolution row through the Upscaler's own steps)
@@ -2588,7 +2637,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.resolution) {
         int up = upscaler(), res = *r.value;
         ur::step_render(upscaler(), ur::snap_render(upscaler(), *r.value), dir, &up, &res);
-        if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4)
+        if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4, XeSS's / XeSS)
         v = ur::full_scale(up) ? *r.value : res;   // (Native changes the mode, not the saved numeric scale)
     }
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
@@ -2617,6 +2666,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             opts.preset = 0; // Custom
         }
     }
+    if (r.value == &opts.transition_autosave) sync_transition_autosave();
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (longshot)
     // (longshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
@@ -2877,10 +2927,13 @@ char fps_sub[96] = "";   // (UTF-8: a translation's line can be three bytes a ch
 // (the FPS counter's levels past the number, written every half second by menu_tick: the frame time and its 1% low; the
 // Breakdown's parts, the GPU's time, the shaders built and draws left out over the graph's 4 s)
 char fps_ms_text[24] = "", fps_low_text[24] = "";
-double fps_ms_now = 0, fps_parts_now[fps_stats::kParts];   // (the frame time and the parts, for their colour and the bar)
+double fps_ms_now = 0;   // (the frame time, for its colour)
 double fps_rate_now = 0;   // (the number's rate, the game's own with frame generation: its colour)
 char fps_part_text[fps_stats::kParts][24];
 char fps_gpu_text[24] = "";
+char fps_rt_text[fps_stats::kRtParts][24];   // (the render thread's parts, fps_texts)
+char fps_gpu_busy_text[24] = "";              // (the GPU's share of the frame)
+bool fps_rt_on = false;                       // (a render thread was measured)
 char fps_built_text[16] = "", fps_left_text[16] = "";
 char fps_dev_text[fps_stats::kDevLines][32];   // (the Dev level's values, fps_texts)
 bool fps_vram_over = false;                    // (the VRAM line in red: past what the driver allows)
@@ -3173,6 +3226,7 @@ struct DebugGroup { const char* title; int from, to; };   // (debug_tools_order[
 constexpr int debug_tools_order[] = {0, -1, 1, 11, 9, 10, 8, 2, 3, 7, 4};
 constexpr DebugGroup debug_groups[] = {{"Player", 0, 6}, {"Travel", 6, 9}, {"Camera & world", 9, 11}};
 constexpr int kDebugGroups = sizeof debug_groups / sizeof debug_groups[0];
+constexpr int kDebugGeneralRows = 2;
 constexpr int kDebugTools = sizeof debug_tools_order / sizeof debug_tools_order[0];
 /// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the tools in debug_tools_order while they
 /// are on, then the Developer rows; *dev where those start, *dev_head the Developer heading's row (-1 none). Their count
@@ -3180,14 +3234,17 @@ int debug_rows(int* out, int* dev, int* dev_head) {
     const int count = tab_row_count(TAB_DEBUG);
     int n = 0;
     *dev_head = -1;
-    for (int k = 0; k < count; ++k)
-        if (rows[tab_row_to_global(TAB_DEBUG, k)].value == &opts.debug_tools) out[n++] = k;
+    for (int k = 0; k < count; ++k) {
+        const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
+        if (r.value == &opts.debug_tools || r.value == &opts.transition_autosave) out[n++] = k;
+    }
     for (int t = 0; t < kDebugTools; ++t)
         for (int k = 0; k < count; ++k) {
             const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
-            if (debug_tools_order[t] < 0 ? r.value == &opts.damage_taken : r.cheat == debug_tools_order[t]) out[n++] = k;
+            if (debug_tools_order[t] == -1 ? r.value == &opts.damage_taken : r.cheat == debug_tools_order[t]) out[n++] = k;
         }
     *dev = n;
+    if (quick_debug) return n;
     for (int k = 0; k < count; ++k) {
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
         if (r.heading) *dev_head = k;
@@ -3233,9 +3290,9 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         return ui::size_of(c.f.strong, px, v.empty() ? says : v.c_str()).x + (cheat_chooses(r.cheat) ? 68 : tight ? 56 : 60) * s;   // (choice_cell keeps 48 for arrows either way)
     };
     float name_need[2] = {0, 0}, cell_full[2] = {halves_w + 64 * s, halves_w + 64 * s}, cell_tight[2] = {halves_w + 36 * s, halves_w + 36 * s};
-    for (int i = 1; i < dev; ++i) {
+    for (int i = kDebugGeneralRows; i < dev; ++i) {
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, order[i])];
-        const int col = i - 1 >= debug_groups[0].to ? 1 : 0;   // (Player in the first, the rest in the second)
+        const int col = i - kDebugGeneralRows >= debug_groups[0].to ? 1 : 0;   // (Player in the first, the rest in the second)
         name_need[col] = std::max(name_need[col], ui::size_of(c.f.strong, 18.5f * s, r.name).x + 40 * s);
         cell_full[col] = std::max(cell_full[col], need(r, false)), cell_tight[col] = std::max(cell_tight[col], need(r, true));
     }
@@ -3243,13 +3300,14 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
     const bool two = col_w >= name_need[0] + cell_tight[0] && col_w >= name_need[1] + cell_tight[1];
     // (where each goes: a row number of the layout and a column)
     int vrow[64] = {}, vcol[64] = {}, head_row[kDebugGroups] = {}, head_col[kDebugGroups] = {};
-    int next_row[2] = {1, 1};
-    const bool tools = dev > 1;
+    vrow[1] = 1;
+    int next_row[2] = {kDebugGeneralRows, kDebugGeneralRows};
+    const bool tools = dev > kDebugGeneralRows;
     for (int g = 0; tools && g < kDebugGroups; ++g) {
         const int col = two && g > 0 ? 1 : 0;
-        if (next_row[col] > 1) next_row[col]++;   // (a gap over a heading that follows another group)
+        if (next_row[col] > kDebugGeneralRows) next_row[col]++;   // (a gap over a heading that follows another group)
         head_row[g] = next_row[col]++, head_col[g] = col;
-        for (int t = debug_groups[g].from; t < debug_groups[g].to; ++t) vrow[1 + t] = next_row[col]++, vcol[1 + t] = col;
+        for (int t = debug_groups[g].from; t < debug_groups[g].to; ++t) vrow[kDebugGeneralRows + t] = next_row[col]++, vcol[kDebugGeneralRows + t] = col;
     }
     int foot = std::max(next_row[0], next_row[1]);
     if (tools) foot++;
@@ -3285,7 +3343,7 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
         const float y = top + (vrow[i] - first) * pitch;
         if (y + pitch <= top || y >= bottom) continue;
-        const bool in_tools = i > 0 && i < dev;
+        const bool in_tools = i >= kDebugGeneralRows && i < dev;
         const float x0 = two && in_tools && vcol[i] ? mid + gap * .5f : left;
         const float x1 = !two || !in_tools || vcol[i] ? right : mid - gap * .5f;
         const bool selected = k == sel;
@@ -4041,6 +4099,39 @@ void draw_teleport(ui::Ctx& c) {
     ui::prompt_bar(c, prompts, 5);   // (the prompts, on top of the help and the cards)
 }
 
+void draw_quick_debug(ui::Ctx& c) {
+    const float s = c.s, width = std::min(1040 * s, c.w - 2 * c.safe);
+    const float left = (c.w - width) * .5f, right = left + width;
+    const float top = std::max(c.safe, c.h * .10f), bottom = std::min(c.h - c.safe, top + 540 * s);
+    c.d->AddRectFilled(ImVec2(left, top), ImVec2(right, bottom), ui::kCellDark);
+    c.d->AddRect(ImVec2(left, top), ImVec2(right, bottom), ui::kEdge);
+    ui::text_mid(c, c.f.heading, 23 * s, left + 24 * s, top + 25 * s, ui::kGoldHi, "Debug Tools");
+    draw_debug_rows(c, left, right, top + 52 * s, bottom - 12 * s, tab_selected[TAB_DEBUG]);
+    const ui::Prompt prompts[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"},
+        {ui::kConfirm, "Select"}, {ui::kBack, "Close"}};
+    ui::prompt_bar(c, prompts, 4);
+}
+
+void draw_debug_warning(ui::Ctx& c) {
+    const float s = c.s, width = std::min(600 * s, c.w - 2 * c.safe), height = 234 * s;
+    const ImVec2 a((c.w - width) * .5f, (c.h - height) * .5f), b = a + ImVec2(width, height);
+    c.d->AddRectFilled(a, b, ui::kCellDark);
+    c.d->AddRect(a, b, ui::kEdge, 0, 2 * s);
+    c.d->AddRectFilled(a, ImVec2(b.x, a.y + 48 * s), ui::kBanner);
+    ui::text_mid_centre(c, c.f.heading, 23 * s, (a.x + b.x) * .5f, a.y + 24 * s, ui::kBannerInk, "Enable Debug Tools?");
+    ui::para(c, c.f.body, 18 * s, a + ImVec2(24 * s, 62 * s), ui::kInk,
+             "Debug tools can change your progress. Use a backup save. Enabling Debug tools turns off autosave. "
+             "You can turn it back on in the Debug tab.", width - 48 * s);
+    const char* labels[] = {"Cancel", "Enable Debug Tools"};
+    const float button_w = (width - 60 * s) / 2;
+    for (int i = 0; i < 2; ++i) {
+        const ImVec2 p(a.x + 24 * s + i * (button_w + 12 * s), b.y - 66 * s);
+        const ImVec2 q = p + ImVec2(button_w, 42 * s);
+        ui::button(c, p, q, labels[i], i == debug_warning_choice);
+        hits.add(p.x, p.y, q.x, q.y, menu_hit::kButton, i);
+    }
+}
+
 void draw_ask(ui::Ctx& c) {
     const float s = c.s, W = 560 * s, H = 232 * s;
     const ImVec2 p((c.w - W) * 0.5f, (c.h - H) * 0.5f), q = p + ImVec2(W, H);
@@ -4124,10 +4215,12 @@ void draw_menu(ui::Ctx& c) {
     menu_ox = std::floor((c.w - k.w) * 0.5f);
     const int vtx0 = c.d->VtxBuffer.Size, cmd0 = c.d->CmdBuffer.Size;
     hits.clear(0, 0, k.w, k.h);
-    if (page == 5) draw_ask(k);
+    if (debug_warning) draw_debug_warning(k);
+    else if (page == 5) draw_ask(k);
     else if (page == 1) draw_controls(k);
     else if (page == 3) draw_teleport(k);
     else if (page == 4) draw_inventory(k);
+    else if (quick_debug && cur_tab == TAB_DEBUG) draw_quick_debug(k);
     else if (tune_mode) draw_tune_bar(k);
     else draw_options(k);
     if (menu_ox <= 0) return;
@@ -4194,14 +4287,46 @@ struct Tab {
     }
 };
 
+/// The processor's name without its marks, clock and core count: "Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz" is "Intel Core
+/// i7-8700K", "AMD Ryzen 5 5600X 6-Core Processor" is "AMD Ryzen 5 5600X"
+static std::string hardware_cpu_name(std::string t) {
+    for (const char* mark : {"(R)", "(TM)", "(tm)"})
+        for (size_t at; (at = t.find(mark)) != std::string::npos;) t.erase(at, strlen(mark));
+    if (const size_t at = t.find(" @ "); at != std::string::npos) t.erase(at);
+    while (!t.empty() && t.back() == ' ') t.pop_back();
+    const auto drop_end = [&](const char* w) {
+        const size_t n = strlen(w);
+        if (t.size() > n && t.compare(t.size() - n, n, w) == 0) t.erase(t.size() - n);
+    };
+    drop_end(" Processor");
+    drop_end(" CPU");
+    if (const size_t sp = t.rfind(' '); sp != std::string::npos && t.size() > 5 && t.compare(t.size() - 5, 5, "-Core") == 0) t.erase(sp);
+    std::string out;
+    for (char ch : t)
+        if (ch != ' ' || (!out.empty() && out.back() != ' ')) out += ch;
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+}
+
+/// The GPU's name without its marks and the driver's note in brackets at its end, which the driver line says:
+/// "AMD Radeon RX 6750 XT (RADV NAVI22)" is "AMD Radeon RX 6750 XT", "Intel(R) Arc(tm) A770 Graphics (DG2)" "Intel Arc A770 Graphics"
+static std::string hardware_gpu_name(std::string t) {
+    for (const char* mark : {"(R)", "(TM)", "(tm)"})
+        for (size_t at; (at = t.find(mark)) != std::string::npos;) t.erase(at, strlen(mark));
+    while (!t.empty() && t.back() == ' ') t.pop_back();
+    if (const size_t open = t.rfind(" ("); open != std::string::npos && open > 0 && !t.empty() && t.back() == ')') t.erase(open);
+    return t;
+}
+
 /// The FPS counter, in the corner the FPS counter position row chooses (the safe area's; under the banner at the top right
 /// while the menu is open, unless it fits beside the menu's column on a very wide window). The number as it always looked:
 /// green outlined bold, "FPS" small beside it, the frame generation line under them, no plate (#1957, v2.0.14's paint_fps).
 /// Past FPS (the row's levels, fps_stats.h), a tidy column under it, aligned to the same edge, with the same soft-shadowed
 /// text and no plate either: the frame time (green, amber or red against the cap's) and the 1% low; the graph of the last
 /// 4 s, a thin line over a soft fill, one column a frame span with its slowest frame (a stutter never falls between two), a
-/// faint dashed line at the cap's frame time, red ticks over frames past twice it; the Breakdown's bar of where the time
-/// goes, its legend with the values, the GPU's time and the stutters' causes (their columns get a red tick too).
+/// faint dashed line at the cap's frame time, red ticks over frames past twice it; the Breakdown, where the time goes
+/// stacked in the graph's columns, its legend with the values, the GPU's time and the stutters' causes (their columns get a
+/// red tick too). Dev adds the CPU, GPU and driver under the frame time, and the renderer's own numbers.
 void draw_fps(ui::Ctx& c, bool under_banner) {
     namespace fs = fps_stats;
     int level = fs::level_of(opts.show_fps);
@@ -4210,7 +4335,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const Tab num(c.f.strong, big), tab(c.f.strong, small), lab(c.f.strong, label);
     const float nw = num.width(fps_text), lw = ui::size_of(c.f.strong, small, "FPS").x;
     const float sw = fps_sub[0] ? tab.width(fps_sub) : 0;
-    const float gw = 208 * s;   // (the column's width from the graph on)
+    const float gw = (fs::level_of(opts.show_fps) >= fs::kBreakdown ? 280 : 208) * s;   // (the column's width from the graph on; wider with the lanes)
     // (while the menu is open: the top right under the banner, the number and the frame time only, unless the window is so much
     // wider than 16:9 that the column fits beside the menu's, in its own corner)
     const bool beside = menu_ox >= (level >= fs::kGraph ? gw : nw + lw) + 2 * c.safe + 8 * s;
@@ -4221,8 +4346,10 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const float row = 17 * s, gh = 50 * s, lh = 16 * s;
     float h = 32 * s + (fps_sub[0] ? row : 0);
     if (level >= fs::kFrameTime && fps_ms_text[0]) h += row;
+    if (level >= fs::kDev) h += 3 * lh;
     if (level >= fs::kGraph) h += 8 * s + gh + 4 * s;
-    if (level >= fs::kBreakdown) h += 10 * s + 6 * s + 4 * lh + 6 * s + 3 * lh;
+    const bool rt_lane = fps_render_thread_on();   // (no render thread, threaded rendering off: no lane, no legend section)
+    if (level >= fs::kBreakdown) h += (rt_lane ? 36 * s + 6 * lh : 0) + 10 * s + 10 * lh + 12 * s;   // (the render lane, the legend's rows)
     if (level >= fs::kDev) h += 6 * s + fs::kDevLines * lh;
     const float edge = left ? c.safe : c.w - c.safe;
     const float top = bottom ? c.h - c.safe - h : under_banner && !tune_mode && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe;
@@ -4260,8 +4387,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     }
     float y = top + 32 * s;
     if (fps_sub[0]) tab.draw(c.d, at(sw), y, soft, fps_sub, s), y += row;
-    if (level < fs::kFrameTime) return;
-    if (fps_ms_text[0]) {   // ("16.7 ms" in the colour of its distance from the cap's frame time, "1% low 58" beside it)
+    if (level >= fs::kFrameTime && fps_ms_text[0]) {   // ("16.7 ms" coloured by its distance from the cap's frame time, "1% low 20.1 ms" beside it)
         const ImU32 ms_col = grade_col[fps_ms_now > 0 ? fs::rate_grade(1000.0 / fps_ms_now, target) : 0];
         const float mw = tab.width(fps_ms_text), gap = 10 * s, low_w = tab.width(fps_low_text);
         const float x = at(mw + gap + low_w);
@@ -4269,23 +4395,46 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
         tab.draw(c.d, x + mw + gap, y, soft, fps_low_text, s);
         y += row;
     }
+    if (level >= fs::kDev) {   // (Dev: the CPU, the GPU, its driver. A line too long for the column's width loses its end)
+        static std::string cpu, gpu, drv, fit[3];
+        static float fit_w = 0;
+        if (gpu.empty()) cpu = hardware_cpu_name(bug_report::cpu_name()), gpu = hardware_gpu_name(device_name_text()), drv = driver_text(), fit_w = 0;
+        if (fit_w != gw) {
+            fit_w = gw;
+            const auto shorten = [&](std::string t, float room) {
+                if (lab.width(t.c_str()) <= room) return t;
+                while (!t.empty() && lab.width((t + "...").c_str()) > room) {
+                    t.pop_back();
+                    while (!t.empty() && ((unsigned char)t.back() & 0xC0) == 0x80) t.pop_back();
+                }
+                while (!t.empty() && t.back() == ' ') t.pop_back();
+                return t + "...";
+            };
+            fit[0] = shorten(cpu.empty() ? "-" : cpu, gw);
+            fit[1] = shorten(gpu.empty() ? "-" : gpu, gw);
+            fit[2] = shorten(drv.empty() ? "-" : drv, gw);
+        }
+        for (const std::string& t : fit) lab.draw(c.d, at(lab.width(t.c_str())), y + 1 * s, soft, t.c_str(), s), y += lh;
+    }
     if (level < fs::kGraph) return;
     // (the graph)
-    constexpr int kCols = 104;
+    constexpr int kCols = 64;   // (wider columns, the lanes' parts readable)
     static fs::Frame col[kCols];
     static bool mark[kCols];
     // (the columns from the ring at most 60 times a second: at the cap Uncapped's 1000 fps, 4 s of frames each present cost
     // more than the drawing; a 4 s graph moves a column every 40 ms)
-    static double topms = 0;
+    static double topms = 0, scroll = 0;
     static int64_t graph_at = 0;
     if (const int64_t now = fps_clock(); now - graph_at >= fs::kSecond / 60 || now < graph_at) {
         graph_at = now;
-        (void)fps_graph(now, kCols, col, mark);
+        (void)fps_graph(now, kCols, col, mark, &scroll);   // (fixed slots, scrolled by how far into the newest one now is)
         static float ms[kCols];   // (the scale from the usual frame, not the slowest: a spike past the top is drawn at it, and marked)
         int k = 0;
         for (int i = 0; i < kCols; i++)
             if (col[i].ms > 0) ms[k++] = col[i].ms;
-        topms = fs::graph_top(target, fs::typical_ms(ms, k));
+        // (up at once, down slowly, so the whole graph does not rescale with each frame that scrolls out)
+        const double want = fs::graph_top(target, fs::typical_ms(ms, k));
+        topms = want >= topms ? want : std::max(want, topms * 0.995);
     }
     const bool parts = level >= fs::kBreakdown;
     const float x0 = at(gw), x1 = x0 + gw, gy0 = y + 8 * s, gy1 = gy0 + gh;
@@ -4308,14 +4457,41 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
         lab.draw(c.d, left ? x1 + 5 * s : x0 - 5 * s - lab.width(t), gy0 - label * 0.55f, ui::rgba(200, 200, 200), t, s);
     }
     // (the soft fill: a column each, fading down; then the line over it, broken where a column had no frame, a faint dark line
-    // under it for the bright scenes)
+    // under it for the bright scenes. with the Breakdown, each column its frame's parts stacked instead of the fill, and
+    // with a render thread a lane under the graph on the same time axis, the render thread's frame)
     static ImVec2 pts[kCols];
     const auto yv = [&](float ms) { return std::max(gy0, gy1 - ms * py); };
+    const auto cx_of = [&](int i) { return x0 + (i + 0.5f - (float)scroll) * cw; };   // (scrolled smoothly)
+    // (the parts' colours, one meaning in every lane: blue the game's work, red the waits for the GPU, purple the render thread,
+    // grey the pacing and idle; the lighter shade of a family its smaller part)
+    static const ImU32 part_col[fs::kParts] = {ui::rgba(96, 160, 232), ui::rgba(160, 200, 245), ui::rgba(246, 150, 130),
+                                                ui::rgba(120, 120, 120), ui::rgba(168, 132, 230), ui::rgba(232, 72, 60)};
+    static const char* const names[fs::kParts] = {"Game", "Renderer", "GPU present", "Pacing", "Render thread", "GPU fence"};
+    static const bool part_waits[fs::kParts] = {false, false, true, false, true, true};   // (under the legend's "Waiting on")
+    static const int order[fs::kParts] = {fs::kGame, fs::kRender, fs::kWaitRender, fs::kWaitGpu, fs::kGpuWait, fs::kPace};
+    static const ImU32 rt_col[fs::kRtParts] = {ui::rgba(168, 132, 230), ui::rgba(210, 190, 245), ui::rgba(232, 72, 60),
+                                                ui::rgba(110, 110, 110)};
+    static const char* const rt_names[fs::kRtParts] = {"Recording", "Workers", "GPU slot", "Idle"};
+    const auto alpha = [](ImU32 c, int a) { return (c & 0x00FFFFFF) | ((ImU32)a << 24); };
+    c.d->PushClipRect(ImVec2(x0, gy0 - 8 * s), ImVec2(x1, gy1 + 1), true);
+    if (parts)
+        for (int i = 0; i < kCols; i++) {
+            if (col[i].ms <= 0) continue;
+            const float l = cx_of(i) - cw * 0.5f + 0.5f, r = l + cw - 0.5f;   // (a hairline between columns)
+            float yb = gy1;
+            for (int o = 0; o < fs::kParts && yb > gy0; o++) {
+                const float hgt = col[i].part[order[o]] * py;
+                if (hgt <= 0) continue;
+                const float yt = std::max(gy0, yb - hgt);
+                c.d->AddRectFilled(ImVec2(l, yt), ImVec2(r, yb), alpha(part_col[order[o]], 190));
+                yb = yt;
+            }
+        }
     // (the columns with a frame, joined across those without: a slow stretch has fewer frames than columns)
     int n = 0;
     for (int i = 0; i < kCols; i++)
-        if (col[i].ms > 0) pts[n++] = ImVec2(x0 + (i + 0.5f) * cw, yv(col[i].ms));
-    if (n >= 2) {   // (the fill: a quad under each segment, its colour at the line fading to nothing at the floor)
+        if (col[i].ms > 0) pts[n++] = ImVec2(cx_of(i), yv(col[i].ms));
+    if (n >= 2 && !parts) {   // (the fill: a quad under each segment, its colour at the line fading to nothing at the floor)
         const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
         c.d->PrimReserve((n - 1) * 6, (n - 1) * 4);
         for (int k = 0; k + 1 < n; k++) {
@@ -4346,57 +4522,110 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     }
     for (int i = 0; i < kCols; i++)
         if ((col[i].ms > 2 * target && col[i].ms > 1.5f * usual) || col[i].ms > topms || (parts && mark[i])) {   // (no target: past half again the usual)
-            const float cx = x0 + (i + 0.5f) * cw;
+            const float cx = cx_of(i);
             c.d->AddCircleFilled(ImVec2(cx, gy0 - 3 * s), 2.2f * s, ui::rgba(0, 0, 0, 120));
             c.d->AddCircleFilled(ImVec2(cx, gy0 - 3 * s), 1.6f * s, ui::rgba(240, 100, 85));
         }
+    c.d->PopClipRect();
     if (!parts) return;
-    // (the Breakdown: where the half second's frame time went, as a bar, then a legend with the values, then the rest)
-    static const ImU32 part_col[fs::kParts] = {ui::rgba(110, 170, 230), ui::rgba(180, 140, 225), ui::rgba(226, 160, 80),
-                                                ui::rgba(130, 128, 118)};
-    static const char* const names[fs::kParts] = {"Game", "Renderer", "GPU wait", "Pacing"};
-    float by = gy1 + 10 * s;
-    {
-        const float bh = 6 * s, r = 3 * s;
-        double sum = 0;
-        for (double v : fps_parts_now) sum += v;
-        c.d->AddRectFilled(ImVec2(x0 - 1, by - 1), ImVec2(x1 + 1, by + bh + 1), ui::rgba(0, 0, 0, 90), r);
-        float x = x0;
-        for (int p = 0; p < fs::kParts && sum > 0; p++) {
-            const float w = (float)(gw * fps_parts_now[p] / sum);
-            if (w <= 0) continue;
-            const ImDrawFlags round = (x <= x0 + 0.5f ? ImDrawFlags_RoundCornersLeft : 0) |
-                                      (x + w >= x1 - 0.5f ? ImDrawFlags_RoundCornersRight : 0);
-            c.d->AddRectFilled(ImVec2(x, by), ImVec2(std::min(x + w, x1), by + bh), part_col[p], round ? r : 0, round ? round : ImDrawFlags_RoundCornersNone);
-            x += w;
+    // (longshot) the render thread's lane: its frame in ms on the frame graph's scale (its own height), the work and the waits
+    // stacked and idle left empty, so a column's height is what the render thread spent of the frame; the cap's line and the
+    // top's value beside it, as the frame graph's
+    const float lane_gap = 6 * s, rh = rt_lane ? 30 * s : 0;
+    const float ry0 = gy1 + (rt_lane ? lane_gap : 0), ry1 = ry0 + rh, rpy = (float)(rh / topms);
+    if (rt_lane) {
+        const auto scale_label = [&](const char* t, float ty, ImU32 col_) {
+            lab.draw(c.d, left ? x1 + 5 * s : x0 - 5 * s - lab.width(t), ty - label * 0.55f, col_, t, s);
+        };
+        c.d->AddLine(ImVec2(x0, std::floor(ry1) + 0.5f), ImVec2(x1, std::floor(ry1) + 0.5f), ui::rgba(255, 255, 255, 60), std::max(1.0f, s));
+        {
+            char t[16];
+            if (target > 0) {
+                const float ty = std::floor(ry1 - (float)target * rpy) + 0.5f, dash = 4 * s, gap = 3 * s;
+                for (float x = x0; x < x1; x += dash + gap)
+                    c.d->AddLine(ImVec2(x, ty), ImVec2(std::min(x + dash, x1), ty), ui::rgba(255, 255, 255, 110), std::max(1.0f, s));
+                snprintf(t, sizeof t, "%.1f", target);
+                scale_label(t, ty, ui::rgba(235, 235, 235));
+            }
+            snprintf(t, sizeof t, topms < 10 ? "%.1f" : "%.0f", topms);
+            scale_label(t, ry0, ui::rgba(200, 200, 200));
         }
-        by += bh + 6 * s;
+        c.d->PushClipRect(ImVec2(x0, ry0), ImVec2(x1, ry1 + 1), true);
+        for (int i = 0; i < kCols && fps_rt_on; i++) {
+            if (col[i].ms <= 0) continue;
+            const float l = cx_of(i) - cw * 0.5f + 0.5f, r = l + cw - 0.5f;
+            float yb = ry1;
+            for (int k = 0; k < fs::kRtParts && yb > ry0; k++) {
+                if (k == fs::kRtIdle) continue;   // (idle: the space above)
+                const float hgt = col[i].rt[k] * rpy;
+                if (hgt <= 0) continue;
+                const float yt = std::max(ry0, yb - hgt);
+                c.d->AddRectFilled(ImVec2(l, yt), ImVec2(r, yb), alpha(rt_col[k], 190));
+                yb = yt;
+            }
+        }
+        c.d->PopClipRect();
     }
-    const auto line = [&](ImU32 dot, const char* name, const char* value, ImU32 value_col) {
-        float nx = x0;
-        if (dot) {
-            c.d->AddCircleFilled(ImVec2(x0 + 4 * s, by + lh * 0.5f), 3.2f * s, ui::rgba(0, 0, 0, 110));
-            c.d->AddCircleFilled(ImVec2(x0 + 4 * s, by + lh * 0.5f), 2.6f * s, dot);
-            nx += 12 * s;
-        }
+    // (the legend: the frame's parts first, adding up to the frame time shown under the number, then the render thread's to the same
+    // span on its own clock, the GPU's beside them; the render thread and the GPU run in parallel with the frame, not after it.
+    // The waits under a "Waiting on" sub-heading of their own, which has no value)
+    float by = ry1 + 10 * s;
+    const float half_w = gw * 0.5f;
+    const auto swatch = [&](float sx, ImU32 col) {
+        c.d->AddRectFilled(ImVec2(sx, by + lh * 0.5f - 3 * s), ImVec2(sx + 6 * s, by + lh * 0.5f + 3 * s), col, 1.5f * s);
+    };
+    const auto cell = [&](int column, ImU32 dot, bool indent, const char* name, const char* value, ImU32 value_col) {
+        const float cx0 = column < 0 ? x0 : x0 + column * half_w, cx1 = column < 0 ? x1 : cx0 + half_w - (column ? 0 : 8 * s);   // (-1: the whole width)
+        float nx = cx0 + (indent ? 10 * s : 0);   // (indent: a part under "Waiting on")
+        if (dot) swatch(nx, dot), nx += 10 * s;
         lab.draw(c.d, nx, by + 1 * s, soft, name, s);
-        tab.draw(c.d, x1 - tab.width(value), by, value_col, value, s);
+        tab.draw(c.d, cx1 - tab.width(value), by, value_col, value, s);
+    };
+    const auto header = [&](const char* t, const char* value, ImU32 value_col) {
+        lab.draw(c.d, x0, by + 1 * s, ui::rgba(255, 255, 255, 200), t, s);
+        if (value) tab.draw(c.d, x1 - tab.width(value), by, value_col, value, s);
         by += lh;
     };
-    for (int p = 0; p < fs::kParts; p++) line(part_col[p], names[p], fps_part_text[p], ink);
+    // (a sub-heading over the waits, without a value of its own: the values in the column are the parts, and they add up)
+    const auto waiting_on = [&] {
+        lab.draw(c.d, x0, by + 1 * s, soft, "Waiting on", s);
+        by += lh;
+    };
+    for (int o = 0; o < fs::kParts; o++) {   // (the work first, then the waits under their sub-heading, then the pacing)
+        if (part_waits[order[o]] && (o == 0 || !part_waits[order[o - 1]])) waiting_on();
+        cell(-1, part_col[order[o]], part_waits[order[o]], names[order[o]], fps_part_text[order[o]], ink);
+        by += lh;
+    }
+    if (rt_lane) {
+        header("Render thread", "in parallel", dim);
+        for (int k = 0; k < fs::kRtParts; k++) {
+            const bool waits = k == fs::kRtWorkers || k == fs::kRtGpu;
+            if (k == fs::kRtWorkers) waiting_on();
+            cell(-1, rt_col[k], waits, rt_names[k], fps_rt_text[k], ink);
+            by += lh;
+        }
+    }
+    header("GPU", "in parallel", dim);
+    {
+        char busy[48];
+        snprintf(busy, sizeof busy, "%s  %s", fps_gpu_text, fps_gpu_busy_text);
+        cell(-1, 0, false, "GPU time", busy, ink);
+        by += lh;
+    }
     c.d->AddLine(ImVec2(x0, std::floor(by + 3 * s) + 0.5f), ImVec2(x1, std::floor(by + 3 * s) + 0.5f), ui::rgba(255, 255, 255, 40), std::max(1.0f, s));
     by += 6 * s;
-    line(0, "GPU time", fps_gpu_text, ink);
     const ImU32 red = ui::rgba(240, 100, 85);
-    line(0, "Shaders built (4 s)", fps_built_text, strcmp(fps_built_text, "0") ? red : dim);
-    line(0, "Draws left out (4 s)", fps_left_text, strcmp(fps_left_text, "0") ? red : dim);
+    cell(0, 0, false, "Shaders built (4 s)", fps_built_text, strcmp(fps_built_text, "0") ? red : dim);
+    cell(1, 0, false, "Draws left out (4 s)", fps_left_text, strcmp(fps_left_text, "0") ? red : dim);
+    by += lh;
     if (level < fs::kDev) return;
     // (Dev: the renderer's own numbers, for debugging)
     c.d->AddLine(ImVec2(x0, std::floor(by + 3 * s) + 0.5f), ImVec2(x1, std::floor(by + 3 * s) + 0.5f), ui::rgba(255, 255, 255, 40), std::max(1.0f, s));
     by += 6 * s;
     for (int i = 0; i < fs::kDevLines; i++) {
         const bool alarm = (i == fs::kVram && fps_vram_over) || (i == fs::kSkipped && strcmp(fps_dev_text[i], "0") && strcmp(fps_dev_text[i], "-"));
-        line(0, fs::dev_name(i), fps_dev_text[i], alarm ? red : ink);
+        cell(-1, 0, false, fs::dev_name(i), fps_dev_text[i], alarm ? red : ink);
+        by += lh;
     }
 }
 
@@ -4461,7 +4690,7 @@ void draw_startup(ui::Ctx& c) {
 void startup_fade_to(float f) { startup_fade.store(f, std::memory_order_relaxed); }
 
 // (longshot, #1886) The Upscaler row's one-time questions: NVIDIA's NGX started (dlss_probe), AMD's FSR 4 loaded
-// (fsr4_probe), FSR 3.1's GPU check. They were asked at the menu's first open, on the frame's thread, and NGX's start
+// (fsr4_probe), Intel's XeSS context made once (xess_probe), FSR 3.1's GPU check. They were asked at the menu's first open, on the frame's thread, and NGX's start
 // alone held that frame about 3 s (an RTX 5080 at 4K; 2.9 s here): the game stood still and its sound ran on, out of
 // step with a cutscene. Now asked once on a thread of their own while the start-up screen shows, where nobody waits on
 // them; each is locked and asked once (ngx_init, fsr4's load, fsr3::supported's static), so the menu's own calls at its
@@ -4474,6 +4703,7 @@ static void probe_upscalers_soon() {
             const auto t0 = std::chrono::steady_clock::now();
             dlss_probe();
             fsr4_probe();
+            xess_probe();
             (void)fsr3::supported();
             logf("menu: the upscalers asked in the background while the start-up screen shows (%.0f ms)",
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
@@ -4589,6 +4819,7 @@ void menu_init() {
         }
     }
     first_start = !has_options;
+    sync_transition_autosave();
     const char* handheld_env = getenv("HOS_HANDHELD");   // (host/nn_applet.c handheld(): the environment over the file's)
     if (!has_output && !(handheld_env ? atoi(handheld_env) != 0 : opts.handheld != 0)) {
         // (none chosen, a new install: the size host/nn_applet.c took at boot, the game's 2560x1440 or the main screen's where
@@ -4771,6 +5002,7 @@ int menu_heart_protection() {
 int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_order_relaxed) : -1; }
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
+int menu_transition_autosave() { return transition_autosave_enabled.load(std::memory_order_relaxed); }
 int menu_damage_taken() { return cheats_on() ? opts.damage_taken : 1; }   // (Normal while the tools are off; the choice is kept)
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
 
@@ -4817,10 +5049,12 @@ void fps_texts(int64_t now) {
     fs::low_text(fps_low_text, sizeof fps_low_text, half.low_fps);
     if (!half.frames) fps_ms_text[0] = 0;
     fps_ms_now = half.avg_ms;
-    for (int p = 0; p < fs::kParts; p++) fps_parts_now[p] = half.part[p];
     if (level < fs::kBreakdown) return;
     for (int p = 0; p < fs::kParts; p++) fs::frame_time_text(fps_part_text[p], sizeof fps_part_text[p], half.part[p]);
     fs::frame_time_text(fps_gpu_text, sizeof fps_gpu_text, half.gpu_ms);
+    for (int k = 0; k < fs::kRtParts; k++) fs::frame_time_text(fps_rt_text[k], sizeof fps_rt_text[k], half.rt[k]);
+    fps_rt_on = half.rt[fs::kRtWork] + half.rt[fs::kRtWorkers] + half.rt[fs::kRtGpu] + half.rt[fs::kRtIdle] > 0;
+    snprintf(fps_gpu_busy_text, sizeof fps_gpu_busy_text, "%.0f%%", half.avg_ms > 0 ? std::min(100.0, 100.0 * half.gpu_ms / half.avg_ms) : 0.0);
     const fs::Summary graph = fps_summary(now, fs::kGraphWindow, 0);
     snprintf(fps_built_text, sizeof fps_built_text, "%d", graph.pipelines);
     snprintf(fps_left_text, sizeof fps_left_text, "%d", graph.left_out);
@@ -4969,7 +5203,8 @@ void menu_auto_tune(double gpu_ms, double draws, double fps) {
             samplers_changed();
             menu_refresh = true;
             tuning.n = 0;   // (the windows gathered were at the other share)
-            static const char* const name[ur::kUpscalers] = {"the game's own", "DLSS", "DLAA", "FSR 3.1", "FSR 4", "FSR 4", "Off"};
+            static const char* const name[ur::kUpscalers] = {"the game's own", "DLSS", "DLAA", "FSR 3.1", "FSR 4", "FSR 4", "Off",
+                                                             "XeSS", "XeSS"};
             logf("vk: Auto (this PC): %s runs, not the %s chosen: Render resolution %d%% -> %d%%",
                  name[std::clamp(u, 0, ur::kUpscalers - 1)], name[std::clamp(c.upscaler, 0, ur::kUpscalers - 1)], ur::percent(v),
                  ur::percent(opts.resolution));
@@ -5218,12 +5453,12 @@ void menu_tick() {
     fullscreen_tick();
     game_lang_tick();
     outputs_follow_screen();
-    enum { K_N = 17 };
+    enum { K_N = 18 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
                                   VK_RETURN, VK_DELETE, VK_BACK,
                                   'Q', 'E', VK_TAB,   // (the tabs: Q and E, Tab and Shift+Tab)
-                                  VK_PRIOR, VK_NEXT, VK_HOME, VK_END};   // (the long lists: a page, the ends)
+                                  VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_F10};   // (the long lists: a page, the ends)
     HWND fg = GetForegroundWindow();
     DWORD pid = 0;
     if (fg) GetWindowThreadProcessId(fg, &pid);
@@ -5385,11 +5620,31 @@ void menu_tick() {
     // control can be bound to Esc, so nothing in play changes; the window gives the captured mouse back on the close)
     const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
     if (esc_opens) press[5] = false;
-    if ((press[0] || press[6]) && open_now.load() && page == 5) {
+    const bool home_debug = press[15] && (!open_now.load() || (quick_debug && page == 0));
+    if ((press[17] || home_debug) && !editing && !listening && !debug_warning && page != 5) {
+        if (home_debug) press[15] = false;
+        if (open_now.load() && quick_debug && page == 0) press[5] = true;
+        else {
+            quick_debug = true;
+            tune_mode = false;
+            open_now = true;
+            page = 0;
+            cur_tab = TAB_DEBUG;
+            tab_selected[TAB_DEBUG] = 0;
+            changed = true;
+            press[5] = press[7] = false;
+        }
+    }
+    if (quick_debug && page == 0) tab_left = tab_right = false;
+    if ((press[0] || press[6]) && debug_warning) {
+        debug_warning = false;
+        changed = true;
+    } else if ((press[0] || press[6]) && open_now.load() && page == 5) {
         later();
     } else if ((press[0] || press[6]) && open_now.load() && restart_ask()) {
         page = 5, ask_sel = 0, listening = 0, changed = true;
     } else if (press[0] || press[6] || esc_opens) {
+        quick_debug = false;
         open_now = !open_now.load(), changed = true;
         if (open_now.load()) tune_mode = tune_down;
         else tune_mode = false;
@@ -5397,10 +5652,31 @@ void menu_tick() {
         // (the layout row shows the controls as they are: host/nn_hid.c keeps them, the ini's pad_ lines, and a saved
         // layout is not applied over them at start)
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
-        if (open_now.load()) dlss_probe(), fsr4_probe();   // (whether the Upscaler row can offer DLSS and FSR here: asked once)
+        if (open_now.load()) dlss_probe(), fsr4_probe(), xess_probe();   // (whether the Upscaler row can offer DLSS, FSR and XeSS: asked once)
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
     }
-    if (open_now.load() && editing) {   // (longshot) a text field has the keyboard: the keys type into it (text_edit), nothing else
+    if (open_now.load() && debug_warning) {
+        if (press[3] || press[4]) debug_warning_choice = 1 - debug_warning_choice, changed = true;
+        if (mouse) {
+            const auto hit = hits.at((float)mx, (float)my);
+            if (hit.part == menu_hit::kButton && hit.index >= 0 && hit.index < 2 && (moved || ptr.pressed)) {
+                debug_warning_choice = hit.index;
+                changed = true;
+                if (ptr.pressed & HOS_MOUSE_LEFT) press[7] = true;
+            }
+            if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
+        }
+        if (press[5] || press[7]) {
+            if (!press[5] && debug_warning_choice != 0) {
+                opts.debug_tools = 1;
+                opts.transition_autosave = 0;
+                sync_transition_autosave();
+                save();
+            }
+            debug_warning = false;
+            changed = true;
+        }
+    } else if (open_now.load() && editing) {   // (longshot) a text field has the keyboard: the keys type into it (text_edit), nothing else
         int done = kTextGoOn;
         auto feed = [&](uint32_t in) {
             if (done == kTextGoOn) done = text_edit(*editing, in), edit_why = nullptr, changed = true;
@@ -5648,7 +5924,7 @@ void menu_tick() {
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
         else if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
-        else if (press[5]) open_now = false, tune_mode = false;
+        else if (press[5]) open_now = false, tune_mode = false, quick_debug = false;
         // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
         if ((tab_left || tab_right) && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS;
         if (tab_left) cur_tab = (cur_tab + TAB_COUNT - 1) % TAB_COUNT, changed = true;

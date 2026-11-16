@@ -16,8 +16,7 @@ follow.
 | Tracking issues (`[Tracking] ...`) | one per family of reports (AMD rendering, no mesh shaders, Linux, VRAM, missing walls, FPS, ...) |
 | Discord #bug-reporting (forum) | first reports, often without a log; turn the reproducible ones into issues |
 | Discord #dev-work | claims, progress, review requests |
-| Matrix `#agent-updates:magicbean.dev` | the same, posted by agents (`scripts/team_chat.py`, sign-in with Discord); copied to Discord #dev-agents |
-| Matrix `#test-requests:magicbean.dev` | PRs that need a test on other hardware, who is testing them and the results ([test-requests.md](test-requests.md), `scripts/test_requests.py`); copied to Discord |
+| Matrix `#agent-updates:magicbean.dev` | the same, posted by agents (Tooling's `team_chat.py`, sign-in with Discord); copied to Discord #dev-agents |
 | Discord #dev-stuff | security scan results (Syntak): handled before anything else |
 | CI | a red check on `main` is everyone's first problem |
 
@@ -76,18 +75,20 @@ problem with a log outranks an NVIDIA one of the same severity.
 1. **Triage.** Reproduce if you can. Find the tracking issue it belongs to, or open the issue (with the log). Score it
    (section 2).
 2. **Claim.** Before starting, say so in Discord #dev-work and on the issue: what, why (the score), and on what
-   hardware you can test. Search open PRs first: two people fixing the same thing is the most common waste here. Drop
-   a claim out loud when you stop.
+   hardware you can test. Search open PRs first (agents: the [prior-work skill](../.claude/skills/prior-work/SKILL.md)):
+   two people fixing the same thing is the most common waste here. Drop a claim out loud when you stop.
 3. **Fix.** A branch from current `main`, one topic. Find the cause before the fix: a log, a trace, a measurement.
 4. **Test.**
-   - A game-free test that fails without the change (see AGENTS.md: tests read the source).
+   - A game-free test that fails without the change (see AGENTS.md: tests read the source; agents: the
+     [fix-with-test skill](../.claude/skills/fix-with-test/SKILL.md)).
    - `python -I -B tests/run_all.py`, all of it.
    - In the game, on your hardware: what you did and what you saw, with numbers from `longshot_log.txt` for performance.
    - Add one self-contained file under `docs/tested/` for each new run you measured, following
      [tested configurations](tested-configurations.md). Existing rows stay frozen; do not append there or commit the
      assembled view.
-   - Say what you could not test (another OS, another vendor, real input devices), and open a test request for
-     what others must test: the description's Testing section
+   - Say what you could not test (another OS, another vendor, real input devices), and ask the Test Farm
+     (`@Beanstalk <what to test>`, [how it works](https://beanstalk.magicbean.dev/how)) or a person for what others must test: the
+     description's Testing section
      ([CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests)).
 5. **Pull request.** Open it as work in progress (`forge.py pr create`, a `WIP:` title) and fill in
    [the template](../.forgejo/pull_request_template.md) as
@@ -123,7 +124,7 @@ next thing to work on is the top of `is:open label:reproduced -label:claimed sor
 - Pick from the top of [docs/worklist.md](worklist.md); add a scored row there for a new problem you find.
 - Prefer problems you can reproduce on the hardware you run on.
 - Claim before working, report progress where you claimed, and post the PR there. Agents post to the Matrix room
-  `#agent-updates:magicbean.dev`: read the [team-updates skill](../.claude/skills/team-updates/SKILL.md) before
+  `#agent-updates:magicbean.dev`: read the [team-updates skill](https://git.magicbean.dev/MagicBeanDev/Tooling/src/branch/main/skills/team-updates/SKILL.md) before
   claiming.
 - Measure, don't guess: every claim about speed or correctness carries the log line, the test or the screenshot.
 - Never open a PR whose tests you have not run, or that has not been rebased onto `main`.

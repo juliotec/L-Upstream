@@ -184,7 +184,8 @@ POSIX_PIECES = ["static DWORD error_of(int e) {", "static void slashes(char *dst
                 "DWORD GetFileAttributesA(LPCSTR name) {", "static BOOL find_next(HFind *f, WIN32_FIND_DATAA *fd) {",
                 "HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *fd) {",
                 "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {", "BOOL FindClose(HANDLE h) {",
-                "BOOL CreateDirectoryA(LPCSTR name, void *attr) {"]   # (prompts.c makes cache/prompts)
+                "BOOL CreateDirectoryA(LPCSTR name, void *attr) {",   # (prompts.c makes cache/prompts)
+                "BOOL DeleteFileA(LPCSTR name) {", "BOOL MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags) {"]   # (and moves its files in)
 
 
 def documented_example_checks(exe, tmp):
@@ -254,7 +255,8 @@ def routing_checks(cc, tmp, zstandard, host):
     posix = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
     src = tmp / "src"
     src.mkdir(parents=True)
-    for f in ("mods.c", "prompts.c"):   # (beside a hos.h of the test's: hos_log, and what the live prompts read: none here)
+    for f in ("mods.c", "prompts.c", "texts.c"):   # (beside a hos.h of the test's: hos_log, and what the live prompts read: none
+                                                   # here; texts.c: mods.c asks it for a path no mod and no prompt has)
         (src / f).write_bytes((host / f).read_bytes())
     (src / "hos.h").write_text("#pragma once\n#include <stddef.h>\n#include <stdint.h>\nvoid hos_log(const char *f, ...);\n"
                                "#define HOS_WRITTEN(p, n) ((void)0)\n"
@@ -312,7 +314,7 @@ int main(int argc, char **argv) {
     exe = tmp / "fixture"
     subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0",
                     "-I", str(ROOT / "host"), "-I", str(ROOT / "host/posix"), "-I", str(ZSTD), str(src / "mods.c"),
-                    str(src / "prompts.c"), str(tmp / "posix.c"), str(tmp / "main.c"),
+                    str(src / "prompts.c"), str(src / "texts.c"), str(tmp / "posix.c"), str(tmp / "main.c"),
                     *(str(ZSTD / f) for f in ZSTD_SOURCES), "-o", str(exe)], check=True)
 
     documented_example_checks(exe, tmp / "documented-example")
@@ -388,7 +390,39 @@ int main(int argc, char **argv) {
     served, content, log = case("own-font", {"seed": {TABLE: frame(MOD_B), FONT: b"a mod's own font"}})
     check(served == {TABLE: "game/cache/prompts/rsizetable.mod.zs", FONT: mod_file.replace(TABLE, FONT) % "seed"}
           and content == merged(MOD_B, OURS), "a mod with its own font: %s" % served)
-    n = 10
+    # the texts' PC wording (host/texts.c): the build's file for a language it reworded and the game's own for one it did not;
+    # a mod's own text file before ours; HOS_TEXTS=0
+    text, other = "Mals/USen.Product.110.sarc.zs", "Mals/JPja.Product.110.sarc.zs"
+
+    def texts_case(name, mod=False, off=False):
+        top = tmp / name
+        game = top / "game"
+        (game / "texts").mkdir(parents=True)
+        (game / "texts" / text[5:].lower()).write_bytes(b"ours")   # (nx2/text_assets.py names its files in lower case)
+        (top / "mods").mkdir()
+        if mod:
+            (top / "mods/seed/romfs" / text).parent.mkdir(parents=True)
+            (top / "mods/seed/romfs" / text).write_bytes(b"a mod's own texts")
+        env = dict(os.environ, TEST_GAME_EXE=str(game / "longshot"), HOS_MODS=str(top / "mods"), TEST_ROMFS=str(game / "romfs"))
+        env.pop("HOS_TEXTS", None)
+        if off:
+            env["HOS_TEXTS"] = "0"
+        out = subprocess.run([str(exe), text, other], env=env, check=True, capture_output=True, text=True, timeout=60).stdout
+        served = {}
+        for line in out.splitlines():
+            if line.startswith("open "):
+                rel, _, what = line[5:].partition(": ")
+                what = what.replace("\\", "/")
+                served[rel] = what if what == "(the game's)" else os.path.relpath(what, top).replace("\\", "/")
+        return served, out
+
+    served, log = texts_case("texts")
+    check(served == {text: "game/texts/usen.product.110.sarc.zs", other: "(the game's)"}, "the texts: %s\n%s" % (served, log))
+    served, log = texts_case("texts-mod", mod=True)
+    check(served == {text: "mods/seed/romfs/" + text, other: "(the game's)"}, "a mod's own texts: %s\n%s" % (served, log))
+    served, log = texts_case("texts-off", off=True)
+    check(served == {text: "(the game's)", other: "(the game's)"} and "HOS_TEXTS=0" in log, "HOS_TEXTS=0: %s\n%s" % (served, log))
+    n = 13
     if zstandard:   # (Clawshot writes its table at level 19, with the frame's size: zstandard's default)
         served, content, log = case("level19", {"seed": {TABLE: zstandard.ZstdCompressor(level=19).compress(MOD_B)}})
         check(content == merged(MOD_B, OURS), "a compressed mod table: %s" % served)
@@ -398,7 +432,7 @@ int main(int argc, char **argv) {
               "a frame without its size: %s" % served)
         n += 2
     print("ok: %d cases served as they should: no mod, a mod with a table, two table versions in both open orders, "
-          "one that grows a file without, two mods, a table that cannot be merged, no table of ours, a mod's own font%s"
+          "one that grows a file without, two mods, a table that cannot be merged, no table of ours, a mod's own font, the texts' PC wording (ours, a mod's, off)%s"
           % (n, ", compressed and size-less frames" if zstandard else " (no zstandard: compressed frames not tried)"))
 
 

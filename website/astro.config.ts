@@ -4,18 +4,27 @@ import { unified } from '@astrojs/markdown-remark';
 import { repository, siteUrl, editUrl } from './src/site.ts';
 import { repoAssets } from './src/repo-docs/assets.ts';
 import { remarkTestedConfigurations } from './src/repo-docs/tested-configurations.ts';
+import { rehypeKeyboardScroll } from './src/repo-docs/keyboard-scroll.ts';
 
 export default defineConfig({
   site: siteUrl,
   trailingSlash: 'always',
-  markdown: { processor: unified({ remarkPlugins: [remarkTestedConfigurations] }) },
+  markdown: { processor: unified({ remarkPlugins: [remarkTestedConfigurations], rehypePlugins: [rehypeKeyboardScroll] }) },
   integrations: [repoAssets(), starlight({
+    expressiveCode: { plugins: [{
+      name: 'Keyboard scroll fallback',
+      hooks: {
+        // Expressive Code replaces the original pre after the Markdown plugins.
+        postprocessRenderedBlock: ({ renderData }) => rehypeKeyboardScroll()(renderData.blockAst),
+      },
+    }] },
     title: 'Longshot',
     description: 'Longshot by Team MagicBean. Guides, project updates, and practical help for your PC adventure.',
     favicon: '/branding/longshot.png',
     customCss: ['./src/styles/theme.css', './src/styles/content.css'],
     components: {
       Header: './src/components/Header.astro',
+      Sidebar: './src/components/Sidebar.astro',
       Hero: './src/components/LongshotHero.astro',
       Footer: './src/components/Footer.astro',
     },
@@ -24,6 +33,7 @@ export default defineConfig({
     sidebar: [
       { label: 'Get started', items: [
         { label: 'Install', slug: 'install' },
+        { label: 'Steam Deck', slug: 'install/steam-deck' },
         { label: 'System requirements', slug: 'requirements' },
         { label: 'Settings', slug: 'settings' },
         { label: 'Updates & saves', slug: 'saves' },
@@ -38,6 +48,7 @@ export default defineConfig({
       { label: 'Development', items: [
         { label: 'Progress', slug: 'progress' },
         { label: 'Contributing', slug: 'contributing' },
+        { label: 'Help test (Test Farm) ↗', link: 'https://beanstalk.magicbean.dev/how' },
         { label: 'Scrub a save', slug: 'saves/scrub' },
         { label: 'Source code ↗', link: repository },
       ] },

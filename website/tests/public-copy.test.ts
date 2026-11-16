@@ -43,3 +43,9 @@ test('players\' issue titles come out with no name the site check rejects', () =
     assert.doesNotMatch(publicGameText(text), GAME_BRANDING, text);
   }
 });
+
+
+test('new report titles neutralize alternate location spelling and item names', () => {
+  assert.equal(publicGameText('Zora River water; Zora’s Domain'), 'the water region water; the water region');
+  assert.equal(publicGameText('Deku Stick preview'), 'wooden stick preview');
+});

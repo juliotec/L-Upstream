@@ -43,7 +43,8 @@ NOTE = ("Attach this zip to a comment on %s and paste the lines below into it, w
 
 # (longshot_options.ini's values as the menu names them: gpu/vk/vk_menu.cpp tx_upscaler, tx_framegen, tx_hdr, and
 # gpu/vk/upscaler_rows.h kPercent)
-UPSCALERS = ("Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4", "AMD FSR 4 Native AA", "Off (no upscaling)")
+UPSCALERS = ("Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4", "AMD FSR 4 Native AA", "Off (no upscaling)",
+             "Intel XeSS", "Intel XeSS Native AA")
 PERCENT = (0, 100, 75, 67, 50, 58, 33, 42, 83, 92)
 MODES = {67: "Quality", 58: "Balanced", 50: "Performance", 33: "Ultra Performance"}
 FRAMEGEN = ("Off", "Auto", "2x", "3x", "4x", "5x", "6x", "7x", "8x")

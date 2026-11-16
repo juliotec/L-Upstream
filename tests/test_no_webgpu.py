@@ -42,10 +42,13 @@ def main():
     check("nx2/build.py still has gpu_sources (the WebGPU renderer's sources)", "gpu_sources" not in functions)
     check("nx2/build.py still reads WGPU_NATIVE or wgpu-native", "WGPU" not in names and "WGPU_NATIVE" not in build
           and "webgpu.h" not in build and "wgpu_native" not in build and "rx_wgpu_names" not in build)
-    # (gpu/render is a dependency of the Vulkan back end's objects, for its headers: nothing of it is compiled)
+    # (gpu/render is a dependency of the Vulkan back end's objects, for its headers: nothing of it is compiled. It is one of the
+    # folders whose headers the objects are named by, vdeps_roots: the blob of all of them, vdeps, and the depfiles' headers
+    # under them, renderer_deps)
     render = [line for line in build.splitlines() if 'os.path.join(GPU, "render")' in line]
     check("nx2/build.py uses gpu/render for more than the Vulkan back end's header dependencies: %r" % render,
-          len(render) == 1 and "vdeps = tree_headers(" in render[0])
+          len(render) == 1 and render[0].strip().startswith("vdeps_roots = (") and "vdeps = tree_headers(*vdeps_roots)" in build
+          and "renderer_deps(vdeps, vdeps_roots, obj)" in build)
     check("nx2/build.py leaves host/rx_nowgpu.c out of the Windows build", "have_wgpu" not in build and re.search(
         r'not \(LINUX and f in \("display\.c", "mf_av1\.c", "rx_nowgpu\.c"\)\)\s*\n\s*and \(f != "dav1d_av1\.c"', build))
     sources = sorted(p.name for p in (ROOT / "gpu" / "render").iterdir() if p.suffix in (".c", ".cpp"))

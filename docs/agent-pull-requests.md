@@ -2,12 +2,16 @@
 
 Read this before opening, updating, reviewing or marking a pull request ready.
 [CONTRIBUTING.md](../CONTRIBUTING.md), the [pull request template](../.forgejo/pull_request_template.md) and
-[docs/forge.md](forge.md) are canonical. This guide adds only the agent's execution discipline.
+[Tooling's docs/forge.md](https://git.magicbean.dev/MagicBeanDev/Tooling/src/branch/main/docs/forge.md) are canonical. This guide adds only the agent's execution discipline.
 
 ## Open and update
 
 - Push your branch to `forge-fork`; Longshot's `main` takes reviewed pull requests only. Set up the fork as in
-  [docs/forge.md](forge.md#set-up-pushing), then follow its [change, start to finish](forge.md#a-change-start-to-finish).
+  [Tooling's docs/forge.md](https://git.magicbean.dev/MagicBeanDev/Tooling/src/branch/main/docs/forge.md#set-up-pushing), then follow its [change, start to finish](https://git.magicbean.dev/MagicBeanDev/Tooling/src/branch/main/docs/forge.md#a-change-start-to-finish).
+- **Run a change the game runs in the game before you open its PR**, at least once where it matters, and say where
+  and what you saw: `pr create --tested-in-game "RTX 3080, driver 580.95, Linux: Kakariko, no flicker after a load"`
+  (it goes up as the first comment). `pr create` refuses a branch that changes the game's files without it. Use
+  `--force` only when the person you work for asks you to open it untested; if you can't run the game, ask them.
 - Open the PR as **work in progress**. Keep it WIP until its applicable evidence is complete and every *Everyone* box is
   ticked. `pr ready` enforces the description check; leave its `--force` option unused. A PR that needs more work goes
   back with `pr wip <n>`, and a WIP PR is not ready for review.
@@ -32,10 +36,11 @@ including their measurement, switch and tested-configuration requirements. The e
 - **A change the game doesn't run** (docs, tests only, a script or the checks) is measured by its applicable game-free
   checks; an unrelated game run is not a readiness requirement.
 - **A change the game runs** needs the in-game evidence those canonical sections require before it becomes ready. If you
-  could not run it, say so and keep the PR WIP until the Test Farm or a person has covered what is missing.
+  could not run it, say so and keep the PR WIP until the Test Farm or a person has covered what is missing. The
+  [measure skill](../.claude/skills/measure/SKILL.md) has the steps for numbers against `main`.
 
-When the PR needs hardware you do not have, follow the
-[request-testing skill](../.claude/skills/request-testing/SKILL.md).
+When the PR needs hardware you do not have, ask the Test Farm on it (`@Beanstalk <what to test, in words>`; a BigBean
+approves the request): [how it works](https://beanstalk.magicbean.dev/how).
 
 ## Screenshots for visible changes
 
@@ -49,7 +54,7 @@ When the PR needs hardware you do not have, follow the
   `browser_download_url` it returns as `![caption](url)`:
 
   ```
-  TOKEN=$(printf 'protocol=https\nhost=git.magicbean.dev\n\n' | python -I scripts/forge.py credential get | sed -n 's/^password=//p')
+  TOKEN=$(printf 'protocol=https\nhost=git.magicbean.dev\n\n' | python -I ../Tooling/scripts/forge.py credential get | sed -n 's/^password=//p')
   curl -s -H "Authorization: token $TOKEN" -F "attachment=@shot.png;type=image/png" \
     "https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot/issues/<n>/assets?name=shot.png"
   ```

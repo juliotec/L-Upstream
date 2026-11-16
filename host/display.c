@@ -429,6 +429,11 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_SYSKEYDOWN:   /* Alt+Enter, as on Linux (display_sdl.c); other Alt keys (Alt+F4) go on to Windows */
+        if (wp == VK_F10 && !(lp & (1 << 29))) {
+            extern void hos_vk_note_key_press(unsigned key);
+            if (!(lp & (1 << 30))) hos_vk_note_key_press(VK_F10);
+            return 0;
+        }
         if (wp == VK_RETURN && (lp & (1 << 29))) {
             if (!(lp & (1 << 30))) set_fullscreen(w, !fullscreen);
             return 0;
@@ -579,6 +584,10 @@ void hos_renderer_wait(void) {
 void hos_display_start(void) {
     if (env_on("HOS_HEADLESS")) {   /* no window: the renderer still draws, offscreen (screenshots, frame dumps) */
         rx_start(NULL);
+        /* The renderer's startup may attach/free a console, which resets Windows' console handlers.
+           Install the stop route afterwards; it needs neither a rendered frame nor the game's input loop. */
+        int hos_windows_stop_start(void);
+        if (!hos_windows_stop_start()) hos_log("stop: windowless stop route unavailable; use the control bridge");
         return;
     }
     renderer_up = CreateEventA(NULL, TRUE, FALSE, NULL);

@@ -377,23 +377,46 @@ static const char *saves_dir(const char *beside) {
     char real[MAX_PATH];
     move_old = realpath(beside, real), move_from = beside, move_new = dir;
     /* (looked at first, then moved: with an entry the new place has already, the old place is kept, and it keeps them all.
-       The others used to go all the same, and the game then ran here without them) */
+       The others used to go all the same, and the game then ran here without them. So does one that cannot go, a copy that
+       fails (a full disk): the entries that went before it come back, and a copied one's old place goes only once all are
+       there. They used to stay in the new place, and the next start found them there and kept the old place without them) */
+    struct { char *name; int copied; } *went = NULL;
+    size_t n_went = 0;
     for (int move = 0; move < 2 && !kept; move++) {
         WIN32_FIND_DATAA fd;
         HANDLE h = FindFirstFileA(pattern, &fd);
         if (h == INVALID_HANDLE_VALUE) return dir;
         do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..") || (move && kept)) continue;
             char from[MAX_PATH], to[MAX_PATH];
             snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
             snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
-            if (!move) kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
-            else if (!has_link(from) && MoveFileExA(from, to, 0)) moved++;
-            else if (copy_tree(from, to)) delete_tree(from), moved++;
-            else delete_tree(to), kept++;
+            if (!move) {
+                kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
+                continue;
+            }
+            void *more = realloc(went, (n_went + 1) * sizeof *went);
+            char *name = more ? strdup(fd.cFileName) : NULL;
+            if (more) went = more;
+            if (!name) kept++;
+            else if (!has_link(from) && MoveFileExA(from, to, 0)) went[n_went].name = name, went[n_went++].copied = 0;
+            else if (copy_tree(from, to)) went[n_went].name = name, went[n_went++].copied = 1;
+            else delete_tree(to), free(name), kept++;
         } while (FindNextFileA(h, &fd));
         FindClose(h);
     }
+    for (size_t i = 0; i < n_went; i++) {
+        char from[MAX_PATH], to[MAX_PATH];
+        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, went[i].name);
+        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, went[i].name);
+        if (!kept) {
+            moved++;
+            if (went[i].copied) delete_tree(from);
+        } else if (went[i].copied) delete_tree(to);
+        else if (!MoveFileExA(to, from, 0)) hos_log("saves: %s could not come back to %s", to, from);
+        free(went[i].name);
+    }
+    free(went);
     if (kept) {
         hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
         return beside;
@@ -420,14 +443,17 @@ static const char *saves_dir(const char *beside) {
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
    player's longshot_env.txt as it is.
    (longshot) longshot_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
-   LONGSHOT_, EDEN_, NVN_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
-   path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
-   the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
+   LONGSHOT_, EDEN_, NVN_ and SDL_ names), never HOS_ENV_FILE, HOS_CONTROL_PEER_SID or SDL's library override, and no
+   value that is a path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can
+   load code, and the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
 static int env_line_allowed(const char *name, const char *value) {
     static const char *const prefixes[] = {"RX_", "HOS_", "LONGSHOT_", "EDEN_", "NVN_", "SDL_"};
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
+    /* (longshot) nor HOS_CONTROL_PEER_SID: it lets one more account into the control bridge's pipe (host/control.c), so a
+       shared file would let another user of this PC steer the game and read its memory. The environment still sets it */
+    if (!strcmp(name, "HOS_CONTROL_PEER_SID")) return 0;
     /* (longshot) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
        SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
     if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
@@ -532,6 +558,27 @@ static void removed_switch_notes(void) {
 }
 
 int hos_oot_protect_hearts;
+/* Trace the request before the save manager queues it. */
+int hos_oot_trace_save(Ctx *c) {
+    int rx_option(int id, int otherwise);
+    const uint64_t caller = c->x[30];
+    const uint64_t parent = caller == 0x80bc7764ULL ? recomp_load64(c, c->x[31] + 24) : 0;
+    if (env_on("HOS_OOT_TRACE_SAVES")) hos_log("save trace: reason=%u mode=%u caller=%#llx request_site=%#llx", (unsigned)c->x[1], (unsigned)c->x[2],
+            (unsigned long long)caller, (unsigned long long)(parent ? parent : caller));
+    const unsigned reason = (uint32_t)c->x[1];
+    /* A crossing can queue both arrival requests in addition to the transition request. */
+    const int transition = (parent == 0x80bc7710ULL && reason == 6) ||
+        (parent == 0x80bc7864ULL && reason == 2) ||
+        (parent == 0x832a9764ULL && reason == 1);
+    if (caller == 0x80bc7764ULL && transition &&
+        (uint32_t)c->x[2] == 0 && !rx_option(HOS_OPT_TRANSITION_AUTOSAVE, 1)) {
+        if (env_on("HOS_OOT_TRACE_SAVES")) hos_log("save trace: transition autosave suppressed");
+        c->x[0] = 0;
+        return 1;
+    }
+    return 0;
+}
+
 volatile int hos_oot_live_action;   /* (test runs) the live input file's "!cheat <action>": host/nn_hid.c */
 
 int hos_oot_hearts_enabled(void) {
@@ -673,17 +720,40 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
         }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
-        probed = 1;   /* (one line naming every count, both spellings: which names the pouch knows) */
+        probed = 1;   /* (each editor value, plus the alternative pouch spellings) */
         static const char *const probes[] = {OOT_CHEAT_ITEM_PROBES};
         const unsigned total = (unsigned)(OOT_ITEM_COUNT + sizeof probes / sizeof probes[0]);
         char line[512];
         size_t used = 0;
         for (unsigned i = 0; i < total; i++) {   /* (several short lines: the log cuts long ones) */
             const char *name = i < OOT_ITEM_COUNT ? oot_item_names[i] : probes[i - OOT_ITEM_COUNT];
-            used += (size_t)snprintf(line + used, sizeof line - used, " %s=%d", name, oot_pouch_count(c, name));
+            const int count = i < OOT_ITEM_COUNT ? oot_item_count(c, name) : oot_pouch_count(c, name);
+            used += (size_t)snprintf(line + used, sizeof line - used, " %s=%d", name, count);
             if (used > 300 || i + 1 == total) hos_log("cheats: inventory probe:%s", line), used = 0;
         }
     }
+}
+
+/* Learned songs use saved IsGet.<actor> Bool flags rather than pouch quantities.
+   These are their MurmurHash3 x86-32 hashes with seed 0. */
+static uint32_t oot_song_flag(const char *name) {
+    static const struct { const char *name; uint32_t hash; } songs[] = {
+        {"Item_Melody_ZeldaLullaby", 0x01c20002u},
+        {"Item_Melody_EponaSong", 0xb492ac33u},
+        {"Item_Melody_SariaSong", 0xd3f8bfccu},
+        {"Item_Melody_SunSong", 0x165dd1adu},
+        {"Item_Melody_TimeSong", 0x03b3450eu},
+        {"Item_Melody_StormSong", 0x2b39dd4fu},
+        {"Item_Melody_ForestMinuet", 0xdc0a0b54u},
+        {"Item_Melody_FireBolero", 0x49041ab9u},
+        {"Item_Melody_WaterSerenade", 0x3fa63986u},
+        {"Item_Melody_ShadowNocturne", 0xc2fb95f4u},
+        {"Item_Melody_SpiritRequiem", 0x802a36a8u},
+        {"Item_Melody_LightPrelude", 0xd6320ba4u},
+    };
+    for (unsigned i = 0; i < sizeof songs / sizeof songs[0]; i++)
+        if (!strcmp(name, songs[i].name)) return songs[i].hash;
+    return 0;
 }
 
 /* Masks share one slot (the Happy Mask Shop lends one at a time). The game takes "Item_Mask_X" when adding one and
@@ -694,6 +764,11 @@ static int oot_mask_alias(const char *name, char *alias, size_t size) {
 }
 
 static int oot_item_count(Ctx *c, const char *name) {
+    const uint32_t song = oot_song_flag(name);
+    if (song) {
+        int learned = 0;
+        return oot_gamedata_bool(c, song, &learned) ? learned : -1;
+    }
     char alias[64];
     const int n = oot_pouch_count(c, name);
     if (!oot_mask_alias(name, alias, sizeof alias)) return n;
@@ -705,9 +780,19 @@ static void oot_inventory_edit(Ctx *c, int action) {
     const unsigned item = (unsigned)(action - OOT_CHEAT_ITEM_ACTION) / 256, op = (unsigned)(action - OOT_CHEAT_ITEM_ACTION) % 256;
     if (item >= OOT_ITEM_COUNT) return;
     const char *name = oot_item_names[item];
+    const int have = oot_item_count(c, name);
+    const uint32_t song = oot_song_flag(name);
+    if (song) {
+        if (op != 200 || have < 0) return;   /* songs have no editable quantity */
+        if (!oot_gamedata_set_bool(c, song, !have)) {
+            hos_log("cheats: song %s: learned flag unavailable", name);
+            return;
+        }
+        hos_log("cheats: song %s %s (had %d, now %d)", name, have ? "relocked" : "unlocked", have, oot_item_count(c, name));
+        return;
+    }
     char alias[64];
     const int is_mask = oot_mask_alias(name, alias, sizeof alias);
-    const int have = oot_item_count(c, name);
     int delta = 0;
     if (op == 200) delta = have > 0 ? -have : 1;   /* unlock / relock */
     else if (op < 128) delta = (int)op - 64;
@@ -1705,6 +1790,12 @@ static void memory_notice(void) {
     MessageBoxA(NULL, text, "Longshot", MB_OK | MB_ICONWARNING);
 }
 #endif
+/* (longshot, linux) What driver_env_choose did with the driver's environment, said again in the game's own log once it is open
+   (it runs before, when stderr is still the launcher's) */
+static char driver_env_said[1024];
+static void driver_env_log(void) {
+    if (driver_env_said[0]) hos_log("%s", driver_env_said);
+}
 #ifdef _WIN32
 /* (longshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
    PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
@@ -1810,13 +1901,20 @@ static int game_main(int argc, char **argv) {
 #if !defined(_WIN32) && !defined(A64_MEM_ZERO)
             startup_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
 #endif
-            if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            /* (opened first: freopen closes stderr when it cannot open the file, and the next file opened would take its
+               descriptor. A log that cannot be written leaves the stderr the game was started with) */
+            FILE *log = fopen(path, "w");
+            if (log) {
+                fclose(log);
+                if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
+            }
         } else hos_crash_record_prepare(NULL);   /* an externally supplied stderr, not the game's log */
     }
     hos_log("longshot %s", LONGSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
     const char *hos_report_run_id(void);
     hos_log("run_id: %s", hos_report_run_id());
     hos_game_layout_log();
+    driver_env_log();
     void hos_crash_record_log_notes(void);
     hos_crash_record_log_notes();
     removed_switch_notes();
@@ -2093,6 +2191,37 @@ static void driver_cache_folder(void) {
         *p = '/';
     }
 }
+/* (longshot, linux) RADV_FORCE_VRS_CONFIG_FILE dropped before anything loads Vulkan. The Steam Deck's Game Mode sets it for
+   Steam and everything it starts, naming a file it writes the Half Rate Shading rate to (/tmp/radv_vrs.<random>, "1x1" when
+   off). When that file exists, RADV forces VRS for the device and puts that into every graphics pipeline's key, so nothing
+   built without it is found, in the driver's cache or in ours: measured on a Steam Deck OLED (RADV, Mesa 26.2.0-devel), the
+   same install compiled its 32,438 noted pipelines at about 20 a second (25-30 minutes) with the variable naming a file, empty
+   or "1x1", and loaded them in 22 s without it or with it naming no file. The preparation (the Builder, a first start from the
+   desktop) runs without it, so every start from Game Mode compiled again what it built. Dropped only when it names a file that
+   exists, which is when RADV reads it; no other driver reads it. RX_VK_HALF_RATE_SHADING=1 keeps it: Steam's Half Rate Shading
+   works for Longshot then (little: RADV leaves a fragment program that reads its position at full rate, and nearly all of
+   ours do), and the starts in Game Mode compile their own pipelines. RADV_FORCE_VRS, a rate someone set by hand, is kept.
+   The variable is named in LONGSHOT_DRIVER_ENV_SET for the renderer's driver cache line. A restart (hos_relaunch.c) starts
+   again from the first environment and drops it again */
+static void driver_env_choose(void) {
+    const char *file = getenv("RADV_FORCE_VRS_CONFIG_FILE");
+    struct stat st;
+    if (!file || !*file || stat(file, &st) != 0) return;
+    const char *keep = getenv("RX_VK_HALF_RATE_SHADING");
+    if (keep && !strcmp(keep, "1")) {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE kept (RX_VK_HALF_RATE_SHADING=1): Steam's Half Rate Shading reaches the game, "
+                 "and RADV gives every graphics pipeline another key than the preparation's, so they are compiled again");
+    } else {
+        snprintf(driver_env_said, sizeof driver_env_said,
+                 "vk: RADV_FORCE_VRS_CONFIG_FILE=%.300s dropped: with it RADV gives every graphics pipeline another key than the "
+                 "preparation's and compiles them all again; Steam's Half Rate Shading has no effect on Longshot "
+                 "(RX_VK_HALF_RATE_SHADING=1 keeps it)", file);
+        unsetenv("RADV_FORCE_VRS_CONFIG_FILE");
+        setenv("LONGSHOT_DRIVER_ENV_SET", "RADV_FORCE_VRS_CONFIG_FILE", 1);
+    }
+    fprintf(stderr, "%s\n", driver_env_said);
+}
 int main(int argc, char **argv) {
     {   /* (longshot) the crash window's helper of this run (host/hos_crash_dialog.c): first, so it starts nothing of the game */
         int hos_crash_helper_main(int argc, char **argv);
@@ -2106,6 +2235,7 @@ int main(int argc, char **argv) {
     hos_options_choose(argc, argv);   /* (before the Discord status reads it, below: host/options_path.c) */
     driver_cache_room();
     driver_cache_folder();
+    driver_env_choose();
     game_argc = argc, game_argv = argv;
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {

@@ -69,6 +69,10 @@ void menu_debug_rows(int, int) { CHECK(false); }
 /* OPTIONS */
 /* AUTO_PRESET */
 Options opts;
+bool debug_warning = false;
+int debug_warning_choice = 0;
+void sync_transition_autosave() {}
+
 /* TABS */
 /* ROW */
 unsigned available = (1u << ur::kUpscalers) - 1;
@@ -150,12 +154,12 @@ void prompts_at_once(const Row&) {}
 void apply_auto();
 /* PRESET */
 /* APPLY_AUTO */
+bool menu_refresh = false;
 /* SET_ROW */
 /* RESOLUTION_SCALE */
 /* RESOLUTION_AUTO */
 /* WALK */
 std::recursive_mutex menu_mu;
-bool menu_refresh = false;
 int env_int(const char*, int fallback) { return fallback; }
 double fps_target_ms() { return 1000.0 / 60; }
 int display_refresh_mhz() { return 60000; }

@@ -23,10 +23,10 @@ have the game measure itself first.
 
 ## Help with testing
 
-Fixes often need checking on hardware the developer doesn't have: another graphics card, Linux, a Steam Deck. The team
-posts test requests on [Discord](https://discord.gg/magicbean); pick one up, play the change, and say what you saw,
-including what didn't work. The [testing guide](https://git.magicbean.dev/MagicBeanDev/Longshot/src/branch/main/docs/test-requests.md)
-explains how.
+Fixes often need checking on hardware the developer doesn't have: another graphics card, Linux, a Steam Deck. Lend your
+PC to the Test Farm, Beanstalk: a small app builds approved pull requests next to `main` from your own copy of the game,
+plays the same scenes on both, and posts the numbers on the pull request, while you do something else.
+[How it works, and the download](https://beanstalk.magicbean.dev/how).
 
 ## Improve the documentation or the code
 

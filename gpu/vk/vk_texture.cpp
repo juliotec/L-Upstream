@@ -47,6 +47,7 @@
 #include "video_core/textures/astc.h"
 #include "video_core/textures/decoders.h"
 
+#include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "host_shaders/astc_decoder_comp_spv.h"
 #include "host_shaders/bc_encoder_comp_spv.h"
 #include "host_shaders/bc7_encoder_comp_spv.h"
@@ -504,6 +505,12 @@ std::map<uint64_t, std::pair<uint64_t, uint64_t>> gpu_wrote;
 std::mutex gpu_wrote_mu;
 }  // namespace
 bool gpu_wrote_into(Texture& tex);
+void helper_thread_start() {
+#ifndef _WIN32
+    GetCurrentThreadId();
+#endif
+}
+
 namespace {
 Staging staging(uint64_t n, uint64_t align = 256) {
     // Separate slices may already be read by submitted parallel segments. A flush must not share their cache atom.
@@ -615,8 +622,9 @@ bool astc_ready() {
     pi.pPushConstantRanges = &pr;
     if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &astc_layout) != VK_SUCCESS) return false;
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = sizeof ASTC_DECODER_COMP_SPV;
-    mi.pCode = ASTC_DECODER_COMP_SPV;
+    const auto spv = BUILTIN_SPV(ASTC_DECODER_COMP_SPV);
+    mi.codeSize = spv.size;
+    mi.pCode = spv.code;
     VkShaderModule m = VK_NULL_HANDLE;
     IntelDriverGate gate;
     if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return false;
@@ -832,8 +840,8 @@ bool bc_ready() {
         vkDestroyShaderModule(dev.device, m, nullptr);
         return r == VK_SUCCESS;
     };
-    if (!make_pipe(BC_ENCODER_COMP_SPV, sizeof BC_ENCODER_COMP_SPV, bc_pipe)) return false;
-    if (bc7 && !make_pipe(BC7_ENCODER_COMP_SPV, sizeof BC7_ENCODER_COMP_SPV, bc7_pipe)) {
+    if (!make_pipe(BUILTIN_SPV_ARGS(BC_ENCODER_COMP_SPV), bc_pipe)) return false;
+    if (bc7 && !make_pipe(BUILTIN_SPV_ARGS(BC7_ENCODER_COMP_SPV), bc7_pipe)) {
         // (the BC7 pipeline could not be made: BC3, not RGBA8. The next bc7_enabled() answers false too, so the encoders
         // and the textures made from now on take bc_pipe)
         bc7_ok = false, bc7 = false;
@@ -1026,7 +1034,7 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
                 if (!host->gpu_read(gpu + at, scratch.data() + at, std::min<uint64_t>(0x10000, b - at)))
                     std::memset(scratch.data() + at, 0, std::min<uint64_t>(0x10000, b - at));
         };
-        for (uint32_t t = 1; t < nt; t++) pool.emplace_back(part, t);
+        for (uint32_t t = 1; t < nt; t++) pool.emplace_back([&part, t] { helper_thread_start(), part(t); });
         part(0);
         for (std::thread& t : pool) t.join();
         return scratch.data();
@@ -1250,8 +1258,9 @@ bool unswizzle_ready() {
     pi.pPushConstantRanges = &pr;
     if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &unsw_layout) != VK_SUCCESS) return false;
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = sizeof BLOCK_LINEAR_UNSWIZZLE_2D_COMP_SPV;
-    mi.pCode = BLOCK_LINEAR_UNSWIZZLE_2D_COMP_SPV;
+    const auto spv = BUILTIN_SPV(BLOCK_LINEAR_UNSWIZZLE_2D_COMP_SPV);
+    mi.codeSize = spv.size;
+    mi.pCode = spv.code;
     VkShaderModule m = VK_NULL_HANDLE;
     IntelDriverGate gate;
     if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return false;
@@ -1591,7 +1600,7 @@ bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool wid
     };
     if (nthreads > 1) {
         std::vector<std::thread> th;
-        for (uint32_t t = 1; t < nthreads; t++) th.emplace_back(part, t);
+        for (uint32_t t = 1; t < nthreads; t++) th.emplace_back([&part, t] { helper_thread_start(), part(t); });
         part(0);
         for (auto& x : th) x.join();
     } else {
@@ -1780,7 +1789,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                             }
                         };
                         std::vector<std::thread> pool;
-                        for (uint32_t t = 1; t < nthreads; t++) pool.emplace_back(part, t);
+                        for (uint32_t t = 1; t < nthreads; t++) pool.emplace_back([&part, t] { helper_thread_start(), part(t); });
                         part(0);
                         for (std::thread& t : pool) t.join();
                         static const bool check = env_on("RX_VK_UNSWIZZLE_CHECK");   // (against one thread)

@@ -9,7 +9,7 @@
    a file already there (one that cannot move stays, and the log says so). The Vulkan pipeline cache is renamed on the way, from
    mkw-recomp's mkw_vk_pipelines*.bin to longshot_vk_pipelines*.bin, and what a write of it cut short left (a .tmp) is deleted;
    the button prompts an older build made in prompts/ are deleted, as they are made again in cache/prompts. The build's own files
-   stay where the build put them (image.bin, romfs, longshot_shaders.bin, the shipped pipeline list, prompts/<face>/, language.txt),
+   stay where the build put them (image.bin, romfs, longshot_shaders.bin, the shipped pipeline list, prompts/<face>/, texts/, language.txt),
    and so do the settings (longshot_options.ini; in the user folder when --user names one: host/options_path.c),
    longshot_env.txt and the saves (user/). */
 #include "hos_paths.h"   /* (first: windows.h, host/posix's on Linux) */

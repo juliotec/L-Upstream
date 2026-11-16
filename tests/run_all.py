@@ -5,6 +5,8 @@ Exits 1 when anything failed.
 
     python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [--shard K/N]
                                   [--list] [--junit FILE] [--exact] [name ...]
+    python -I -B tests/run_all.py --changed [BASE]   (only the checks that read files changed since BASE: main on the
+                                                     remote that points at Longshot, else origin/main)
 
 A name picks the checks whose path contains it (--exact: only a check whose path is exactly the name; with names given
 and none matching, nothing runs and it exits 2). --strict: a check that needs a tool this PC lacks (a compiler, the
@@ -339,6 +341,61 @@ class Result:
         self.returncode, self.stdout = returncode, stdout
 
 
+# (--changed, the dev-loop proposal's D1) the checks that read what changed: most tests name the files they cut code from or run,
+# by path or by name, so a test whose text names a changed file is picked. A change to this runner, or to a shared .py of tests/
+# that is not a test, picks every check. Before a pull request the whole run is still the one that counts (docs/workflow.md)
+LONGSHOT_REMOTE = "git.magicbean.dev/magicbeandev/longshot"   # (scripts/forge.py's HOST and REPO, as add_remote matches them)
+
+
+def default_base():
+    """--changed's base when none is named: main on the remote that points at Longshot (scripts/forge.py adds one as forge
+    unless one already does: CONTRIBUTING.md's git rebase forge/main), else origin/main"""
+    r = subprocess.run(["git", "-C", ROOT, "remote", "-v"], capture_output=True, text=True)
+    for line in (r.stdout if r.returncode == 0 else "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and LONGSHOT_REMOTE in parts[1].lower().replace(".git", ""):
+            return parts[0] + "/main"
+    return "origin/main"
+
+
+def changed_files(base):
+    """The files changed since base's merge base with HEAD, committed or not, and the untracked ones (git, repository paths)"""
+    def git(*args):
+        r = subprocess.run(["git", "-C", ROOT] + list(args), capture_output=True, text=True)
+        if r.returncode:
+            raise SystemExit("--changed: git %s: %s" % (" ".join(args), r.stderr.strip()))
+        return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+    mb = git("merge-base", "HEAD", base)[0]
+    return sorted(set(git("diff", "--name-only", mb)) | set(git("ls-files", "--others", "--exclude-standard")))
+
+
+def reads_changed(tests, changed):
+    """(the tests to run, whether every check is to run) for these changed files"""
+    import re
+    if any(c == "tests/run_all.py" or (c.startswith("tests/") and c.endswith(".py") and not os.path.basename(c).startswith("test_"))
+           for c in changed):
+        return list(tests), True
+    names = []
+    for c in changed:
+        base = os.path.basename(c)
+        alts = [re.escape(c)]
+        if len(base) > 4 and "." in base:
+            alts.append(r"(?<![\w.-])" + re.escape(base) + r"(?![\w-])")
+        if base.endswith(".py"):   # (a module the test imports by its name: `import chunks`, `from chunks import ...`)
+            alts.append(r"\b(?:import|from)\s+" + re.escape(base[:-3]) + r"\b")
+        names.append(re.compile("|".join(alts)))
+    picked = []
+    for rel in tests:
+        if rel in changed:
+            picked.append(rel)
+            continue
+        with open(os.path.join(ROOT, rel), encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if any(n.search(text) for n in names):
+            picked.append(rel)
+    return picked, False
+
+
 def compile_all():
     """Every tracked .py file byte-compiled (in memory: nothing written), so a syntax error anywhere fails"""
     r = subprocess.run(["git", "ls-files", "-z", "--", "*.py"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -411,9 +468,14 @@ def main():
     p.add_argument("--junit", metavar="FILE", help="also write the results as JUnit XML to FILE")
     p.add_argument("--exact", action="store_true",
                    help="a name must be a check's whole path, and with names given and none matching, run nothing")
+    p.add_argument("--changed", nargs="?", const="", metavar="BASE",
+                   help="only the checks that read a file changed since BASE's merge base (default main on the remote that "
+                        "points at Longshot, forge/main as forge.py adds it, else origin/main), or an untracked one")
     a = p.parse_args()
     if a.write_times and (a.names or a.shard):
         p.error("--write-times needs a full run: no names, no --shard")
+    if a.changed is not None and (a.names or a.write_times):
+        p.error("--changed picks the checks itself: no names, no --write-times")
     times = load_times()
     tools = find_tools()
 
@@ -433,6 +495,14 @@ def main():
     # (only the tests asked for: a bad declaration elsewhere does not stop a run of one named test)
     if a.names:
         tests = [rel for rel in tests if picked(rel)]
+    changed, everything = None, True
+    if a.changed is not None:
+        a.changed = a.changed or default_base()
+        changed = changed_files(a.changed)
+        tests, everything = reads_changed(tests, changed)
+        print("--changed: %d files changed since %s, %s" % (
+            len(changed), a.changed, "every check (the runner or a shared test file changed)" if everything else
+            "%d checks read them; the whole run is still the one a pull request needs" % len(tests)), flush=True)
     decls, errors = {}, []
     for rel in tests:
         try:
@@ -458,6 +528,8 @@ def main():
             c.run = lambda m=missing: Result(1, ("not found: %s (--strict)\n" % ", ".join(m)).encode())
         checks.append(c)
     cpp, missing = cpp_checks(tools, a.timeout)
+    if not everything and not any(c.startswith("gpu/") for c in changed):
+        cpp = []   # (--changed: the C++ unit tests build gpu/vk's headers alone)
     for name, run in cpp:
         c = Check(name, run)
         if missing:

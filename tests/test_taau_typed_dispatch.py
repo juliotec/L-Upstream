@@ -51,6 +51,8 @@ bool scene_tonemap_on(){return tone;}
 bool env_on(const char* name){return !strcmp(name,"RX_VK_TAAU_CLAMP");}
 uint64_t texture_frame_no(){return frame;}
 struct IntelDriverGate {};
+struct BuiltinSpv { const uint32_t* code; size_t size; };   // (vk_builtin_spv.h with RX_VK_SHADER_DIR unset)
+#define BUILTIN_SPV(words) BuiltinSpv{words, sizeof words}
 VkResult vkCreateDescriptorSetLayout(VkDevice,const VkDescriptorSetLayoutCreateInfo*,const VkAllocationCallbacks*,VkDescriptorSetLayout* p){*p=handle<VkDescriptorSetLayout>(++next_handle);return VK_SUCCESS;}
 VkResult vkCreatePipelineLayout(VkDevice,const VkPipelineLayoutCreateInfo*,const VkAllocationCallbacks*,VkPipelineLayout* p){*p=handle<VkPipelineLayout>(++next_handle);return VK_SUCCESS;}
 VkResult guarded_shader_module(const VkShaderModuleCreateInfo* info,VkShaderModule* p){

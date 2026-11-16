@@ -182,6 +182,7 @@ int recording_index = 0;
 /// (a recording slot's last submit done: before it is used again)
 void recording_wait(Recording& r) {
     if (!r.submitted) return;
+    FpsRtWait rt_wait(fps_stats::kRtGpu);   // (the FPS counter's render lane)
     if (r.batch) {
         {
             std::lock_guard lk(dev.present_mu);
@@ -317,6 +318,19 @@ void wait_value(uint64_t v) {
     vkWaitSemaphores(dev.device, &wi, UINT64_MAX);
 }
 bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok);
+/// (longshot) What the calling thread's last wait on the recordings' timeline came back with (wait_rec_seq): one that came back
+/// VK_ERROR_DEVICE_LOST is said there, and not again by vk_timeline_wait as a capture's wait that timed out
+thread_local VkResult wait_rec_result = VK_SUCCESS;
+/// (longshot) A timeline wait that came back VK_ERROR_DEVICE_LOST, said as a lost device (8 times at most). Run 21 (macOS,
+/// MoltenVK 1.4.2) logged one as a capture's wait that "timed out (done 0)": the driver marks the device lost, signals every
+/// timeline waited on, returns VK_ERROR_DEVICE_LOST from the wait and leaves the counter's value unwritten, so completed() read
+/// 0, and the log showed a timeout where the GPU was gone. Only the line: the next submit or the GPU hang watch ends the game,
+/// as before
+void wait_lost(const char* what, uint64_t v) {
+    static std::atomic<int> logged{0};
+    if (logged++ >= 8) return;
+    logf("vk: %s %llu came back VK_ERROR_DEVICE_LOST: the GPU device is lost", what, (unsigned long long)v);
+}
 } // namespace
 uint64_t vk_timeline_completed() { return timeline ? completed() : 0; }
 void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back behind the caller's thread goes on without it)
@@ -325,6 +339,8 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
     // submission is stopped at an event wait; wait on `rec_timeline` where that recording actually signalled completion)
     int ok = 0;
     if (wait_recorded(v, 250000000ull, &ok)) {
+        const bool lost = wait_rec_result == VK_ERROR_DEVICE_LOST;   // (said by wait_rec_seq)
+        if (lost) return;
         if (!ok) {
             static std::atomic<int> logged{0};
             if (logged++ < 8)
@@ -338,10 +354,13 @@ void vk_timeline_wait(uint64_t v) {   // (at most 250 ms: a submission held back
     wi.semaphoreCount = 1;
     wi.pSemaphores = &timeline;
     wi.pValues = &v;
-    if (vkWaitSemaphores(dev.device, &wi, 250000000ull) == VK_TIMEOUT) {
+    const VkResult res = vkWaitSemaphores(dev.device, &wi, 250000000ull);
+    if (res == VK_TIMEOUT) {
         static std::atomic<int> logged{0};
         if (logged++ < 8) logf("vk: a capture's wait for write-back %llu timed out (done %llu)", (unsigned long long)v, (unsigned long long)completed());
     }
+    const bool lost = res == VK_ERROR_DEVICE_LOST;
+    if (lost) wait_lost("a capture's wait for write-back", v);
 }
 namespace {
 
@@ -1053,20 +1072,92 @@ bool cpu_signal_uncaptured(uint64_t gpu) {
 }
 uint64_t ts_anchor_ns = 0;   // (the last present's time: counter timestamps are scaled from it)
 
-/// A GPU-timeline write of guest memory (the stream's own writes: they reach memory in command order)
+/// (longshot) The binding of up to n bytes of guest memory from gpu that one import holds, n cut to its length: all of it when an
+/// import can hold it; else the part in the game pool holding gpu (a range across two pools has no import: pool_lookup), or,
+/// outside every pool, none for the bytes up to the next one. None too when the range's import failed (logged there)
+BufferRef gpu_piece_bind(uint64_t gpu, uint64_t& n) {
+    if (const BufferRef b = gpu_buffer_bind(gpu, n, true)) return b;
+    bool in_pool = false;
+    const uint64_t k = gpu_pool_piece(gpu, n, in_pool);
+    if (k == n) return {};   // (in one pool, whose import failed, or in none)
+    n = k;
+    return in_pool ? gpu_buffer_bind(gpu, n, true) : BufferRef{};
+}
+
+/// (longshot) k bytes into b on the GPU timeline, after a barrier: an update when they are 4-byte aligned (vkCmdUpdateBuffer's
+/// rule, up to 64 KB), else put in the recording's stream and copied into place, a copy having no alignment rule. false: no
+/// room in the stream, and nothing recorded
+bool gpu_put(VkCommandBuffer cmd, const BufferRef& b, const uint8_t* d, uint64_t k) {
+    const bool update = !(b.offset & 3) && !(k & 3) && k <= 65536;
+    const BufferRef s = update ? BufferRef{} : stream_copy(d, k);
+    if (!update && !s) return false;
+    full_barrier(cmd);   // overlapping inline writes must reach memory in stream order
+    if (update) {
+        vkCmdUpdateBuffer(cmd, b.buffer, b.offset, k, d);
+    } else {
+        const VkBufferCopy r{s.offset, b.offset, k};
+        vkCmdCopyBuffer(cmd, s.buffer, b.buffer, 1, &r);
+    }
+    return true;
+}
+
+/// A GPU-timeline write of guest memory (the stream's own writes: they reach memory in command order). (longshot) Every part an
+/// import holds goes on the GPU, an unaligned one too, one import at a time; only bytes no import holds are written on the CPU,
+/// at record time, which is exact outside every pool: no import there, so the GPU neither reads nor writes them. An unaligned
+/// write, or one across two game pools, went on the CPU whole: out of command order, ahead of the draws recorded before it
 void gpu_write(VkCommandBuffer cmd, uint64_t gpu, const void* data, uint64_t n) {
     const uint8_t* d = (const uint8_t*)data;
-    while (n) {   // (vkCmdUpdateBuffer: up to 64 KB, 4-byte aligned)
-        const uint64_t k = std::min<uint64_t>(n, 65536);
-        BufferRef b = gpu_buffer_bind(gpu, k, true);
-        if (!b || (b.offset & 3) || (k & 3)) {   // (unaligned or outside the pools: on the CPU, as before)
-            guest_cpu_write(gpu, d, k);
-        } else {
-            full_barrier(cmd);   // overlapping inline writes must reach memory in stream order
-            vkCmdUpdateBuffer(cmd, b.buffer, b.offset, k, d);
-        }
+    while (n) {
+        uint64_t k = std::min<uint64_t>(n, 65536);
+        const BufferRef b = gpu_piece_bind(gpu, k);
+        if (!b || !gpu_put(cmd, b, d, k)) guest_cpu_write(gpu, d, k);   // (no import, a failed one, or a full stream: on the CPU)
         gpu += k, d += k, n -= k;
     }
+}
+
+/// (longshot) n bytes of guest memory from gpu cleared to value on the GPU timeline (NOP_CLEAR_BUF, between its barriers): each
+/// part an import holds as a fill of whole words, the up to 3 bytes on either side copied from the recording's stream (a fill
+/// takes aligned words only), stamped as the GPU's. The rest on the CPU (an unaligned clear, or one across two game pools, went
+/// there whole, out of command order), unless in_stream: the replay cleared those bytes on the CPU in stream order already, and
+/// the GPU's parts are not stamped. True when every byte went on the GPU
+bool gpu_fill(VkCommandBuffer cmd, uint64_t gpu, uint64_t n, uint32_t value, bool in_stream) {
+    uint8_t pattern[8];   // (byte i of the clear is the value's byte i % 4: pattern[i % 4] on)
+    std::memcpy(pattern, &value, 4), std::memcpy(pattern + 4, &value, 4);
+    bool all = true;
+    for (uint64_t done = 0; done < n;) {
+        const uint64_t at = gpu + done;
+        uint64_t k = n - done;
+        const BufferRef b = gpu_piece_bind(at, k);
+        const uint64_t head = std::min<uint64_t>(k, (0 - b.offset) & 3), mid = (k - head) & ~3ull, tail = k - head - mid;
+        uint8_t ends[6];   // (the head's bytes, then the tail's)
+        std::memcpy(ends, pattern + (done & 3), head);
+        std::memcpy(ends + head, pattern + ((done + head + mid) & 3), tail);
+        const BufferRef s = b && head + tail ? stream_copy(ends, head + tail) : BufferRef{};
+        const bool put = b && (s || !(head + tail));
+        if (put) {
+            uint32_t w;
+            std::memcpy(&w, pattern + ((done + head) & 3), 4);
+            if (mid) vkCmdFillBuffer(cmd, b.buffer, b.offset + head, mid, w);
+            VkBufferCopy r[2];
+            uint32_t nr = 0;
+            if (head) r[nr++] = {s.offset, b.offset, head};
+            if (tail) r[nr++] = {s.offset + head, b.offset + head + mid, tail};
+            if (nr) vkCmdCopyBuffer(cmd, s.buffer, b.buffer, nr, r);
+            const uint64_t guest = host->gpu_guest(at);
+            if (guest && !in_stream) memory_stamp_gpu(guest, k);
+        } else if (!in_stream) {   // (no import, a failed one, or a full stream: on the CPU)
+            uint32_t buf[1025];
+            for (auto& x : buf) x = value;
+            for (uint64_t off = 0; off < k;) {
+                const uint64_t m = std::min<uint64_t>(4096, k - off);
+                if (!guest_cpu_write(at + off, (const uint8_t*)buf + (done & 3), m)) break;
+                off += m;
+            }
+        }
+        all = all && put;
+        done += k;
+    }
+    return all;
 }
 
 // ---- uniform updates (UPDATE_UB): written at the end of their recording; ub_overlay applies them to copies ----
@@ -1410,6 +1501,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const bool samples = (uint32_t)c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED;
             // (timestamps on the guest tick clock in counter ticks (19.2 MHz, nvnDeviceGetTimestampInNanoseconds
             // converts), the replay's time; occlusion counts grow with every draw, as in the WebGPU renderer)
+            // doc: docs/design.md#4-the-lessons-from-mkw-as-rules-here (rule 4: GPU timestamps drive dynamic resolution)
             // (the GPU's time as the game measures it: from the frame's present on, at RX_VK_TS_SCALE (default 0.1)
             // times the real clock. The reports are written as the replay records them, so the real clock gave the
             // replay's time and its lag, not the GPU's: MKW's dynamic resolution moved every frame (each new size a
@@ -1494,7 +1586,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             full_barrier(cmd);
             break;
         }
-        case NOP_CLEAR_BUF: {   // (longshot) nvnCommandBufferClearBuffer: on the GPU in order, as a buffer copy
+        case NOP_CLEAR_BUF: {   // (longshot) nvnCommandBufferClearBuffer: on the GPU in order, as a fill (gpu_fill)
             const auto c0 = payload<nvn_p_clear_buf>(a, avail);
             // (the small ones are the counters the reports and conditions use, which happen here on the CPU in stream order. Left
             // to the GPU, a clear earlier in the stream reached guest memory after a later report and wiped it, as far as the GPU
@@ -1510,7 +1602,12 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             ParLock lk;
             const auto c = c0;
             if (!c.size) break;
-            BufferRef dst = gpu_buffer_bind(c.dst, c.size, true);
+            end_pass(cmd);
+            GprofSpan gp(cmd, "clear buffer (with its barriers)");
+            gp.bytes = c.size;
+            full_barrier(cmd);
+            const bool on_gpu = gpu_fill(cmd, c.dst, c.size, c.value, in_stream);
+            full_barrier(cmd);
             {   // (EvilOOT: RX_VK_WATCH_RANGE, the clears into it too)
                 unsigned long long lo = 0, hi = 0;
                 static const char* e = getenv("RX_VK_WATCH_RANGE");
@@ -1518,26 +1615,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 static int logged;
                 if (hi && c.dst < hi && c.dst + c.size > lo && logged++ < 400)
                     logf("vk: watch range buffer clear %#llx (%#llx bytes) to %#x: %s", (unsigned long long)c.dst,
-                         (unsigned long long)c.size, (unsigned)c.value, dst ? "on the GPU" : "NOT bound");
+                         (unsigned long long)c.size, (unsigned)c.value, on_gpu ? "on the GPU" : "NOT all on the GPU");
             }
-            end_pass(cmd);
-            GprofSpan gp(cmd, "clear buffer (with its barriers)");
-            gp.bytes = c.size;
-            full_barrier(cmd);
-            if (dst && !(dst.offset & 3) && !(c.size & 3)) {
-                vkCmdFillBuffer(cmd, dst.buffer, dst.offset, c.size, c.value);
-                const uint64_t guest = host->gpu_guest(c.dst);
-                if (guest && !in_stream) memory_stamp_gpu(guest, c.size);
-            } else if (!in_stream) {   // (outside the pools or unaligned: on the CPU)
-                uint32_t buf[1024];
-                for (auto& w : buf) w = c.value;
-                for (uint64_t done = 0; done < c.size;) {
-                    const uint64_t k = std::min<uint64_t>(sizeof buf, c.size - done);
-                    if (!guest_cpu_write(c.dst + done, buf, k)) break;
-                    done += k;
-                }
-            }
-            full_barrier(cmd);
             break;
         }
         case NOP_COPY_B2T: if (!dry) { ParLock lk; copy_b2t(cmd, s, payload<nvn_p_copy_bt>(a, avail), true); } break;
@@ -2264,6 +2343,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     for (auto& jp : jobs) {   // (in order, each as soon as it is done)
         Job* j = jp.get();
         {
+            FpsRtWait rt_wait(fps_stats::kRtWorkers);   // (the FPS counter's render lane)
             std::unique_lock l(seg_mu);
             seg_cv.wait(l, [j] { return j->done.load(); });
         }
@@ -2290,6 +2370,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         if (res == VK_ERROR_DEVICE_LOST) device_lost();
     }
     {
+        FpsRtWait rt_wait(fps_stats::kRtWorkers);
         std::unique_lock lk(par_pool.mu);
         par_pool.done.wait(lk, [] { return par_pool.pending == 0; });
     }
@@ -2945,6 +3026,7 @@ void sync_watch() {
     }
 }
 
+// doc: docs/design.md#4-the-lessons-from-mkw-as-rules-here (rule 1: cross-queue event waits are honoured)
 /// A submit on the replay thread: replayed as far as its waits allow, or (its queue stopped) after its queue's
 void submit_job(std::vector<uint64_t>& handles, uint64_t value, uint64_t queue) {
     const bool may_stop = event_waits_on() && !dump_on();
@@ -3017,6 +3099,7 @@ static void wait_rec_seq(uint64_t seq, uint64_t timeout_ns, int* ok) {
     uint64_t reached = 0;
     if (vkGetSemaphoreCounterValue(dev.device, rec_timeline, &reached) == VK_SUCCESS && reached >= seq) {
         *ok = 1;
+        wait_rec_result = VK_SUCCESS;
         return;
     }
     // (a batched submit holds its recordings' signal until the batch goes out: the readback wait in invalidate came here
@@ -3026,10 +3109,15 @@ static void wait_rec_seq(uint64_t seq, uint64_t timeout_ns, int* ok) {
     wi.semaphoreCount = 1;
     wi.pSemaphores = &rec_timeline;
     wi.pValues = &seq;
+    VkResult res;
     {
-        FpsWait fw(fps_stats::kGpuWait);   // (the FPS counter's Breakdown)
-        *ok = vkWaitSemaphores(dev.device, &wi, timeout_ns) == VK_SUCCESS;
+        FpsWait fw(fps_gpu_wait_kind());   // (the FPS counter's Breakdown; in the game's fence wait, its kind)
+        res = vkWaitSemaphores(dev.device, &wi, timeout_ns);
     }
+    *ok = res == VK_SUCCESS;
+    wait_rec_result = res;
+    const bool lost = res == VK_ERROR_DEVICE_LOST;   // (said as a lost device, not by vk_timeline_wait as a wait that timed out)
+    if (lost) wait_lost("a wait for recording", seq);
 }
 uint64_t fence();
 /// (longshot) A fence of one queue (nvnQueueFenceSync): the value of that queue's last submission
@@ -3058,6 +3146,14 @@ struct GpuWaiter {
 int wait(uint64_t f, uint64_t timeout_ns) {
     gf_waited_ns = gf_now();   // (RX_VK_LOG_READBACK_RANGES: this thread waited for the GPU, or asked whether it was done)
     if (completed() >= f) return 1;
+    // (the FPS counter's Breakdown: this wait's kind, by whether its work was recorded when it began: the renderer behind, or
+    // the GPU)
+    bool recorded = true;
+    if (timeout_ns && fps_breakdown_on()) {
+        std::lock_guard mk(rec_map_mu);
+        recorded = value_rec.count(f) != 0;
+    }
+    FpsFenceWait fence_kind(recorded);
     if (timeout_ns) gate_need_value(f);   // (the render thread's whole frames: this one's submit goes on without its present)
     FpsRender fr;   // (the FPS counter's Breakdown: the replay of stopped work in here is the renderer's, the waits the GPU's)
     queue_flush_for(FR_WAIT);
@@ -3110,7 +3206,7 @@ int wait(uint64_t f, uint64_t timeout_ns) {
     queue_flush_for(FR_WAIT);
     VkResult res;
     {
-        FpsWait fw(fps_stats::kGpuWait);
+        FpsWait fw(fps_gpu_wait_kind());
         res = vkWaitSemaphores(dev.device, &wi, timeout_ns);
     }
     static int logged;
@@ -3370,7 +3466,7 @@ void invalidate(uint64_t gpu, uint64_t size) {
             // (not unforced: the submitting thread's replay with RX_VK_SYNC_WAITS=0 or RX_VK_PER_QUEUE_FENCES=0, as before)
             const bool behind = async_on();
             const bool unforced = behind || (sync_waits_on() && !per_queue_fences_off());
-            static std::atomic<int64_t> settled{0}, held_back{0};
+            static std::atomic<int64_t> settled{0}, held_back{0}, in_place{0};
             // That is the console's answer for a read the game makes without waiting for the GPU: the latest result that has
             // landed. Where the game does wait first (a fence, nvnSyncWait, nvnQueueFinish), that wait is the exact one and
             // the read after it finds its write-back recorded. RX_VK_READBACK_EXACT (a test, off): 1, every range is read
@@ -3419,6 +3515,7 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 if (by_part && part && in_place_after) held_back++;
                 const bool parted = unforced && by_part && part && whole <= completed() && !in_place_after &&
                                     wait_recorded_part(part, UINT64_MAX, &ok);
+                if (!parted && !part) in_place++;   // (pages written in place (no mirror: part 0): the whole submission waited for)
                 if (!parted && !(unforced && wait_recorded(v, UINT64_MAX, &ok))) {
                     if (unforced && replay_behind()) wait_queue_empty();   // (not recorded whole: as before)
                     if (behind) readback_fell_back();
@@ -3451,9 +3548,10 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 if (log_ranges) rb_ranges_log();
                 const int64_t n = waited.exchange(0);
                 logf("vk: readbacks of GPU results: %lld of 3000 waited for their write-back, %.2f ms each; %lld looked at the "
-                     "stopped queues first, %lld waited for their submission's last part (guest memory read in place after theirs)",
+                     "stopped queues first, %lld waited for their submission's last part (guest memory read in place after theirs), "
+                     "%lld waited for their whole submission (their pages written in place, no mirror)",
                      (long long)n, n ? ns.exchange(0) / (double)n / 1e6 : 0.0, (long long)settled.exchange(0),
-                     (long long)held_back.exchange(0));
+                     (long long)held_back.exchange(0), (long long)in_place.exchange(0));
             }
         }
     }
@@ -5607,6 +5705,7 @@ void readback_fell_back(int what) {
 }
 void replay_thread_main() {
     SetThreadDescription(GetCurrentThread(), L"mkw_vk replay");
+    fps_render_thread();   // (the FPS counter's render lane is this thread's)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     // (on the core the host keeps free of the game's threads, hos_reserved_cpus: its last physical one)
     if (host->reserved_cpus) {
@@ -5646,6 +5745,7 @@ void replay_thread_main() {
         bool have = false;
         {
             std::unique_lock lk(q_mu);
+            FpsRtWait rt_idle(fps_stats::kRtIdle);   // (the FPS counter's render lane: waiting for a job)
             // (gate_ready: the oldest job, once its frame's present is handed over or a game's thread waits for it)
             if (present_held)   // (the signal's job, or on without it)
                 q_cv.wait_for(lk, std::chrono::milliseconds(2), [] { return gate_ready(); });
@@ -6034,6 +6134,7 @@ bool register_at_once() {
     static const bool v = env_on("RX_VK_REGISTER_AT_ONCE");
     return v;
 }
+// doc: docs/design.md#4-the-lessons-from-mkw-as-rules-here (rule 3: registrations are queued in order with the submits)
 void register_texture_queued(int id, const nvn_tex* t, const nvn_view* v) {
     if (!async_on() || register_at_once()) return register_texture_locked(id, t, v);
     if (id < 0 || id >= (1 << 20) || !t) return;
@@ -6205,6 +6306,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CAMERA_SPEED) return opts.camera_speed;
         if (id == HOS_OPT_PROMPTS) return opts.prompts;
         if (id == HOS_OPT_FOV) return opts.fov;
+        if (id == HOS_OPT_TRANSITION_AUTOSAVE) return menu_transition_autosave();
         if (id == HOS_OPT_DAMAGE_TAKEN) return menu_damage_taken();
         if (id == HOS_OPT_SKIP_OPENING) return opts.skip_opening;
         if (id == HOS_OPT_FPS_CAP) return opts.fps_cap;

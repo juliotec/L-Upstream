@@ -52,7 +52,8 @@ def main():
     assert 'history.format = out->format, hist_frame = 0' in draw
     assert 'ic.imageType = VK_IMAGE_TYPE_2D, ic.format = out->format;' in draw
     assert 'Pipeline& pipeline = pipelines[rgba ? 1 : 0];' in draw
-    assert 'mi.pCode = rgba ? TAAU_UPSCALE_RGBA_COMP_SPV : TAAU_UPSCALE_COMP_SPV;' in draw
+    assert 'const auto spv = rgba ? BUILTIN_SPV(TAAU_UPSCALE_RGBA_COMP_SPV) : BUILTIN_SPV(TAAU_UPSCALE_COMP_SPV);' in draw
+    assert 'mi.codeSize = spv.size, mi.pCode = spv.code;' in draw
     assert 'vec3 c = s * s;' in shader.read_text(encoding='utf-8')
     print('PsychoV35 TAAU: both compiled storage types, generated hashes and format/history selection pass')
 

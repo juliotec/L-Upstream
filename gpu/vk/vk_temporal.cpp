@@ -1,5 +1,5 @@
 // (longshot) A temporal upscaler in place of OoT's gameplay upscale network: the frame chain (vk_temporal.h), shared by the
-// engines that draw with it, NVIDIA DLSS (vk_dlss.cpp) and AMD FSR 4 (vk_fsr4.cpp).
+// engines that draw with it, NVIDIA DLSS (vk_dlss.cpp), AMD FSR 4 (vk_fsr4.cpp) and Intel XeSS (vk_xess.cpp).
 // The chain is hckrman101's, from their NVIDIA DLSS (#841): the camera, the inputs pass, the actor motion and the jitter's
 // state, moved here from vk_dlss.cpp unchanged in what they do, so that DLSS and FSR share them.
 //
@@ -30,7 +30,8 @@
 // encoding is unchanged: the HDR prep still squares it to linear, and a typed RGBA16F output pass writes it back as is.
 //
 // The Insert menu's Upscaler row (opts.dlss, upscaler_rows.h) chooses the engine; RX_VK_DLSS=1 / 2 (DLSS, DLAA) or
-// RX_VK_FSR4=1 / 2 (FSR 4, its native anti-aliasing) over it, and =0 takes that engine out for the run. AMD FSR 3.1
+// RX_VK_FSR4=1 / 2 (FSR 4, its native anti-aliasing) or RX_VK_XESS=1 / 2 (Intel XeSS, its Native AA) over it, and =0 takes
+// that engine out for the run. AMD FSR 3.1
 // (vk_fsr3.cpp, the row's value 3 or RX_VK_FSR=1) is an engine of this chain too (fsr3_engine, slot 2); with
 // RX_VK_FSR3_CHAIN=0 it has inputs of its own (vk_fsr3_inputs.cpp), and while it upscales so, this chain stands aside.
 // The row's Off (temporal_off) takes the same dispatches with no engine: the network's input, stretched to its output with
@@ -64,9 +65,12 @@
 #include "fsr3_math.h"   // (longshot: FSR 3.1's depth constants from the projection)
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own; fsr3_engine: on this chain)
 #include "vk_fsr4.h"
+#include "vk_xess.h"
+#include "xess_rules.h"
 #include "vk_menu.h"
 #include "vk_texture.h"
 
+#include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/dlss_actor_frag_spv.h"
 #include "shaders/dlss_actor_vert_spv.h"
 #include "shaders/dlss_out_comp_spv.h"
@@ -88,29 +92,34 @@ int env_switch(const char* name) {   // (-1: unset)
 namespace {
 int env_dlss() { static const int v = env_switch("RX_VK_DLSS"); return v; }   // (read at the first ask, as the others)
 int env_fsr4() { static const int v = env_switch("RX_VK_FSR4"); return v; }
+int env_xess() { static const int v = xess_rules::env_mode(getenv("RX_VK_XESS")); return v; }
 }  // namespace
 
 bool temporal_env_chosen() {
-    // (only where the engine asked for runs: else a saved FSR 3.1 stays, not the game's own. DLSS before FSR 4, as below)
+    // (only where the engine asked for runs: else a saved FSR 3.1 stays, not the game's own. DLSS before FSR 4 before XeSS,
+    // as below)
     if (env_dlss() > 0) return dlss_why() == DLSS_OK;
-    return env_fsr4() > 0 && fsr4_why() == FSR_OK;
+    if (env_fsr4() > 0) return fsr4_why() == FSR_OK;
+    return env_xess() > 0 && xess_why() == XESS_OK;
 }
 
 int temporal_mode() {
-    const int dlss = env_dlss(), fsr4 = env_fsr4();
+    const int dlss = env_dlss(), fsr4 = env_fsr4(), xess = env_xess();
     int v = opts.dlss;
     if (dlss > 0) v = dlss >= 2 ? ur::DLAA : ur::DLSS;   // (2 and up: DLAA, as RX_VK_DLSS was clamped before)
     else if (fsr4 > 0) v = fsr4 >= 2 ? ur::FSR4_AA : ur::FSR4;
+    else if (xess > 0) v = xess >= 2 ? ur::XESS_AA : ur::XESS;
     // (longshot) FSR 3.1, the row's 3 or RX_VK_FSR=1, is an engine of this chain (vk_fsr3.h fsr3_on_chain): its inputs are the
     // chain's, the skinned draws' motion in them. A switch above goes over the row's FSR 3.1 (fsr3_chosen asks
     // temporal_env_chosen); RX_VK_FSR=1 goes over them
     if (fsr3_on_chain() && fsr3_chosen()) return ur::FSR3;
     // (with RX_VK_FSR3_CHAIN=0 FSR 3.1 upscales with its own inputs, vk_fsr3_inputs.cpp: the game's own as far as this chain is
     // concerned. Nor anything while it upscales: one upscaler at a time, and one camera jitter)
-    if (!ur::is_dlss(v) && !ur::is_fsr4(v)) return ur::GAME;
+    if (!ur::is_dlss(v) && !ur::is_fsr4(v) && !ur::is_xess(v)) return ur::GAME;
     if (fsr3_wanted()) return ur::GAME;
     if (ur::is_dlss(v) && dlss_why() != DLSS_OK) return ur::GAME;
     if (ur::is_fsr4(v) && fsr4_why() != FSR_OK) return ur::GAME;
+    if (ur::is_xess(v) && xess_why() != XESS_OK) return ur::GAME;
     return v;
 }
 bool temporal_wanted() { return temporal_mode() != ur::GAME; }
@@ -150,7 +159,7 @@ struct Engine {
 
 struct State {
     std::mutex mu;
-    Engine engines[3];               // (DLSS, FSR 4, FSR 3.1: engine_of)
+    Engine engines[4];               // (DLSS, FSR 4, FSR 3.1, XeSS: engine_of)
     const TemporalEngine* drawing = nullptr;   // (the engine that drew last: another one starts a new history)
     int drawn_mode = ur::GAME;
     bool dlaa_waiting = false;
@@ -240,7 +249,10 @@ struct State {
     uint64_t engines_made = 0;  // (prepare's new histories: a feature or context made again, each a stall in play)
     float status_jitter[2]{};   // (the last evaluation's jitter, in render pixels, and whether it had motion)
     bool status_motion = false;
-    struct Dead { uint64_t frame; std::function<void()> free; };
+    // (value: vk_retirement_value when let go. The frames counted are the replay's: with no window (HOS_HEADLESS, as test runs
+    // use) nothing waits for the present ring, and only the 48-slot recording ring bounds how far behind the GPU is, many frames
+    // when a frame has few recordings, so 4 frames on did not prove the GPU done with it. Freed once both have passed; never at 0)
+    struct Dead { uint64_t frame; uint64_t value; std::function<void()> free; };
     std::vector<Dead> dead;   // (what work in flight may still use: freed a few frames on)
     uint64_t asked = 0;       // (the frame an upscale last asked for an engine: temporal_idle)
     std::atomic<bool> holding{false};   // (an engine's state, images or frees still to do: temporal_idle has something to let go)
@@ -260,13 +272,14 @@ void note_output(const Texture* out, uint32_t level) {
     s.out_h.store(std::max(1u, out->height >> level), std::memory_order_relaxed);
 }
 
-/// The chain's slot for the engine of an Upscaler value (DLSS and DLAA: DLSS's; FSR 4 and its native AA: FSR 4's; FSR 3.1;
-/// temporal_jitter_sample picks the same one)
+/// The chain's slot of an Upscaler value's engine (DLSS and DLAA: DLSS's, 0; FSR 4 and its native AA: FSR 4's, 1; FSR 3.1, 2;
+/// Intel XeSS and its Native AA: XeSS's, 3), which temporal_jitter_sample reads too
+int slot_of(int mode) { return ur::is_fsr4(mode) ? 1 : mode == ur::FSR3 ? 2 : ur::is_xess(mode) ? 3 : 0; }
 Engine& engine_of(int mode) {
     State& s = st();
-    const int slot = ur::is_fsr4(mode) ? 1 : mode == ur::FSR3 ? 2 : 0;
+    const int slot = slot_of(mode);
     Engine& k = s.engines[slot];
-    if (!k.e) k.e = slot == 1 ? fsr4_engine() : slot == 2 ? fsr3_engine() : dlss_engine();
+    if (!k.e) k.e = slot == 1 ? fsr4_engine() : slot == 2 ? fsr3_engine() : slot == 3 ? xess_engine() : dlss_engine();
     return k;
 }
 const char* name_of(int mode) {
@@ -276,6 +289,8 @@ const char* name_of(int mode) {
     case ur::FSR4: return "AMD FSR 4";
     case ur::FSR4_AA: return "AMD FSR 4 Native AA";
     case ur::FSR3: return "AMD FSR 3.1";
+    case ur::XESS: return "Intel XeSS";
+    case ur::XESS_AA: return "Intel XeSS Native AA";
     default: return "the game's own";
     }
 }
@@ -288,12 +303,12 @@ bool fail(const char* why) {   // (the network runs: why, when it changes and ev
     return false;
 }
 
-void later(std::function<void()> f) { st().dead.push_back({texture_frame_no(), std::move(f)}); }
+void later(std::function<void()> f) { st().dead.push_back({texture_frame_no(), vk_retirement_value(), std::move(f)}); }
 void free_dead(bool all) {
     State& s = st();
-    const uint64_t now = texture_frame_no();
+    const uint64_t now = texture_frame_no(), done = vk_timeline_completed();
     for (size_t i = 0; i < s.dead.size();) {
-        if (all || now - s.dead[i].frame > 4) {
+        if (all || (now - s.dead[i].frame > 4 && s.dead[i].value && done >= s.dead[i].value)) {
             s.dead[i].free();
             s.dead[i] = std::move(s.dead.back());
             s.dead.pop_back();
@@ -382,7 +397,7 @@ bool make_pipelines() {
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     const VkDescriptorType prep_types[5] = {S, S, I, I, I}, out_types[2] = {S, I};
-    if (!s.prep && !make_pipeline(DLSS_PREP_COMP_SPV, sizeof DLSS_PREP_COMP_SPV, prep_types, 5, 84, s.prep_set, s.prep_layout, s.prep))
+    if (!s.prep && !make_pipeline(BUILTIN_SPV_ARGS(DLSS_PREP_COMP_SPV), prep_types, 5, 84, s.prep_set, s.prep_layout, s.prep))
         return false;
     // (the HDR ones, for an engine that takes HDR colour. dlss_prep.comp squares the square-root encoded scene into linear
     // light (kSquare, its constant 1), what an HDR feature and its auto exposure are made for, and its ceiling (kColorMax,
@@ -397,12 +412,12 @@ bool make_pipelines() {
     static const VkSpecializationMapEntry out_hdr_entry{0, 0, sizeof(VkBool32)};
     static const VkSpecializationInfo out_hdr_spec{1, &out_hdr_entry, sizeof out_hdr_square, &out_hdr_square};
     static_assert(sizeof(PrepSpec) == sizeof(float) + sizeof(VkBool32), "dlss_prep.comp's constants, packed");
-    if (!s.prep_hdr && !make_pipeline(DLSS_PREP_COMP_SPV, sizeof DLSS_PREP_COMP_SPV, prep_types, 5, 84, s.prep_hdr_set,
+    if (!s.prep_hdr && !make_pipeline(BUILTIN_SPV_ARGS(DLSS_PREP_COMP_SPV), prep_types, 5, 84, s.prep_hdr_set,
                                       s.prep_hdr_layout, s.prep_hdr, &prep_hdr_spec))
         return false;
-    if (!s.out && !make_pipeline(DLSS_OUT_COMP_SPV, sizeof DLSS_OUT_COMP_SPV, out_types, 2, 8, s.out_set, s.out_layout, s.out))
+    if (!s.out && !make_pipeline(BUILTIN_SPV_ARGS(DLSS_OUT_COMP_SPV), out_types, 2, 8, s.out_set, s.out_layout, s.out))
         return false;
-    if (!s.out_hdr && !make_pipeline(DLSS_OUT_COMP_SPV, sizeof DLSS_OUT_COMP_SPV, out_types, 2, 8, s.out_hdr_set,
+    if (!s.out_hdr && !make_pipeline(BUILTIN_SPV_ARGS(DLSS_OUT_COMP_SPV), out_types, 2, 8, s.out_hdr_set,
                                      s.out_hdr_layout, s.out_hdr, &out_hdr_spec))
         return false;
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -422,7 +437,7 @@ bool make_rgba_output() {
     static const VkBool32 square = VK_FALSE; // HDR prep already decoded the network colour to linear.
     static const VkSpecializationMapEntry entry{0, 0, sizeof square};
     static const VkSpecializationInfo spec{1, &entry, sizeof square, &square};
-    return make_pipeline(DLSS_OUT_RGBA_COMP_SPV, sizeof DLSS_OUT_RGBA_COMP_SPV, types, 2, 8,
+    return make_pipeline(BUILTIN_SPV_ARGS(DLSS_OUT_RGBA_COMP_SPV), types, 2, 8,
                          s.out_rgba_set, s.out_rgba_layout, s.out_rgba, &spec);
 }
 
@@ -432,7 +447,7 @@ bool make_rgba_stretch() {
     State& s = st();
     if (s.stretch_rgba) return true;
     const VkDescriptorType types[2] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
-    return make_pipeline(DLSS_OUT_RGBA_COMP_SPV, sizeof DLSS_OUT_RGBA_COMP_SPV, types, 2, 8,
+    return make_pipeline(BUILTIN_SPV_ARGS(DLSS_OUT_RGBA_COMP_SPV), types, 2, 8,
                          s.stretch_rgba_set, s.stretch_rgba_layout, s.stretch_rgba);
 }
 
@@ -488,8 +503,9 @@ bool make_actor_pipeline() {
     if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &s.actor_layout) != VK_SUCCESS) return false;
     IntelDriverGate gate;
     VkShaderModule m[2]{};
-    const uint32_t* code[2] = {DLSS_ACTOR_VERT_SPV, DLSS_ACTOR_FRAG_SPV};
-    const size_t size[2] = {sizeof DLSS_ACTOR_VERT_SPV, sizeof DLSS_ACTOR_FRAG_SPV};
+    const auto vert = BUILTIN_SPV(DLSS_ACTOR_VERT_SPV), frag = BUILTIN_SPV(DLSS_ACTOR_FRAG_SPV);
+    const uint32_t* code[2] = {vert.code, frag.code};
+    const size_t size[2] = {vert.size, frag.size};
     for (int i = 0; i < 2; i++) {
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = size[i], mi.pCode = code[i];
@@ -882,7 +898,7 @@ MkwVkJitter temporal_jitter_sample() {
     const int mode = temporal_mode();
     if (off || mode == ur::GAME || (mode == ur::FSR3 && fsr3_off)) return {};
     const uint64_t last = s.last_frame.load(std::memory_order_relaxed);
-    if (s.engines[ur::is_fsr4(mode) ? 1 : mode == ur::FSR3 ? 2 : 0].failed.load(std::memory_order_relaxed) || !last) return {};
+    if (s.engines[slot_of(mode)].failed.load(std::memory_order_relaxed) || !last) return {};
     return s.jitter.read(texture_frame_no());
 }
 
@@ -1182,14 +1198,15 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     }
     if (ready == 0) return fail(why ? why : "not this frame");
     if (psycho && (!engine.e->hdr || !engine.e->hdr()))
-        return fail(ur::is_fsr4(mode) ? "PsychoV35 waits for the native HDR FSR 4 context"
-                    : mode == ur::FSR3 ? "PsychoV35 waits for the native HDR FSR 3.1 path"
-                                       : "PsychoV35 waits for the native HDR DLSS feature");
+        return fail(ur::is_fsr4(mode)   ? "PsychoV35 waits for the native HDR FSR 4 context"
+                    : ur::is_xess(mode) ? "PsychoV35 waits for the native HDR XeSS context"
+                    : mode == ur::FSR3  ? "PsychoV35 waits for the native HDR FSR 3.1 path"
+                                        : "PsychoV35 waits for the native HDR DLSS feature");
     const bool rgba = psycho && in->format == VK_FORMAT_R16G16B16A16_SFLOAT && out->format == VK_FORMAT_R16G16B16A16_SFLOAT;
     if (s.psycho_last != psycho || s.history_input != in->format) {
         if (psycho || s.psycho_last || s.history_input == VK_FORMAT_R16G16B16A16_SFLOAT)
             logf("vk: PsychoV35 %s: %s route; scene format %u, network input %u, output %u",
-                 ur::is_fsr4(mode) ? "FSR 4" : mode == ur::FSR3 ? "FSR 3.1" : "DLSS",
+                 ur::is_fsr4(mode) ? "FSR 4" : ur::is_xess(mode) ? "XeSS" : mode == ur::FSR3 ? "FSR 3.1" : "DLSS",
                  rgba ? "RGBA16F linear" : "packed", (unsigned)cam.scene_format, (unsigned)in->format, (unsigned)out->format);
         s.psycho_last = psycho;
         s.history_input = in->format;

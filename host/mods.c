@@ -185,8 +185,9 @@ int hos_mods_romfs(const char *rel, char *out, size_t cap) {
     snprintf(key, sizeof key, "%s", rel);
     lower_slash(key);
     int hos_prompts_romfs(const char *key, const char *mod, char *out, size_t cap);   /* prompts.c: the button prompts */
+    int hos_texts_romfs(const char *key, const char *mod, char *out, size_t cap);   /* texts.c: the texts' PC wording */
     Entry *e = table_n ? find(key) : NULL;
-    if (!e || e->is_dir) return hos_prompts_romfs(key, NULL, out, cap);
+    if (!e || e->is_dir) return hos_prompts_romfs(key, NULL, out, cap) || hos_texts_romfs(key, NULL, out, cap);
     const int merged = hos_prompts_romfs(key, e->host, out, cap);   /* (the size table: the prompts' entries merged in) */
     if (!merged) snprintf(out, cap, "%s", e->host);
     static volatile LONG logged;

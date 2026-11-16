@@ -677,7 +677,8 @@ def bridge_driving(tour, a, states, rec):
         if not tour.SETTLE_QUIET <= fake.frame - before <= tour.SETTLE_QUIET + 50:
             fail("the default settle took %d frames, wanted about %d" % (fake.frame - before, tour.SETTLE_QUIET))
         # a snapshot kept from before a load (game.frame behind the reply's) is not taken for control
-        fake.stale_from, fake.stale_until = fake.frame - 1, fake.frame + 200
+        # (older than the STALE_FRAMES presents a snapshot may trail its reply by: one taken at Link's update, a frame or two before)
+        fake.stale_from, fake.stale_until = fake.frame - tour.STALE_FRAMES - 1, fake.frame + 200
         g.calm(lambda st: True, 2000)
         if fake.frame < fake.stale_until:
             fail("calm took a stale snapshot (game.frame %d, reply %d) for control" % (fake.stale_from, fake.frame))

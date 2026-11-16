@@ -62,6 +62,7 @@ uint64_t texture_frame_no() { return 10; }
 int dispatches=0, bound_pipe=0, bound_layout=0, disturbed=0, creates=0;
 uint32_t groups_x=0,groups_y=0;
 const uint32_t DLSS_OUT_RGBA_COMP_SPV[]={0x07230203};
+#define BUILTIN_SPV_ARGS(words) words, sizeof words   // (vk_builtin_spv.h with RX_VK_SHADER_DIR unset)
 bool make_pipeline(const uint32_t* code, size_t, const int*, int, int,
                    int& set,int& layout,int& pipe,const void* specialization=nullptr) {
  assert(code==DLSS_OUT_RGBA_COMP_SPV && specialization==nullptr); // Default kSquare=true: decode once.

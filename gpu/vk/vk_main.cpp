@@ -28,11 +28,13 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "auto_settings.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
+#include "vk_xess.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
 #include "vk_progress.h"
 #include "vk_programs.h"
 #include "mesh_mode.h"
+#include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "longshot_env.h"
 #endif
@@ -113,6 +115,8 @@ std::string driver_text() {
     return info.empty() ? name : name.empty() ? info : name + " " + info;
 }
 
+std::string device_name_text() { return std::string(dev.props.deviceName, strnlen(dev.props.deviceName, sizeof dev.props.deviceName)); }
+
 /// (longshot) Milliseconds on the steady clock: the log's last line and the preparation's watchdog
 int64_t steady_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -182,6 +186,7 @@ bool create_instance() {
         std::vector<VkExtensionProperties> all(n);
         vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
         dlss_instance_extensions(ext_list, all);
+        xess_instance_extensions(ext_list, all, app.apiVersion);   // (longshot: Intel XeSS's, when its library is there: vk_xess.cpp)
         // (longshot) the HDR10 colour space for the Insert menu's HDR (the menu's settings are read after the instance is made, so
         // whenever the driver has it; the SDR choice in create_swapchain keeps to the sRGB surface)
         if (has_extension(all, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))
@@ -391,6 +396,7 @@ bool create_device() {
     dlss_fg_device_extensions(want, exts);   // (longshot: NVIDIA DLSS Frame Generation's through NGX, asked of NGX)
     bool fsr_descriptor_buffer = false;   // (longshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
     if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
+    xess_device_extensions(want, exts);   // (longshot: Intel XeSS's, when its library is there and the instance took its own)
     reflex_device_extensions(want, exts);   // (longshot: NVIDIA Reflex's, vk_reflex.cpp)
     antilag_device_extensions(want, exts);   // (longshot: AMD Anti-Lag 2's, vk_antilag.cpp)
 
@@ -682,8 +688,13 @@ bool create_device() {
     dev.sparse_images = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding &&
                         f.features.sparseResidencyImage2D && !(getenv("RX_VK_SPARSE") && !atoi(getenv("RX_VK_SPARSE")));
     dev.sparse_buffers = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding;
+    // (longshot) Intel XeSS's features (vk_xess.cpp), last, into the chain as it will be made: the library sets what it needs in
+    // the renderer's structures and adds what it lacks (VK_EXT_mutable_descriptor_type's); nothing without its library, and a
+    // refusal leaves the chain as it was and XeSS out for the run
+    void* chain = &f;
+    xess_device_features(&chain, tail);
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-    ci.pNext = &f;
+    ci.pNext = chain;
     ci.queueCreateInfoCount = (uint32_t)qs.size();
     ci.pQueueCreateInfos = qs.data();
     ci.enabledExtensionCount = (uint32_t)want.size();
@@ -1502,6 +1513,7 @@ void auto_profile() {
                   strstr(p.deviceName, "Custom GPU 0932");
     hw.dlss_built = dlss_built();
     hw.fsr4_built = fsr4_built();
+    hw.xess_ready = xess_library_loaded();
     hw.threads = (int)std::thread::hardware_concurrency();
 #ifdef _WIN32
     MEMORYSTATUSEX m{};
@@ -1591,9 +1603,11 @@ MkwVkRenderer table;
 } // namespace
 } // namespace mkwvk
 
-// (longshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process): while the
-// shaders are prepared, their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one
-// pipeline). Looked up by name, so an executable and a back end of different versions still close
+// (longshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process), or the game quit
+// (the Insert menu's Quit and Restart now, host/control.c's quit, which end it the same way): while the shaders are prepared,
+// their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one pipeline). Then the
+// files that count the starts that crashed in a step are put back as this start found them (crash_markers.h): a close is not a
+// crash. Looked up by name, so an executable and a back end of different versions still close
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1604,6 +1618,7 @@ void mkwvk_close_asked(void) {
     using namespace mkwvk;
     programs_census_log("close");
     module_ids_flush();
+    page_table_census_log("close");   // (the guest pools the page table cannot reach: how many came, vk_memory.cpp)
     fsr4_close();             // (AMD FSR 4's tuned layers: their background builds stopped first, what they made then saved below)
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
     if (prep_running.load() && !prepare_stopped()) {
@@ -1611,6 +1626,7 @@ void mkwvk_close_asked(void) {
         prepare_stop();
         if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
     }
+    crash_markers::close();   // (after the stop: a step whose workers crash the driver while it stops still counts)
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
 }
 

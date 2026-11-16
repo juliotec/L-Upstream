@@ -98,7 +98,7 @@ The emulator's save is backed up before it's replaced. The launcher doesn't expo
 
 ## Where Longshot keeps them
 
-| | Your saves | The launcher's backups |
+| Installation | Your saves | The launcher's backups |
 |---|---|---|
 | Windows, pictured nightly Launcher, installed | `%APPDATA%\Longshot\save\` | `%LOCALAPPDATA%\Longshot\oot-save-backups` |
 | Windows, pictured nightly Launcher, portable | `LongshotLauncher-data\user\save\` beside the launcher | `LongshotLauncher-data\save-backups\` beside the launcher |

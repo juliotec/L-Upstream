@@ -98,10 +98,11 @@ sealed class Runner
         // (written into the game folder's longshot_version.txt: the builder that made the game)
         BuilderHome.PassTo(si);
         if (Environment.ProcessPath != null) si.Environment["LONGSHOT_BUILDER_EXE"] = Environment.ProcessPath;
-        // (NVIDIA DLSS and AMD FSR 4: a build is with them only when its arguments ask (--fetch-ngx-sdk, --fetch-fsr-runtime);
-        // an SDK folder set on the PC is not passed on)
+        // (NVIDIA DLSS, AMD FSR 4 and Intel XeSS's library: a build is with them only when its arguments ask (--fetch-ngx-sdk,
+        // --fetch-fsr-runtime, --fetch-xess-runtime); an SDK folder set on the PC is not passed on)
         si.Environment.Remove("LONGSHOT_NGX_SDK");
         si.Environment.Remove("LONGSHOT_FFX_SDK");
+        si.Environment.Remove("LONGSHOT_XESS_SDK");
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
         var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm") };
         foreach (var (name, folder) in sets)

@@ -49,7 +49,8 @@ it. The default waits until the bridge answers, then prints the socket's path. S
     RID of 1000 or more, an account this PC can look up, and a user, not a group. Everyone, Authenticated Users,
     Users, Administrators and other well-known SIDs (an SDDL alias like `WD` too) are refused. A refused value is
     logged (`control: HOS_CONTROL_PEER_SID refused: ...`), and the pipe stays the current user's alone. Unset, nothing
-    changes.
+    changes. It is taken from the environment only: `longshot_env.txt`, a file players pass around, can't set it (the
+    line is left out and logged), so a shared file can't let another user of the PC into the pipe.
 
   Linux has neither addition: a sandbox there (the farm's bwrap) runs the game as the same user, which
   `SO_PEERCRED` already lets in. `FILE_FLAG_FIRST_PIPE_INSTANCE` keeps another process from owning the name first.
@@ -403,8 +404,25 @@ With `"wait": false` the reply is at once, with `"sent": null`. The game logs it
 < {"id":14,"ok":true,"frame":7310,"age":"adult","sent":true,"map":"KokiriForest_Adult","accepted":true}
 ```
 
-**quit**: the reply, then the game exits as when its window is closed (the log flushed, exit code 0). The socket is
-removed.
+**quit**: the reply acknowledges the request, then the bridge closes, runs the renderer close hooks and shared
+close/log tail, and calls `ExitProcess(0)`. It does not restart even if the menu had asked for a restart, and does
+not claim a window closed. The Unix socket is removed. There is no forced deadline or DLL-detach bound on this
+route. It does not request a guest save or wait for pending save writes. Observe the game process's exit separately;
+the reply is not a save or exit receipt. See [Stopping a windowless game](development.md#stopping-a-windowless-game)
+for Windows console/window routes, their different deadlines, and how incomplete shutdown differs from normal close.
+
+**relaunch**: the reply (`{"ok":true,"relaunching":true}`), then the bridge lets go of its socket and the game starts
+again with the command and the environment it started with, as the Insert menu's Restart now does
+(`host/hos_relaunch.c`), so the game started again serves the same socket (`HOS_CONTROL` names it). Unlike `quit`,
+which never restarts, the game comes back: on Linux the same process (`execve`, the same pid), on Windows a new process
+that waits for the old one to end first. A game built without the hook answers `unavailable`, and the connection goes
+on. A restart that fails leaves the game exited, as Restart now would ("restart: the game could not be started again"
+in the log). The client's `relaunch [--timeout 120]` sends it and waits until a `status` answers from the process
+started again: one whose `uptime` is no longer than its wait (0.05 s to spare: status gives the uptime to 0.1 s), so
+the old game answering for a moment before it lets go of the socket is not taken for the new one, and a connection the
+old one drops mid-request is tried again. It prints `relaunched: answering again after N s (uptime U s)`, or exits 3
+when the game does not answer again within the timeout. In a run (`--run DIR`) the session follows the game: see
+[Sessions](#sessions).
 
 ## Saves
 
@@ -529,6 +547,7 @@ python -I scripts/longshot_ctl.py raw '{"cmd": "wait", "event": "frame", "frame"
 python -I scripts/longshot_ctl.py mem read 0x80000000 8               # needs HOS_CONTROL_MEM=ro or rw
 python -I scripts/longshot_ctl.py mem read 0x1000000000 16 --format u32
 python -I scripts/longshot_ctl.py mem write 0x1000000000 2a000000      # needs HOS_CONTROL_MEM=rw
+python -I scripts/longshot_ctl.py relaunch --timeout 120                # started again; back when the new game answers
 python -I scripts/longshot_ctl.py quit
 ```
 
@@ -603,6 +622,24 @@ and actual exit code. An attaching client never sends an OS signal to a pid from
 forced stopping. There is no command to adopt an arbitrary `--sock` game as an owned process.
 Stop also rechecks the child at a wait deadline before reporting a timeout or escalating. A child found already exited
 is not reported as forcibly terminated.
+`relaunch` in a run keeps the run: **the session follows the game**. The client records the ask in the manifest
+(`relaunch`, a ticket with the old game's `pid` and birth identity), sends it, and once the game started again answers,
+asks the system which process serves the socket (the pipe's server, `GetNamedPipeServerProcessId`, on Windows; the
+socket's peer, `SO_PEERCRED`, on Linux) and records it. On Linux that is the same process (`execve` keeps the pid and
+its start time): the ticket says `same-process` and nothing else changes. On Windows it is a new process: `pid` and
+`process_start` become the new game's, `relaunches` counts it, the ticket says `followed`, and the supervisor, whose
+child has ended, opens the new game by its pid, checks the birth identity once it holds the handle, and goes on
+watching it and stopping it through that handle as it did its child (a pid reused later is never waited for or ended).
+So `show`, `stop` (`quit`, then `--terminate`) and `--run` requests work after a relaunch, and `log` and `expect` go on
+with the new game's lines: on Windows the game started again is given the standard handles the game was started with
+(the run's `log.txt`), and only those (`host/hos_relaunch.c`); a game that opened its own `longshot_log.txt` passes
+none. While the client waits, the supervisor waits for the ticket rather than ending the run, as long as the client's
+`--timeout` from the ask (`asked_at`) and ten seconds more, so a ticket left `asked` by a client that ended mid-wait
+does not hold up a later exit. When it stops waiting it marks the ticket `failed`, and a client whose game answers
+after that, or after the run ended, leaves the run as it is and exits 3. A relaunch that does not come back (`failed`),
+or whose game can't be told (`lost`: the client exits 3), ends the run as any exit does; the new game's exit code is
+the one recorded.
+
 The bridge's `game_quit` flushes the log and exits, **but has no save-in-progress barrier**. `save_drain` is
 `unsupported`, or `unknown` for an observed orphan exit, never `clean`. A copied save is not a validated checkpoint.
 
@@ -656,6 +693,7 @@ and values are recorded, not the inherited environment (explicit `--env` values 
 | `artifacts` | Acknowledged shots: `kind`, `path`, game `frame`, renderer `present`, `width`, `height` |
 | `error`, `error_code` | Failure explanation and client exit category, when available |
 | `stop_request`, `stop_result` | Owner mailbox and last reply, matched by `id`; reply has `method`, `process_exited`, `forced`, `save_drain`, and any error |
+| `relaunch`, `relaunches` | The last `relaunch`'s ticket: `id`, `state` (`asked`, `same-process`, `followed`, `refused`, `failed` or `lost`), `asked_at`, `ended_at`, `timeout`, and the game's identity `from` and `to` (`pid`, `process_start`); how many times the run followed the game to a new process (absent before the first) |
 
 **Trust:** the client starts programs and writes files with the user's authority. A run folder is not a sandbox.
 Do not load manifests, wrapper commands or executable paths from an untrusted caller. Use an owned game copy if options

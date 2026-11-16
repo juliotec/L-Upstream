@@ -24,6 +24,8 @@ struct Hardware {
     bool rdna4 = false;         // (an AMD RDNA 4 card, RX 9000: FSR 4)
     bool dlss_built = false;    // (the game was built with NVIDIA's DLSS SDK)
     bool fsr4_built = false;    // (with AMD's FSR 4 runtime)
+    bool xess_ready = false;    // (Intel's libxess.dll found and loaded: Intel XeSS on the Upscaler row. Only said in the
+                                // choice's why, never chosen, and not part of the fingerprint)
     uint32_t vram_mb = 0;
     uint32_t ram_mb = 0;        // (0: not known)
     int threads = 0;            // (0: not known)
@@ -95,8 +97,13 @@ inline Choice choose(const Hardware& h) {
         c.resolution = c.tier == 2 ? RES_PERFORMANCE : c.tier == 3 ? RES_BALANCED : RES_QUALITY;
         add(c, c.tier == 2 ? "AMD RDNA 4: FSR 4 Performance" : c.tier == 3 ? "AMD RDNA 4: FSR 4 Balanced" : "AMD RDNA 4: FSR 4 Quality");
     } else {
+        // (Intel XeSS is never chosen here: it runs only with Intel's own DLL beside the game, whose version the player picked,
+        // it has not been measured against the game's own network on Intel's GPUs, and the network was what the presets were
+        // tuned on. A PC that has it is told it is there)
         add(c, h.rtx && !h.dlss_built ? "the game's own upscaler (this build has no DLSS)"
-               : h.rdna4 && !h.fsr4_built ? "the game's own upscaler (this build has no FSR 4)" : "the game's own upscaler");
+               : h.rdna4 && !h.fsr4_built ? "the game's own upscaler (this build has no FSR 4)"
+               : h.vendor == INTEL && h.xess_ready ? "the game's own upscaler (Intel XeSS is there: choose it in the Upscaler row)"
+                                                   : "the game's own upscaler");
     }
     // (an integrated GPU beside 4 threads or fewer: Minimum's 50% was 60-220 ms of GPU time a frame in Kokiri Forest on an
     // i3-1115G4's UHD Graphics (2 cores, 4 threads, 16 GB), 3-5 fps. A third of each side is a ninth of the pixels)

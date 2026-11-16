@@ -520,6 +520,44 @@ class Running(unittest.TestCase):
         self.assertEqual(check.strip_wip("fix: WIP: x"), "fix: WIP: x")
         self.assertEqual(check.title_type("WIP: perf(vk)!: x"), "perf")
 
+    def test_file_mode_uses_wip_title(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tmp = Path(folder) / "body.md"
+            tmp.write_text(drop(GOOD, "Why"), encoding="utf-8")
+            for title in ("WIP: " + FIX, "[WIP] " + FIX, "wip: " + FIX, "  WIP:" + FIX):
+                with self.subTest(title=title):
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        result = check.main(["--file", str(tmp), "--title", title])
+                    self.assertEqual(result, 0)
+                    self.assertIn("::notice::Work in progress", out.getvalue())
+                    self.assertIn("no ## Why section", out.getvalue())
+                    self.assertNotIn("::error::", out.getvalue())
+
+    def test_file_mode_requires_complete_non_wip_body(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tmp = Path(folder) / "body.md"
+            tmp.write_text(drop(GOOD, "Why"), encoding="utf-8")
+            for title in (FIX, "fix: WIP: no", "WIPE: no", None, ""):
+                with self.subTest(title=title):
+                    argv = ["--file", str(tmp)]
+                    if title is not None:
+                        argv += ["--title", title]
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        result = check.main(argv)
+                    self.assertEqual(result, 1)
+                    self.assertIn("::error::no ## Why section", out.getvalue())
+                    self.assertNotIn("::notice::Work in progress", out.getvalue())
+
+    def test_wip_title_does_not_skip_review(self):
+        body = drop(GOOD, "Why")
+        want = ["no ## Why section (.forgejo/pull_request_template.md)"]
+        for title in ("WIP: " + FIX, "[WIP] " + FIX, "wip: " + FIX, "  WIP:" + FIX):
+            with self.subTest(title=title):
+                self.assertEqual(check.review(body, title=title), (want, []))
+                self.assertEqual(check.problems(body, title=title), want)
+
     def test_main_and_wip(self):
         folder = Path(tempfile.mkdtemp())
         tmp, diff = folder / "body.md", folder / "pr.diff"
@@ -554,6 +592,29 @@ class Running(unittest.TestCase):
         self.assertRegex(wf, r"uses: https://github.com/actions/checkout@[0-9a-f]{40} ")
         self.assertIn("python3 -I scripts/check_pr_description.py --pr", wf)
         self.assertNotIn("${{ github.event.pull_request.title", wf)   # (nothing the PR's author writes reaches the shell)
+
+
+
+class TitleAndGamePaths(unittest.TestCase):
+    """TITLE, the Conventional Commit the CI workflow's title job and Tooling's forge.py check; GAME_PATHS, the files
+    the game runs, for which forge.py pr create wants a run in the game"""
+
+    def test_title(self):
+        for good in ("fix(vk): walls", "feat(builder)!: x", "docs: y", "ci(forge.py): z"):
+            self.assertTrue(check.TITLE.match(good), good)
+        for bad in ("Fix walls", "fix walls", "fix:walls", "wip: x", "WIP: fix: x"):
+            self.assertFalse(check.TITLE.match(bad), bad)
+        self.assertTrue(check.TITLE.match(check.strip_wip("WIP: fix: x")))
+
+    def test_game_paths(self):
+        self.assertTrue(all(p.endswith("/") for p in check.GAME_PATHS))
+        for path in ("gpu/vk/vk_draw.cpp", "host/hos.c", "nx2/lift.py"):
+            self.assertTrue(path.startswith(check.GAME_PATHS), path)
+        for path in ("docs/development.md", "scripts/release.py", "tests/run_all.py", "website/src/x.ts"):
+            self.assertFalse(path.startswith(check.GAME_PATHS), path)
+        ci = (ROOT / ".forgejo" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn('spec_from_file_location("check", "scripts/check_pr_description.py")', ci)   # (the title job)
+        self.assertNotIn('"scripts/forge.py"', ci)   # (forge.py is Tooling's: the sparse checkout has only a forwarder)
 
 
 if __name__ == "__main__":

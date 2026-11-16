@@ -63,6 +63,7 @@
 #include "translate_wait.h"
 #include "quick_pipe.h"
 
+#include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
 #include "shaders/clear_u_frag_spv.h"
@@ -78,6 +79,7 @@
 #include "vk_programs.h"
 #include "vk_pipelines.h"
 #include "warm_bounded.h"
+#include "crash_markers.h"   // (the files that count the starts that crashed in a step: a close puts them back)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -425,13 +427,15 @@ bool stream_grow_off() {
 }
 const uint64_t kStream = (getenv("RX_VK_STREAM_MB") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_STREAM_MB"))) : stream_grow_off() ? 24u : 2u) << 20;
 std::atomic<uint64_t> stream_peak{0}, stream_extra{0}, stream_grown{0};
+std::atomic<uint64_t> pools_extra{0};   // (descriptor pools made because a recording's own ran out: make_pool)
 std::deque<RecordingRes> res;   // (a deque: a recording thread keeps its own in place while another is added)
 thread_local RecordingRes* cur = nullptr;
 
 VkDescriptorPool make_pool() {
     // (each recording's pool: 8192 sets of up to 32768 descriptors a type, for the programs with more descriptors than the push limit,
     // 24 or 48 pools at once, and the driver may keep host memory for all of that. A pool that runs out is followed by another of the same
-    // size (cur->extra), so a smaller one is safe, and costs a pool made and destroyed per recording in a scene that needs more.
+    // size (cur->extra), so a smaller one is safe, and costs a pool made and destroyed per recording in a scene that needs more: the
+    // streams' line counts those (pools_extra), which is what says how small is too small.
     // RX_VK_DESC_POOL_DIV=<n> (1..32): a n-th of both)
     static const uint32_t div = getenv("RX_VK_DESC_POOL_DIV") ? (uint32_t)std::clamp(atoi(getenv("RX_VK_DESC_POOL_DIV")), 1, 32) : 1;
     const VkDescriptorPoolSize sizes[] = {
@@ -2823,7 +2827,120 @@ bool quick_pipeline(PipeEntry& e, const Program& p, const NvnState& s, const Tar
 }
 
 // ---- samplers (by NVN sampler parameters) ----
-std::unordered_map<uint64_t, VkSampler> samplers;
+/// (longshot) What vkCreateSampler reads of the create info sampler_make fills in, less what no sample can reach: the anisotropy
+/// of a sampler without anisotropic filtering (Vulkan ignores it), the border colour of one no address mode clamps to its border.
+/// Two keys whose infos are equal get samplers that sample alike, so they share one (sampler_book). The comparison of a sampler
+/// that does not compare stays in it: a driver may compare anyway (the amd-fix note below, RX_VK_DREF_FROM_SAMPLER=1). 32-bit
+/// words without padding, compared as bytes (a bias of -0 apart from one of +0: two samplers, as two keys were)
+struct SamplerInfo {
+    uint32_t mag, min, mip, u, v, w;
+    float bias, aniso, min_lod, max_lod;
+    uint32_t aniso_on, compare_on, compare_op, border;
+    float custom[4];      // (a custom border colour's, else 0)
+    uint32_t reduction;   // (VK_SAMPLER_REDUCTION_MODE_* + 1; 0: none)
+    bool operator==(const SamplerInfo& o) const { return !std::memcmp(this, &o, sizeof o); }
+};
+static_assert(sizeof(SamplerInfo) == 19 * 4, "SamplerInfo is compared as bytes: no padding");
+struct SamplerInfoHash {
+    size_t operator()(const SamplerInfo& i) const {
+        uint32_t w[sizeof i / 4];
+        std::memcpy(w, &i, sizeof i);
+        uint64_t h = 0x5A;
+        for (const uint32_t x : w) h = mix(h, x);
+        return (size_t)h;
+    }
+};
+SamplerInfo sampler_info(const VkSamplerCreateInfo& ci) {
+    SamplerInfo i{};
+    i.mag = ci.magFilter, i.min = ci.minFilter, i.mip = ci.mipmapMode;
+    i.u = ci.addressModeU, i.v = ci.addressModeV, i.w = ci.addressModeW;
+    i.bias = ci.mipLodBias, i.min_lod = ci.minLod, i.max_lod = ci.maxLod;
+    i.aniso_on = ci.anisotropyEnable, i.aniso = ci.anisotropyEnable ? ci.maxAnisotropy : 0.0f;
+    i.compare_on = ci.compareEnable, i.compare_op = ci.compareOp;
+    const VkSamplerAddressMode b = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    const bool border = ci.addressModeU == b || ci.addressModeV == b || ci.addressModeW == b;
+    i.border = border ? (uint32_t)ci.borderColor : 0u;
+    for (auto* n = static_cast<const VkBaseInStructure*>(ci.pNext); n; n = n->pNext) {
+        if (n->sType == VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT && border)
+            std::memcpy(i.custom, reinterpret_cast<const VkSamplerCustomBorderColorCreateInfoEXT*>(n)->customBorderColor.float32,
+                        sizeof i.custom);
+        else if (n->sType == VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO)
+            i.reduction = (uint32_t)reinterpret_cast<const VkSamplerReductionModeCreateInfo*>(n)->reductionMode + 1u;
+    }
+    return i;
+}
+/// (longshot) The samplers sampler_make made: one for each SamplerInfo, and the keys that resolve to each, under the replay's lock
+/// (ParLock; the atomics are read without it). A driver makes at most maxSamplerAllocationCount samplers (NVIDIA 4000, NVK 4096):
+/// past that vkCreateSampler fails, and a draw with a failed sampler is refused (bind_descriptors). So before a new one would go
+/// past the room sampler_room keeps, the least recently resolved one is retired: out of every table at once, and destroyed once
+/// the GPU is past every recording made so far (vk_retirement_value), since a thread's own tables (sampler_for's, mine) may still
+/// hand it to the draws it is recording until it reads retired_gen again. Those tables hide a sampler's use from the book, so
+/// from half the retiring point on (watching) their entries last a present: each sampler in use resolves here once a present
+struct SamplerBook {
+    struct Made { VkSampler s; uint64_t used; };       // (used: tick when a key last resolved to it here; only the order to retire in)
+    struct Retired { VkSampler s; uint64_t after; };   // (destroyed once the timeline reaches after; 0: never)
+    std::unordered_map<SamplerInfo, Made, SamplerInfoHash> made;   // (the owner)
+    std::unordered_map<uint64_t, Made*> keys;   // (sampler_make's key -> its sampler in made; several keys may share one)
+    std::vector<Retired> retired;
+    uint64_t tick = 0, retirements = 0;
+    std::atomic<uint64_t> retired_gen{0};   // (moves at each retirement: each thread's sampler_make drops its mine)
+    std::atomic<bool> watching{false};      // (near the device's limit, for good: the threads' tables last a present)
+};
+SamplerBook sampler_book;
+/// (longshot) The retired samplers the GPU is done with (the timeline at completed), destroyed
+void samplers_reap(uint64_t completed) {
+    std::erase_if(sampler_book.retired, [completed](const SamplerBook::Retired& r) {
+        if (!r.after || r.after > completed) return false;
+        vkDestroySampler(dev.device, r.s, nullptr);
+        return true;
+    });
+}
+/// (longshot) The least recently resolved sampler retired (sampler_book). false: none, or no room to note it (it stays made: one
+/// not noted would never be destroyed)
+bool sampler_retire() {
+    SamplerBook& b = sampler_book;
+    if (b.made.empty()) return false;
+    auto lru = b.made.begin();
+    for (auto it = b.made.begin(); it != b.made.end(); ++it)
+        if (it->second.used < lru->second.used) lru = it;
+    try {
+        b.retired.push_back({lru->second.s, vk_retirement_value()});
+    } catch (const std::exception&) {
+        return false;
+    }
+    const SamplerBook::Made* gone = &lru->second;
+    std::erase_if(b.keys, [gone](const auto& kv) { return kv.second == gone; });
+    b.made.erase(lru);
+    b.retired_gen.fetch_add(1, std::memory_order_acq_rel);
+    samplers_changed();   // (sampler_for's tables and the descriptors kept by reuse resolve theirs again)
+    if (++b.retirements == 1 || b.retirements % 1000 == 0)
+        logf("vk: samplers: %zu made, the device allows %u: the least recently used retired (%llu so far), each destroyed once "
+             "the GPU is past the recordings that may use it", b.made.size() + 1, dev.props.limits.maxSamplerAllocationCount,
+             (unsigned long long)b.retirements);   // (made + 1: as many as there were)
+    return true;
+}
+/// (longshot) Whether sampler_make may make one more sampler. The room: maxSamplerAllocationCount (4000, Vulkan's least, when not
+/// known) less a reserve of 64 (a quarter of a smaller limit) for the renderer's other samplers (the blits', the upscalers', frame
+/// generation's) and an upscaler SDK's. From 3/4 of it the least recently resolved ones are retired, one for each made; the last
+/// 1/4 is for those made while retired ones are still the GPU's. Full only when the GPU may still use every one of those: then
+/// nothing is retired and the draw waits for a later present (the failed key's rule), as one whose creation failed does
+bool sampler_room() {
+    SamplerBook& b = sampler_book;
+    const uint64_t limit = dev.props.limits.maxSamplerAllocationCount ? dev.props.limits.maxSamplerAllocationCount : 4000;
+    const uint64_t room = limit - std::min<uint64_t>(64, limit / 4), keep = room - room / 4;
+    if (!b.retired.empty()) samplers_reap(vk_timeline_completed());
+    if (b.made.size() + b.retired.size() >= room) {
+        static std::atomic<int> told{0};
+        if (told++ < 8)
+            logf("vk: samplers: %zu made and %zu retired that the GPU may still use fill the %llu this device allows "
+                 "(maxSamplerAllocationCount %u): a draw needing a new one waits for a later present", b.made.size(),
+                 b.retired.size(), (unsigned long long)room, dev.props.limits.maxSamplerAllocationCount);
+        return false;
+    }
+    if (b.made.size() >= keep / 2) b.watching.store(true, std::memory_order_relaxed);
+    while (b.made.size() >= keep && sampler_retire()) {}
+    return true;
+}
 VkSamplerAddressMode wrap(uint8_t w) {
     switch (w) {
     case NVN_WRAP_MODE_REPEAT: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -2876,13 +2993,15 @@ bool sampler_cache_on();   // (longshot, RX_VK_SAMPLER_CACHE and the Sampler cac
 VkSampler sampler_for(int id, bool compare) {
     static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
     if (!on || id < 0 || id >= 4096) return sampler_make(id, compare);
-    struct Entry { uint64_t gen; VkSampler s; };
+    struct Entry { uint64_t gen; VkSampler s; uint64_t frame; };
     static thread_local Entry table[2][4096];   // (gen 0: never filled; the generation starts at 1)
     const uint64_t gen = sampler_registrations_generation();   // (read first: a registration after it makes the next call miss)
+    // (near the device's sampler limit, an entry lasts a present: the book sees the samplers in use, sampler_book)
+    const uint64_t frame = sampler_book.watching.load(std::memory_order_relaxed) ? texture_frame_no() : 0;
     Entry& e = table[compare ? 1 : 0][id];
-    if (e.gen == gen) return e.s;
+    if (e.gen == gen && e.frame == frame) return e.s;
     const VkSampler made = sampler_make(id, compare);
-    if (made) e = {gen, made};   // (a failed creation is retryable without a new registration)
+    if (made) e = {gen, made, frame};   // (a failed creation is retryable without a new registration)
     return made;
 }
 VkSampler sampler_make(int id, bool compare) {
@@ -2910,13 +3029,18 @@ VkSampler sampler_make(int id, bool compare) {
         std::memcpy(&w, b + i, std::min<size_t>(8, sizeof p - i));
         key = mix(key, w);
     }
-    static thread_local std::unordered_map<uint64_t, VkSampler> mine;   // (samplers are never destroyed)
+    static thread_local std::unordered_map<uint64_t, VkSampler> mine;   // (dropped at a retirement, its samplers may be going, and
+    static thread_local uint64_t mine_gen = 0, mine_frame = 0;          // at each present near the limit: sampler_for's note)
+    const uint64_t g = sampler_book.retired_gen.load(std::memory_order_acquire);
+    const uint64_t f = sampler_book.watching.load(std::memory_order_relaxed) ? texture_frame_no() : 0;
+    if (g != mine_gen || f != mine_frame) mine.clear(), mine_gen = g, mine_frame = f;
     if (auto m = mine.find(key); m != mine.end()) return m->second;
     ParLock lk;
-    auto it = samplers.find(key);
-    if (it != samplers.end()) {
-        try { mine.emplace(key, it->second); } catch (const std::exception&) {}   // (the global cache still owns it)
-        return it->second;
+    SamplerBook& book = sampler_book;
+    if (auto it = book.keys.find(key); it != book.keys.end()) {
+        it->second->used = ++book.tick;
+        try { mine.emplace(key, it->second->s); } catch (const std::exception&) {}   // (the book still owns it)
+        return it->second->s;
     }
     // Keep valid cache hits ahead of failure tracking. A bad key gets at most one failed attempt per present;
     // unrelated keys can still work, and a later present can retry without changing the registration.
@@ -3018,18 +3142,30 @@ VkSampler sampler_make(int id, bool compare) {
         rm.pNext = (void*)ci.pNext;
         ci.pNext = &rm;
     }
+    const SamplerInfo info = sampler_info(ci);
+    if (auto it = book.made.find(info); it != book.made.end()) {   // (another key's sampler samples alike: shared, not made again)
+        it->second.used = ++book.tick;
+        try { book.keys.emplace(key, &it->second); } catch (const std::exception&) {}   // (only the keys' table: made owns it)
+        return it->second.s;
+    }
+    if (!sampler_room()) {   // (the device's samplers all in the GPU's hands: none made past its limit)
+        remember_failure();
+        return VK_NULL_HANDLE;
+    }
     VkSampler sm = VK_NULL_HANDLE;
     if (vkCreateSampler(dev.device, &ci, nullptr, &sm) != VK_SUCCESS) {
         remember_failure();   // (an error's output handle is undefined, not a resource to cache or destroy)
         return VK_NULL_HANDLE;
     }
+    SamplerBook::Made* made = nullptr;
     try {
-        samplers.emplace(key, sm);
+        made = &book.made.emplace(info, SamplerBook::Made{sm, ++book.tick}).first->second;
     } catch (const std::exception&) {
         vkDestroySampler(dev.device, sm, nullptr);   // (only the new sampler whose ownership was not committed)
         remember_failure();
         return VK_NULL_HANDLE;
     }
+    try { book.keys.emplace(key, made); } catch (const std::exception&) {}   // (only the keys' table: the next look finds it by info)
     return sm;
 }
 
@@ -4243,6 +4379,7 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
         }
         try {
             cur->extra.push_back(pool);
+            pools_extra.fetch_add(1, std::memory_order_relaxed);
         } catch (const std::exception&) {
             vkDestroyDescriptorPool(dev.device, pool, nullptr);
             return false;
@@ -5117,15 +5254,17 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
         if (lr != VK_SUCCESS || !made) return fail("pipeline layout", lr);
         clear_layout = made;
     }
-    const uint32_t* fw = kind == 1 ? CLEAR_U_FRAG_SPV : kind == 2 ? CLEAR_I_FRAG_SPV : CLEAR_F_FRAG_SPV;
-    const size_t fn = (kind == 1 ? sizeof CLEAR_U_FRAG_SPV : kind == 2 ? sizeof CLEAR_I_FRAG_SPV : sizeof CLEAR_F_FRAG_SPV) / 4;
+    const auto fs = kind == 1 ? BUILTIN_SPV(CLEAR_U_FRAG_SPV) : kind == 2 ? BUILTIN_SPV(CLEAR_I_FRAG_SPV) : BUILTIN_SPV(CLEAR_F_FRAG_SPV);
+    const uint32_t* fw = fs.code;
+    const size_t fn = fs.size / 4;
     const std::vector<uint32_t> frag = spirv_location(fw, fn, (uint32_t)index);
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
     VkResult vr = VK_ERROR_UNKNOWN, fr = VK_ERROR_UNKNOWN;
     {
         IntelDriverGate gate;   // (released before cached_graphics, which takes the same lock)
-        mi.codeSize = sizeof CLEAR_VERT_SPV, mi.pCode = CLEAR_VERT_SPV;
+        const auto spv = BUILTIN_SPV(CLEAR_VERT_SPV);
+        mi.codeSize = spv.size, mi.pCode = spv.code;
         vr = guarded_shader_module(&mi, &vm);
         if (vr != VK_SUCCESS || !vm) return fail("vertex module", vr);
         mi.codeSize = frag.size() * 4, mi.pCode = frag.data();
@@ -5196,6 +5335,7 @@ int format_kind(VkFormat f) {   // 0 float, 1 unsigned integer, 2 signed integer
 
 int64_t st_clears, st_masked_clears;
 
+// doc: docs/design.md#4-the-lessons-from-mkw-as-rules-here (rule 5: clears after draws get a pass of their own)
 /// A clear after draws of the open pass: in a pass of its own, after a full barrier (begin_pass makes it). In the pass
 /// the draws before it may still read what it clears (a target they sample: the depth the fog and the lighting read):
 /// vkCmdClearAttachments is ordered with the attachments' own writes only, and the GPU cleared tiles while a draw
@@ -5214,8 +5354,8 @@ void clear_after_draws(VkCommandBuffer cmd) {
 /// (longshot) The temporal upscalers' reactive mask (vk_reactive.h, RX_VK_REACTIVE=1): before the scene's transparent draws
 /// (reactive_policy.h: blended over it, tested against its depth without writing it) the scene's colour is copied, in a
 /// break of the pass. The scene is the B10G11R11 target with a depth of the size the upscaler last took, as its jitter is
-/// given (temporal_jitter_size, fsr3_inputs::jitter_size: 0 while neither draws). Not while AMD FSR 4 draws on the frame
-/// chain: it is given no mask, so nothing is copied for it
+/// given (temporal_jitter_size, fsr3_inputs::jitter_size: 0 while neither draws). Not while AMD FSR 4 or Intel XeSS draws on
+/// the frame chain: neither is given a mask, so nothing is copied for it
 void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& s, const Targets& at) {
     if (!reactive::wanted()) return;
     if (!at.n || !at.color[0] || !at.depth || !temporal_scene_format(at.color_format[0])) return;
@@ -5224,7 +5364,7 @@ void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& 
     static thread_local Seen seen{~0ull, 0, 0};
     if (seen.frame != now) {   // (once a frame on each thread, not once a draw)
         const bool chain = temporal_jitter_size(0) != 0;   // (one upscaler at a time: the chain's engine, else FSR 3.1)
-        if (chain && upscaler_rows::is_fsr4(temporal_mode()))
+        if (chain && (upscaler_rows::is_fsr4(temporal_mode()) || upscaler_rows::is_xess(temporal_mode())))
             seen = {now, 0, 0};
         else
             seen = {now, chain ? temporal_jitter_size(0) : fsr3_inputs::jitter_size(0),
@@ -5249,6 +5389,7 @@ void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& 
 bool writes_sampled_target(uint16_t writes, uint16_t sampled_targets) {
     return (writes & sampled_targets) != 0;
 }
+// doc: docs/design.md#4-the-lessons-from-mkw-as-rules-here (rule 5: a draw that samples what its pass wrote gets a pass of its own)
 /// A draw that samples a target this pass already wrote, or writes a target an earlier draw of this pass sampled: in
 /// a pass of its own, after a full barrier (begin_pass makes it), as for the clears above: in one pass the GPU orders
 /// the targets' writes with each other only, not with the draws' texture reads of them. (A draw that samples a target
@@ -5427,10 +5568,10 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     if (r.c1_at.size() > c1_peak.load(std::memory_order_relaxed)) c1_peak.store(r.c1_at.size(), std::memory_order_relaxed);
     if (++begun % 3000 == 0)
         logf("vk: the recording streams: %zu of %llu MB, the most one held %llu KB; %llu made on demand (%llu MB kept now); "
-             "c1 stages: at most %zu a recording", res.size(),
+             "c1 stages: at most %zu a recording; %llu descriptor pools made when a recording's own ran out", res.size(),
              (unsigned long long)(kStream >> 20), (unsigned long long)(stream_peak.load(std::memory_order_relaxed) >> 10),
              (unsigned long long)stream_grown.load(), (unsigned long long)(stream_extra.load() >> 20),
-             c1_peak.load(std::memory_order_relaxed));
+             c1_peak.load(std::memory_order_relaxed), (unsigned long long)pools_extra.load(std::memory_order_relaxed));
     r.used = 0, r.before = 0;
     r.c1_at.reset();   // (its array kept: emptied at every recording's start, it fills again to about the same size)
     cur = &r;
@@ -6691,24 +6832,36 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
     void* mapped = nullptr;
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    // (the records' header is the vertex stage's indirect draw and the mesh stage's indirect dispatch)
-    if (!create_buffer(records, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
-    f.records_address = fallback_buffer_address(f.records);
-    f.records_bytes = records;
-    if (!f.records_address) {
-        destroy_buffer(f.records, f.records_mem);
-        return false;
+    // (only the payload outgrown: the newest pair's records, which every program takes from, go with the bigger payload. Made
+    // again, each growth left another 64 MB arena on the thread for the session, that no draw used again)
+    const bool shared = !sets.empty() && sets.back().records && sets.back().records_bytes >= records;
+    const auto drop_records = [&] {
+        if (!shared) destroy_buffer(f.records, f.records_mem);
+    };
+    if (shared) {
+        const FallbackBuffers& last = sets.back();
+        f.records = last.records, f.records_mem = last.records_mem;
+        f.records_address = last.records_address, f.records_bytes = last.records_bytes;
+    } else {
+        // (the records' header is the vertex stage's indirect draw and the mesh stage's indirect dispatch)
+        if (!create_buffer(records, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
+        f.records_address = fallback_buffer_address(f.records);
+        f.records_bytes = records;
+        if (!f.records_address) {
+            drop_records();
+            return false;
+        }
     }
     if (payload) {
         if (!create_buffer(payload, usage, false, f.payload, f.payload_mem, &mapped)) {
-            destroy_buffer(f.records, f.records_mem);
+            drop_records();
             return false;
         }
         f.payload_address = fallback_buffer_address(f.payload);
         f.payload_bytes = payload;
         if (!f.payload_address) {
             destroy_buffer(f.payload, f.payload_mem);
-            destroy_buffer(f.records, f.records_mem);
+            drop_records();
             return false;
         }
     }
@@ -7095,7 +7248,8 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
         pi.setLayoutCount = 1, pi.pSetLayouts = &set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
         vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        mi.codeSize = sizeof SHADOW_STAB_COMP_SPV, mi.pCode = SHADOW_STAB_COMP_SPV;
+        const auto spv = BUILTIN_SPV(SHADOW_STAB_COMP_SPV);
+        mi.codeSize = spv.size, mi.pCode = spv.code;
         VkShaderModule m{};
         IntelDriverGate gate;
         if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
@@ -8071,7 +8225,8 @@ bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle,
         pi.setLayoutCount = 1, pi.pSetLayouts = &set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
         vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        mi.codeSize = sizeof MOVIE_UPSCALE_COMP_SPV, mi.pCode = MOVIE_UPSCALE_COMP_SPV;
+        const auto spv = BUILTIN_SPV(MOVIE_UPSCALE_COMP_SPV);
+        mi.codeSize = spv.size, mi.pCode = spv.code;
         VkShaderModule m{};
         IntelDriverGate gate;
         if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
@@ -8340,8 +8495,8 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
         pi.setLayoutCount = 1, pi.pSetLayouts = &set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
         vkCreatePipelineLayout(dev.device, &pi, nullptr, &layout);
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        mi.codeSize = rgba ? sizeof TAAU_UPSCALE_RGBA_COMP_SPV : sizeof TAAU_UPSCALE_COMP_SPV;
-        mi.pCode = rgba ? TAAU_UPSCALE_RGBA_COMP_SPV : TAAU_UPSCALE_COMP_SPV;
+        const auto spv = rgba ? BUILTIN_SPV(TAAU_UPSCALE_RGBA_COMP_SPV) : BUILTIN_SPV(TAAU_UPSCALE_COMP_SPV);
+        mi.codeSize = spv.size, mi.pCode = spv.code;
         VkShaderModule m{};
         IntelDriverGate gate;
         if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
@@ -8889,13 +9044,13 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
                 fclose(f);
                 logf("vk: the last start did not finish the driver's part of the shaders: left out");
             } else {
-                if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
+                crash_markers::begin(warming, 1, crash_markers::none);
                 if (!warm_libraries(progress)) {
-                    remove(warming.c_str());
+                    crash_markers::end(warming);
                     return false;
                 }
             }
-            remove(warming.c_str());
+            crash_markers::end(warming);
         }
         prepared_for.warmed = warmed;
         prepared_write(path, prepared_for);
@@ -8920,8 +9075,8 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         fclose(f);
         warm = warm_cs = false;
         logf("vk: the last start did not finish the driver's part of the shaders: left out");
-    } else if (warm || warm_cs) {
-        if (FILE* w = fopen(warming.c_str(), "wb")) fclose(w);
+    } else if (warm || warm_cs) {   // (a start closed in them leaves no file: crash_markers::close)
+        crash_markers::begin(warming, 1, crash_markers::none);
     }
     pcache_init();   // (once, here: the workers below build compute pipelines into it)
     std::atomic<size_t> next{0}, done{0}, made{0}, libs{0}, variants{0}, asking{0}, capped{0};
@@ -9021,7 +9176,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     if (prepare_stopped()) {   // (closed: what was made is in the program cache already, the rest is made at the next start)
         logf("vk: shader preparation stopped at %zu of %zu (the window was closed): the next start goes on from there", done.load(),
              total);
-        remove(warming.c_str());
+        // (the file as the close leaves it, crash_markers::close: a close neither counts as a crash nor clears one)
         return false;
     }
     int64_t translated = 0, failed = 0;
@@ -9029,16 +9184,17 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     logf("vk: prepared %zu shader programs%s (%zu new, %lld failed, %zu compute pipelines; %zu compute variants, %zu programs with "
          "texture variants, %zu at the limit) in %.1f s", programs, background ? " in play" : "", made.load(), (long long)failed, libs.load(), variants.load(),
          asking.load(), capped.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    shader_fail_lines();   // (the failed by their "not translated" lines, all of them: those lines stop at 30 programs each)
     if (warm) {
         // (translated, whatever becomes of the libraries: a start that is closed in them goes on with them alone)
         prepared_for.warmed = 0;
         prepared_write(path, prepared_for);
         if (!warm_libraries(progress)) {
-            remove(warming.c_str());
+            crash_markers::end(warming);
             return false;
         }
     }
-    if (!background) remove(warming.c_str());
+    if (!background) crash_markers::end(warming);
     // (the driver's part left out, by a start that ended in it or in play, is not tried again for this driver: as before)
     prepared_for.warmed = warmed;
     prepared_write(path, prepared_for);
@@ -9076,9 +9232,10 @@ void prepare_progress_log(const char* what, size_t done, size_t total, std::chro
 /// compiled. The precompile does the same by keeping them all ready, which is the memory RX_VK_LOAD=create is there to save
 /// and more than a 16 GB PC has (its precompile was killed at 23,407 of 35,870 pipelines under a 12 GB cap). Here each
 /// worker borrows one program, builds its notes' pipelines one after the other and destroys each at once: never more
-/// pipelines alive than workers (warm_bounded.h). Before the game, with the precompile's progress; a start closed in it
-/// begins again at the next one, and after two that did not get through, the notes are taken as they are (what a cache
-/// then lacks is made at its first draw, as on an install that was never prepared)
+/// pipelines alive than workers (warm_bounded.h). Before the game, with the precompile's progress; a start closed in it begins
+/// again at the next one (the close puts the file back as the start found it, crash_markers.h), and after two that crashed in it
+/// (or were killed), the notes are taken as they are (what a cache then lacks is made at its first draw, as on an install that
+/// was never prepared)
 void precompile_warm(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::string warming = precompile_built_path() + ".warming";
@@ -9096,7 +9253,7 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
              "are, a pipeline the caches lack is made when it is first drawn");
         return;
     }
-    if (FILE* f = fopen(warming.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
+    crash_markers::begin(warming, ended_inside + 1, ended_inside ? ended_inside : crash_markers::none);
     // (by program, in the notes' order: a worker's borrowed program serves all its notes)
     std::vector<uint64_t> progs;
     std::unordered_map<uint64_t, std::vector<const NoteRef*>> by_prog;
@@ -9176,7 +9333,7 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
              std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count());
         // (not by the preparation's own process: warm_bounded.h leaves_marker)
         if (warm_bounded::leaves_marker(prepare_only, all, prepare_stopped())) precompile_built_write(total);
-        remove(warming.c_str());
+        crash_markers::end(warming);
     }
     logf("vk: precompile: %zu noted pipelines of %zu programs and %zu compute pipelines of %zu compute programs built into the "
          "pipeline cache and let go (%zu and %zu not made, %zu whose program variant is not kept), on %u threads in %.1f s (the "
@@ -9280,7 +9437,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     // (a start that dies in here would die in here every time, the notes being what it builds from: a player saw the console reach
     // 542 of 543 and the game close. The file says this step began and did not end: the next start lets the notes go and plays)
     // (two starts in a row, not one: closing the window while it ran counted as a crash, and the next start then skipped the
-    // precompile and compiled everything in play: "stuck at 99%, then fine on the second start", 2026-11-08)
+    // precompile and compiled everything in play: "stuck at 99%, then fine on the second start", 2026-11-08. And a close does
+    // not count at all: a quit ends the process before this returns, so two quits in it still dropped the notes. The close puts
+    // the file back as the start found it, crash_markers.h)
     const std::string running = pipe_notes_path() + ".running";
     int ended_inside = 0;
     if (FILE* f = fopen(running.c_str(), "rb")) {
@@ -9292,10 +9451,11 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
             logf("vk: the last two starts did not get through the precompile: its notes are dropped");
             return;
         }
-        logf("vk: the last start did not get through the precompile (closed, or it crashed there): trying it once more");
+        logf("vk: the last start did not get through the precompile (it crashed there, or was killed): trying it once more");
     }
-    if (FILE* f = fopen(running.c_str(), "wb")) fprintf(f, "%d\n", ended_inside + 1), fclose(f);
-    struct Done { const std::string& path; ~Done() { remove(path.c_str()); } } done_marker{running};
+    crash_markers::begin(running, ended_inside + 1, ended_inside ? ended_inside : crash_markers::none);
+    // (stopped: the window was closed, and the close puts the file back, crash_markers::close)
+    struct Done { const std::string& path; ~Done() { if (!prepare_stopped()) crash_markers::end(path); } } done_marker{running};
     pcache_init();
     std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
     // (the notes file and the state list opened now, before play, with the notes just read: pipeline_note and state_record opened
@@ -9566,7 +9726,8 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     }
     // (the marker counts the starts that began it: two that did not get through it (a driver that hangs or ends the process on one
     // of these pipelines) and it is let go, the rest left to play, as precompile_run does with its notes)
-    // A start closed in it (prepare_stopped) writes its count back unchanged: only one that crashed or hung there counts
+    // A start closed in it has its count written back unchanged by the close (crash_markers::close), whether its workers stopped in
+    // time or not: only one that crashed or hung there counts
     int began = 0;
     bool resumed = false;
     if (FILE* f = fopen(predict_pending_path().c_str(), "rb")) {
@@ -9581,7 +9742,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     }
     if (resumed) logf("vk: the last start did not finish building the predicted pipelines (%s): they are built again (what the "
                       "driver kept comes from its cache)", began ? "it ended in them" : "closed");
-    if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began + 1), fclose(f);
+    crash_markers::begin(predict_pending_path(), began + 1, began);
     size_t programs = 0;
     PredictCounts left_out;
     std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs, &left_out);
@@ -9722,8 +9883,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
         predicted_keys_write(pre->made_keys);
     }
     // (gone on: what is stuck is left to play, as the stall guard says; a start that does it again would only stall again)
-    if (!prepare_stopped()) remove(predict_pending_path().c_str());
-    else if (FILE* f = fopen(predict_pending_path().c_str(), "wb")) fprintf(f, "%d\n", began), fclose(f);   // (closed: not counted)
+    if (!prepare_stopped()) crash_markers::end(predict_pending_path());   // (closed: the close writes `began` back, not counted)
     driver_cache_log("after the prediction");
     if (!gone_on) delete pre;
 }
@@ -10715,7 +10875,7 @@ void pipeline_cache_save(bool force) {
     if (force || between) save();
     else {
         try {
-            std::thread(save).detach();
+            std::thread([save] { helper_thread_start(), save(); }).detach();   // (do_present asks, inside its ReplayPin)
         } catch (const std::exception& e) {
             busy = false;
             logf("vk: could not start pipeline cache save: %s", e.what());

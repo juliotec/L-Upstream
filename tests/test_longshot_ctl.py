@@ -7,6 +7,7 @@ Linux uses a Unix socket; Windows uses the named pipe.
 python -I -B tests/test_longshot_ctl.py [--source-root OTHER_CHECKOUT]
 """
 import argparse
+import calendar
 import importlib.util
 import json
 import os
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -91,6 +93,9 @@ if os.name == "nt":   # a named pipe, through ctypes: one synchronous handle a c
         def flush_and_exit(self):
             k.FlushFileBuffers(self.h)   # (the reply read before the process and its pipe go)
             os._exit(0)
+        def flush_and_relaunch(self):
+            k.FlushFileBuffers(self.h)
+            os.execv(sys.executable, [sys.executable, "-I"] + sys.argv)   # (a new process; this one goes, its pipe with it)
     def accept():
         h = k.CreateNamedPipeW(name, 3, 0, 255, 65536, 65536, 0, None)   # (duplex, byte mode, waiting)
         if not k.ConnectNamedPipe(h, None) and ctypes.get_last_error() != 535:   # ERROR_PIPE_CONNECTED
@@ -111,6 +116,10 @@ else:
         def flush_and_exit(self):
             os.unlink(path)
             os._exit(0)
+        def flush_and_relaunch(self):   # (as the game: the socket let go of, then this process again, the same pid)
+            srv.close()
+            os.unlink(path)
+            os.execv(sys.executable, [sys.executable, "-I"] + sys.argv)
     def accept():
         return Conn(srv.accept()[0])
 def ticker():
@@ -126,7 +135,7 @@ def serve(f):
         r = {"id": rid, "ok": True, "frame": frame[0]}
         if cmd == "status":
             r.update(protocol=1, fps=59.9, state="play", draws=2400.0, window={"width": 1280, "height": 720}, version="fake",
-                     map="KokiriForest_Child", game=game_state[0])
+                     map="KokiriForest_Child", game=game_state[0], uptime=round(time.monotonic() - started, 3))
             if os.environ.get("FAKE_SESSION"):
                 age = time.monotonic() - started
                 present = age >= float(os.environ.get("FAKE_PRESENT_AFTER", "0"))
@@ -212,6 +221,12 @@ def serve(f):
             if not os.environ.get("FAKE_REFUSE_QUIT"):
                 f.flush_and_exit()
             continue
+        elif cmd == "relaunch":
+            f.write((json.dumps(dict(r, relaunching=True)) + "\n").encode())
+            time.sleep(0.2)   # (the client has the reply before the stand-in goes, as the game's flush sees to)
+            if os.environ.get("FAKE_RELAUNCH_EXIT"):   # (a restart that fails: the game only exits, as hos_relaunch.c logs)
+                f.flush_and_exit()
+            f.flush_and_relaunch()
         elif cmd == "release":
             r.update(released=2)
         elif cmd == "saves":
@@ -371,6 +386,86 @@ class Sessions(unittest.TestCase):
         ctl(*args, "raw", '{"cmd":"fixture_game","game":null}', check=0)
         self.assertIsNone(attached.request("status")["game"])
         self.assertEqual(len(ctl(*args, "status", check=0).stdout.splitlines()), 1)
+
+    def test_the_session_follows_a_relaunch(self):
+        """relaunch in a run: the manifest names the game started again (Windows: a new process, the stand-in's execv;
+        Linux: the same pid, execve), the supervisor watches it, and show and stop go on with it"""
+        session = self.start(profile="test")
+        time.sleep(0.5)   # (the client takes a status for the new game's when its uptime is no longer than the wait: an old one
+        #                   asked within 50 ms of its start would pass for it)
+        before = session.info()
+        args = ("--run", str(session.folder))
+        st = json.loads(ctl("--json", *args, "relaunch", "--timeout", "30", check=0).stdout)
+        self.assertEqual(st["session"], "followed" if WINDOWS else "same-process")
+        after = session.info()
+        self.assertEqual(after["relaunch"]["state"], st["session"])
+        self.assertEqual(after["relaunch"]["from"], {"pid": before["pid"], "process_start": before["process_start"]})
+        self.assertEqual(after["relaunch"]["to"], {"pid": after["pid"], "process_start": after["process_start"]})
+        if WINDOWS:
+            self.assertNotEqual(after["pid"], before["pid"])
+            self.assertEqual(after["relaunches"], 1)
+            self.assertFalse(self.m.same_process(before["pid"], before["process_start"]))
+        else:
+            self.assertEqual((after["pid"], after["process_start"]), (before["pid"], before["process_start"]))
+        self.assertTrue(self.m.same_process(after["pid"], after["process_start"]))
+        time.sleep(0.5)   # (the old process gone on Windows: the supervisor took the new one rather than ending the run)
+        self.assertEqual(session.info()["state"], "running")
+        self.assertEqual(json.loads(ctl("--json", *args, "show", check=0).stdout)["pid"], after["pid"])
+        self.assertEqual(json.loads(ctl("--json", *args, "status", check=0).stdout)["state"], "play")
+        stopped = session.stop()
+        self.assertEqual((stopped["state"], stopped["stop_method"]), ("finished", "quit"))
+        self.assertTrue(stopped["process_exited"])
+        self.assertFalse(self.m.same_process(after["pid"], after["process_start"]))
+
+    def test_a_relaunch_that_does_not_come_back_ends_the_run(self):
+        """the client's ticket says failed when the game does not answer again, and the supervisor ends the run once it
+        stops waiting for the relaunch, as for any exit"""
+        session = self.start(profile="test", env={"FAKE_RELAUNCH_EXIT": "1"})
+        time.sleep(0.5)   # (as above: older than the client's wait)
+        with self.assertRaisesRegex(self.m.Failed, "did not answer again"):
+            self.m.relaunch(session.connect(), 1)
+        self.assertEqual(session.info()["relaunch"]["state"], "failed")
+        deadline = time.monotonic() + 10
+        while session.info()["state"] not in ("finished", "failed") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(session.info()["state"], "finished")
+
+    def relaunch_run(self, name, state, ticket_state, asked_at):
+        """A run folder whose manifest has a relaunch ticket, with no game and no supervisor"""
+        run = self.root / name
+        run.mkdir()
+        (run / "manifest.lock").write_bytes(b"\0")
+        session = self.m.Session(run)
+        birth = {"clock": "test", "ticks": 1}
+        ticket = {"id": name, "state": ticket_state, "asked_at": asked_at, "timeout": 1,
+                  "from": {"pid": 2 ** 22 + 1, "process_start": birth}}
+        self.m.write_json(session.manifest, {"schema_version": 1, "state": state, "pid": 2 ** 22 + 1,
+                                             "process_start": birth, "relaunch": ticket})
+        return session, ticket
+
+    def test_a_late_follow_leaves_the_run_alone(self):
+        """the game answering again after the run ended, or after its supervisor stopped waiting for the ticket, is not
+        written into the run: the client fails and the manifest is as it was"""
+        for name, state, ticket_state in (("ended", "finished", "asked"), ("given-up", "running", "failed")):
+            session, ticket = self.relaunch_run(name, state, ticket_state, self.m.utc_now())
+            before = session.info()
+            with self.assertRaisesRegex(self.m.Failed, "ended before the game answered again"):
+                self.m.follow_relaunch(session, dict(ticket, state="asked"), os.getpid())
+            self.assertEqual(session.info(), before)
+
+    def test_a_stale_ticket_is_counted_from_the_ask(self):
+        """a ticket left asked by a client that ended mid-wait: the supervisor's wait is counted from asked_at, not from
+        the game's exit, and giving up marks the ticket failed"""
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+        session, ticket = self.relaunch_run("stale", "running", "asked", old)
+        self.assertEqual(self.m.relaunch_deadline(ticket, 0),
+                         calendar.timegm(time.strptime(old, "%Y-%m-%dT%H:%M:%SZ")) + 1 + 10)
+        self.assertEqual(self.m.relaunch_deadline(dict(ticket, asked_at=None), 50), 50 + 1 + 10)
+        process = types.SimpleNamespace(pid=ticket["from"]["pid"])
+        t0 = time.monotonic()
+        self.assertIsNone(self.m.relaunched_game(session, process, ticket["from"]["process_start"]))
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertEqual(session.info()["relaunch"]["state"], "failed")
 
     def test_default_profile_and_unique_folders(self):
         first, second = self.start(), self.start()
@@ -1061,9 +1156,48 @@ class LongshotCtl(unittest.TestCase):
         self.assertEqual(ctl("release", "--all", env=self.env, check=0).stdout.strip(), "released 2 (every client's)")
         self.assertIs(self.last("release")["all"], True)
 
+    def test_relaunch_through_a_dropped_connection(self):
+        # (seen on Windows with the PC busy: the client met the old game's pipe as it closed, its write failed with EINVAL, and
+        # relaunch ended in a traceback instead of trying again)
+        sys.path.insert(0, str(CTL.parent))
+        try:
+            import longshot_ctl
+        finally:
+            sys.path.pop(0)
+        tries = []
+
+        class Old:
+            path = "game"
+
+            def request(self, cmd, **kw):
+                return {"ok": True}
+
+            def close(self):
+                pass
+
+        class Again(Old):
+            def __init__(self, path, timeout):
+                pass
+
+            def request(self, cmd, **kw):
+                tries.append(cmd)
+                if len(tries) == 1:
+                    raise OSError(22, "Invalid argument")
+                return {"ok": True, "uptime": 0.0}
+
+        real = longshot_ctl.Bridge
+        longshot_ctl.Bridge = Again
+        try:
+            st = longshot_ctl.relaunch(Old(), 10)
+        finally:
+            longshot_ctl.Bridge = real
+        self.assertTrue(st["ok"])
+        self.assertEqual(tries, ["status", "status"])
+
     def test_input_waits_as_long_as_the_bridge(self):
         # (without --timeout the bridge's default holds: 30 s plus the input's frames at 10 fps. The client waited 70 s
         # for any reply and gave up on long inputs the game was still pressing)
+        from unittest import mock
         m = client_module()
         waits = []
 
@@ -1079,10 +1213,55 @@ class LongshotCtl(unittest.TestCase):
                 return {"id": self.sent["id"], "ok": True}
 
         b = Fake()
-        b.request("stick", stick="L", x=0, y=1, frames=36000)
-        b.request("status")
-        b.request("press", timeout=5, buttons="A")
+        with mock.patch.object(m.time, "monotonic", return_value=100.0):   # (no time passes: each wait is the whole one)
+            b.request("stick", stick="L", x=0, y=1, frames=36000)
+            b.request("status")
+            b.request("press", timeout=5, buttons="A")
         self.assertEqual(waits, [3610, 70, 15])
+
+    def test_reply_wait_ends_at_its_deadline_while_events_arrive(self):
+        # (each event line started the whole wait again: a tool subscribed to present events, whose command's reply
+        # never came, waited for ever)
+        from unittest import mock
+        m = client_module()
+        clock = [0.0]
+
+        def bridge(lines):
+            class Fake(m.Bridge):
+                def __init__(self):
+                    self.next_id, self.pending, self.sock, self.waits = 0, b"", None, []
+
+                def send(self, obj):
+                    self.sent = obj
+
+                def line(self, timeout):
+                    self.waits.append(timeout)
+                    if not lines or lines[0][0] > clock[0] + timeout:
+                        clock[0] += timeout
+                        raise m.Failed("no answer from the game in %.0f s" % timeout, 3)
+                    at, msg = lines.pop(0)
+                    clock[0] = max(clock[0], at)
+                    return msg(self.sent["id"]) if callable(msg) else msg
+            return Fake()
+
+        event = {"event": "present", "frame": 1}
+        with mock.patch.object(m.time, "monotonic", side_effect=lambda: clock[0]):
+            clock[0] = 0.0
+            b = bridge([(t, event) for t in range(5, 200, 5)])   # (an event every 5 s, no reply)
+            with self.assertRaises(m.Failed) as failed:
+                b.request("status")
+            self.assertEqual(failed.exception.code, 3)
+            self.assertLessEqual(clock[0], 70)   # (status: 60 s and 10 more, from the request)
+            self.assertIn("70 s", str(failed.exception))
+            clock[0] = 0.0
+            b = bridge([(t, event) for t in range(5, 65, 5)] + [(69, lambda rid: {"id": rid, "ok": True})])
+            self.assertTrue(b.request("status")["ok"])   # (a reply just before the deadline is taken)
+            clock[0] = 0.0
+            b = bridge([(t, event) for t in range(1, 10)])
+            with self.assertRaises(m.Failed) as failed:
+                b.request("status", reply_timeout=3)
+            self.assertEqual(failed.exception.code, 3)
+            self.assertLessEqual(clock[0], 3)
 
     def test_shot(self):
         path = os.path.join(self.dir, "out.png")
@@ -1288,6 +1467,26 @@ class LongshotCtl(unittest.TestCase):
             self.assertIn("--slot goes with --save", r.stderr)
         else:
             r = ctl("launch", self.dir, "--save", src, check=2)
+
+    def test_relaunch(self):
+        """the stand-in started again as the game is (execv: on Linux the same pid, on Windows a new process): the client
+        is back once a status answers from the new one, and the socket serves on"""
+        with open(self.log) as f:
+            starts = sum('"_start"' in line for line in f)
+        # (twice, back to back: the second asks a stand-in barely a second old. It answers for 0.2 s after its reply, as
+        # the old game might before it lets go of the socket; the client waits for the one started again, not that answer)
+        for n in (1, 2):
+            r = ctl("--json", "relaunch", "--timeout", "30", env=self.env, check=0)
+            st = json.loads(r.stdout)
+            self.assertTrue(st["ok"])
+            self.assertLessEqual(st["uptime"], st["after_s"] + 0.1)
+            self.assertGreaterEqual(st["after_s"], 0.2, "relaunch %d was taken for done by the old stand-in" % n)
+            with open(self.log) as f:
+                self.assertEqual(sum('"_start"' in line for line in f), starts + n)
+        self.assertEqual(self.last("relaunch")["cmd"], "relaunch")
+        r = ctl("relaunch", env=self.env, check=0)
+        self.assertRegex(r.stdout, r"^relaunched: answering again after [\d.]+ s \(uptime [\d.]+ s\)")
+        self.assertEqual(ctl("status", env=self.env, check=0).returncode, 0)
 
     def test_zz_quit(self):   # (last: the stand-in ends)
         r = ctl("quit", env=self.env, check=0)

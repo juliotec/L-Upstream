@@ -7,6 +7,23 @@ import { pathToFileURL } from 'node:url';
 import { repoAssets, repositoryAssets } from '../src/repo-docs/assets.ts';
 import { renderPage } from '../src/repo-docs/pages.ts';
 import { createMarkdownProcessor } from '@astrojs/markdown-remark';
+import { rehypeKeyboardScroll } from '../src/repo-docs/keyboard-scroll.ts';
+
+test('guide tables retain headers and are keyboard reachable without JavaScript', async () => {
+  const processor = await createMarkdownProcessor({ rehypePlugins: [rehypeKeyboardScroll] });
+  for (const page of ['settings', 'saves/transfer']) {
+    const { markdown } = await renderPage(page);
+    const { code } = await processor.render(markdown);
+    for (const [block] of code.matchAll(/<pre\b[^>]*>/g)) assert.match(block, /tabindex="0"/);
+    const tables = [...code.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/g)];
+    assert.ok(tables.length > 0, page);
+    for (const [table] of tables) {
+      assert.match(table, /^<table tabindex="0" aria-label="[^"]+ — data table" data-scroll-label="[^"]+ — data table">/);
+      assert.doesNotMatch(table, /<th>\s*<\/th>/);
+      assert.match(table, /<thead>[\s\S]*<th>[^<]+<\/th>/);
+    }
+  }
+});
 
 // A filesystem URL must be decoded: otherwise a checkout under "New Volume"
 // writes into a literal New%20Volume directory and serves broken image URLs.

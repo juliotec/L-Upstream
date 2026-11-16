@@ -299,7 +299,7 @@ static int game_in_front(void) {
 /* HOS_INPUT_SCRIPT, and HOS_INPUT_LIVE=<file>: lines appended to that file while the game runs are presses in the
    script's syntax, their times counted from when the line is read ("0:LUP/2000,2:A"): a test can steer the game
    by looking at its screenshots. */
-typedef struct { int64_t start_ms, end_ms; uint64_t buttons; int32_t stick[4]; } Press;
+typedef struct { int64_t start_ms, end_ms; uint64_t buttons; int32_t stick[4]; int host; } Press;   /* (host: hos_hid_tap's) */
 #define MAX_PRESSES 1024
 static Press presses[MAX_PRESSES];
 static int npresses = -1;
@@ -315,7 +315,7 @@ static int64_t script_elapsed_ms(int64_t now) {
     return frames * 1000 / 60;
 }
 
-static int parse_presses(const char *s, int64_t base_ms, int live);
+static int parse_presses(const char *s, int64_t base_ms, int live);   /* (live: 0 the script, 1 HOS_INPUT_LIVE, 2 the host's) */
 
 static void parse_script(void) {
     {   /* start SDL's controller thread now: pads are open by the time the game window comes to the front */
@@ -419,6 +419,7 @@ static int parse_presses(const char *s, int64_t base_ms, int live) {
         if (*s == '/') hold = strtol(s + 1, (char **)&s, 10);
         p.start_ms = base_ms + (int64_t)(t * 1000);
         p.end_ms = p.start_ms + hold;
+        p.host = live == 2;
         int slot = npresses < MAX_PRESSES ? npresses : -1;
         if (slot < 0)   /* full: reuse a press that is over */
             for (int i = 0; i < MAX_PRESSES && slot < 0; i++)
@@ -438,14 +439,16 @@ static void host_taps(void);
 static void host_stick_read(int32_t stick[4]);
 static void host_drag_read(int32_t stick[4]);   /* (above) */
 
-static void scripted_input(uint64_t *buttons, int32_t stick[4]) {
+/* (the host's taps go to *taps, not *buttons: they are the game's menus' mouse clicks, not the player's presses, so
+   hold-to-toggle does not latch them) */
+static void scripted_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
     if (npresses < 0) parse_script();
     live_input();
     host_taps();
     const int64_t ms = script_elapsed_ms(hos_now_ns());
     for (int i = 0; i < npresses; i++)
         if (ms >= presses[i].start_ms && ms < presses[i].end_ms) {
-            *buttons |= presses[i].buttons;
+            *(presses[i].host ? taps : buttons) |= presses[i].buttons;
             for (int k = 0; k < 4; k++)
                 if (presses[i].stick[k]) stick[k] = presses[i].stick[k];
         }
@@ -493,7 +496,7 @@ static void host_taps(void) {
     memcpy(text, tap_text, sizeof text);
     tap_text[0] = 0;
     ReleaseSRWLockExclusive(&tap_lock);
-    if (text[0]) parse_presses(text, script_elapsed_ms(hos_now_ns()), 1);
+    if (text[0]) parse_presses(text, script_elapsed_ms(hos_now_ns()), 2);
 }
 
 static void stick_max(int32_t stick[4], const int32_t v[4]) {
@@ -701,7 +704,8 @@ static uint64_t bound_pad_buttons(uint64_t raw) {
 }
 
 static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
-static int pad_after_menu;          /* (the menu just closed: the pads wait until they are let go; oc_pad_word too) */
+static uint64_t pad_after_menu;     /* (the pads' inputs the Insert menu had, 1 << HOS_PAD_*: each waits until let go) */
+static uint64_t pad_raw_game;       /* (pads_read: the last read's inputs without the menu's Back+Start chord) */
 uint32_t hos_pad_raw(void) { return (uint32_t)pad_raw_now; }
 
 /* Apply the Insert menu's Stick dead zone to each stick as a pair, for XInput and SDL.
@@ -808,6 +812,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
        keeps): they reach the game only one at a time */
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
     if ((raw & chord) == chord) raw &= ~chord;
+    pad_raw_game = raw;
     const uint64_t b = bound_pad_buttons(raw);
     cached_buttons = b;
     memcpy(cached_stick, s, sizeof s);
@@ -935,7 +940,7 @@ static void oc_notes(void) {
         const int row = HOS_KEY_OC_NOTE_L + i;
         int held = bound_down(row, 0);
         for (int k = 0; k < 2 && !held; k++)
-            if (pad_bind[row][k] >= 0 && (pad_raw_now >> pad_bind[row][k] & 1)) held = 1;
+            if (pad_bind[row][k] >= 0 && ((uint64_t)pad_raw_now & ~pad_after_menu) >> pad_bind[row][k] & 1) held = 1;
         if (held) bits |= 1ULL << i;
     }
     for (int i = 0; i < 5; i++) {
@@ -953,8 +958,9 @@ static void oc_notes(void) {
 /* (npad_states writes the game's one merged word: during a button wait its five note buttons are the note controls) */
 static uint64_t oc_pad_word(uint64_t buttons) {
     if (hos_oc_wait != 1) return buttons;
-    /* (no notes where read_input gives the game no player input either: menu open, pads held after it, background) */
-    if (rx_option(1, 0) || pad_after_menu || !game_in_front()) return buttons;
+    /* (no notes where read_input gives the game no player input either: menu open, background; the pads' inputs
+       still held after the menu are left out in oc_notes) */
+    if (rx_option(1, 0) || !game_in_front()) return buttons;
     static const uint64_t note_to[5] = {1ULL << HOS_SW_L, 1ULL << HOS_SW_R, 1ULL << HOS_SW_A,
                                         1ULL << HOS_SW_Y, 1ULL << HOS_SW_X};
     uint64_t w = buttons;
@@ -980,12 +986,12 @@ static uint64_t oc_pad_word(uint64_t buttons) {
    closed the menu or the one Alt+Tab ended with does not switch walking. Returns whether Link walks now */
 static int walk_held(int down, int readable, int toggle) {
     static int was_down = 1, on;   /* (a key held at the first read counts only after its release) */
+    if (!toggle) on = 0;   /* (also Hold chosen in the Insert menu) */
     if (!readable) {
         was_down = 1;
         return toggle && on;
     }
-    if (!toggle) on = 0;
-    else if (down && !was_down) on = !on, hos_log("hid: walking %s (Walk mode Toggle)", on ? "on" : "off");
+    if (toggle && down && !was_down) on = !on, hos_log("hid: walking %s (Walk mode Toggle)", on ? "on" : "off");
     was_down = down;
     return toggle ? on : down;
 }
@@ -1005,11 +1011,12 @@ static void move_keys_stick(int x, int y, int percent, int32_t out[2]) {
         logged = percent, hos_log("hid: walking: the movement keys tilt the left stick to %d%% (%d, %d)", percent, out[0], out[1]);
 }
 
-static void read_input(uint64_t *buttons, int32_t stick[4]) {
-    *buttons = 0;
+/* *taps: the host's own presses (hos_hid_tap), apart from the rest */
+static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
+    *buttons = *taps = 0;
     memset(stick, 0, 4 * sizeof *stick);
     void hos_mouse_native_stick(int held);
-    scripted_input(buttons, stick);
+    scripted_input(buttons, taps, stick);
     void hos_oot_autoload_input(void);   /* (host/oot_autoload.c: the Skip title screen row's presses) */
     hos_oot_autoload_input();
     /* (longshot) HOS_CONTROL: the control bridge's presses (host/control.c); one that asked to be exclusive keeps the
@@ -1026,31 +1033,41 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (exclusive < 0) exclusive = env_on("HOS_INPUT_EXCLUSIVE");
     if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
         return;
-    /* (longshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) is the test's own, not the
-       player's: it counts with the game's window behind another one, so a test run can drive the game on one
-       monitor while the player works in the front window. HOS_INPUT_BACKGROUND still decides the pads. */
+    /* (longshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) and the control bridge's are the test's
+       own: scripted_input() and hos_control_input() put them in above, so they count with the game's window behind
+       another one, and a test run can drive the game on one monitor while the player works in the front window.
+       HOS_INPUT_SCRIPT_BACKGROUND=1 used to skip the gate below, which let only the player's devices through: the
+       keyboard (GetAsyncKeyState, whatever window is in front) and the mouse, so typing in another window reached the
+       test run. The gate now holds with it set; it is only said in the log. */
     static int scripted_background = -1;
     if (scripted_background < 0) {
         scripted_background = env_on("HOS_INPUT_SCRIPT_BACKGROUND");
-        if (scripted_background) hos_log("hid: scripted input runs with the game in the background (HOS_INPUT_SCRIPT_BACKGROUND)");
+        if (scripted_background)
+            hos_log("hid: HOS_INPUT_SCRIPT_BACKGROUND is no longer needed: scripted and control-bridge presses count with "
+                    "the game's window behind another one, and the player's keyboard and mouse stay out");
     }
-    if (!game_in_front() && !scripted_background) {   /* (the pads alone, when the player asked for them behind other windows) */
+    if (!game_in_front()) {   /* (the pads alone, when the player asked for them behind other windows) */
         static const char *env;
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
         if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
-        walk_held(0, 0, 0);
+        walk_held(0, 0, rx_option(HOS_OPT_WALK_MODE, 0) == 1);   /* (behind: a toggled walk is kept) */
         return;
     }
     {   /* (longshot) while the Insert menu is open the pads are its own, as the keyboard is (key()), and after it
-           closed until they are let go (the press that closed it never reaches the game) */
+           closed each input it had waits until it is let go (the press that closed it never reaches the game); the
+           others and the sticks count again at once, so one input that stays down (a worn trigger, a second pad)
+           no longer keeps the rest from the game */
         uint64_t pb = 0;
         int32_t ps[4] = {0};
         pads_read(&pb, ps);
-        if (rx_option(1, 0)) pad_after_menu = 1;
-        else if (pad_after_menu && !pad_raw_now) pad_after_menu = 0;
-        if (!pad_after_menu) {
-            *buttons |= pb;
+        static int menu_was;
+        const int menu = rx_option(1, 0);
+        if (menu || menu_was) pad_after_menu |= (uint32_t)pad_raw_now;   /* (the first read after the close too) */
+        else pad_after_menu &= (uint32_t)pad_raw_now;
+        menu_was = menu;
+        if (!menu) {
+            *buttons |= pad_after_menu ? bound_pad_buttons(pad_raw_game & ~pad_after_menu) : pb;
             stick_max(stick, ps);
         }
         if (pb || ps[0] > 12000 || ps[0] < -12000 || ps[1] > 12000 || ps[1] < -12000 || ps[2] > 12000 || ps[2] < -12000 ||
@@ -1077,12 +1094,12 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (native) {
         mouse_setup();
         mouse_sens_keys();
-        hos_mouse_native_free(!((*buttons | toggles.latched) & game_stick));
+        hos_mouse_native_free(!((*buttons | *taps | toggles.latched) & game_stick));
         captured = hos_mouse_native();
         if (captured < 0) captured = 0, as_stick = 1;
     }
     if (as_stick) {
-        captured = mouse_stick(&mouse[2], &mouse[3], (int)((*buttons | toggles.latched) >> B_L & 1));
+        captured = mouse_stick(&mouse[2], &mouse[3], (int)((*buttons | *taps | toggles.latched) >> B_L & 1));
         if (captured) stick_max(stick, mouse);
     }
     mouse_buttons_arm(captured);
@@ -1114,7 +1131,7 @@ static void npad_states(Ctx *c) {
     uint64_t out = ARG(0);
     int count = (int)ARG(1);
     uint32_t id = G32(ARG(2));
-    uint64_t buttons = 0;
+    uint64_t buttons = 0, taps = 0;
     int32_t stick[4] = {0};
     int connected = id == NPAD_NO1;
     {
@@ -1137,7 +1154,7 @@ static void npad_states(Ctx *c) {
         }
     }
     if (connected) {
-        read_input(&buttons, stick);
+        read_input(&buttons, &taps, stick);
         uint64_t axes = 0;
         uint64_t flight = 0;
         int height = 0;
@@ -1148,7 +1165,7 @@ static void npad_states(Ctx *c) {
                           !pads_in_background(getenv("HOS_INPUT_BACKGROUND"), rx_option(4, 0)));
         /* Pause/map must release shield/aim before the game's menu reads input. */
         const uint64_t pause = buttons & ~toggles.previous & ((1ULL << B_PLUS) | (1ULL << B_MINUS));
-        buttons = hold_toggle_apply(&toggles, buttons, enabled, reset || pause);
+        buttons = hold_toggle_apply(&toggles, buttons, enabled, reset || pause) | taps;
         const int free_camera = rx_option(HOS_OPT_CHEAT_CAMERA, 0);
         const int flying = flight_jump_shortcut(&buttons, rx_option(HOS_OPT_CHEAT_FLIGHT, -1), menu_open, free_camera);
         if (free_camera && !menu_open) {

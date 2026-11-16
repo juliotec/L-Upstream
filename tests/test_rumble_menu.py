@@ -56,6 +56,11 @@ FIXTURE = r"""
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
 %(options)s
 Options opts;
+bool debug_warning = false;
+int debug_warning_choice = 0;
+void sync_transition_autosave() {}
+bool menu_refresh = false;
+
 %(tabs)s
 %(row)s
 int saves = 0, presets = 0;

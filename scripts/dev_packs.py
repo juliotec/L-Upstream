@@ -88,7 +88,7 @@ STAMPED_SOURCES = ("host/hos_main.c", "gpu/vk/vk_menu.cpp")
 OLD_TRANSLATOR = ("gpu/vk/eden/", "gpu/vk/sirit/", "gpu/vk/compat/", "gpu/vk/vk_shader.cpp", "gpu/vk/vk_bank.cpp",
                   "gpu/vk/vk_state.h", "gpu/vk/vk_api.h")
 TRANSLATOR_FILES = "nx2/translator_files.py"
-RENDERER_ONLY = ("gpu/vk/", "third_party/imgui/", "third_party/fidelityfx")
+RENDERER_ONLY = ("gpu/vk/", "third_party/imgui/", "third_party/fidelityfx", "third_party/xess/")
 INCLUDE = re.compile(r'#\s*include\s+"([^"]+)"')
 NO_MODULE = ("docs/", "tests/", ".github/", ".forgejo/", ".claude/")   # (.forgejo: Longshot's workflows and templates)
 HEADERS = (".h", ".hpp", ".hh", ".inc", ".inl")
@@ -515,7 +515,7 @@ def cmd_base(a):
 def cmd_adopt(a):
     d = os.path.abspath(a.dir)
     check_folders(d, {"work": a.work, "game": a.game})
-    os.makedirs(d, exist_ok=True)
+    ensure_dir(d)
     write_base(d, {"commit": git(os.path.abspath(a.tree), "rev-parse", "HEAD"), "work": os.path.abspath(a.work),
                    "game": os.path.abspath(a.game), "romfs": os.path.abspath(a.romfs), "exefs": os.path.abspath(a.exefs),
                    "language": game_language(a.game) or "en-US"})
@@ -728,6 +728,15 @@ def cmd_warm(a):
     print("the base's caches warmed by %d runs: %s" % (len(a.run), ", ".join(copied) or "nothing grew"))
 
 
+def ensure_dir(d):
+    """d made when it isn't there yet. os.makedirs(d, exist_ok=True) on a folder that is already there still looks at each
+    folder above it, and in the Beanstalk agent's Windows sandbox (an AppContainer that may open the folders it was given,
+    not see the ones above them) those look missing: it climbs to C:\\ and fails there with "Access is denied"
+    """
+    if not os.path.isdir(d):
+        os.makedirs(d, exist_ok=True)
+
+
 class Busy:
     """dev_packs.busy in a base's folder while a job builds, warms or copies from it: a second job on the same base is refused
     (game packs share one work folder; a warm-up writes the base's caches). A marker left by a stopped job is deleted by hand"""
@@ -735,7 +744,7 @@ class Busy:
         self.path, self.what = os.path.join(d, BUSY), what
 
     def __enter__(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        ensure_dir(os.path.dirname(self.path))
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:

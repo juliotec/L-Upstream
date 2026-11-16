@@ -28,12 +28,15 @@ steer it and read its state from a shell, a test or a coding agent. Standard lib
     mem read ADDR SIZE [--format hex|u8|u16|u32|u64|f32]   read guest memory (HOS_CONTROL_MEM=ro or rw)
     mem write ADDR HEX                          write guest memory (HOS_CONTROL_MEM=rw); aliases: ro->r/read, rw->readwrite
     quit                                        the game exits
+    relaunch [--timeout 120]                    the game starts again (the Insert menu's Restart now), with the same
+                                                command and environment; back when its bridge answers again
     raw '{"cmd": "status"}'                     any request
 
 The socket defaults to $HOS_CONTROL. Plain lines by default, --json for the replies as they come. Exit status: 0 done,
 1 an error reply, 2 no game or bad usage, 3 a timeout.
 """
 import argparse
+import calendar
 import codecs
 import contextlib
 import functools
@@ -73,6 +76,39 @@ def session_call(function):
     return call
 
 
+def open_windows_pipe(name, timeout):
+    """Open a local pipe, retrying only the Windows busy error until the deadline."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    create.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    deadline = time.monotonic() + timeout
+    while True:
+        handle = create(name, 0xC0000000, 0, None, 3, 0, None)  # read/write, OPEN_EXISTING
+        if handle != ctypes.c_void_p(-1).value:
+            try:
+                fd = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+            except BaseException:
+                kernel.CloseHandle(handle)
+                raise
+            try:
+                return os.fdopen(fd, "r+b", buffering=0)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                raise
+        error = ctypes.get_last_error()
+        if error != 231 or time.monotonic() >= deadline:  # ERROR_PIPE_BUSY only
+            raise ctypes.WinError(error)
+        time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+
+
 class Bridge:
     """One connection: requests with ids, replies matched to them, events kept for watch"""
 
@@ -83,16 +119,7 @@ class Bridge:
             if WINDOWS:
                 name = path if path.startswith("\\\\.\\pipe\\") else "\\\\.\\pipe\\" + path
                 self.sock = None
-                deadline = time.monotonic() + timeout
-                while True:   # (the bridge keeps one instance waiting: a busy pipe is waited for)
-                    try:
-                        self.pipe = open(name, "r+b", buffering=0)
-                        break
-                    except OSError as e:
-                        # (busy: winerror 231, ERROR_PIPE_BUSY; missing pipes are not waited for)
-                        if getattr(e, "winerror", 0) != 231 or time.monotonic() > deadline:
-                            raise
-                        time.sleep(0.02)
+                self.pipe = open_windows_pipe(name, timeout)
             else:
                 self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 self.sock.settimeout(timeout)
@@ -102,6 +129,26 @@ class Bridge:
 
     def close(self):
         (self.sock or self.pipe).close()
+
+    def server_pid(self):
+        """The pid of the process that serves this connection, as the system says (Windows: the pipe's server,
+        GetNamedPipeServerProcessId; Linux: the socket's peer, SO_PEERCRED); None when it can't tell"""
+        try:
+            if WINDOWS:
+                import ctypes
+                import msvcrt
+                from ctypes import wintypes
+                k = ctypes.WinDLL("kernel32", use_last_error=True)
+                k.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)]
+                pid = wintypes.ULONG()
+                if k.GetNamedPipeServerProcessId(msvcrt.get_osfhandle(self.pipe.fileno()), ctypes.byref(pid)):
+                    return pid.value or None
+                return None
+            import struct
+            cred = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            return struct.unpack("3i", cred)[0] or None
+        except (OSError, AttributeError, ValueError):
+            return None
 
     def send(self, obj):
         data = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
@@ -171,9 +218,13 @@ class Bridge:
             req["timeout"] = timeout
         self.send(req)
         wait = (timeout if timeout is not None else 3600 if cmd in ("press", "stick", "sequence") else 60) + 10
-        deadline = time.monotonic() + (wait if reply_timeout is None else reply_timeout)
-        while True:
-            msg = self.line(wait if reply_timeout is None else max(0, deadline - time.monotonic()))
+        limit = wait if reply_timeout is None else reply_timeout
+        deadline = time.monotonic() + limit
+        while True:   # (one deadline: an event line that comes meanwhile does not start the wait again)
+            left = deadline - time.monotonic()
+            if left <= 0 and b"\n" not in self.pending:
+                raise Failed("no answer from the game in %.0f s" % limit, 3)
+            msg = self.line(max(0, left))
             if msg is None:
                 if cmd == "quit":
                     return {"id": rid, "ok": True, "quitting": True}
@@ -255,6 +306,83 @@ def format_bytes(data, fmt):
     for i in range(0, len(data) - n + 1, n):
         out.append(struct.unpack(code, data[i:i + n])[0])
     return " ".join(("%g" if fmt == "f32" else "%d") % v for v in out)
+
+
+def relaunch(b, timeout):
+    """The game started again (the relaunch command), then its status once its bridge answers on the same socket from the
+    process started again: one whose uptime is no longer than the wait (its bridge started after the ask), not the old one
+    answering before it lets go of the socket (status gives the uptime to 0.1 s: 0.05 s to spare). A connection the old
+    one drops mid-request (Windows: a write to its pipe as it closes, EINVAL) is tried again. b is closed; the status reply
+    has after_s, the seconds it took.
+    In a session (--run DIR) the session follows the game: the run folder's manifest records the relaunch, and then the
+    process that serves the socket again, its pid and birth identity as the system gives them (follow_relaunch), so
+    stop, show and the run's supervisor go on with the game started again. On Linux that is the same process (execve);
+    on Windows it is a new one"""
+    session = getattr(b, "session", None)
+    ticket = None
+    if session:
+        info = session.info()
+        ticket = {"id": uuid.uuid4().hex, "state": "asked", "asked_at": utc_now(), "timeout": timeout,
+                  "from": {"pid": info["pid"], "process_start": info["process_start"]}}
+        session.update(relaunch=ticket)
+    try:
+        check(b.request("relaunch"))
+    except BaseException:
+        if session:
+            session.update(relaunch=dict(ticket, state="refused"))
+        raise
+    path = b.path
+    b.close()
+    t0 = time.monotonic()
+    while True:
+        try:
+            nb = Bridge(path, 2)
+            try:
+                st = nb.request("status", timeout=5)
+                server = nb.server_pid() if session else None
+            finally:
+                nb.close()
+            waited = time.monotonic() - t0
+            if st.get("ok") and st.get("uptime", float("inf")) <= waited + 0.05:
+                st = dict(st, after_s=round(waited, 1))
+                if session:
+                    st["session"] = follow_relaunch(session, ticket, server)
+                return st
+        except (Failed, OSError):
+            pass
+        if time.monotonic() - t0 > timeout:
+            if session:
+                session.update(relaunch=dict(ticket, state="failed", ended_at=utc_now()))
+            raise Failed("the game did not answer again in %.0f s" % timeout, 3)
+        time.sleep(0.2)
+
+
+def follow_relaunch(session, ticket, pid):
+    """The run's manifest moved to the process that answers after a relaunch: pid (the socket's server, from the system)
+    and its birth identity. The same process (Linux: execve keeps both) is kept as it is; one the client can't tell, or one
+    gone already, leaves the run failed to follow (stop and show then refuse, as for any game that is gone).
+    A run that ended meanwhile, or whose supervisor stopped waiting for this ticket (relaunched_game: it is no longer
+    asked), is left as it is: the game started again is not written into a run nobody watches"""
+    birth = process_start(pid)
+    with run_lock(session.folder):
+        info = session._read()
+        current = info.get("relaunch") or {}
+        if info["state"] in ("finished", "failed") or current.get("id") != ticket["id"] or current.get("state") != "asked":
+            raise Failed("relaunched, but the run ended before the game answered again: the run does not follow it: %s"
+                         % session.folder, 3)
+        if birth is None:
+            state = "lost"
+        elif pid == info["pid"] and birth == info["process_start"]:
+            state = "same-process"
+        else:
+            state = "followed"
+            info.update(pid=pid, process_start=birth, relaunches=info.get("relaunches", 0) + 1)
+        info["relaunch"] = dict(ticket, state=state, ended_at=utc_now(), to={"pid": pid, "process_start": birth})
+        write_json(session.manifest, info)
+    if state == "lost":
+        raise Failed("relaunched, but the process serving the socket can't be told: the run no longer follows the game: %s"
+                     % session.folder, 3)
+    return state
 
 
 def connect(a, timeout=10.0):
@@ -440,6 +568,9 @@ def run(a):
                 print(slots_text(r))
         elif a.command == "quit":
             show(a, check(b.request("quit")), lambda r: "quitting")
+        elif a.command == "relaunch":
+            st = relaunch(b, a.timeout)
+            show(a, st, lambda r: "relaunched: answering again after %.1f s (uptime %.1f s)" % (r["after_s"], r["uptime"]))
         elif a.command == "raw":
             req = json.loads(a.request)
             b.next_id += 1
@@ -1024,6 +1155,103 @@ def terminate_child(process):
         return "terminate"
 
 
+class Adopted:
+    """The game a Windows relaunch started (host/hos_relaunch.c: a new process, not this supervisor's child), held by a
+    handle this supervisor opened while the process's birth identity was the manifest's, so a pid reused later is never
+    waited for or ended. It answers as the Popen child does where supervise, stop_child and terminate_child ask it"""
+
+    def __init__(self, pid, birth):
+        import ctypes
+        from ctypes import wintypes
+        self.k = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.k.OpenProcess.restype = wintypes.HANDLE
+        self.k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self.k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self.k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        self.k.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        self.k.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.pid, self.birth, self.returncode = pid, birth, None
+        # (SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION; the identity checked after the handle is
+        # held, so the process the handle names is the one that was checked)
+        self.h = self.k.OpenProcess(0x100000 | 0x0001 | 0x1000, False, pid)
+        if not self.h or process_start(pid) != birth:
+            self.close()
+            raise Failed("the relaunched game is gone or its pid was reused", 2)
+
+    def close(self):
+        if self.h:
+            self.k.CloseHandle(self.h)
+            self.h = None
+
+    def _wait(self, ms):
+        from ctypes import wintypes
+        import ctypes
+        if self.returncode is not None:
+            return True
+        if self.k.WaitForSingleObject(self.h, ms) != 0:
+            return False
+        code = wintypes.DWORD()
+        self.returncode = code.value if self.k.GetExitCodeProcess(self.h, ctypes.byref(code)) else 1
+        return True
+
+    def poll(self):
+        return self.returncode if self._wait(0) else None
+
+    def wait(self, timeout=None):
+        if not self._wait(0xFFFFFFFF if timeout is None else max(0, int(timeout * 1000))):
+            raise subprocess.TimeoutExpired("relaunched game", timeout)
+        return self.returncode
+
+    def terminate(self):
+        if self.returncode is None:
+            self.k.TerminateProcess(self.h, 1)
+
+    kill = terminate
+
+
+def relaunched_game(session, process, birth):
+    """After the game the supervisor watches ended: the game a relaunch of it started, when the client followed it to a new
+    process (follow_relaunch), held as Adopted; else None, and the run ends. A relaunch still being waited for by its
+    client is waited for, as long as the client said it would wait and a little more, counted from the ask (asked_at), so
+    a ticket left asked by a client that ended mid-wait does not hold up a later exit. Giving up marks the ticket failed
+    under the manifest's lock, so a client that follows the game later finds it so and leaves the run alone"""
+    since = time.time()   # (for a ticket without asked_at: from the exit)
+    while True:
+        info = session.info()
+        ticket = info.get("relaunch") or {}
+        mine = ticket.get("from") == {"pid": process.pid, "process_start": birth}
+        if not mine or info.get("stop_request") or ticket.get("state") not in ("asked", "followed"):
+            return None
+        if ticket["state"] == "followed":
+            if not WINDOWS or ticket["to"]["pid"] == process.pid:
+                return None
+            try:
+                return Adopted(info["pid"], info["process_start"])
+            except Failed:
+                return None
+        if time.time() >= relaunch_deadline(ticket, since):
+            with run_lock(session.folder):
+                info = session._read()
+                current = info.get("relaunch") or {}
+                if current.get("id") == ticket.get("id") and current.get("state") == "asked":
+                    info["relaunch"] = dict(current, state="failed", ended_at=utc_now())
+                    write_json(session.manifest, info)
+                    return None
+            continue   # (the client wrote its ticket meanwhile: read again)
+        time.sleep(0.05)
+
+
+def relaunch_deadline(ticket, since):
+    """When a supervisor stops waiting for a relaunch (the system's clock, seconds): the client's --timeout from its ask,
+    and 10 s more, for the client's last try (a 2 s open, a 5 s status) and asked_at's whole seconds; from since when the
+    ticket has no asked_at"""
+    try:
+        asked = calendar.timegm(time.strptime(ticket["asked_at"], "%Y-%m-%dT%H:%M:%SZ"))
+    except (KeyError, TypeError, ValueError):
+        asked = since
+    return asked + float(ticket.get("timeout") or 120) + 10
+
+
 def supervise(folder):
     session, process = Session(folder), None
     info = session.update(owner={"pid": os.getpid(), "birth": process_start(os.getpid())}, state="starting")
@@ -1038,21 +1266,26 @@ def supervise(folder):
         info = session.update(pid=process.pid, process_start=birth, started_at=utc_now())
         reply = wait_ready(session, info["ready"], info["ready_timeout"], process)
         session.update(state="running", ready_reply=reply)
-        while process.poll() is None:
-            info = session.info()
-            request = info.get("stop_request")
-            if request:
-                if request["pid"] != process.pid or request["process_start"] != birth:
-                    result = {"method": "refused", "process_exited": False, "error": "process identity changed"}
-                else:
-                    session.update(state="stopping")
-                    result = stop_child(process, info, request["timeout"], request["terminate"])
-                method = result["method"]
-                session.update(stop_result=dict(result, id=request["id"]), stop_request=None,
-                               state="stopping" if result["process_exited"] else "running")
-            if (session.folder / "cancel").exists():
-                method = "cancel-" + terminate_child(process)
-            time.sleep(0.05)
+        while True:
+            while process.poll() is None:
+                info = session.info()
+                request = info.get("stop_request")
+                if request:
+                    if request["pid"] != process.pid or request["process_start"] != birth:
+                        result = {"method": "refused", "process_exited": False, "error": "process identity changed"}
+                    else:
+                        session.update(state="stopping")
+                        result = stop_child(process, info, request["timeout"], request["terminate"])
+                    method = result["method"]
+                    session.update(stop_result=dict(result, id=request["id"]), stop_request=None,
+                                   state="stopping" if result["process_exited"] else "running")
+                if (session.folder / "cancel").exists():
+                    method = "cancel-" + terminate_child(process)
+                time.sleep(0.05)
+            followed = relaunched_game(session, process, birth)
+            if followed is None:
+                break
+            process, birth = followed, followed.birth   # (the game started again: watched and stopped as the first one was)
     except BaseException as e:
         error, code = str(e), e.code if isinstance(e, Failed) else 2
         if process is not None:
@@ -1220,13 +1453,19 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="the replies as JSON lines")
     sub = p.add_subparsers(dest="command", required=True)
 
+    def finite_float(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise argparse.ArgumentTypeError("expected a finite number")
+        return value
+
     def inputs(q):
         q.add_argument("--frames", type=int, default=8)
         q.add_argument("--at", type=int, default=0, help="frames from the next controller read")
         q.add_argument("--exclusive", action=argparse.BooleanOptionalAction, default=None,
                        help="the player's own devices left out meanwhile (default for test runs)")
         q.add_argument("--no-wait", action="store_true", help="reply as soon as it is queued")
-        q.add_argument("--timeout", type=float)
+        q.add_argument("--timeout", type=finite_float)
 
     q = sub.add_parser("launch", help="start a game folder with the bridge on")
     q.add_argument("game_dir")
@@ -1258,28 +1497,28 @@ def main(argv=None):
     inputs(q)
     q = sub.add_parser("stick")
     q.add_argument("which", choices=["L", "R", "l", "r"])
-    q.add_argument("x", type=float)
-    q.add_argument("y", type=float)
+    q.add_argument("x", type=finite_float)
+    q.add_argument("y", type=finite_float)
     inputs(q)
     q = sub.add_parser("sequence")
     q.add_argument("script", help="<at>:<buttons>[/<frames>],...")
     q.add_argument("--hos", action="store_true", help="times in seconds and holds in ms, as HOS_INPUT_SCRIPT")
     q.add_argument("--exclusive", action=argparse.BooleanOptionalAction, default=None)
     q.add_argument("--no-wait", action="store_true")
-    q.add_argument("--timeout", type=float)
+    q.add_argument("--timeout", type=finite_float)
     q = sub.add_parser("release", help="let go of this client's queued inputs and those of clients gone")
     q.add_argument("--all", action="store_true", help="every client's, also those still connected")
     q = sub.add_parser("shot")
     q.add_argument("path", nargs="?")
     q.add_argument("--after", type=int, help="the first present after this frame")
-    q.add_argument("--timeout", type=float)
+    q.add_argument("--timeout", type=finite_float)
     q = sub.add_parser("wait")
     q.add_argument("event", choices=["present", "frame", "in_play", "state", "loading_start", "loading_end", "change", "map"])
     q.add_argument("--frames", type=int)
     q.add_argument("--frame", type=int)
     q.add_argument("--state")
     q.add_argument("--map", help="map: until the game is in this map (default: any other map than now)")
-    q.add_argument("--timeout", type=float, default=60)
+    q.add_argument("--timeout", type=finite_float, default=60)
     q = sub.add_parser("option")
     q.add_argument("action", choices=["get", "set"])
     q.add_argument("name", nargs="?")
@@ -1300,13 +1539,13 @@ def main(argv=None):
                    help="read: how to print the bytes")
     q = sub.add_parser("teleport", help="(OoT) the debug teleport: a destination's index or map; none lists them")
     q.add_argument("to", nargs="?")
-    q.add_argument("--timeout", type=float, default=10, help="seconds for the game to take it (it does in play)")
-    q.add_argument("--arrive", type=float, metavar="SECS", help="then wait up to SECS until the game is in the map")
+    q.add_argument("--timeout", type=finite_float, default=10, help="seconds for the game to take it (it does in play)")
+    q.add_argument("--arrive", type=finite_float, metavar="SECS", help="then wait up to SECS until the game is in the map")
     q.add_argument("--no-wait", action="store_true", help="reply once asked, without whether the game took it")
     q = sub.add_parser("age", help="(OoT) the Debug tab's Switch age: child or adult (none: the other age)")
     q.add_argument("to", nargs="?", choices=["child", "adult"])
-    q.add_argument("--timeout", type=float, default=10, help="seconds for the game to take it (it does in play)")
-    q.add_argument("--arrive", type=float, metavar="SECS", help="then wait up to SECS until the map has reloaded (its "
+    q.add_argument("--timeout", type=finite_float, default=10, help="seconds for the game to take it (it does in play)")
+    q.add_argument("--arrive", type=finite_float, metavar="SECS", help="then wait up to SECS until the map has reloaded (its "
                    "load ended)")
     q.add_argument("--no-wait", action="store_true", help="reply once asked, without whether the game took it")
     q = sub.add_parser("saves", help="the save folder the game uses: its files, newest slot first")
@@ -1315,6 +1554,8 @@ def main(argv=None):
     q = sub.add_parser("slots", help="the save slots: last written, sizes, scene; * the newest (Continue's)")
     q.add_argument("--thumbs", metavar="DIR", help="each slot's file-select picture written there as slot_NN.jpg")
     sub.add_parser("quit")
+    q = sub.add_parser("relaunch", help="the game starts again (the Insert menu's Restart now); back when it answers")
+    q.add_argument("--timeout", type=float, default=120, help="seconds for the game started again to answer")
     q = sub.add_parser("raw")
     q.add_argument("request", help="a JSON request object")
     q = sub.add_parser("runs", help="list run manifests under a root")

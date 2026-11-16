@@ -194,6 +194,8 @@ void log_program_stages(const NvnState& s, const char* why);
 Shader::AttributeType attribute_type_of(uint32_t vattr);
 Shader::TextureType handle_texture_type(uint32_t handle);
 void shader_stats(int64_t* translated, int64_t* failed);
+/// (longshot) After the preparation's "N failed": a line for each "not translated" line's programs, all of them (those lines stop at 30)
+void shader_fail_lines();
 double shader_translate_ms();
 void program_released(const nvn_prog* p);
 /// (longshot) A guest program as the game makes it (nvnProgramSetShaders), before any draw (vk_programs.cpp): its stages' code keys

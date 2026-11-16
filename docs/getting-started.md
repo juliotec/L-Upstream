@@ -8,6 +8,9 @@ Longshot is built on your PC, from your own copy of the game, by the Longshot La
 Your copy of the game must be the supported version, and your PC needs a Vulkan 1.3 graphics card with 4 GB of video
 memory (8 GB and mesh shaders recommended), 16 GB of memory and about 60 GB free while building. See [what you need](../README.md#what-you-need).
 
+The launcher checks your selected game files before the build. If it reports a different game build,
+compare its message with the supported identifiers in the requirements above.
+
 ## 2. Download the launcher
 
 - [Download for Windows](https://longshot.magicbean.dev/download/launcher/windows)
@@ -16,6 +19,8 @@ memory (8 GB and mesh shaders recommended), 16 GB of memory and about 60 GB free
 
 **Linux and SteamOS:** before opening the `.AppImage`, open its **Properties** in your file manager and enable
 **Allow executing file as program** (the wording differs between desktops). Then open the launcher.
+**On a Steam Deck,** read [Playing on the Steam Deck](steam-deck-playbook.md) before your first build: what the
+build costs on the Deck, which two switches help, and the one clock setting worth knowing.
 
 For the full setup instructions, follow [the Windows steps](../README.md#on-windows) or
 [the Linux steps](../README.md#on-linux).
