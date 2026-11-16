@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <map>
 #include <memory>
@@ -37,7 +38,7 @@ struct BufferRef {
     VkBuffer buffer{}; uint64_t offset = 0, size = 64; VkDeviceAddress address = 0;
     explicit operator bool() const { return buffer != VK_NULL_HANDLE; }
 };
-struct { VkDevice device{}; VkPhysicalDeviceProperties props{}; } dev;
+struct { VkDevice device{}; VkPhysicalDeviceProperties props{}; bool null_descriptor = false; } dev;
 uint64_t frame_no = 1, mem_rec_value = 1, mem_completed = 0, mapping = 0x1000;
 bool mapped = true;
 std::atomic<unsigned> lookups{0};
@@ -73,7 +74,14 @@ Host* host = &host_value;
 int view_nvn_format(const nvn_tex*, const nvn_view* v) { return v ? v->format : 42; }
 struct Format { VkFormat format; };
 Format vk_format(int nf) {
-    return {nf == 42 ? VK_FORMAT_R32_UINT : nf == 43 ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_UNDEFINED};
+    return {nf == 42 ? VK_FORMAT_R32_UINT : nf == 43 ? VK_FORMAT_R32_SFLOAT :
+            nf == 44 ? VK_FORMAT_R32G32B32_SFLOAT : VK_FORMAT_UNDEFINED};
+}
+VkFormatProperties format_props(VkFormat f) {   // (format 44: the device has no texel buffers of it)
+    VkFormatProperties fp{};
+    if (f != VK_FORMAT_R32G32B32_SFLOAT)
+        fp.bufferFeatures = VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT | VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
+    return fp;
 }
 int nvn_block_size(int, int* w, int* h) { *w = *h = 1; return 4; }
 void texture_gpu_wrote(uint64_t gpu, uint64_t size) { writes++; written_gpu = gpu; written_size = size; }
@@ -91,6 +99,13 @@ const char* getenv(const char*) { return nullptr; }   // (unrelated diagnostic t
 bool env_on(const char* name) { const char* v = getenv(name); return v && !env_value_off(v); }   // (the switches through the stand-in)
 VkDeviceAddress vkGetBufferDeviceAddress(VkDevice, const VkBufferDeviceAddressInfo*) { return 0; }
 void destroy_buffer(VkBuffer, VmaAllocation) {}
+unsigned dummy_buffers = 0;
+bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool, VkBuffer& buffer, VmaAllocation& alloc, void** mapped) {
+    static uint8_t bytes[16];
+    assert(size == 16 && (usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) && (usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT));
+    dummy_buffers++; buffer = handle<VkBuffer>(9); alloc = nullptr; *mapped = bytes;
+    return true;
+}
 void vkDestroyBuffer(VkDevice, VkBuffer buffer, const VkAllocationCallbacks*) {
     std::lock_guard lk(driver_mu);
     for (const auto& [view, ci] : live) { (void)view; assert(ci.buffer != buffer); }
@@ -150,6 +165,15 @@ void run(const std::string& test) {
     } else if (test == "clamped-range") {
         dev.props.limits.maxTexelBufferElements = 8; auto v = get(tex); assert(v && live.at(v).range == 32);
         tex.d.width = 32; assert(get(tex) == v && creates == 1);
+    } else if (test == "unsupported") {
+        dev.null_descriptor = true;
+        nvn_view v{44}; assert(!get(tex, &v)); assert(!get(tex, &v, true));
+        assert(creates == 0 && lookups == 0 && writes == 0);
+    } else if (test == "unsupported-dummy") {   // (no nullDescriptor: a valid view, never VK_NULL_HANDLE, VUID 02995)
+        nvn_view v{44}; const VkBufferView a = get(tex, &v), s = get(tex, &v, true);
+        assert(a && a == s && live.at(a).format == VK_FORMAT_R32_SFLOAT && live.at(a).buffer == handle<VkBuffer>(9));
+        assert(dummy_buffers == 1 && creates == 3 && lookups == 0 && writes == 0);
+        live.clear();   // (the dummies live as long as the device)
     } else if (test == "invalid") {
         assert(!texel_buffer_view(nullptr, nullptr, false));
         tex.gpu = 0; assert(!get(tex)); tex.gpu = 0x1000;
