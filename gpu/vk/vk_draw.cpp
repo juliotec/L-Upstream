@@ -3236,9 +3236,10 @@ struct SamplerInfo {
     uint32_t aniso_on, compare_on, compare_op, border;
     float custom[4];      // (a custom border colour's, else 0)
     uint32_t reduction;   // (VK_SAMPLER_REDUCTION_MODE_* + 1; 0: none)
+    uint32_t border_format;   // (a custom border colour's VkFormat, else 0)
     bool operator==(const SamplerInfo& o) const { return !std::memcmp(this, &o, sizeof o); }
 };
-static_assert(sizeof(SamplerInfo) == 19 * 4, "SamplerInfo is compared as bytes: no padding");
+static_assert(sizeof(SamplerInfo) == 20 * 4, "SamplerInfo is compared as bytes: no padding");
 struct SamplerInfoHash {
     size_t operator()(const SamplerInfo& i) const {
         uint32_t w[sizeof i / 4];
@@ -3259,10 +3260,13 @@ SamplerInfo sampler_info(const VkSamplerCreateInfo& ci) {
     const bool border = ci.addressModeU == b || ci.addressModeV == b || ci.addressModeW == b;
     i.border = border ? (uint32_t)ci.borderColor : 0u;
     for (auto* n = static_cast<const VkBaseInStructure*>(ci.pNext); n; n = n->pNext) {
-        if (n->sType == VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT && border)
-            std::memcpy(i.custom, reinterpret_cast<const VkSamplerCustomBorderColorCreateInfoEXT*>(n)->customBorderColor.float32,
-                        sizeof i.custom);
-        else if (n->sType == VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO)
+        if (n->sType == VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT) {
+            const auto* bc = reinterpret_cast<const VkSamplerCustomBorderColorCreateInfoEXT*>(n);
+            if (border) std::memcpy(i.custom, bc->customBorderColor.float32, sizeof i.custom);
+            // (the format whatever the address modes: VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015 has no
+            // condition on them, so a sampler without it is not one for a view of those formats)
+            i.border_format = (uint32_t)bc->format;
+        } else if (n->sType == VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO)
             i.reduction = (uint32_t)reinterpret_cast<const VkSamplerReductionModeCreateInfo*>(n)->reductionMode + 1u;
     }
     return i;
@@ -3339,6 +3343,16 @@ bool sampler_room() {
     while (b.made.size() >= keep && sampler_retire()) {}
     return true;
 }
+/// (longshot) The format a custom border colour names for a view of view_format: the four packed 16-bit formats
+/// VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015 requires it for; VK_FORMAT_UNDEFINED for the rest, as the
+/// customBorderColorWithoutFormat feature (required for custom border colours here) allows
+VkFormat border_format(VkFormat view_format) {
+    switch (view_format) {
+    case VK_FORMAT_B4G4R4A4_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16: case VK_FORMAT_A1B5G5R5_UNORM_PACK16:
+    case VK_FORMAT_B5G5R5A1_UNORM_PACK16: return view_format;
+    default: return VK_FORMAT_UNDEFINED;
+    }
+}
 VkSamplerAddressMode wrap(uint8_t w) {
     switch (w) {
     case NVN_WRAP_MODE_REPEAT: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -3382,28 +3396,30 @@ float upscale_lod_bias() {
     return upscaler_rows::upscale_lod_bias_for(up, resolution_scale(), offset);   // (share in 1/10000 of the output; 0: Auto)
 }
 /// compare: the shader reads depth with a reference (a sampler without one cannot compare). one_level: the image bound with it
-/// has a single level, and the Anisotropic filtering row's anisotropy is not added (the game's own stays)
-VkSampler sampler_make(int id, bool compare, bool one_level);
+/// has a single level, and the Anisotropic filtering row's anisotropy is not added (the game's own stays). view_format: the
+/// format of the view it samples (its custom border colour's, border_format; VK_FORMAT_UNDEFINED: none known)
+VkSampler sampler_make(int id, bool compare, bool one_level, VkFormat view_format);
 // (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:
 // ~48000 times a frame at 3000 draws. Now a thread's table by id and compare, good while no sampler registration's contents
 // changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0 turns off both this table and the parameters' cache inside
 // sampler_make; =1 or the Sampler cache row turns the parameters' cache on (this table stays on, as it is without the option)
 bool sampler_cache_on();   // (longshot, RX_VK_SAMPLER_CACHE and the Sampler cache row: defined below with the descriptor fingerprint's)
-VkSampler sampler_for(int id, bool compare, bool one_level) {
+VkSampler sampler_for(int id, bool compare, bool one_level, VkFormat view_format) {
     static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
-    if (!on || id < 0 || id >= 4096) return sampler_make(id, compare, one_level);
-    struct Entry { uint64_t gen; VkSampler s; uint64_t frame; };
+    if (!on || id < 0 || id >= 4096) return sampler_make(id, compare, one_level, view_format);
+    struct Entry { uint64_t gen; VkSampler s; uint64_t frame; VkFormat border; };   // (border: border_format of the view)
     static thread_local Entry table[2][2][4096];   // (gen 0: never filled; the generation starts at 1)
     const uint64_t gen = sampler_registrations_generation();   // (read first: a registration after it makes the next call miss)
     // (near the device's sampler limit, an entry lasts a present: the book sees the samplers in use, sampler_book)
     const uint64_t frame = sampler_book.watching.load(std::memory_order_relaxed) ? texture_frame_no() : 0;
+    const VkFormat border = border_format(view_format);
     Entry& e = table[compare ? 1 : 0][one_level ? 1 : 0][id];
-    if (e.gen == gen && e.frame == frame) return e.s;
-    const VkSampler made = sampler_make(id, compare, one_level);
-    if (made) e = {gen, made, frame};   // (a failed creation is retryable without a new registration)
+    if (e.gen == gen && e.frame == frame && e.border == border) return e.s;
+    const VkSampler made = sampler_make(id, compare, one_level, view_format);
+    if (made) e = {gen, made, frame, border};   // (a failed creation is retryable without a new registration)
     return made;
 }
-VkSampler sampler_make(int id, bool compare, bool one_level) {
+VkSampler sampler_make(int id, bool compare, bool one_level, VkFormat view_format) {
     nvn_samp_par p{};
     bool known = false;
     if (sampler_cache_on()) {   // (longshot: what an id holds stays cached with its version on this thread: resolving an id
@@ -3430,6 +3446,8 @@ VkSampler sampler_make(int id, bool compare, bool one_level) {
         std::memcpy(&w, b + i, std::min<size_t>(8, sizeof p - i));
         key = mix(key, w);
     }
+    const VkFormat bfmt = border_format(view_format);   // (part of the key only for the formats that name it)
+    if (bfmt != VK_FORMAT_UNDEFINED) key = mix(key, (uint64_t)bfmt);
     static thread_local std::unordered_map<uint64_t, VkSampler> mine;   // (dropped at a retirement, its samplers may be going, and
     static thread_local uint64_t mine_gen = 0, mine_frame = 0;          // at each present near the limit: sampler_for's note)
     const uint64_t g = sampler_book.retired_gen.load(std::memory_order_acquire);
@@ -3536,7 +3554,9 @@ VkSampler sampler_make(int id, bool compare, bool one_level) {
     else if (dev.custom_border_color) {
         ci.borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
         std::memcpy(bc.customBorderColor.float32, p.border, 16);
-        bc.format = VK_FORMAT_UNDEFINED;
+        bc.format = bfmt;   // (VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015)
+        if (bfmt != VK_FORMAT_UNDEFINED)   // (VUID-VkSamplerCreateInfo-borderColor-04442: within what the UNORM format holds)
+            for (float& c : bc.customBorderColor.float32) c = c > 0.0f ? std::min(c, 1.0f) : 0.0f;
         ci.pNext = &bc;
     } else {
         ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
@@ -3651,6 +3671,7 @@ struct HandleHit {
     uint32_t version; // (the slot's, when resolved)
     uint32_t tex_epoch;   // (the texture epoch it was last touched in)
     bool sampling;    // (its use reads the texture's contents)
+    VkFormat format;  // (the view's; VK_FORMAT_UNDEFINED without one)
 };
 TLS_OBJECT(handle_hits, FlatMap<uint64_t, HandleHit>)
 // (longshot) RX_VK_TRACE_TEX=<w>x<h>,...: each draw sampling a texture of that size is logged with its state, every 30th frame, 600 lines: a
@@ -3690,7 +3711,7 @@ bool log_img_wanted(uint64_t key) {   // (longshot) RX_VK_LOG_IMG=<key prefix,..
 }
 
 VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, VkFormat storage_as = VK_FORMAT_UNDEFINED,
-                            Texture** tex_out = nullptr, uint32_t* level_out = nullptr) {
+                            Texture** tex_out = nullptr, uint32_t* level_out = nullptr, VkFormat* format_out = nullptr) {
     const uint32_t version = texture_slot_version((int)(handle & 0xFFFFF));
     const uint64_t dgen = texture_destroy_generation();
     const uint64_t key = (uint64_t)(handle & 0xFFFFF) | (uint64_t)want << 20 | (uint64_t)use << 28 | (uint64_t)storage_as << 32;
@@ -3716,6 +3737,7 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
         }
         if (tex_out) *tex_out = it->second.tex;
         if (level_out) *level_out = it->second.level;
+        if (format_out) *format_out = it->second.format;
         return it->second.view;
     }
     ParLock lk;
@@ -3744,9 +3766,11 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
                      has_view && v.set_format ? v.format : 0, has_view && v.set_target ? v.target : -1, (int)want, (int)use);
         }
     }
-    handle_hits()[key] = {view, tex, dgen, level, version, texture_epoch(), use == ViewUse::Sample || use == ViewUse::Storage};
+    const VkFormat format = view ? last_view_format : VK_FORMAT_UNDEFINED;   // (texture_view set it for the view it made)
+    handle_hits()[key] = {view, tex, dgen, level, version, texture_epoch(), use == ViewUse::Sample || use == ViewUse::Storage, format};
     if (tex_out) *tex_out = tex;
     if (level_out) *level_out = level;
+    if (format_out) *format_out = format;
     return view;
 }
 
@@ -4608,6 +4632,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             uint32_t prev_handle = 0;
             VkImageView prev_view = VK_NULL_HANDLE;
             Texture* prev_tex = nullptr;
+            VkFormat prev_format = VK_FORMAT_UNDEFINED;
             bool have_prev = false;
             for (uint32_t k = 0; k < d.count; k++) {
                 // (Fritchii d603d98bb) A handle word where a storage buffer of the same program keeps its address is not a
@@ -4625,11 +4650,12 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 desc_fp_note(handle);   // (Descriptor reuse)
                 Texture* tex = nullptr;
                 VkImageView view = VK_NULL_HANDLE;
+                VkFormat view_format = VK_FORMAT_UNDEFINED;   // (the sampler's custom border colour names it: sampler_make)
                 if (is_table && have_prev && handle == prev_handle) {   // (a table repeats entries: unused ones are 0)
-                    view = prev_view, tex = prev_tex;
+                    view = prev_view, tex = prev_tex, view_format = prev_format;
                 } else {
                     upload_defer_ok = st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT;   // (a draw's: its new ASTC textures may wait a frame)
-                    view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex) : VK_NULL_HANDLE;
+                    view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex, nullptr, &view_format) : VK_NULL_HANDLE;
                     upload_defer_ok = false;
                     // (Lichii bd0171f7) A depth-compare sample of a colour texture is undefined and differs between vendors: a
                     // handle read from memory (an unused or stale table entry) that names one binds nothing
@@ -4638,9 +4664,9 @@ void build_descriptors(const NvnState& s, const Program& p) {
                         if (told++ < 8)
                             logf("vk: handle table: element %u of program %016llx names texture #%u (format %d) for a depth "
                                  "comparison: bound as nothing", k, (unsigned long long)p.key, tex->id, (int)tex->format);
-                        view = VK_NULL_HANDLE, tex = nullptr;
+                        view = VK_NULL_HANDLE, tex = nullptr, view_format = VK_FORMAT_UNDEFINED;
                     }
-                    if (is_table) prev_handle = handle, prev_view = view, prev_tex = tex, have_prev = true;
+                    if (is_table) prev_handle = handle, prev_view = view, prev_tex = tex, prev_format = view_format, have_prev = true;
                 }
                 // (the shader clamps its index to the last element: a table that names a texture there may run past the
                 // array, and its lights from that index on all take this one's texture. Said once)
@@ -4676,9 +4702,9 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                tex ? tex->width : 0, tex ? tex->height : 0, tex ? tex->layers : 0, tex ? (void*)tex->image : nullptr,
                                (void*)view, view ? "" : " (dummy)");
                 if (view && tex && tex->gpu_written) draw_sampled().push_back(tex);
-                if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
+                if (!view) view = dummies.view[(int)vt], view_format = VK_FORMAT_UNDEFINED, st_dummy_textures += handle != 0;
                 // (an image of one level: no anisotropy of the row's, sampler_make)
-                out.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth, tex && tex->levels <= 1), view,
+                out.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth, tex && tex->levels <= 1, view_format), view,
                                     VK_IMAGE_LAYOUT_GENERAL});
             }
             w.pImageInfo = &out.imgs[first];
