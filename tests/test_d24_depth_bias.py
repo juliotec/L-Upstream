@@ -67,6 +67,13 @@ def main():
           "FORCE_UNORM for bias_unorm, the format's unit otherwise")
     check(re.search(r"\} else\s*vkCmdSetDepthBias\(cmd, d\.bias\[0\], d\.bias\[1\], d\.bias\[2\]\);", b) is not None,
           "vkCmdSetDepthBias without the extension")
+    # VUID-vkCmdSetDepthBias-depthBiasClamp-00790 / VUID-VkDepthBiasInfoEXT-depthBiasClamp-08950: 0 without the feature
+    check("dev.depth_bias_clamp = f.features.depthBiasClamp == VK_TRUE;" in main_cpp,
+          "the depthBiasClamp feature is read from the enabled features")
+    sb = draw.find("d.bias[1] = s.poly_offset[2]")
+    zb = draw.find("if (!dev.depth_bias_clamp) d.bias[1] = 0.0f;")
+    check(sb >= 0 and zb > sb and zb < draw.find("if (DYN_CHANGED(bias)"),
+          "the game's bias clamp is 0 on a device without depthBiasClamp (00790, 08950)")
 
     if fails:
         print("%d check(s) failed" % len(fails))
