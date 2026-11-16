@@ -511,6 +511,9 @@ void DefineSoftwareMatrixFunction(EmitContext& ctx) {
 // words of D back. False when the tiles do not fit the device's shared memory: the program then takes the software
 // multiply.
 bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program) {
+    // (only where every subgroup is full: the cooperative matrix operations and the subgroup barriers then run with all
+    // 32 lanes, as the startup test checked them. Otherwise the software multiply)
+    if (!mma_wmma16_full_subgroups || program.workgroup_size[0] == 0 || program.workgroup_size[0] % 32 != 0) return false;
     const u32 threads = std::max(1U, program.workgroup_size[0] * program.workgroup_size[1] * program.workgroup_size[2]);
     const u32 subgroups = (threads + 31) / 32;
     const bool explicit_layout = ctx.uses_explicit_workgroup_layout && program.shared_memory_size != 0;

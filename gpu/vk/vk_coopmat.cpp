@@ -457,6 +457,11 @@ void wmma16_init() {
         software_multiplies("cooperative matrices of 16x16x16 only, and no 32-lane compute subgroups");
         return;
     }
+    if (!dev.vk13.computeFullSubgroups) {   // (a subgroup with lanes missing would run the tiles: vk_draw.cpp pin_subgroup)
+        software_multiplies("cooperative matrices of 16x16x16 only, and no full compute subgroups");
+        return;
+    }
+    mma_wmma16_full_subgroups = true;
     mma_wmma16_fast = false;
     mma_wmma16_shared_limit = dev.props.limits.maxComputeSharedMemorySize;
     if (!test_multiply_wmma16()) {
