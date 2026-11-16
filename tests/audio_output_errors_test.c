@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../host/audio_output_devices.h"
 
 typedef void *HWAVEOUT;
 typedef char *LPSTR;
@@ -32,7 +33,20 @@ static int queued[10];
 static WAVEHDR *known[10];
 static char last_log[512];
 
-static const char *test_getenv(const char *name) { (void)name; return NULL; }
+static const char *device_override;
+static char requested_output[HOS_OUTPUT_ID_CAP];
+static unsigned requested_generation = 1;
+static int named_device = 1, route_state;
+static int fail_named_open;
+static const char *test_getenv(const char *name) { return !strcmp(name, "HOS_AUDIO_DEVICE") ? device_override : NULL; }
+void hos_audio_output_preference(char *id, int capacity, unsigned *generation) {
+    if (*generation != requested_generation) {
+        CHECK(audio_output_copy_id(id, (size_t)capacity, requested_output));
+        *generation = requested_generation;
+    }
+}
+int hos_audio_output_resolve(const char *id) { return !strcmp(id, "named-endpoint") ? named_device : -1; }
+void hos_audio_output_report(int state) { route_state = state; }
 static void hos_log(const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -54,9 +68,10 @@ static MMRESULT test_open(HWAVEOUT *out, unsigned device, const WAVEFORMATEX *f,
     CHECK(f->nBlockAlign == 2 * f->nChannels && f->nAvgBytesPerSec == 48000 * f->nBlockAlign);
     last_channels = f->nChannels;
     open_calls++;
+    if (fail_named_open && device == (unsigned)named_device) return 7;
     if (opens_fail) return 6;   /* (MMSYSERR_NODRIVER: the audio service down) */
     if (fail_open || (fail_open6 && f->nChannels == 6)) return 7;   /* (MMSYSERR_NOMEM; a device without 5.1: 32) */
-    *out = (void *)(uintptr_t)1;
+    *out = (void *)(uintptr_t)(device == WAVE_MAPPER ? 1 : device + 2);
     return 0;
 }
 static MMRESULT test_prepare(HWAVEOUT out, WAVEHDR *h, unsigned size) {
@@ -74,7 +89,7 @@ static MMRESULT test_write(HWAVEOUT out, WAVEHDR *h, unsigned size) {
     write_calls++;
     if (gone_write_at && write_calls == gone_write_at) return 6;   /* (MMSYSERR_NODRIVER) */
     if (!(h->dwFlags & WHDR_PREPARED)) return 34; /* WAVERR_UNPREPARED: no completion follows. */
-    if (fail_write && write_calls == 1) return 7; /* MMSYSERR_NOMEM: no buffer was queued. */
+    if (fail_write && (fail_write < 0 || write_calls == 1)) return 7; /* MMSYSERR_NOMEM: no buffer was queued. */
     queued[i] = 1;
     h->dwFlags = (h->dwFlags & ~WHDR_DONE) | WHDR_INQUEUE;
     accepted++;
@@ -156,9 +171,163 @@ int main(int argc, char **argv) {
         !strcmp(scenario, "downmix") || !strcmp(scenario, "retry"))
         speakers = 6;
     fail_open6 = !strcmp(scenario, "fallback") || !strcmp(scenario, "upmix");
-    opens_fail = !strcmp(scenario, "retry");
+    opens_fail = !strcmp(scenario, "retry") || !strcmp(scenario, "same-layout-retry");
     output_open();
-    if (fail_open6) {
+    if (!strcmp(scenario, "named-stall-budget") || !strcmp(scenario, "named-backoff")) {
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        uint64_t previous_wait = 0;
+        for (int attempt = 0; attempt < 10; attempt++) {
+            CHECK(out_named_active && wout);
+            frames(NBLOCKS * 2, 0); /* Open succeeds, but no queued block ever completes. */
+            now_ms += 1;
+            frames(1, 0);
+            now_ms += 1501;
+            frames(1, 0);
+            printf("OBSERVE %s: named stall %d, named=%d fallback=%d reopens=%d\n",
+                   scenario, attempt + 1, out_named_active, !!(route_state & HOS_OUTPUT_FALLBACK), out_reopens);
+            fflush(stdout);
+            CHECK(wout && !out_named_active && (route_state & HOS_OUTPUT_FALLBACK));
+            const uint64_t delay = out_named_retry_at - now_ms;
+            if (!strcmp(scenario, "named-backoff")) {
+                CHECK(delay >= previous_wait);
+                CHECK(attempt == 0 || delay > previous_wait || delay == 60000);
+                previous_wait = delay;
+            }
+            const int before = accepted;
+            frames(4, 1);
+            CHECK(accepted == before + 2); /* Fallback still plays after more than six named stalls. */
+            now_ms = out_named_retry_at;
+            output_route_update();
+        }
+    } else if (!strcmp(scenario, "named-open-failure")) {
+        fail_named_open = 1;
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(wout && !out_named_active && (route_state & HOS_OUTPUT_FALLBACK));
+        frames(4, 1);
+        for (int attempt = 0; attempt < 8; attempt++) {
+            complete_all();
+            if (fill_frames) frames(1, 1);
+            frames(3, 0); /* A queued fallback block plus a partially mixed one. */
+            const int closes = close_calls, resets = reset_calls, fill = fill_frames, calls = open_calls;
+            int queued_before[10]; memcpy(queued_before, queued, sizeof queued);
+            HWAVEOUT fallback = wout;
+            now_ms = out_named_retry_at;
+            output_route_update();
+            CHECK(open_calls > calls); /* Actually attempted the resolvable named endpoint. */
+            CHECK(wout == fallback && close_calls == closes && reset_calls == resets && fill_frames == fill);
+            CHECK(!memcmp(queued_before, queued, sizeof queued));
+            frames(3, 1);
+        }
+        fail_named_open = 0;
+        speakers = 6;
+        now_ms = out_named_retry_at;
+        output_route_update(); /* A successful probe switches layout before the next mix. */
+        CHECK(out_named_active && out_channels == 6 && !route_state && fill_frames == 0);
+        mixed_frame(out_channels);
+        CHECK(fill_frames == 1 && !blocks_hold(7777));
+    } else if (!strcmp(scenario, "named-retry-stereo")) {
+        fail_named_open = 1, speakers = 6;
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(!out_named_active && out_channels == 6);
+        fail_named_open = 0, fail_open6 = 1;
+        now_ms = out_named_retry_at;
+        output_route_update();
+        CHECK(out_named_active && out_channels == 2 && last_channels == 2 && last_device == (unsigned)named_device);
+        mixed_frame(out_channels);
+        CHECK(fill_frames == 1 && !blocks_hold(7777));
+    } else if (!strcmp(scenario, "named-write-failure")) {
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(out_named_active);
+        out_named_retry_wait = 60000;
+        fail_write = -1;
+        frames(6200, 1);
+        CHECK(accepted == 0 && unprepare_calls > 3000);
+        CHECK(out_named_retry_wait == 60000); /* Reusing a never-queued header is not consumed audio. */
+    } else if (!strcmp(scenario, "named-healthy-reset")) {
+        fail_named_open = 1;
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(out_named_retry_wait > 3000);
+        /* Even a long-lived healthy fallback must retain the named endpoint's backoff. */
+        frames(6200, 1);
+        CHECK(out_named_retry_wait > 3000);
+        fail_named_open = 0;
+        now_ms = out_named_retry_at;
+        output_route_update();
+        CHECK(out_named_active && out_named_retry_wait > 3000);
+        now_ms += 60000;
+        frames(NBLOCKS * 2, 0); /* Elapsed time and queued writes are not proof of consumption. */
+        CHECK(out_named_retry_wait > 3000);
+        complete_all();
+        frames(6200, 1); /* More than 30 seconds of completed 10 ms blocks. */
+        CHECK(out_named_retry_wait == 3000);
+    } else if (!strcmp(scenario, "selection")) {
+        CHECK(last_device == WAVE_MAPPER);
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(last_device == 1 && out_named_active && !route_state && close_calls == 1);
+        requested_output[0] = 0, requested_generation++;
+        output_route_update();
+        CHECK(last_device == WAVE_MAPPER && !out_named_active && close_calls == 2);
+    } else if (!strcmp(scenario, "named-missing")) {
+        named_device = -1;
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(last_device == WAVE_MAPPER && (route_state & HOS_OUTPUT_FALLBACK));
+        const int calls = open_calls;
+        named_device = 73; /* The endpoint returns at a new index, beyond the former microphone-size limits. */
+        output_route_update();
+        CHECK(open_calls == calls);
+        now_ms += 3001;
+        output_route_update();
+        CHECK(last_device == 73 && out_named_active && !route_state);
+    } else if (!strcmp(scenario, "named-override")) {
+        device_override = "7";
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(last_device == 7 && (route_state & HOS_OUTPUT_OVERRIDE) && !out_named_active);
+    } else if (!strcmp(scenario, "named-format")) {
+        speakers = 6, fail_open6 = 1;
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(last_device == 1 && last_channels == 2 && out_named_active);
+        CHECK(out_channels == 2 && !(route_state & HOS_OUTPUT_FALLBACK));
+    } else if (!strcmp(scenario, "layout-reopen")) {
+        /* This PCM was mixed for stereo. Reopening as surround must drop it before the ring copy. */
+        speakers = 6, default_key++, now_ms += 1001;
+        mixed_frame(2);
+        CHECK(out_channels == 6 && fill_frames == 0 && accepted == 0 && !blocks_hold(7777));
+        frames(2, 1);
+        CHECK(fill_frames == 0 && accepted == 1 && hdr[0].dwBufferLength == FRAME * 2 * 6 * 2);
+        output_close();
+        out_retry = 1, out_retry_at = now_ms, speakers = 2, now_ms += 1001;
+        mixed_frame(6);
+        CHECK(out_channels == 2 && fill_frames == 0 && accepted == 1);
+        frames(2, 1);
+        CHECK(accepted == 2 && hdr[0].dwBufferLength == FRAME * 2 * 2 * 2);
+    } else if (!strcmp(scenario, "named-default-change")) {
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        int calls = open_calls;
+        default_key++, now_ms += 2000;
+        frames(2, 1);
+        CHECK(last_device == 1 && open_calls == calls);
+    } else if (!strcmp(scenario, "pre-mix")) {
+        /* Same order as renderer_main: route first, then construct PCM using the selected sink's channels. */
+        speakers = 6;
+        strcpy(requested_output, "named-endpoint"), requested_generation++;
+        output_route_update();
+        CHECK(out_channels == 6 && out_named_active && fill_frames == 0);
+        mixed_frame(out_channels);
+        CHECK(fill_frames == 1 && !blocks_hold(7777));
+        frames(1, 1);
+        CHECK(accepted == 1 && hdr[0].dwBufferLength == FRAME * 2 * 6 * 2);
+        CHECK(blocks[0][FRAME * 6 - 1] == (int16_t)(100 + FRAME * 6 - 1));
+    } else if (fail_open6) {
         CHECK(open_calls == 4 && last_channels == 2 && last_device == WAVE_MAPPER);   /* (5.1 on all three, then stereo) */
         CHECK(out_channels == 2 && hdr[0].dwBufferLength == FRAME * 2 * 2 * 2);
         CHECK(strstr(last_log, "default device") && strstr(last_log, "stereo"));
@@ -180,16 +349,23 @@ int main(int argc, char **argv) {
             CHECK(accepted == 20 && !logs);
         }
     } else if (opens_fail) {
-        CHECK(open_calls == 6 && !wout && out_channels == 2);   /* (5.1 on all three, then stereo on all three) */
+        const int attempts = !strcmp(scenario, "same-layout-retry") ? 3 : 6;
+        CHECK(open_calls == attempts && !wout && out_channels == 2);
         mixed_frame(2);
-        CHECK(open_calls == 6);          /* not again within the second */
-        opens_fail = 0;                  /* a device plugged in, and it takes 5.1 */
+        CHECK(open_calls == attempts);   /* not again within the second */
+        opens_fail = 0;                  /* a device plugged in, and it takes the requested layout */
         now_ms += 1000;
         mixed_frame(2);
-        CHECK(wout && open_calls == 7 && out_channels == 6);
-        CHECK(fill_frames == 0 && !write_calls && !blocks_hold(7777));
-        frames(2, 1);
-        CHECK(accepted == 1 && blocks[0][FRAME * 6] == 31);
+        CHECK(wout && open_calls == attempts + 1 && !write_calls && !blocks_hold(7777));
+        if (!strcmp(scenario, "same-layout-retry")) {
+            CHECK(out_channels == 2 && fill_frames == 1);
+            frames(1, 1);
+        } else {
+            CHECK(out_channels == 6 && fill_frames == 0);
+            frames(2, 1);
+        }
+        CHECK(accepted == 1);
+        CHECK(blocks[0][FRAME * out_channels] == (!strcmp(scenario, "same-layout-retry") ? 0 : 31));
     } else if (fail_open) {
         CHECK(open_calls == 3);   /* (the default, then both devices; HOS_AUDIO_DEVICE unset) */
         CHECK(!wout);

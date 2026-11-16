@@ -45,6 +45,7 @@ def main():
     # vk_formats.cpp: the ASTC tables, vk_format (astc_native: the made-up device's answer below)
     astc_tables = block(fmts, 'namespace {\nconstexpr int kAstcBw', True)
     formats = '\n'.join([astc_tables, 'namespace {\n' + block(fmts, 'VkFormat depth24_or_32(VkFormat d24, VkFormat d32)') + '\n}',
+                         'namespace {\n' + block(fmts, 'bool r5g5b5a1_sampled()') + '\n}',
                          block(fmts, 'VkFormatInfo vk_format(int nvn_format)'),
                          block(fmts, 'bool is_depth_format(VkFormat f)'), block(fmts, 'bool has_stencil(VkFormat f)')])
     texture = '\n'.join(block(tex, m) for m in (

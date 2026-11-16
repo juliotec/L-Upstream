@@ -71,6 +71,9 @@ void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 void mic_chosen() {}
+int output_pick;
+bool output_forced() { return false; }
+void output_chosen() {}   // Playback selection is covered by test_audio_output_devices.py.
 void samplers_changed() {}
 void menu_debug_rows(int, int) {}   // (the Debug rows that apply in play: vk_draw.cpp)
 int temporal_resets = 0;

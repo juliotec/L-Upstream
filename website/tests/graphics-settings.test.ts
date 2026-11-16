@@ -94,7 +94,7 @@ test('cards take the menu\'s help, the source restart flag and README conditions
   assert(settings.every(setting => setting.summary), 'every card has the menu\'s description');
   assert(!settings.some(setting => /Applies after/.test(setting.summary)));
   assert.deepEqual(settings.filter(setting => setting.restart).map(setting => setting.name),
-    ['Aspect ratio', 'Output resolution', 'Custom output size', 'Profile', 'GPU device', 'Threaded rendering', 'Audio output', 'Skip title screen', 'Game language', 'Button prompts']);
+    ['Aspect ratio', 'Output resolution', 'Custom output size', 'Profile', 'GPU device', 'Threaded rendering', 'Speaker layout', 'Skip title screen', 'Game language', 'Button prompts']);
   assert.deepEqual(find('NVIDIA Reflex').badges, ['NVIDIA GPUs only']);
   assert.deepEqual(find('HDR tone mapper').badges, ['With HDR on Native']);
   assert(find('HDR contrast').badges.includes('While HDR is on'));
@@ -105,9 +105,9 @@ test('cards take the menu\'s help, the source restart flag and README conditions
 test('restart, coverage and condition drift between README and the menu stop publication', () => {
   // (README says after a restart where the menu applies at once, or not where it takes one)
   assert.throws(() => readGraphicsSettings(readme.replace('| | Fullscreen | Off, On', '| | Fullscreen | Off, On (after a restart)'), menu), /restart mismatch at Fullscreen/);
-  const noAudioRestart = readme.replace(/^(\| \| Audio output \|[^\n]*)after a restart/m, '$1without restarting');
-  assert.notEqual(noAudioRestart, readme, 'Audio output fixture must remove its restart annotation');
-  assert.throws(() => readGraphicsSettings(noAudioRestart, menu), /restart mismatch at Audio output/);
+  const noSpeakerRestart = readme.replace(/^(\| \| Speaker layout \|[^\n]*)after a restart/m, '$1without restarting');
+  assert.notEqual(noSpeakerRestart, readme, 'Speaker layout fixture must remove its restart annotation');
+  assert.throws(() => readGraphicsSettings(noSpeakerRestart, menu), /restart mismatch at Speaker layout/);
   // (a row of another tab added to the menu, or one README lists that the menu lacks)
   assert.throws(() => readGraphicsSettings(readme, menu.replace('{TAB_AUDIO, "Volume"', '{TAB_AUDIO, "Balance", &opts.volume, 0, 1, 1, tx_onoff, "x"},\n    {TAB_AUDIO, "Volume"')), /Audio coverage mismatch/);
   assert.throws(() => readGraphicsSettings(readme.replace(/^\| \| Mute in background .*\n/m, ''), menu), /Audio coverage mismatch/);

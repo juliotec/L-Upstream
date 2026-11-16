@@ -131,7 +131,7 @@ int main(void) {
 #include <cstring>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 enum MenuTab { TAB_CONTROLS };
-struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, handheld = 0, ultrawide = 0, stick_dead_zone = 0, game_lang = 0; } opts;   // (ultrawide: the Aspect ratio row's key)
+struct Options { int output_res = 0, vsync = 0, resolution = 0, fps_cap = 0, upscale = 0, dlss = 0, handheld = 0, ultrawide = 0, stick_dead_zone = 0, game_lang = 0, audio_output = 0; } opts;   // (renamed rows retain their keys by value)
 static int parse_output(const char* text) { return atoi(text); }   // (the Output row's own parse: not what this checks)
 ''' + block(menu, "struct Row {") + ";\n" + block(menu, "const char* tx_stick_dead_zone(") + "\n" + \
         "Row rows[] = {" + row.group(0) + "};\n" + block(menu, "const char* ini_key(") + r'''
@@ -146,6 +146,9 @@ static int parse(const char* text) {
 }
 int main() {
     CHECK(!strcmp(ini_key(rows[0]), "stick_dead_zone"));
+    Row renamed = rows[0];
+    renamed.name = "A future speaker-label rename", renamed.value = &opts.audio_output;
+    CHECK(!strcmp(ini_key(renamed), "audio_output"));
     CHECK(rows[0].preset_exempt && !rows[0].restart);
     CHECK(parse("stick_dead_zone=0\n") == 0 && parse("stick_dead_zone=3\n") == 3 && parse("stick_dead_zone=5\n") == 5);
     CHECK(parse("stick_dead_zone=9\n") == 5 && parse("stick_dead_zone=-4\n") == 0 && parse("stick_dead_zone=x\n") == 0);

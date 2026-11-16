@@ -14,13 +14,18 @@ extern "C" DWORD GetFileAttributesA(LPCSTR) { std::abort(); }
 namespace mkwvk {
 const MkwVkHost* host = nullptr;
 Device dev{}; // No physical device: hide hardware-specific Debug actions in this UI-only fixture.
+std::atomic<bool> present_native_pq{false}; // Synthetic SDR presentation, never a live HDR surface.
 void logf(const char*, ...) {}
 std::vector<std::string> gpu_device_names;
+std::vector<gpu_choice::Card> gpu_device_cards;
+std::string options_path() { std::abort(); } // Capture never reads or writes player settings.
 bool dlss_built() { return false; }
 DlssWhy dlss_why() { return DLSS_NOT_BUILT; }
 int dlss_fg_skip(unsigned* most) { if (most) *most = 0; return FG_SKIP_NOT_BUILT; }
 bool fsr4_built() { return false; }
 FsrWhy fsr4_why() { return FSR_NOT_BUILT; }
+bool xess_built() { return false; }
+XessWhy xess_why() { return XESS_NOT_BUILT; }
 bool fsr3_wanted() { return false; }
 namespace fsr3 { bool supported() { return false; } }
 namespace fsr3fi { uint32_t frames_wanted() { return 0; } }

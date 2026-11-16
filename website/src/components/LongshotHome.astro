@@ -7,6 +7,12 @@ import { buildFeed } from '../lib/progress-feed.ts';
 const feed = await buildFeed();
 const stable = feed?.stableRelease;
 const date = (value: string) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+// The game's newest version for the release section: the stable one, else the newest published v-tag (an rc).
+// Kept apart from the launcher's, which has version numbers of its own (MagicBeanDev/LongshotLauncher#135).
+const tagOf = (url: string) => decodeURIComponent(url.split('/').at(-1) || '');
+const preview = (feed?.items || []).filter(i => i.kind === 'release' && /^v\d/.test(tagOf(i.url)))
+  .sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))[0];
+const game = stable ? { ...stable, stable: true } : preview ? { tag: tagOf(preview.url), url: preview.url, publishedAt: preview.publishedAt, stable: false } : null;
 const activity = (feed?.items || []).filter(i => i.kind === 'pull' && i.status === 'merged' && i.mergedAt)
   .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt)).slice(0, 4);
 
@@ -43,7 +49,11 @@ const steps = [
     <div>
       <p class="eyebrow">DOWNLOAD</p>
       <h2 id="release-title">Get the Longshot Launcher.</h2>
-      <p>It builds the game from your copy, starts it, and keeps it up to date. <strong>No game files are included:</strong> we don't host or distribute game files, assets or keys.{stable && ` The latest Longshot is ${stable.tag}, released ${date(stable.publishedAt)}.`}</p>
+      <p>It builds the game from your copy, starts it, and keeps it up to date. <strong>No game files are included:</strong> we don't host or distribute game files, assets or keys.</p>
+      <dl class="versions" aria-label="Version numbers">
+        <div><dt>Launcher</dt><dd><span data-launcher-status><a href="https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/releases">Longshot Launcher</a></span>: the app you download. It has its own version numbers.</dd></div>
+        <div><dt>Game</dt><dd>{game ? <a href={game.url}>Longshot {game.tag}</a> : 'Longshot'}{game && `, ${game.stable ? 'released' : 'a preview released'} ${date(game.publishedAt)}`}: what the launcher builds from your copy. It downloads that version's builder for you.</dd></div>
+      </dl>
       <p class="release-files"><a href="/download/launcher/windows">Windows</a><a href="/download/launcher/windows-portable">Windows, portable</a><a href="/download/launcher/linux">Linux</a><a href="https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/releases">Launcher release notes ↗</a><a href={stable?.url || `${repository}/releases`}>Game &amp; build release notes ↗</a></p>
     </div>
     <div class="release-actions">
@@ -140,6 +150,11 @@ const steps = [
   .release h2, .team h2 { font-size: var(--text-heading); margin: .4rem 0 .5rem; }
   .release p, .team p { margin: 0; }
   .release-actions { display: flex; flex-direction: column; gap: .4rem; align-items: stretch; }
+  .versions { display: grid; gap: .3rem; margin: .7rem 0 0; font-size: var(--text-sm); }
+  .versions div { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: .75rem; }
+  .versions dt { font-weight: 700; color: var(--sl-color-white); }
+  .versions dd { margin: 0; color: var(--sl-color-gray-2); }
+  .versions a { color: var(--sl-color-text-accent); }
   .release-files { display: flex; flex-wrap: wrap; gap: .25rem 1.2rem; margin-top: .6rem !important; }
   .release-files a { display: inline-flex; align-items: center; min-height: 44px; color: var(--sl-color-text-accent); }
   .release-actions .text-link { justify-content: center; }

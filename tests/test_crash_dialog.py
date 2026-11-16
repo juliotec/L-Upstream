@@ -385,6 +385,13 @@ def source_checks():
     import make_game
     assert make_game.stale_copies([10, 11, 12, 13], {10: 1, 11: 10, 12: 99, 13: 10}, {10, 13}) == [12], \
         "the update ends a stray copy, not the game (10), its waiting helper (11) or a helper showing its window (13)"
+    folder = os.path.join("C:" + os.sep, "Games", "Longshot")
+    roots = [os.path.normcase(f) + os.sep for f in (os.path.join(folder, "bin"), folder)]
+    for name, copy in (("longshot.exe", True), (os.path.join("bin", "longshot.exe"), True),
+                       ("LongshotLauncher-v1.0.0-rc.9-windows-x64-setup.exe", False), (os.path.join("bin", "other.exe"), False),
+                       (os.path.join("saves", "longshot.exe"), False)):
+        assert make_game.game_copy(os.path.join(folder, name), roots) == copy, \
+            "only longshot.exe in the folder or bin\\ is a running game, not the launcher kept there (LongshotLauncher#139): " + name
     for fixture in ("tests/display_startup_failure_test.cpp",):   # (the checks that build a main() cut out of hos_main.c)
         assert "int hos_crash_helper_main(" in (ROOT / fixture).read_text(encoding="utf-8"), fixture + " stands in for the helper"
     code = re.sub(r"/\*.*?\*/|//[^\n]*", "", dialog, flags=re.S)

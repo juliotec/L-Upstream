@@ -1,4 +1,4 @@
-"""The Insert menu's Audio output (Auto, Stereo, 5.1, Mono) reaches the speakers the game is told about (host/nn_audio.c).
+"""The Insert menu's Speaker layout (Auto, Stereo, 5.1, Mono) reaches the speakers the game is told about (host/nn_audio.c).
 
 The real au_speakers and au_menu_output from host/nn_audio.c and the menu's ini_key, tx_audio_output and hn_audio_output
 from gpu/vk/vk_menu.cpp are compiled together: the fixture saves the row's choice under the key the menu would write, then
@@ -53,7 +53,7 @@ struct { int output_res, vsync, resolution, fps_cap, upscale, dlss, handheld, ul
 MENU
 int main(int argc, char **argv) {
     assert(argc == 7);
-    const Row output_row = {1, "Audio output", &opts.audio_output};
+    const Row output_row = {1, "Speaker layout", &opts.audio_output};
     for (int v = 0; v <= 3; v++) {
         opts.audio_output = v;
         assert(row_restart_value(output_row) == (v == 3 ? 1 : v));
@@ -91,17 +91,17 @@ int main(int argc, char **argv) {
 # (saved audio_output or "-" for no longshot_options.ini, HOS_AUDIO_CHANNELS or None, the default output's channels,
 #  the speakers the game is told, whether the device was asked, what the log says)
 CASES = (
-    ("-", None, 6, 6, 1, "the default output has 6 channels"),
-    ("-", None, 2, 2, 1, "the default output has 2 channels"),
-    ("0", None, 8, 6, 1, "the default output has 8 channels"),
-    ("0", None, 2, 2, 1, "the default output has 2 channels"),
-    ("1", None, 6, 2, 0, "stereo for the game (the Insert menu's Audio output)"),
-    ("2", None, 2, 6, 0, "5.1 for the game (the Insert menu's Audio output)"),
-    ("3", None, 6, 2, 0, "stereo for the game (the Insert menu's Audio output)"),
-    ("4", None, 6, 2, 0, "stereo for the game (the Insert menu's Audio output)"),   # clamped to Mono
+    ("-", None, 6, 6, 1, "the selected/default output has 6 channels"),
+    ("-", None, 2, 2, 1, "the selected/default output has 2 channels"),
+    ("0", None, 8, 6, 1, "the selected/default output has 8 channels"),
+    ("0", None, 2, 2, 1, "the selected/default output has 2 channels"),
+    ("1", None, 6, 2, 0, "stereo for the game (the Insert menu's Speaker layout)"),
+    ("2", None, 2, 6, 0, "5.1 for the game (the Insert menu's Speaker layout)"),
+    ("3", None, 6, 2, 0, "stereo for the game (the Insert menu's Speaker layout)"),
+    ("4", None, 6, 2, 0, "stereo for the game (the Insert menu's Speaker layout)"),   # clamped to Mono
     ("3", "6", 2, 6, 0, "5.1 for the game (HOS_AUDIO_CHANNELS)"),
-    ("missing", None, 6, 6, 1, "the default output has 6 channels"),
-    ("-1", None, 6, 6, 1, "the default output has 6 channels"),
+    ("missing", None, 6, 6, 1, "the selected/default output has 6 channels"),
+    ("-1", None, 6, 6, 1, "the selected/default output has 6 channels"),
     ("2", "2", 6, 2, 0, "stereo for the game (HOS_AUDIO_CHANNELS)"),
     ("1", "6", 2, 6, 0, "5.1 for the game (HOS_AUDIO_CHANNELS)"),
     ("-", "6", 2, 6, 0, "5.1 for the game (HOS_AUDIO_CHANNELS)"),
@@ -123,7 +123,7 @@ def main():
     # (tab, name, value, lo, hi, step, text, help, then hint, restart: read once at the start, preset_exempt)
     row = re.search(r'\{TAB_(\w+), "([^"]+)", &opts\.audio_output, (-?\d+), (-?\d+), (\d+), (\w+),\s*"[^{}]*?", '
                     r'(\w+), (true|false), (true|false)\},', menu)
-    assert row, "the Insert menu has no Audio output row"
+    assert row, "the Insert menu has no Speaker layout row"
     tab, name, lo, hi, step, text, hint, restart, exempt = row.groups()
     assert (tab, lo, hi, step, text, hint, restart, exempt) == \
         ("AUDIO", "0", "3", "1", "tx_audio_output", "hn_audio_output", "true", "true"), row.groups()
@@ -151,7 +151,7 @@ def main():
             if env_channels is not None:
                 env["HOS_AUDIO_CHANNELS"] = env_channels
             subprocess.run([str(exe), name, saved, str(device), str(want), str(asked), log], cwd=work, env=env, check=True)
-    print("PASS: Audio output: a restart row; Auto follows the device, Stereo/Mono use two speakers, 5.1 uses six, HOS_AUDIO_CHANNELS "
+    print("PASS: Speaker layout: a restart row; Auto follows the device, Stereo/Mono use two speakers, 5.1 uses six, HOS_AUDIO_CHANNELS "
           "over them")
 
 

@@ -73,6 +73,43 @@ class MenuI18nTests(unittest.TestCase):
             for name, hint in hints.items():
                 self.assertTrue(hint in keys, "%s: missing current %s hint" % (table, name))
 
+    def test_speaker_layout_texts_are_translated(self):
+        texts = ("Speaker layout",
+                 "5.1 when the selected/default output has 5.1 or more speakers at startup, else stereo.")
+        for text in texts:
+            self.assertIn(text, self.menu)
+        for table, pairs in self.tables.items():
+            translated = dict(pairs)
+            for text in texts:
+                with self.subTest(table=table, text=text):
+                    self.assertIn(text, translated)
+                    self.assertNotEqual(translated[text], text)
+
+    def test_output_device_texts_are_translated(self):
+        texts = (
+            "Output device", "Where the game plays sound. Changes apply without restarting the game.",
+            "Where the game plays sound. A change briefly restarts only the audio stream.",
+            "HOS_AUDIO_DEVICE overrides this run. The saved device choice is kept.",
+            "Named playback selection is Windows-only in this build. Default uses the system output.",
+            "No playback output could be opened. The game keeps trying.",
+            "Default is used temporarily. The selected output is remembered and retried when available.",
+            "This playback device. Speaker layout changes still require a game restart.",
+            "Follow the Windows default playback device.", "Overridden by HOS_AUDIO_DEVICE",
+            "Selected output", "Default", " (not connected)",
+        )
+        self.assertEqual(len(self.tables), 13)
+        for text in texts:
+            self.assertIn(text, self.menu)
+        for table, pairs in self.tables.items():
+            translated = dict(pairs)
+            for text in texts:
+                with self.subTest(table=table, text=text):
+                    self.assertIn(text, translated)
+                    self.assertNotEqual(translated[text], text)
+        source = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
+        self.assertIn('std::string(i18n::tr("Selected output"))', source)
+        self.assertIn('+ i18n::tr(" (not connected)")', source)
+
     def test_custom_output_texts_are_translated(self):
         texts = (
             "Custom output size",

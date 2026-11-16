@@ -117,16 +117,18 @@ export function preferredPlatform(userAgent: string): 'windows' | 'linux' | null
 }
 
 export async function installLauncherStatus(document: Document, fetcher = fetch) {
-  const status = document.querySelector<HTMLElement>('[data-launcher-status]');
-  if (!status) return;
+  // (the front page shows it twice: under the hero and in the release section's version numbers)
+  const statuses = [...document.querySelectorAll<HTMLElement>('[data-launcher-status]')];
+  if (!statuses.length) return;
   try {
     const response = await fetcher('/download/launcher/versions.json', { signal: AbortSignal.timeout(10000) });
     if (!response.ok) return;
     const versions = validateLauncherVersions(await response.json());
     const channel = versions.bestChannel;
     const release = channel && versions.channels[channel];
-    status.textContent = release
-      ? `${channel === 'stable' ? 'Stable launcher' : channel === 'rc' ? 'Release candidate launcher' : 'Nightly launcher'}: ${release.tag}`
+    const text = release
+      ? `Longshot Launcher ${release.tag} · ${channel === 'stable' ? 'stable' : channel === 'rc' ? 'release candidate' : 'nightly'}`
       : 'No launcher release is available yet.';
+    for (const status of statuses) status.textContent = text;
   } catch { /* Keep the working download-page link when metadata cannot be reached. */ }
 }

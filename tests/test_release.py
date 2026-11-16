@@ -10,6 +10,7 @@ Needs git and the openssl command line.
 """
 import base64
 import contextlib
+import datetime
 import hashlib
 import http.server
 import importlib.util
@@ -134,6 +135,15 @@ class Channels(unittest.TestCase):
         rels[-1]["draft"] = True
         self.assertEqual(release.newest(rels, "stable", 3), "v3.0.0")
 
+    def test_the_newest_nightlys_age(self):
+        # (the newest by count, published ones only, from published_at; none when there is none: the nightly then builds)
+        rels = [{"tag_name": t, "draft": d, "published_at": p} for t, d, p in (
+            ("nightly-9-aaaaaaaa", False, "2026-11-15T10:00:00Z"), ("nightly-12-bbbbbbbb", False, "2026-11-15T09:00:00+00:00"),
+            ("nightly-13-cccccccc", True, "2026-11-15T11:00:00Z"), ("v3.0.0", False, "2026-11-15T11:30:00Z"))]
+        noon = datetime.datetime(2026, 11, 15, 12, tzinfo=datetime.timezone.utc).timestamp()
+        self.assertEqual(release.nightly_age(rels, now=noon), 3 * 3600)
+        self.assertIsNone(release.nightly_age(rels[2:], now=noon))
+
 
 class Bump(unittest.TestCase):
     def setUp(self):
@@ -202,6 +212,24 @@ class Bump(unittest.TestCase):
             name = release.nightly_name("launcher", root=str(self.dir))
         self.assertRegex(name, r"^nightly-2-[0-9a-f]{8}$")
         self.assertEqual(release.channel_of(name, 1), "nightly")
+
+    def test_a_nightly_with_nothing_new_is_not_made(self):
+        # (only ci: or chore: commits since the newest nightly put nothing on its page, nightly-322-5bc54c6c: none is made.
+        # git-cliff decides, over the commits since that nightly; the first nightly is always made)
+        self.commit("fix: a")
+        with mock.patch.object(release, "git_cliff") as cliff, mock.patch.dict(release.PRODUCTS["launcher"], since=None):
+            self.assertTrue(release.nightly_news("launcher", root=str(self.dir)))
+            cliff.assert_not_called()
+            previous = release.nightly_name("launcher", root=str(self.dir))
+            self.git("tag", previous)
+            self.assertTrue(release.nightly_news("launcher", root=str(self.dir)))   # (HEAD's own nightly: a run made again)
+            cliff.assert_not_called()
+            self.commit("ci: b")
+            cliff.return_value = ""
+            self.assertFalse(release.nightly_news("launcher", root=str(self.dir)))
+            self.assertEqual(cliff.call_args.args, ("--strip", "all", previous + "..HEAD"))
+            cliff.return_value = "### Fixes\n\n- c"
+            self.assertTrue(release.nightly_news("launcher", root=str(self.dir)))
 
     def test_the_notes_start_after_the_previous_tag(self):
         self.git("tag", "v3.0.0")

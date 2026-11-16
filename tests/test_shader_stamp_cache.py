@@ -61,6 +61,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             "gpu/vk/vk_ngx_msvc_rt.cpp": "int msvc_rt;\n",
             "host/mingw_msvc_shims.c": "int shims;\n",
             "host/pgo_rt.c": "int pgo_rt;\n",
+            "host/audio_output_devices.h": "enum { HOS_OUTPUT_ID_CAP = 4096 };\n",
             "gpu/vk/eden/translate.cpp": "int translator;\n",
             "gpu/vk/eden/ir.h": "struct IR {};\n",
             "gpu/vk/sirit/src/sirit.cpp": "int sirit;\n",
@@ -187,6 +188,19 @@ class ShaderStampCacheTests(unittest.TestCase):
                 # (Dear ImGui's objects and zstd's see only their own headers; the fonts' file none)
                 expected = {name for name in before if not name.startswith(("host/posix/", "third_party/imgui/", "third_party/zstd/", "third_party/zbic/", "gen/"))}
                 self.assertEqual(self.changed(before, self.jobs(linux)), expected)
+
+    def test_playback_header_invalidates_only_menu_without_changing_translator_stamp(self):
+        path = self.root / "host/audio_output_devices.h"
+        for linux in (False, True):
+            with self.subTest(linux=linux):
+                path.write_bytes(b"enum { HOS_OUTPUT_ID_CAP = 4096 };\n")
+                before = self.jobs(linux)
+                path.write_bytes(b"enum { HOS_OUTPUT_ID_CAP = 8192 };\n")
+                after = self.jobs(linux)
+                # Main's dependency tracking keeps this host contract on its one renderer consumer.
+                self.assertEqual(self.changed(before, after), {"gpu/vk/vk_menu.cpp"})
+                self.assertEqual([f for f in before["gpu/vk/vk_shader.cpp"]["flags"] if f.startswith("-DLONGSHOT_SHADER_STAMP=")],
+                                 [f for f in after["gpu/vk/vk_shader.cpp"]["flags"] if f.startswith("-DLONGSHOT_SHADER_STAMP=")])
 
     def test_stamp_line_ending_normalization_is_unchanged(self):
         path = self.root / "gpu/vk/eden/translate.cpp"

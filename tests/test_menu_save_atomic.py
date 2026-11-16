@@ -16,6 +16,8 @@ save still happens:
   the save is moved over it there and leaves nothing in the game's folder, and a line in the log names the file's whole path
 - no_file: no settings file this run (options_path() empty: the host found no place for it) saves nothing, makes nothing in
   the folder the game runs in and logs nothing
+- output_device: a named output is saved once by ID and name, never its list index; switching to the system default
+  removes both saved fields and old numeric selections while preserving unrelated settings
 
 The real save() is cut out of the source and compiled with stand-ins for the menu's rows and the host's bindings. A full
 disk is RLIMIT_FSIZE (the write past it fails with EFBIG, SIGXFSZ ignored), checked to hold before the save is tried. Each
@@ -33,7 +35,8 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 RUN_ALL_SKIP = {"windows": "RLIMIT_FSIZE, symlinks and POSIX modes stand in for the cases: POSIX only"}
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ["full_disk", "success", "symlink", "folder_read_only", "mode", "file_read_only", "user_folder", "no_file"]
+CASES = ["full_disk", "success", "symlink", "folder_read_only", "mode", "file_read_only", "user_folder", "no_file",
+         "output_device"]
 
 
 def block(text, marker):
@@ -67,8 +70,11 @@ struct Out { unsigned w, h; };
 struct Options { int preset = 1, fps_cap = 0, vram_budget = 1, output_res = 0, ultrawide = 1, game_lang = 0, budget = 1,
                  hold_toggle = 0, gpu_device = 0; } opts;
 struct Row { const char* name; int* value; };
+int output_pick = 0;
+std::string output_want, output_saved_name;
 Row rows[] = {{"Quality preset", &opts.preset}, {"Game frame rate cap", &opts.fps_cap}, {"VRAM budget", &opts.vram_budget},
-              {"Output resolution", &opts.output_res}, {"Aspect ratio", &opts.ultrawide}, {"Game language", &opts.game_lang}};
+              {"Output resolution", &opts.output_res}, {"Aspect ratio", &opts.ultrawide}, {"Game language", &opts.game_lang},
+              {"Output device", &output_pick}};
 std::string dir;
 std::vector<std::string> logged;
 void logf(const char* fmt, ...) {
@@ -149,7 +155,12 @@ int main(int argc, char** argv) {
     const std::string c = argv[2];
     std::signal(SIGXFSZ, SIG_IGN);   // (a write past the limit fails with EFBIG, as a full disk's with ENOSPC)
     if (c == "full_disk") {
+        output_pick = 1;
+        output_want = "fixture-old-id";
+        output_saved_name = "Fixture old speakers";
         const std::string before = first_save();
+        CHECK(has(before, "audio_output_device_id=fixture-old-id\n"));
+        CHECK(has(before, "audio_output_device_name=Fixture old speakers\n"));
         constexpr rlim_t kRoom = 200;   // (the disk's room: less than the file)
         CHECK(before.size() > 2 * kRoom);
         rlimit was{};
@@ -168,6 +179,8 @@ int main(int argc, char** argv) {
             CHECK(std::remove(probe.c_str()) == 0);
         }
         opts.fps_cap = 2;   // (a row changed: the save that does not fit)
+        output_want = "fixture-new-id";
+        output_saved_name = "Fixture new speakers";
         save();
         const std::string after = slurp(ini_path());
         if (after != before) {
@@ -185,6 +198,9 @@ int main(int argc, char** argv) {
         save();   // (with room again, the change is saved)
         const std::string again = slurp(ini_path());
         CHECK(has(again, "game_frame_rate_cap=3\n") && has(again, "discord_app_id=1234567890\n") && has(again, "key_walk="));
+        CHECK(has(again, "audio_output_device_id=fixture-new-id\n"));
+        CHECK(has(again, "audio_output_device_name=Fixture new speakers\n"));
+        CHECK(!has(again, "fixture-old-id") && !has(again, "Fixture old speakers"));
         CHECK(names(dir).size() == 1);
     } else if (c == "success") {
         first_save();
@@ -292,6 +308,35 @@ int main(int argc, char** argv) {
                          logged.size());
             return 1;
         }
+    } else if (c == "output_device") {
+        FILE* f = std::fopen(ini_path().c_str(), "w");
+        CHECK(f);
+        std::fputs("discord_app_id=1234567890\noutput_device=7\n"
+                   "audio_output_device_id=stale-id\naudio_output_device_name=Stale speakers\n", f);
+        CHECK(std::fclose(f) == 0);
+        output_pick = 2;
+        output_want = "fixture-output-id";
+        output_saved_name = "Fixture speakers";
+        save();
+        const std::string named = slurp(ini_path());
+        CHECK(has(named, "audio_output_device_id=fixture-output-id\n"));
+        CHECK(has(named, "audio_output_device_name=Fixture speakers\n"));
+        CHECK(named.find("audio_output_device_id=") == named.rfind("audio_output_device_id="));
+        CHECK(named.find("audio_output_device_name=") == named.rfind("audio_output_device_name="));
+        CHECK(!has(named, "\noutput_device=") && !has(named, "stale-id") && !has(named, "Stale speakers"));
+        CHECK(has(named, "discord_app_id=1234567890\n") && has(named, "key_walk="));
+        output_pick = 37;   // (the enumeration index changes; the saved endpoint stays the same)
+        save();
+        CHECK(slurp(ini_path()) == named);
+        output_pick = 0;
+        output_want.clear();
+        output_saved_name.clear();
+        save();
+        const std::string defaults = slurp(ini_path());
+        CHECK(!has(defaults, "audio_output_device_id=") && !has(defaults, "audio_output_device_name="));
+        CHECK(!has(defaults, "\noutput_device="));
+        CHECK(has(defaults, "discord_app_id=1234567890\n") && has(defaults, "key_walk="));
+        CHECK(names(dir).size() == 1 && logged.empty());
     } else if (c == "no_file") {
         CHECK(chdir(dir.c_str()) == 0);
         no_file = true;

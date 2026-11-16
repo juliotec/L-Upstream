@@ -117,7 +117,8 @@ void fps_presented() {
                       d(tt.wait[fs::kPace], last_wait[fs::kPace]) + d(slept[1], last_slept[1]),
                       d(tt.wait[fs::kWaitRender], last_wait[fs::kWaitRender]), d(tt.wait[fs::kWaitGpu], last_wait[fs::kWaitGpu]),
                       d(other_wait[0].load(std::memory_order_relaxed), last_other[0]),
-                      d(other_wait[1].load(std::memory_order_relaxed), last_other[1]));
+                      d(other_wait[1].load(std::memory_order_relaxed), last_other[1]),
+                      d(tt.wait[fs::kWaitMain], last_wait[fs::kWaitMain]));
             f.gpu_ms = (float)d(gpu, last_gpu);
             if (rt_running.load(std::memory_order_relaxed)) {   // (the render thread's frame over the same span)
                 double waits = 0;

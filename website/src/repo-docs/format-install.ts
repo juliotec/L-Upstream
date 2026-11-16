@@ -29,7 +29,8 @@ function downloadButtons(body) {
     const buttons = `<div class="download-buttons">\n${links.map(([, text, url], i) =>
       `<a class="button${i < 2 ? ' primary' : ''}" href="${url}">${text}</a>`).join('\n')}\n</div>\n`;
     return (links.some(([, , url]) => url.startsWith('/download/launcher/')) ? channelPicker() +
-      '<p class="launcher-version"><span data-launcher-version role="status">Enable JavaScript to see the current launcher version.</span></p>\n' : '') + buttons;
+      '<p class="launcher-version"><span data-launcher-version role="status">Enable JavaScript to see the current launcher version.</span><br>\n' +
+      'This is the launcher\'s own version. The game it builds is numbered as a Longshot version, separately: the launcher downloads it for you.</p>\n' : '') + buttons;
   });
 }
 

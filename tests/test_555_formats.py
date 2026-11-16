@@ -22,6 +22,9 @@ WANT = {
 }
 ALPHA_ONE = {"RGB5", "BGR5"}
 SWAP_RB = {"RGB5", "RGB5A1"}
+# (formats without mandatory sampled support: each must be asked of the device, else UNDEFINED)
+OPTIONAL = {"A1BGR5": "R5G5B5A1_UNORM_PACK16"}
+GATES = {}
 
 
 def block(text, marker):
@@ -38,12 +41,14 @@ def mapping(src):
     """NVN format name -> the VkFormat vk_format returns for it (case labels that fall through share a return)"""
     body = block(src, "VkFormatInfo vk_format(int nvn_format) {")
     out, pending = {}, []
-    for m in re.finditer(r"case NVN_FORMAT_(\w+):|return \{VK_FORMAT_(\w+)|default:", body):
+    for m in re.finditer(r"case NVN_FORMAT_(\w+):|return \{(?:(\w+)\(\) \? )?VK_FORMAT_(\w+)|default:", body):
         if m.group(1):
             pending.append(m.group(1))
-        elif m.group(2):
+        elif m.group(3):
             for name in pending:
-                out.setdefault(name, m.group(2))
+                out.setdefault(name, m.group(3))
+                if m.group(2):
+                    GATES[name] = m.group(2)
             pending = []
         else:
             pending = []
@@ -62,6 +67,15 @@ def main():
     for name, want in WANT.items():
         if got.get(name) != want:
             bad.append("NVN_FORMAT_%s maps to %s, wanted %s" % (name, got.get(name, "UNDEFINED"), want))
+    for name, vk in OPTIONAL.items():
+        gate = GATES.get(name)
+        fn = re.search(r"bool %s\(\) \{(.*?)\n\}" % gate, fmt, re.S) if gate else None
+        at = fmt.index("case NVN_FORMAT_%s:" % name)
+        ret = fmt[at:fmt.index(";", at)]
+        if not fn or "VK_FORMAT_%s" % vk not in fn.group(1) or "VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT" not in fn.group(1) \
+                or ": VK_FORMAT_UNDEFINED" not in ret:
+            bad.append("NVN_FORMAT_%s maps to %s without asking the device for its sampled support "
+                       "(no mandatory support: VUID-VkImageCreateInfo-imageCreateMaxMipLevels-02251)" % (name, vk))
     if not re.search(r"VkFormatInfo vk_format\(int nvn_format\) \{\s*(//[^\n]*\s*)*"
                      r"if \(dev\.maintenance5 && \(nvn_format == NVN_FORMAT_RGB5A1 \|\| nvn_format == NVN_FORMAT_RGB5\)\)\s*"
                      r"return \{VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR,", fmt):

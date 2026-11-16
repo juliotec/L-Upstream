@@ -35,6 +35,7 @@
 #include "hos_sdl.h"
 #endif
 #include "options_path.h"   /* (longshot_options.ini, au_menu_output) */
+#include "audio_output_devices.h"
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
@@ -759,7 +760,7 @@ static void au_opened(HWAVEOUT w) {
     (void)w;
 #endif
 }
-/* The default output's channels (its shared-mode mix format on Windows, SDL's default device on Linux); 2 when
+/* The selected/default output's channels (its shared-mode mix format on Windows, SDL's default device on Linux); 2 when
    unknown. */
 #ifdef _WIN32
 static int au_device_channels(void) {
@@ -771,7 +772,21 @@ static int au_device_channels(void) {
     IMMDeviceEnumerator *e = NULL;
     if (SUCCEEDED(CoCreateInstance(&clsid_enumerator, NULL, CLSCTX_ALL, &iid_enumerator, (void **)&e)) && e) {
         IMMDevice *d = NULL;
-        if (SUCCEEDED(e->lpVtbl->GetDefaultAudioEndpoint(e, eRender, eConsole, &d)) && d) {
+        char selected[HOS_OUTPUT_ID_CAP] = {0};
+        unsigned generation = 0;
+        hos_audio_output_preference(selected, sizeof selected, &generation);
+        WCHAR wide[HOS_OUTPUT_ID_CAP];
+        const char *forced = getenv("HOS_AUDIO_DEVICE");
+        HRESULT found = E_FAIL;
+        if (!(forced && *forced) && *selected &&
+            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, selected, -1, wide, HOS_OUTPUT_ID_CAP))
+            found = e->lpVtbl->GetDevice(e, wide, &d);
+        if (FAILED(found) || !d) {
+            if (d) d->lpVtbl->Release(d);
+            d = NULL;
+            found = e->lpVtbl->GetDefaultAudioEndpoint(e, eRender, eConsole, &d);
+        }
+        if (SUCCEEDED(found) && d) {
             IAudioClient *a = NULL;
             if (SUCCEEDED(d->lpVtbl->Activate(d, &iid_audio_client, CLSCTX_ALL, NULL, (void **)&a)) && a) {
                 WAVEFORMATEX *mix = NULL;
@@ -823,11 +838,11 @@ static int au_speakers(void) {
                 hos_log("audio: %s for the game (HOS_AUDIO_CHANNELS)", n == 6 ? "5.1" : "stereo");
             } else if (menu) {
                 n = menu == 2 ? 6 : 2;
-                hos_log("audio: %s for the game (the Insert menu's Audio output)", n == 6 ? "5.1" : "stereo");
+                hos_log("audio: %s for the game (the Insert menu's Speaker layout)", n == 6 ? "5.1" : "stereo");
             } else {
                 const int device = au_device_channels();
                 n = device >= 6 ? 6 : 2;
-                hos_log("audio: %s for the game (the default output has %d channels)", n == 6 ? "5.1" : "stereo", device);
+                hos_log("audio: %s for the game (the selected/default output has %d channels)", n == 6 ? "5.1" : "stereo", device);
             }
             known = n;
         }
@@ -860,6 +875,7 @@ static const WAVEFORMATEX *au_format(const WAVEFORMATEX *f) {
 #define OUT_MAX_CH 6
 static HWAVEOUT wout;
 static WAVEHDR hdr[NBLOCKS];
+static unsigned char out_submitted[NBLOCKS];
 static int16_t blocks[NBLOCKS][FRAME * 2 * OUT_MAX_CH];
 static int fill_block, fill_frames;
 static int out_channels = 2;   /* the device's (and the dump's): 2, or 6 for 5.1 */
@@ -881,6 +897,7 @@ static void output_error(const char *operation, MMRESULT result) {
 static int out_next;           /* the next candidate: 0 = HOS_AUDIO_DEVICE, 1 = the default, 2.. = device n-2 */
 static uint64_t out_opened, out_stall_since;
 static unsigned out_played, out_peak, out_reported;
+static unsigned out_completed; /* completed 10 ms blocks, not merely accepted writes */
 /* (longshot) A device gone (a Bluetooth headset off, the audio service restarted: "no driver", "invalid handle" from the
    next call) is closed and the default opened again; none opening, the default is tried every second until one does.
    Opened as the default, the output follows Windows': its key (au_default_key) looked at every second, a change reopens
@@ -889,20 +906,28 @@ static unsigned out_played, out_peak, out_reported;
 static int out_retry, out_reopens;
 static uint64_t out_retry_at, out_default_seen;
 static uint32_t out_default_key;   /* (0: not opened as the default, or Windows did not say which it is) */
+static char out_wanted[HOS_OUTPUT_ID_CAP];
+static unsigned out_generation;
+static int out_named_active, out_force_default;
+static uint64_t out_named_retry_at, out_named_retry_wait = 3000;
+static void output_named_failed(void) {
+    out_named_retry_at = au_ms() + out_named_retry_wait;
+    if (out_named_retry_wait < 60000)
+        out_named_retry_wait = out_named_retry_wait * 2 > 60000 ? 60000 : out_named_retry_wait * 2;
+}
 static int au_device_gone(MMRESULT r) { return r == 2 || r == 5 || r == 6; }   /* BADDEVICEID, INVALHANDLE, NODRIVER */
-static int output_try(int candidate, const WAVEFORMATEX *f) {
-    const char *want = getenv("HOS_AUDIO_DEVICE");
-    unsigned device;
-    if (candidate == 0) {
-        if (!want || !*want) return 0;
-        device = (unsigned)atoi(want);
-    } else device = candidate == 1 ? WAVE_MAPPER : (unsigned)(candidate - 2);
-    const MMRESULT result = waveOutOpen(&wout, device, au_format(f), 0, 0, CALLBACK_NULL);
+/* Probe into a separate handle: a failed named retry must leave the working default untouched. */
+static HWAVEOUT output_probe_device(unsigned device, const WAVEFORMATEX *f) {
+    HWAVEOUT opened = NULL;
+    const MMRESULT result = waveOutOpen(&opened, device, au_format(f), 0, 0, CALLBACK_NULL);
     if (result != MMSYSERR_NOERROR) {
         output_error("waveOutOpen", result);
-        wout = NULL;
-        return 0;
+        return NULL;
     }
+    return opened;
+}
+static void output_use_device(HWAVEOUT opened, unsigned device, const WAVEFORMATEX *f) {
+    wout = opened;
     au_opened(wout);
     out_default_key = device == WAVE_MAPPER ? au_default_key() : 0;
     out_default_seen = au_ms();
@@ -910,12 +935,44 @@ static int output_try(int candidate, const WAVEFORMATEX *f) {
     if (device == WAVE_MAPPER) snprintf(name, sizeof name, "the default device");
     else au_device_name(device, name, sizeof name);
     hos_log("audio: output on %s (%u devices), %s", name, au_device_count(), f->nChannels == 6 ? "5.1" : "stereo");
+}
+static int output_try_device(unsigned device, const WAVEFORMATEX *f) {
+    HWAVEOUT opened = output_probe_device(device, f);
+    if (!opened) return 0;
+    output_use_device(opened, device, f);
     return 1;
+}
+static int output_try(int candidate, const WAVEFORMATEX *f) {
+    const char *want = getenv("HOS_AUDIO_DEVICE");
+    unsigned device;
+    if (candidate == 0) {
+        if (!want || !*want) return 0;
+        device = (unsigned)atoi(want);
+    } else device = candidate == 1 ? WAVE_MAPPER : (unsigned)(candidate - 2);
+    return output_try_device(device, f);
+}
+static void output_stream_started(void) {
+    for (int i = 0; i < NBLOCKS; i++) {
+        memset(&hdr[i], 0, sizeof hdr[i]);
+        hdr[i].lpData = (LPSTR)blocks[i];
+        hdr[i].dwBufferLength = FRAME * 2 * out_channels * sizeof blocks[0][0];
+        hdr[i].dwFlags = WHDR_DONE;
+        out_submitted[i] = 0;
+    }
+    fill_block = fill_frames = 0;
+    out_opened = au_ms();
+    out_stall_since = 0;
+    out_played = out_peak = out_reported = out_completed = 0;
 }
 /* The channels: the game's speakers (au_speakers). A 5.1 format no device takes is stereo instead: the device sink's
    six channels are then mixed down, nothing is lost. */
 static void output_open(void) {
     static int dump_done;
+    hos_audio_output_preference(out_wanted, sizeof out_wanted, &out_generation);
+    const char *override = getenv("HOS_AUDIO_DEVICE");
+    const int forced = override && *override, named = !forced && *out_wanted;
+    const int selected = named && !out_force_default ? hos_audio_output_resolve(out_wanted) : -1;
+    out_named_active = 0;
     int channels = au_speakers();
     if (!dump_done) {
         const char *d = getenv("HOS_AUDIO_DUMP");
@@ -926,7 +983,10 @@ static void output_open(void) {
         out_channels = channels;
         dump_done = 1;
     }
-    if (getenv("HOS_AUDIO") && atoi(getenv("HOS_AUDIO")) == 0) return;
+    if (getenv("HOS_AUDIO") && atoi(getenv("HOS_AUDIO")) == 0) {
+        hos_audio_output_report(HOS_OUTPUT_UNAVAILABLE | (forced ? HOS_OUTPUT_OVERRIDE : 0));
+        return;
+    }
     if (dump) channels = out_channels;   /* (a dump keeps one layout: no stereo fallback) */
     for (;;) {
         WAVEFORMATEX f = {0};
@@ -936,31 +996,41 @@ static void output_open(void) {
         f.wBitsPerSample = 16;
         f.nBlockAlign = 2 * channels;
         f.nAvgBytesPerSec = RATE * 2 * channels;
-        const int candidates = 2 + (int)au_device_count();
-        for (int tried = 0; tried < candidates && !wout; tried++) {
-            const int c = out_next;
-            out_next = (out_next + 1) % candidates;
-            output_try(c, &f);
+        if (named) {
+            if (selected >= 0) {
+                out_named_active = output_try_device((unsigned)selected, &f);
+                if (!wout && channels == 6 && !dump) { /* Prefer stereo on the requested endpoint over another endpoint. */
+                    WAVEFORMATEX stereo = f;
+                    stereo.nChannels = 2, stereo.nBlockAlign = 4, stereo.nAvgBytesPerSec = RATE * 4;
+                    out_named_active = output_try_device((unsigned)selected, &stereo);
+                    if (wout) channels = 2;
+                }
+            }
+            if (!wout) output_try_device(WAVE_MAPPER, &f);
+        } else {
+            const int candidates = 2 + (int)au_device_count();
+            for (int tried = 0; tried < candidates && !wout; tried++) {
+                const int c = out_next;
+                out_next = (out_next + 1) % candidates;
+                output_try(c, &f);
+            }
         }
         if (wout || channels == 2 || dump) break;
         hos_log("audio: no device took 5.1: stereo instead");
         channels = 2;
     }
     out_channels = channels;
+    out_force_default = 0;
+    hos_audio_output_report((named && !out_named_active ? HOS_OUTPUT_FALLBACK : 0) |
+                            (forced ? HOS_OUTPUT_OVERRIDE : 0) | (!wout ? HOS_OUTPUT_UNAVAILABLE : 0));
+    if (named && !out_named_active) output_named_failed();
+    else if (!named) out_named_retry_wait = 3000;
     out_retry = !wout, out_retry_at = au_ms();   /* (none opened: tried again in a second, output_frame) */
     if (!wout) return;
-    for (int i = 0; i < NBLOCKS; i++) {
-        memset(&hdr[i], 0, sizeof hdr[i]);
-        hdr[i].lpData = (LPSTR)blocks[i];
-        hdr[i].dwBufferLength = FRAME * 2 * channels * sizeof blocks[0][0];   /* (two frames) */
-        hdr[i].dwFlags = WHDR_DONE;
-    }
-    fill_block = fill_frames = 0;
-    out_opened = au_ms();
-    out_stall_since = 0;
-    out_played = out_peak = out_reported = 0;
+    output_stream_started();
 }
 static void output_close(void) {   /* (what fails here is not looked at: a device gone takes none of these calls) */
+    if (!wout) return;
     waveOutReset(wout);
     for (int i = 0; i < NBLOCKS; i++)
         if (hdr[i].dwFlags & WHDR_PREPARED) waveOutUnprepareHeader(wout, &hdr[i], sizeof hdr[i]);
@@ -969,9 +1039,11 @@ static void output_close(void) {   /* (what fails here is not looked at: a devic
 }
 static void output_reopen(void) {   /* (a device that takes nothing: the next candidate, 6 times; again after 30 s of sound) */
     out_stall_since = 0;
-    if (++out_reopens > 6) return;
+    /* A named attempt never consumes the default's recovery budget or traps us on a known stalled handle. */
+    if (!out_named_active && ++out_reopens > 6) return;
     hos_log("audio: the output device took no sound for 1.5 s: trying the next one");
     output_close();
+    out_force_default = 1;
     output_open();
 }
 static void output_open_default(void) {   /* (HOS_AUDIO_DEVICE first when it is set, as at the start) */
@@ -982,7 +1054,49 @@ static void output_open_default(void) {   /* (HOS_AUDIO_DEVICE first when it is 
 static void output_move(const char *why) {
     hos_log("audio: %s: the output opened again on the default device", why);
     output_close();
+    out_force_default = 1;
     output_open_default();
+}
+/* Audio thread, before mixing. Keep the fallback handle/ring until the requested endpoint actually opens. */
+static void output_retry_named(void) {
+    const int selected = hos_audio_output_resolve(out_wanted);
+    if (selected < 0) { output_named_failed(); return; }
+    int channels = dump ? out_channels : au_speakers();
+    WAVEFORMATEX f = {0};
+    f.wFormatTag = WAVE_FORMAT_PCM;
+    f.nChannels = channels;
+    f.nSamplesPerSec = RATE;
+    f.wBitsPerSample = 16;
+    f.nBlockAlign = 2 * channels;
+    f.nAvgBytesPerSec = RATE * 2 * channels;
+    HWAVEOUT opened = output_probe_device((unsigned)selected, &f);
+    if (!opened && channels == 6 && !dump) {
+        channels = 2;
+        f.nChannels = 2, f.nBlockAlign = 4, f.nAvgBytesPerSec = RATE * 4;
+        opened = output_probe_device((unsigned)selected, &f);
+    }
+    if (!opened) { output_named_failed(); return; }
+    output_close();
+    output_use_device(opened, (unsigned)selected, &f);
+    out_channels = channels;
+    out_named_active = 1, out_force_default = 0, out_retry = 0;
+    output_stream_started();
+    hos_audio_output_report(0);
+}
+/* Audio thread only, before mixing: output_open can change the sink's channel count. */
+static void output_route_update(void) {
+    if (getenv("HOS_AUDIO") && atoi(getenv("HOS_AUDIO")) == 0) return;
+    unsigned before = out_generation;
+    hos_audio_output_preference(out_wanted, sizeof out_wanted, &out_generation);
+    if (before != out_generation) {
+        output_close();
+        out_force_default = 0, out_reopens = 0, out_named_retry_wait = 3000;
+        hos_log("audio: playback preference changed: reopening the stream");
+        output_open_default();
+    } else if (*out_wanted && !out_named_active && !(getenv("HOS_AUDIO_DEVICE") && *getenv("HOS_AUDIO_DEVICE")) &&
+               au_ms() >= out_named_retry_at) {
+        output_retry_named();
+    }
 }
 static void dump_finish(void) {
     if (!dump) return;
@@ -1056,6 +1170,13 @@ static void output_frame(const int16_t *pcm) {
                 if (au_device_gone(result)) output_move("the output device went away");
                 return;   /* the driver has not released the header: do not change its samples or flags */
             }
+            /* Thirty seconds of returned audio blocks prove playback; an open or queued write does not. */
+            if (out_submitted[fill_block] && out_completed < RATE * 30 / (FRAME * 2) &&
+                ++out_completed == RATE * 30 / (FRAME * 2)) {
+                out_reopens = 0;
+                if (out_named_active) out_named_retry_wait = 3000;
+            }
+            out_submitted[fill_block] = 0;
         }
     }
     memcpy(blocks[fill_block] + fill_frames * FRAME * out_channels, pcm, (size_t)(FRAME * 2 * out_channels));
@@ -1067,8 +1188,8 @@ static void output_frame(const int16_t *pcm) {
             operation = "waveOutWrite";
             result = waveOutWrite(wout, h, sizeof *h);
             if (result == MMSYSERR_NOERROR) {
+                out_submitted[fill_block] = 1;
                 out_played++;
-                if (out_reopens && au_ms() - out_opened > 30000) out_reopens = 0;   /* (sound again: the stall rule's 6 anew) */
             }
         }
         if (result != MMSYSERR_NOERROR) {
@@ -1336,6 +1457,7 @@ static DWORD WINAPI renderer_main(void *p) {
         hos_sleep_ns(next - hos_now_ns());
         next = audio_mix_deadline(hos_now_ns(), next, period);
         if (!renderer_running) continue;
+        output_route_update();
         au_lock();
         if (ncmds && hos_now_ns() - last_update_ns > 50000000) commit();   /* (no update came: see "parameter updates") */
         render_frame(pcm, out_channels);

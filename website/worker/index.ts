@@ -261,7 +261,8 @@ function channelTable(releases) {
 }
 
 const NOT_THE_BUILDER = `<p class="lead">The launcher installs the builder and builds the game on your PC, from your own copy.</p>
-    <p>The <em>LongshotBuilder</em> files on Longshot's releases are for the launcher, not for you to run.</p>`;
+    <p>The <em>LongshotBuilder</em> files on Longshot's releases are for the launcher, not for you to run.</p>
+    <p>The versions on this page are the launcher's. The game it builds has Longshot's own version numbers, separate from them.</p>`;
 
 const NEXT_STEPS = `<h2>Then</h2>
     <ol class="steps">
@@ -282,7 +283,7 @@ function downloadPage(request, releases) {
   const bigs = (primary ? [primary] : ["windows", "linux"]).filter((k) => assetOf(r, k)).map((k) => {
     const a = assetOf(r, k);
     return `<a class="big button primary" href="${esc(viaCdn(assetOf(r, k).browser_download_url))}">Download for ${k === "windows" ? "Windows" : "Linux"}` +
-      `<small>${esc(FILES[k].note)} · ${esc(mb(a.size))} · ${esc(r.tag_name)}</small></a>`;
+      `<small>${esc(FILES[k].note)} · ${esc(mb(a.size))} · Launcher ${esc(r.tag_name)}</small></a>`;
   }).join(" ");
   const others = Object.keys(FILES).filter((k) => k !== primary && assetOf(r, k))
     .map((k) => `<a class="pill button" href="${esc(viaCdn(assetOf(r, k).browser_download_url))}">${esc(FILES[k].label)} (${esc(FILES[k].note)})</a>`).join("");

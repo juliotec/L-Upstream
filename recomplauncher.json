@@ -16,7 +16,7 @@
     ],
     "args": [
       "--play",
-      "{home}/Games/Longshot"
+      "{install}/Longshot"
     ]
   },
   "prepare": {
@@ -28,8 +28,11 @@
       "--cli",
       "--prepare",
       "--game",
-      "{game}"
+      "{game}",
+      "--out",
+      "{install}/Longshot"
     ],
+    "version": "2",
     "label": "Building the game from your copy (15 to 30 minutes)",
     "timeout": 7200,
     "options": [
@@ -75,20 +78,20 @@
       "format": "ini",
       "file": [
         {
-          "path": "{home}/Games/Longshot/longshot_options.ini"
+          "path": "{install}/Longshot/longshot_options.ini"
         }
       ]
     }
   ],
   "saves": [
     "{local}/longshot",
-    "{home}/Games/Longshot/user"
+    "{install}/Longshot/user"
   ],
   "folders": {
     "saves": [
       {
-        "path": "{home}/Games/Longshot/user",
-        "if": "{home}/Games/Longshot/user"
+        "path": "{install}/Longshot/user",
+        "if": "{install}/Longshot/user"
       },
       {
         "path": "{local}/longshot"
@@ -96,7 +99,7 @@
     ],
     "game": [
       {
-        "path": "{home}/Games/Longshot"
+        "path": "{install}/Longshot"
       }
     ]
   },

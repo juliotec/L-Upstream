@@ -12,7 +12,8 @@
    mouse_stick), or with the Insert menu's "Mouse camera" set to Native (HOS_MOUSE_NATIVE=1 or 0 overrides it) turns
    the camera itself (mouse_native.c); left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
    x1.25, shown in the title bar, kept by the Insert menu's Mouse sensitivity row); HOS_MOUSE_SENS=<x> sets it,
-   HOS_MOUSE_INVERT_Y=1 (or the menu's Invert mouse vertical) flips up/down.
+   HOS_MOUSE_INVERT_Y=1 (or the menu's Invert mouse vertical) flips up/down, HOS_MOUSE_INVERT_X=1 (or its Invert mouse
+   horizontal) left/right.
 
    Controllers count only while the game's window is in front, like the keyboard, unless the Insert menu's "Controller in
    background" is on (or HOS_INPUT_BACKGROUND=1; =0 keeps them to the window in front whatever the menu says): then a
@@ -235,6 +236,11 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     static int env_invert = -1;   /* (HOS_MOUSE_INVERT_Y, or the menu's Invert mouse vertical, option 8) */
     if (env_invert < 0) env_invert = invert;
     invert = env_invert || rx_option(8, 0);
+    /* (HOS_MOUSE_INVERT_X, or the menu's Invert mouse horizontal, option 61, HOS_OPT_MOUSE_INVERT_X: left and right, as
+       the camera's own angles take it in mouse_native.c) */
+    static int env_invert_x = -1;
+    if (env_invert_x < 0) env_invert_x = env_on("HOS_MOUSE_INVERT_X");
+    const int invert_x = env_invert_x || rx_option(61, 0);
     const int64_t now = hos_now_ns();
     if (now >= next_tick) {
         int32_t dx, dy;
@@ -243,11 +249,11 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
         if (!captured) look_x = look_y = 0;
         else if (pointing) {
             const double k = hos_mouse_sens * 0.03;
-            look_x += dx * k;
+            look_x += (invert_x ? -dx : dx) * k;
             look_y += (invert ? dy : -dy) * k;
             const double length = sqrt(look_x * look_x + look_y * look_y);
             if (length > 1) look_x /= length, look_y /= length;
-        } else if (dx || dy) mouse_look_move(dx, invert ? dy : -dy);
+        } else if (dx || dy) mouse_look_move(invert_x ? -dx : dx, invert ? dy : -dy);
         /* (the ticks since the last read: the first shows the deflection, the rest only decay it; at most 10, a
            read after a pause starts afresh) */
         const int64_t ticks = next_tick ? (now - next_tick) / MOUSE_TICK_NS + 1 : 1;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { installLauncherChannel, validateLauncherVersions } from '../src/lib/launcher-channel.ts';
+import { installLauncherChannel, installLauncherStatus, validateLauncherVersions } from '../src/lib/launcher-channel.ts';
 
 const versions = {
   bestChannel: 'rc',
@@ -163,4 +163,11 @@ test('pending metadata keeps best-channel routes until the user explicitly choos
   resolve(new Response('offline', { status: 502 }));
   await ready;
   assert.equal(f.links[0].getAttribute('href'), '/download/launcher/rc/windows');
+});
+
+test('the front page names the launcher and its channel beside its version, not as the game\'s', async () => {
+  const statuses = [{ textContent: '' }, { textContent: '' }];
+  const document = { querySelectorAll: selector => selector === '[data-launcher-status]' ? statuses : [] };
+  await installLauncherStatus(document as any, async () => Response.json(versions));
+  for (const status of statuses) assert.equal(status.textContent, 'Longshot Launcher v1.0.0-rc.5 · release candidate');
 });

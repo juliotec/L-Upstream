@@ -91,6 +91,8 @@ Row rows[] = {
 std::string ini_file;
 std::string ini_path() { return ini_file; }
 std::string mic_want;
+int output_pick;
+std::string output_want, output_saved_name;   // Playback state used by the real save(); device tests cover selection.
 uint64_t auto_for = 0, auto_tuned = 0;   // (the Quality preset Auto (this PC)'s fingerprints, which save() writes)
 #include "gpu_choice.h"   // (the GPU device row saved as the card itself, which save() writes)
 namespace gpu_choice = mkwvk::gpu_choice;

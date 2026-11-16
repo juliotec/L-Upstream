@@ -297,6 +297,7 @@ format, tone mapper, encoding and luminance changes reset the corresponding hist
 | `HOS_WIDE_UI=0` | The HUD on a screen that is not 16:9 as before (`host/hos_wide_ui.c`): in the middle 16:9 of a wider screen, fitted to a narrower one's width, instead of at the screen's edges. `HOS_WIDE_UI_LOG=<n>` logs the plan's first n changes (each pane with its layout and move), each root layout (the HUD's, a menu's, over the whole picture, or held at the HUD's size) and the plan's time |
 | `HOS_HUD_MAX_RATIO=<ratio>`, `HOS_HUD_FULL_RATIO=<ratio>` | The HUD's limits (`host/hos_wide_ui.c`): its sides reach a screen's edges up to 12:5 (2.4; `0`: at any width), and it keeps its 16:9 size down to 3:2 (1.5), smaller below |
 | `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
+| `HOS_MOUSE_INVERT_Y=1`, `HOS_MOUSE_INVERT_X=1` | The captured mouse's up and down, or its left and right, swapped for this run, with either Mouse camera (`host/nn_hid.c`, `host/mouse_native.c`). Each adds to its Insert menu row, Invert mouse vertical or Invert mouse horizontal: a row that is on stays on |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
@@ -500,8 +501,8 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_THREAD_TIMES=<seconds>` | Every interval, the threads that used over 5% of a core |
 | `HOS_NO_FASTFP` (set) | The fast float regions' plain-SSE copies never taken: every region runs its exact copy, on the same exe (`A64_FF_ON`, `nx2/fastfp.py`'s `FASTFP_HEADER`). For A/B with `HOS_THREAD_TIMES` |
 | `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents, and the game clock's speed (1.000: real time); a CSV line per game present with host-clock times before queue flushing, around the renderer call, after virtual-core reacquisition, and at the return counter. These are CPU wall times, not GPU completion or scanout; async rendering measures the enqueue call. Unset/empty trace adds no clock reads |
-| `HOS_FPS_MAX=<61-1000>` | A frame rate cap for one run, over the Game frame rate cap row (1000 is Uncapped's) |
-| `HOS_MOVIE_PACE=0` | Leave the pacing at the Game frame rate cap row while a movie plays, instead of raising it to 240 for the movie's pictures (issue #73) |
+| `HOS_FPS_MAX=30` or `HOS_FPS_MAX=<61-1000>` | A frame rate cap for one run, over the Game frame rate cap row (1000 is Uncapped's) |
+| `HOS_MOVIE_PACE=0` | Leave the pacing at the Game frame rate cap row while a movie plays, instead of raising a 60 FPS cap to 240 for the movie's pictures (issue #73); an explicit 30 FPS cap remains 30 |
 | `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms. Also works with `HOS_HEADLESS`: CPU intervals after submitting the offscreen copy, without swapchain/display waits. Not `RX_VK_FRAMELOG` (no underscore: pictures, above) |
 | `RX_VK_PRESENTS_AHEAD=<1-8>` | How many presents the game may hand over ahead of the render thread (`RX_VK_ASYNC=1`; 1 by default). Not `RX_VK_PRESENT_AHEAD` |
 | `RX_VK_PRESENT_AHEAD=0` | Frame generation's copies into the window submitted each at its own time, as before #1702 (default on: a set's copies go to the GPU together). Not `RX_VK_PRESENTS_AHEAD` |
@@ -585,6 +586,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_AUTO_PRESET=0`, `RX_VK_AUTO_PRESET_VRAM_MB=<MB>` | A first start keeps the defaults instead of starting on the Quality preset Auto (this PC) (`gpu/vk/auto_settings.h`); the card's video memory taken as that many MB, to see what Auto chooses for a smaller or larger card |
 | `RX_VK_AUTO_TUNE=0` | Auto (this PC) keeps its Render resolution instead of measuring the GPU in play and stepping it: down while frames are missed with the GPU over 90% busy, up while the cap holds with it under half busy (`auto_settings.h` `tune`) |
 | `RX_VK_COMPACT=0`, `RX_VK_COMPACT_PCT=<50..90>`, `RX_VK_COMPACT_MB=<MB>` | VRAM compaction (on by default; `=0` turns it off): the textures that are not render targets in a pool of their own, moved out of sparsely used blocks a few a present so that the blocks go back to the driver, and the texture budget holding the driver's count at that share of what it allows (85) by letting go of the render targets drawn over since and of textures unused for ten seconds, with a reserve five points under it (80) where those unused for thirty seconds go (what the budget's size, the 90% rule and the driver's limit ask for on their own still goes from textures unused for a second, as with it off); the free space that starts a run (512; 192 while the count is over 90%) |
+| `RX_VK_TARGET_POOL_MB=<MB>`, `RX_VK_DEAD_EVERY=<presents>`, `RX_VK_DEAD_MIN_UNUSED=<presents>` | The render target pool: the most its idle images may hold (by default a twelfth of what the driver allows, 256 to 768 MB: `gpu/vk/target_pool.h`; `0`: no pool), how often the dead transient targets are looked for (every present by default) and how long one must have gone unused (1 present). `RX_VK_TARGET_POOL_MB=256 RX_VK_DEAD_EVERY=10 RX_VK_DEAD_MIN_UNUSED=3` is the earlier behaviour, in which the game's per-frame targets were made and destroyed about twice a frame |
 | `RX_VK_EVICT_EXCESS=0` | The 90% rule and the driver's limit cut the texture cache to 7/8 of their budget again, as before; by default they let go of their excess and 64 MB more (`vram_compact::rule_target`), so a cache a few MB over the line does not lose an eighth of its textures |
 | `RX_VK_COMMIT_RESERVE_MB=<MB>` | The commit or memory-plus-swap headroom the texture cache leaves free (default 2560, `0` turns the rule off). On Windows (`GlobalMemoryStatusEx`'s `ullAvailPageFile`, and what the page files can still grow by: `RX_VK_COMMIT_GROWTH`), every VRAM block counts against the process's commit, so below that much headroom the shortfall comes off the textures' budget and eviction and compaction give blocks back (`vk: commit limit near:` at most every 600 frames); at the limit itself, `hos_commit` and the first-touch handler wait up to 5 s for commit (error 1455) before giving up. On Linux (`MemAvailable + SwapFree` in `/proc/meminfo` when swap is enabled, `gpu/vk/linux_pressure.h`), combines with `RX_VK_AVAIL_RESERVE_MB` below |
 | `RX_VK_COMMIT_GROWTH=0` | Windows only: the commit rule's headroom is what is left under the commit limit as it is now, as before. Unset, what the page files can still grow by counts as room too (each file up to its maximum, from `NtQuerySystemInformation`'s `SystemPageFileInformationEx`, and no further than its drive has free): a page file Windows manages grows as the commit nears the limit, so the limit of the moment is not where a commit fails. The log says `vk: commit: ... the page files can grow by ... MB more` at most every 3600 frames while that growth is what keeps the rule off or eases it |
@@ -593,6 +595,9 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_RETIRE_SECS=<s>`, `RX_VK_RETIRE_MIN_SECS=<s>` | Windows AMD and Intel: how long a retired pool's import (and, with the valve above on there, an idle pool given back) is held after it leaves the page table before its memory is freed (30); under pressure past `RX_VK_IMPORT_HIGH` a retired pool waits `RX_VK_RETIRE_MIN_SECS` (2) instead. Not read elsewhere |
 | `RX_VK_IMAGE_PREALLOC=<blocks>` | Initial 128 MiB image blocks: by default 15% of the real device-local heap, from 2 to 24 blocks (9 on an 8 GiB card); `0` makes them only as needed. They belong to the sampled-texture pool, or the images' pool with `RX_VK_COMPACT=0`, never both. A failed initial allocation retries with no initial blocks. VMA keeps these blocks even when empty: compaction counts only space it can return, and the 97% squeeze waits while only kept texture blocks remain. This avoids charging an unused utility-image pool against the texture budget ([Hookshot issue 2690](https://github.com/NotRexed/Hookshot/issues/2690)); it does not lower the driver's actual memory count in a scene with few textures |
 | `RX_VK_TEST_ALLOWED_MB=<MiB>` | Diagnostic upper bound on the allowance reported to the renderer's eviction policy; does not reduce the real heap or emulate OS paging. To model [Hookshot issue 2690](https://github.com/NotRexed/Hookshot/issues/2690) on a larger card use `7000` with `RX_VK_IMAGE_PREALLOC=9`, since the automatic initial-block count still follows the real heap. Other heap-based defaults, including the mirror budget, also remain real-card defaults unless explicitly overridden |
+| `RX_VK_TEST_ALLOWED_FILE=<file>` | The same bound, read from the number of MiB in that file once a second, so a run can shrink the allowance in play as Windows does when another program takes VRAM (`echo 5000 > <file>`). A missing file or `0` leaves the driver's. Diagnostic only |
+| `RX_VK_TEST_ALLOWED_FOLLOW=1` | With either test bound: once the count is past it, the allowance is reported as the count itself, as AMD's Windows driver does ([#933](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/933), [#1025](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/1025)). With `RX_VK_ALLOWED_AT_COUNT=0` the log shows `at the driver's limit, room in the blocks: not squeezed` on any card. Diagnostic only |
+| `RX_VK_ALLOWED_AT_COUNT=0` | An allowance the driver gives as the count itself (within 16 MiB) is taken as it is. By default it is past: the rules take the allowance as a tenth under the count (`vram_compact::past_allowance`), so the 97% squeeze and the hold give back until the driver reports an allowance over the count again. AMD's Windows driver reports a process over what it allows that way; read as within it, the textures were not squeezed while the driver paged VRAM out: frames of 1.2-15.7 s on 8 GB RX 6600s |
 | `RX_VK_REACTIVE=1`, `RX_VK_REACTIVE_SCALE=<0..64>`, `RX_VK_REACTIVE_MAX=<0..1>`, `RX_VK_REACTIVE_DEBUG=1` | A reactive mask for DLSS and FSR 3.1 only, not FSR 4 (`gpu/vk/vk_reactive.h`, off by default: not yet checked in the game): the scene's colour is copied before its blended draws that test depth without writing it (water, smoke, fire, glows), and where the scene differs from the copy at the upscale the upscaler leans on the current frame, so they smear and ghost less. The mask is the difference times the scale (1), at most the maximum (0.9); the debug switch shows it in the picture in magenta. The mask is the whole difference since the copy, so a blended draw after the last transparent run (a full-screen fade) is in it too. The log's `vk: reactive mask:` lines say whether one is made |
 | `RX_VK_NO_DRAWN_WRITEBACK=1` | Small mip-chained textures the GPU drew are not written into guest memory a few frames later (where that memory is still zero, or still their own last write-back), as before: the game's ground garbles after some minutes in one area (its copies of drawn terrain tiles are all zero) |
 | `RX_VK_NO_DRAWN_PAGE_MAP=1` | A texture in a virtual pool that the GPU writes before anything uploads it has no page map noted at that write, as before: once the game has finalized it, its next check takes all of its storage for remapped and uploads it whole from guest memory over what the GPU drew (the game's HUD button labels go blank after a zone change) |
@@ -612,6 +617,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_FSR3_CHAIN=0` | AMD FSR 3.1 upscales with inputs of its own (`vk_fsr3_inputs.cpp`: the camera's motion alone) instead of as an engine of `vk_temporal.cpp`'s chain (the skinned draws' own motion, as DLSS and FSR 4 get it), for comparisons. The log says `vk: fsr3 on the chain: N frames drawn` on the chain, `vk: fsr3 ... with assembled depth and camera motion` without |
 | Threaded rendering (the Insert menu's row, `threaded_rendering=` in `longshot_options.ini`) | The player's one setting for the two threads (`gpu/vk/threaded_rendering.h`): Off (2) is the replay on the game's submitting thread; On (1) is the render thread, exactly as `RX_VK_ASYNC=1` below, and the recorder thread, as `RX_VK_RECORDER=thread`, together; Auto (0, the default) picks On where the process may run on 12 or more logical processors (its affinity mask, `usable_cpus`, not the PC's count) and Off with fewer, and Off where the mode is not safe: `RX_VK_CAPTURE=0`, `RX_VK_LOW_SPEC`, `RX_VK_DUMP`, `RX_VK_BENCH`, or buffer pools with no mirrors (`RX_VK_MIRROR=0`, an integrated GPU, GCN). One constant, `threaded::kAutoEnabled` in that header, is the gate over Auto's rule: it is `true`, and turning it to `false` makes Auto Off on every PC again, with nothing else to change. Still open with it on: GPU-written tables over 16 KiB that the game reads back without waiting (Hyrule Field's culling tables) can be a frame old behind the game. Not yet in Auto's rule: a pool refused its mirror, or over the mirrors' budget, while the game runs (it needs a fall-back at run time, which is not written). The row is read once, at the start (`menu_threaded_rendering`, logged as `vk: Threaded rendering: ...`): a change applies at the next start. The switches stay over it, for testing: `RX_VK_ASYNC` set chooses the replay's thread and `RX_VK_RECORDER` set the recorder, each for its own half, whatever the row says; unset, the row decides. The host learns the replay's half from the renderer (`HOS_OPT_RENDER_THREAD`, `host/nvn_native.c`'s present poll), not from `RX_VK_ASYNC` |
 | `RX_VK_ASYNC=1` | The render thread (off by default; the Threaded rendering row's On turns it on too, with this unset; any value but `0` turns it on, and there is no `=2` any more: the older replay thread that `=1` used to mean, on which the game still waited for the replay at every frame, is removed): the replay on a thread of its own instead of the game's submitting thread, with the game let run one frame ahead of it, so a frame costs the larger of the game's work and the replay's instead of their sum. The game's present poll is answered at once and the present waits for room instead. It replays whole frames: the present is handed over after the main thread's signal for its frame, and the render thread starts a frame's jobs when that present has been handed over, so it never replays a frame the game is still writing (that drew the lit scene black for one frame at some of the moments it caught up with the game); what a game thread waits for (a queue finish, a texture read back, a fence of the frame in the making) goes on at once, and so does a job with no present behind it after `RX_VK_FRAME_GATE_MS` (1000); the log's `vk: the render thread's whole frames (600 presents)` line counts those (`RX_VK_FRAME_GATE=0`, a test: jobs replayed as they come, as before; `RX_VK_PRESENT_AFTER_SIGNAL=0`/`1`, a test: the present's part alone). Readbacks of small ranges (meters and counters, up to 16 KiB) wait for the write-backs recorded so far, not for the queue, as do larger ones: a read the game makes without waiting for the GPU gets the latest result that has landed, as on the console (`RX_VK_READBACK_EXACT=1`, a test: every range is read after everything handed over before the read is replayed; `=2`: only the ranges over 16 KiB; `RX_VK_LOG_READBACK_RANGES=2` logs the ranges, largest first, with how many frames old what each read got is); nothing but a present or `RX_VK_HOLD_MS` forces a stopped queue; occlusion queries stay on. GPU results the game reads without waiting for the GPU reach it up to a frame later than with the default; for the large GPU-written tables (over 16 KiB: Hyrule Field's culling tables) whether that is what the console gives is an open TODO, and this must not become the default until it is closed. The log's `vk: the render thread (600 presents ...)` line says what its jobs took and what the game waited for. `HOS_PRESENT_NOWAIT=0` with it: the poll as before (the game then waits for each frame's GPU work) |
+| `RX_VK_RT_STRICT_PIN=1` | Windows, A/B switch: the render thread (`RX_VK_ASYNC`; Threaded rendering On, or Auto's On) kept to the core kept for the replay (`HOS_RESERVE_CORE`) alone, as before. By default the render thread has its ideal processor on that core and may also run on the other cores of the fastest kind (a hybrid CPU's performance cores, the highest `EfficiencyClass`; every core on a CPU of one kind), within the process's affinity: the game's threads are kept off the core, other programs' are not, and kept to it alone the render thread waited, ready to run, while a priority-15 thread of another program (Intel's PresentMon service, with the Intel Graphics Software overlay) held its one usable logical processor for 30-40 ms at a time. The log says `vk: the replay thread may run on logical processors ...` when it may move; elsewhere than on Windows it stays on the core alone |
 | `RX_VK_REPLAY_PIN=0` | A/B switch: a thread that replays a submission (the default, `RX_VK_ASYNC` off) stays on its own processors instead of moving to the core kept for the replay (`HOS_RESERVE_CORE`) while it replays, on Windows and Linux. The log says `vk: replays run on logical processors ...` when the move is on |
 | `RX_VK_RECORDER_OWN` (set), `RX_VK_RECORDER_IDLE=wait` | With `RX_VK_RECORDER=thread` (the recorder thread, `gpu/vk/vk_recorder.h`): a recording slot's own command pool and descriptor pool resets at its reuse made without waiting for the recorder; and the recorder's idle a 20 us spin, then a wait on its ring (`WaitOnAddress`, a futex on Linux) instead of the adaptive spin. Both off by default; each named in the recorder's start line |
 | `RX_VK_DESC_REUSE=0/1/never` | Over the Descriptor reuse row for a run, with its values: 0 its Off (a draw keeps the descriptors of the draw before it while no registration at all was made), 1 its On (through registrations of slots it does not sample, the default); `never`: every draw builds its own |
@@ -884,6 +890,49 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
 
 For numbers, compare the runtime with one made by `rt` from no pack: same base, same caches, one difference.
 
+#### Sharing a PC: the job queue
+
+Several agents (and you) often share one PC: its GPU, its CPUs, its memory and its disk. Builds and game runs on such a PC
+go through `scripts/job_queue.py`, which runs each when it fits and keeps measurements apart from everything else; on a PC of
+your own it costs nothing. `scripts/dev_build.py` builds through it.
+
+```
+python -I scripts/dev_build.py base                 # the base where this checkout left main: one per commit, shared
+python -I scripts/dev_build.py pack                 # this checkout as a pack over it
+python -I scripts/dev_build.py rt                   # build-linux/rt-<checkout>/, a game folder to run
+python -I scripts/dev_build.py rt --empty           # build-linux/rt-base/: the base alone, the other half of an A/B
+python -I scripts/job_queue.py run shots --mode shared -- <your run in that folder>
+python -I scripts/job_queue.py run fps --mode timing -- <your measurement>
+python -I scripts/job_queue.py status               # who plays, what runs, what waits and for what
+```
+
+| Mode | For | Beside it |
+|---|---|---|
+| `build` | `make_game.py`, `dev_packs.py base` / `pack`: heavy on the CPU and memory | 2 at once; never a timed run |
+| `light` | game-free checks, a renderer-only build, copies | 4 at once |
+| `shared` | the game for anything that is not a number: screenshots, logs, checks, A/B flashes in one session | 3 at once (each its own game and data folder) |
+| `gpu` | the game alone on the GPU, not a measurement | builds |
+| `timing` | fps, frame times, hitches: alone on the GPU and on its own CPUs, its memory never swapped out, not while you play | nothing heavy |
+| `timing-cpu` | a measured build (`dev_build.py build --timing`) | GPU runs on the other CPUs |
+| `profile` | a profile recorded in the game | as `timing` |
+
+The rules worth knowing (the script's notes have all of them):
+
+- **Measure with `timing`, everything else with `shared`.** A build beside a timed run once doubled the spread between
+  sessions; a timed run waits for running builds and holds new ones off, gets one L3 cache domain of the CPU (the others
+  go to everything else while it measures) and notes in `job_queue.py history` how busy the rest of the PC was. Keep each
+  GPU job short (one game and config): one long batch holds the queue for everyone.
+- **A job never adds an `OOT_`, `RX_` or `A64_` variable.** `make_game.py lift_key` hashes every one of them: the older queue's
+  `OOT_STATUS_LOCK=<job name>` gave each job its own lift key, so no build under it ever took another's translation from
+  `LONGSHOT_LIFT_STORE`. `dev_build.py` says which such variables you set yourself.
+- **Nothing on a RAM file system.** Builds, game folders, work folders and test output go on a disk, never in `/tmp` or
+  another tmpfs: two 5 GB test folders in `/tmp` once held 10 GB of memory and swap. A job's `TMPDIR` on a tmpfs moves to
+  `~/.cache/longshot-queue/tmp/<job>`, and `dev_build.py` refuses a folder on one.
+- **The same build environment everywhere.** `dev_build.py` builds with the build tools a player's build uses (tools.lock,
+  installed once under `~/.cache/longshot-dev/builder/`), the object and translation stores `dev_packs.py` uses, and one base
+  per commit of main (`~/.cache/longshot-dev/bases/`), so the second checkout to build anything compiles only what differs.
+  A checkout's own build files (`build`, `vk`, runtimes) stay in its `build-linux/`, and go when the checkout does.
+
 ### Build times
 
 A player's first build of **nightly-56-e7ed2f7a**, measured on **2026-11-13** on Linux: a Ryzen 9 7900X (12 cores,
@@ -1130,9 +1179,34 @@ buttons: a held confirm or shoulder does not commit or add another character whe
 and keyboard editing keys reach the field while the game receives none.
 
 Custom output size's restart state tracks the actual width and height, not just the custom choice's list index.
-Audio output keeps its separate channel-layout state: Mono and Stereo share a restart value, so switching between
+Speaker layout keeps its separate channel-layout state: Mono and Stereo share a restart value, so switching between
 them does not renew a size change's declined restart prompt. Choosing a different channel layout still does.
 `tests/test_menu_text_field.py` exercises these changes together, including restoring the original size.
+
+Audio's Output device row stores `audio_output_device_id`, an opaque Windows playback endpoint ID, and
+`audio_output_device_name`, its display label. Default is an empty ID. Device changes apply live; a missing endpoint
+uses the default temporarily while retaining and retrying the chosen ID. `HOS_AUDIO_DEVICE` overrides the route for
+one run without changing the saved preference. Named output selection is Windows-only; Linux retains default output.
+Speaker layout retains the existing `audio_output` key and values: 0 Auto, 1 Stereo, 2 5.1, 3 Mono. Microphone is now
+under Audio with its existing settings keys and behavior unchanged.
+
+The host reads the startup output preference from `hos_options_file()`, the same settings path the menu receives through
+`MkwVkHost.options_path`: `HOS_OPTIONS_FILE`, then `--user`, otherwise beside the game. A missing or unchosen file means
+Default, without independently falling back to another settings file. API version 24 appends the playback callbacks after
+version 22's `take_text` and version 23's `options_path`; build the host and renderer together. `tests/test_audio_output_devices.py`
+checks their positional wiring and layout, and `tests/test_audio_output_preferences.py` compiles the actual settings-path
+and preference modules together against synthetic settings files, without enumerating or opening a device.
+
+Explicit playback changes are applied by `output_route_update()` on the audio thread before `render_frame()` mixes its
+next PCM frame. Recovery in `output_frame()` can still reopen a sink after mixing; it drops that frame only when the
+reopened sink has another channel count. A same-layout recovery keeps the frame. The game-free checks are
+`tests/test_audio_output_recovery.py` and `tests/test_audio_output_errors.py`.
+
+A failed named-device retry leaves the working fallback stream and its queued audio intact. A stalled named stream
+falls back without consuming the default device's six-reopen budget. Named retries back off from 3 to 60 seconds;
+only 30 seconds of successfully submitted and returned audio blocks reset that backoff. An open handle, failed write
+or healthy fallback does not establish that the named device plays. Explicitly changing the chosen device resets its
+retry state. Device discovery refreshes when the menu opens, rather than polling on the render thread.
 
 | Key | Values |
 |---|---|
@@ -1149,6 +1223,7 @@ them does not renew a size change's declined restart prompt. Choosing a differen
 | `sharpness`, `rumble_strength`, `motion_sensitivity_x`, `motion_sensitivity_y`, `walk_speed` | percent |
 | `mouse_sensitivity` | hundredths: 100 is 1.00 |
 | `field_of_view` | 50 to 150 percent of the current vertical gameplay FOV; 100 is the original. Applies immediately, before projection and culling. The resulting vertical angle stays within 5 to 140 degrees |
+| `shadow_resolution` | the sun's shadow maps: 0 Auto (the default: by the memory tier, `memory_budget` or else Auto (this PC)'s, the game's 1600 on Minimum and Low, 2200 on Balanced, 3072 from High up; `menu_shadow_res`), 1 Game's (1600 pixels a side), 2 High (2200), 3 Highest (3072). Read each frame (`host/oot_shadow.c`), so a change applies at once. A Quality preset sets it back to 0 |
 | `robust_buffers` | 0 Auto (on), 1 Off, 2 On |
 | `transition_autosave` | 1 On (default), 0 Off. The Autosave row works independently of Debug tools. Off suppresses the verified map-transition save requests. |
 | `damage_taken` | 0 Half, 1 Normal (default), 2 Double, 3 Quadruple; Debug tools Off uses Normal without changing the saved choice. Half rounds the full hit up to a quarter heart, even on lethal hits; Heart protection wins |
@@ -1228,3 +1303,5 @@ where no translation is available.
 
 License: GPL-3.0-or-later, as mkw-recomp: a64-kit's translator is suyu's (GPL-2.0-or-later) and Eden's code is
 GPL-3.0.
+
+`frame_rate_cap=-1` selects 30 FPS in the existing host pacer. This forces real-time stepping without changing the saved Game speed setting; returning to 60 restores that choice. `HOS_FPS_MAX` is read once and overrides the menu, including `HOS_FPS_MAX=30`.

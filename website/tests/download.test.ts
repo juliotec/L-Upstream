@@ -140,4 +140,7 @@ test('download HTML pins files and release notes to its displayed release and pr
   assert.match(html, /href="https:\/\/git-cdn.magicbean.dev\/attachments\/windows"/);
   assert(html.includes('href="' + release.html_url + '"'));
   assert(!html.includes('href="/download/launcher/windows"'));
+  // (the launcher's version is named as the launcher's, apart from the game's Longshot version)
+  assert.match(html, /Launcher v1\.0\.0<\/small>/);
+  assert.match(html, /The versions on this page are the launcher's/);
 });

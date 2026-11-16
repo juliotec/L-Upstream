@@ -31,6 +31,7 @@ FIXTURE = r'''#include "gpu/vk/vk_menu_keys.h"
 // API_ENUMS
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -95,7 +96,12 @@ static bool take_key_press(int key) {
     queued_key = 0;
     return true;
 }
-static struct { bool (*take_key_press)(int); float (*aspect_ratio)(); } queue_host{take_key_press, nullptr}, *host;
+static struct {
+    bool (*take_key_press)(int);
+    float (*aspect_ratio)();
+    int64_t (*now_ns)();
+    void (*audio_output_select)(const char*);
+} queue_host{take_key_press, nullptr, nullptr, nullptr}, *host;
 
 static bool keyboard_toggle(int mode, int key, bool queued, bool has_focus = true) {
     opts.menu_shortcut = mode;
@@ -143,6 +149,8 @@ static void dlss_probe() {}
 static void fsr4_probe() {}
 static void xess_probe() {}
 static void refresh_mics() {}
+static void refresh_outputs() {}   // Playback discovery is covered by test_audio_output_devices.py.
+static bool can_outputs() { return false; }
 // TX_MENU_SHORTCUT
 
 // One tick with key pressed (0: none) and the options o, the menu open before it or not: whether it is open after. *back:
@@ -202,6 +210,9 @@ static std::string ini_path() { return ini_file; }
 static int parse_output(const char*) { return 0; }
 static std::string mic_want;
 [[maybe_unused]] static std::string gpu_saved_card;   // (menu_init reads gpu_device_id=: gpu_choice.h)
+static std::string output_want, output_saved_name;
+static std::string output_id_key(const char* text) { return text; }
+static std::string output_name_key(const char* text) { return text; }
 [[maybe_unused]] static uint64_t auto_for = 0, auto_tuned = 0;   // (the Quality preset Auto (this PC)'s fingerprints, which save() writes)
 static struct { int steps = 0; bool went_down = false; } auto_tuning;   // (and its tuning's steps)
 static std::string mic_key(const char* name) { return name; }

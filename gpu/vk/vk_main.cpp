@@ -601,6 +601,7 @@ bool create_device() {
     // (longshot) the occlusion queries' real counts (vk_replay.cpp, RX_VK_OCC_QUERIES): a sample count, not only "any", and
     // their reset from the CPU once read (both on when the device has them: the queried chain is what it is created with)
     dev.occlusion_precise = f.features.occlusionQueryPrecise == VK_TRUE;
+    dev.depth_bias_clamp = f.features.depthBiasClamp == VK_TRUE;
     dev.host_query_reset = f12.hostQueryReset == VK_TRUE;
     dev.custom_border_color = dev.custom_border_color && border.customBorderColors && border.customBorderColorWithoutFormat;
     dev.depth_clip_control = dev.depth_clip_control && clip.depthClipControl;
@@ -734,6 +735,13 @@ bool create_device() {
         p2.pNext = &pp;
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
         dev.max_push_descriptors = pp.maxPushDescriptors;
+    }
+    if (dev.vertex_divisor) {
+        VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT vp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &vp;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        dev.max_vertex_divisor = vp.maxVertexAttribDivisor;
     }
     return true;
 }

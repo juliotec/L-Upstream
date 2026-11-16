@@ -112,6 +112,17 @@ int main() {
     CHECK(short_excess(6709 * MB, 6450 * MB) == 259 * MB);
     CHECK(short_excess(7680 * MB, 6450 * MB) == 1230 * MB);            // (7.5 of 7.0 GB: the whole excess)
     CHECK(short_excess(5000 * MB, 6450 * MB) == kShortGive);           // (under the line: refused all the same)
+    // an allowance the driver gives as the count itself is past (AMD's Windows driver: #933, #1025): a tenth under the count
+    CHECK(past_allowance(5940 * MB, 5940 * MB) == 5940 * MB - 5940 * MB / 10);   // (the RX 6600 in Hyrule Field)
+    CHECK(past_allowance(6600 * MB, 6600 * MB + 8 * MB) < 6600 * MB);           // (within kAtCount over the count)
+    CHECK(past_allowance(6600 * MB + 8 * MB, 6600 * MB) < 6600 * MB);           // (within kAtCount under it)
+    CHECK(past_allowance(5300 * MB, 6500 * MB) == 6500 * MB);                   // (an allowance over the count: as it is)
+    CHECK(past_allowance(7602 * MB, 6982 * MB) == 6982 * MB);                   // (under the count, past already: as it is)
+    CHECK(past_allowance(5000 * MB, 0) == 0);                                   // (unknown: as it is)
+    CHECK(past_allowance(0, 0) == 0);
+    // and the rules then see the count past it: no room in the blocks, the squeeze's line crossed
+    CHECK(!room_in_blocks(5940 * MB, past_allowance(5940 * MB, 5940 * MB), 746 * MB, false));
+    CHECK(room_in_blocks(5940 * MB, 5940 * MB, 746 * MB, false));               // (what the rule did with the driver's word)
     std::printf("PASS: the compaction's rules\n");
     return 0;
 }

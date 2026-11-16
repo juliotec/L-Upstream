@@ -27,6 +27,7 @@ test('the launcher download buttons get a channel picker, hidden until a script 
   assert.equal((formatted.match(/data-launcher-channel /g) || []).length, 1);
   assert.match(formatted, /<div class="launcher-channel" role="radiogroup" aria-labelledby="launcher-channel-label" data-launcher-channel hidden>[\s\S]*<\/p>\n<\/div>\n<p class="launcher-version">[\s\S]*<\/p>\n<div class="download-buttons">/);
   assert.match(formatted, /data-launcher-version role="status"/);
+  assert.match(formatted, /This is the launcher's own version\. The game it builds is numbered as a Longshot version/);
   assert(!formatted.includes('See all versions'));
   for (const c of launcherChannels) assert(formatted.includes(`value="${c.value}"`), `Missing channel: ${c.name}`);
   assert.equal((formatted.match(/ checked>/g) || []).length, 0);

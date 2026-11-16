@@ -42,14 +42,14 @@ Deck LCD says this is close to right, and a few specific alternatives are worse:
   scripts expect (see [graphics and controls](graphics-and-controls.md)).
 
 What you can expect from the shipped defaults, at the worst outdoor save we have
-(loading into the Kokiri Village benchmark save, then standing still, spinning the
+(loading into the starting village's benchmark save, then standing still, spinning the
 camera, and running forward), Deck LCD, runtime on an SD card, with the two switches
 below on: at the GPU's normal `auto` clock, about 21 fps standing and spinning.
 Pinning the clock (see below) raises that to 24 on last week's main and to 30.9 idle
 / 27.6 spinning on today's main (row run03 of the tested catalogue; SD, the worse
 storage case). Indoor and dungeon areas run higher — a nine-save sweep put them at
 33-36 idle — and most outdoor areas are better than this worst case. Two rough spots
-are being worked on: camera spins in Hyrule Town cost about 30% (#750), and loading
+are being worked on: camera spins in the castle town cost about 30% (#750), and loading
 into a busy outdoor save takes a minute or two of stutter while the world streams in
 (see below).
 
@@ -66,7 +66,7 @@ HOS_SHORT_SLEEP_TIMER=1
 
 - `RX_VK_READBACK_LATE=newest` stops the host from waiting on the GPU before reading
   back small game textures. #238's Deck measurements (OLED, clock pinned) put it at
-  about +20%: Hyrule Field 21.9 to 26.4 fps, the heavy view 24.3 to 30.3 fps. Our Deck
+  about +20%: the main outdoor area 21.9 to 26.4 fps, the heavy view 24.3 to 30.3 fps. Our Deck
   LCD arms (issue #716) all ran with it on. It is merged (#238) but off by default while
   its desktop A/B settles; on Deck, it wins.
 - `HOS_SHORT_SLEEP_TIMER=1` makes the host's waits resolve on a finer timer. On Deck it
@@ -108,7 +108,7 @@ echo auto | sudo tee /sys/class/drm/card0/device/power_dpm_force_performance_lev
   issue #73's Deck evidence recorded 1,055 skipped out of the whole 5,947-picture
   intro at the 60 cap (different settings; the direction is unambiguous, the size is
   not a clean single-change number). Occasional drops remain; see #73.
-- Hyrule Town camera spins cost about 30% (#750). The mechanism (a game texture written
+- Camera spins in the castle town cost about 30% (#750). The mechanism (a game texture written
   by the GPU being re-uploaded every frame) is identified; the fix is open.
 - SD-card installs stutter more at load-in than internal-drive installs (#386).
 - The Deck LCD and OLED measurements on this page are from the LCD (Jupiter, Vangogh);

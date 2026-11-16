@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 23
+#define MKWVK_API_VERSION 24
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (longshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -63,11 +63,20 @@ enum { HOS_OPT_HOLD_TOGGLE = 54 };
 enum { HOS_OPT_AUDIO_OUTPUT = 57 };
 /* Damage taken: 0 Half, 1 Normal (unchanged), 2 Double, 3 Quadruple. */
 enum { HOS_OPT_DAMAGE_TAKEN = 55 };
+/* (HOS_OPT_SHADOW_RES, 56: Graphics' Shadow resolution, host/oot_shadow.c: the sun's cascades as drawn, its Auto resolved
+   (gpu/vk/vk_menu.cpp menu_shadow_res), 0 the game's 1600, 1 2200, 2 3072, read each frame. The existing option callback:
+   no new member.) */
+enum { HOS_OPT_SHADOW_RES = 56 };
 /* (HOS_OPT_RENDER_THREAD, 58: whether the render thread runs on this run, 1 or 0, as the renderer resolved it once at the
    start (gpu/vk/vk_replay.cpp async_on: RX_VK_ASYNC=1, or unset and the Insert menu's Threaded rendering On, or its Auto's
    choice). host/nvn_native.c answers the game's present poll at once with it. The existing option callback: no new member.) */
 enum { HOS_OPT_RENDER_THREAD = 58 };
 enum { HOS_OPT_TRANSITION_AUTOSAVE = 59 };
+/* (HOS_OPT_MOUSE_INVERT_X, 61: Controls' Invert mouse horizontal, 1 on: the mouse's left and right swapped, as option
+   8, Invert mouse vertical, swaps its up and down. host/mouse_native.c (the camera's yaw) and host/nn_hid.c (the mouse
+   as the right stick) read it by its number, as they read 8. The existing option callback: no new member. 59 is the
+   transition autosave's and 60 stays the item wheel's.) */
+enum { HOS_OPT_MOUSE_INVERT_X = 61 };
 
 /* (longshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of longshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:
@@ -230,6 +239,13 @@ typedef struct MkwVkHost {
        Insert menu's (gpu/vk/vk_menu.cpp ini_path) and the switches its rows read before it loads. "" when none could be chosen:
        every row at its default, and nothing saved */
     const char *(*options_path)(void);
+    /* Version 24: playback metadata and requests, appended after version 23's settings path.
+       Only the audio thread changes playback handles.
+       info copies an opaque ID and UTF-8 name. State: 1 default fallback, 2 environment override, 4 no output. */
+    int (*audio_output_count)(void);
+    int (*audio_output_info)(int index, char *id, int id_capacity, char *name, int name_capacity);
+    void (*audio_output_select)(const char *id);
+    int (*audio_output_state)(void);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */

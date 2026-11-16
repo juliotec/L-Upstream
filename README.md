@@ -56,7 +56,7 @@ what does not yet. Open problems are collected in tracking issues, linked below.
 | Hyrule Field, Castle Town, Kakariko and the dungeons | ⚠️ Players got there, with open bugs: lighting and shadows ([#1004](https://github.com/NotRexed/Hookshot/issues/1004)), crashes and freezes ([#2507](https://github.com/NotRexed/Hookshot/issues/2507)) |
 | Ultrawide and 4:3 | ✅ Works. The Aspect ratio row's default, Monitor's shape, widens the 3D to the screen and keeps the HUD and movies in the middle 16:9 ([#2119](https://github.com/NotRexed/Hookshot/pull/2119)) |
 | NVIDIA cards | ✅ Works. The most tested |
-| AMD cards | ⚠️ Many tested: reports from the RX 6600, RX 6800 XT, RX 7800 XT, RX 7900 XTX and RX 9070 XT. On Windows, the RX 6600 to RX 6950 XT and their mobile and Pro models (Navi 21, 22 and 23) draw task and mesh shaders through the compute fallback by default: the driver lost the GPU on their own mesh shaders on an RX 6700 XT, an RX 6800 XT and, in one report in Mako, an RX 6600 ([#1747](https://github.com/NotRexed/Hookshot/pull/1747), [#1992](https://github.com/NotRexed/Hookshot/pull/1992), [#2215](https://github.com/NotRexed/Hookshot/pull/2215)); another RX 6600 played 15-20 minutes on them ([Longshot #130](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/130)). The RX 6400 and 6500 XT (Navi 24) keep their own mesh shaders, as no report has them losing the GPU; `RX_VK_TASK_MESH_FALLBACK=1` tries the fallback. Driver crashes and device lost are still reported ([#996](https://github.com/NotRexed/Hookshot/issues/996)) |
+| AMD cards | ⚠️ Tested on several Radeon cards. Compatibility and performance vary by card, driver and operating system. Longshot automatically uses rendering workarounds on affected Windows cards and AMD GPUs on Linux (see [technical details](docs/development.md#switches-for-testing-and-debugging)). Crashes and severe slowdowns remain reported on some configurations ([RX 6600](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/933), [Radeon 860M](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/1040)). |
 | Intel cards | ❓ Few reports, many of them black screens or crashes ([#999](https://github.com/NotRexed/Hookshot/issues/999)). On Windows, Intel's shader compiler is entered by one thread, and a shader it faults on is left out instead of closing the game, on later starts too ([#252](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/252)). Made for an Intel UHD laptop with 4 threads and 16 GB that crashed in `igvk64.dll` (see [Intel laptops](#intel-laptops)): not yet tested on an Intel GPU |
 | Pre-rendered movies on a slow CPU | ⚠️ Shown rather than skipped when the decoder is slower than the movie, so the picture can fall behind the sound. With 4 logical processors or fewer the decoder uses 2 threads, leaving the game its own. The first picture can still be black on some PCs |
 | Cards without mesh shaders (such as NVIDIA GTX 10 and AMD RX 5000) | ⚠️ Run through the compute fallback (since v2.0.6), which runs the mesh programs as compute shaders on cards with buffer device addresses: slower, and it leaves out the mesh draws that take their count from a buffer ([#640](https://github.com/NotRexed/Hookshot/issues/640)) |
@@ -107,11 +107,11 @@ frame rate: the game runs on more than this, and performance depends on the reso
 | Component | Minimum | Recommended |
 |---|---|---|
 | **Operating system** | **64-bit Windows 10 / 11**, or **64-bit Linux** with glibc 2.35 or newer. | Same. |
-| **Processor** | A 6-core x86-64 CPU, such as an AMD Ryzen 5 2600 or Intel Core i5-8400. AVX2 is not required: a CPU without it builds and runs Longshot, more slowly. | AMD Ryzen 5 5600 or Intel Core i5-12400 or newer. For a steady 60 fps in demanding outdoor areas, a Ryzen 7 5700X3D or Core i5-13600K. |
-| **Graphics card** | **Vulkan 1.3.** NVIDIA GeForce GTX 1060 6 GB or GTX 1650, AMD Radeon RX 5500 XT, or Intel Arc A380. | **Vulkan 1.3 with mesh shaders.** NVIDIA GeForce RTX 3060 or RTX 4060, AMD Radeon RX 6600 XT or RX 6700 XT, or Intel Arc A750. Check the [project status](#project-status) for each maker's known issues. |
-| **Mesh shaders** | Not required: without them, Longshot draws through a slower compute fallback. | **Strongly recommended:** NVIDIA RTX 20 series and newer, AMD RX 6000 series and newer, Intel Arc. |
-| **Video memory (VRAM)** | **4 GB**, with the in-game Minimum (4GB) or Low (6GB) quality preset. | **8 GB or more.** |
-| **System memory (RAM)** | **16 GB.** See the memory guidance below. | **16 GB or more.** |
+| **Processor** | A 6-core x86-64 CPU, such as an AMD Ryzen 5 2600 or Intel Core i5-8400. AVX2 is not required with current builds (v3.0.0-rc.4 or newer). | AMD Ryzen 7 7800X3D or Intel Core i5-13600K. |
+| **Graphics card** | **Vulkan 1.3.** NVIDIA GeForce GTX 1060 6 GB or GTX 1650, or AMD Radeon RX 5500 XT. | **Vulkan 1.3 with mesh shaders.** NVIDIA GeForce RTX 4070 or AMD Radeon RX 7800 XT. Check the [project status](#project-status) for each maker's known issues. |
+| **Mesh shaders** | Not required: without them, Longshot draws through a slower compute fallback. | **Strongly recommended:** NVIDIA RTX 20 series and newer, or AMD RX 6000 series and newer. |
+| **Video memory (VRAM)** | **4 GB**, with the in-game Minimum (4GB) quality preset. | **12 GB or more.** |
+| **System memory (RAM)** | **16 GB.** See the memory guidance below. | **32 GB or more.** |
 | **Storage** | **About 60 GB free while building.** A hard drive works, but builds are much slower. | **An SSD with about 60 GB free.** |
 
 **Below the minimum:** a laptop with Intel UHD graphics and a 4-thread CPU is below both minimums. The game has been
@@ -440,7 +440,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Frame generation | Off, Auto, 2x to 8x | Off |
 | | Frame generation by | Auto (NVIDIA DLSS Frame Generation where it runs: RTX 40 and newer, with a temporal Upscaler; else the built-in one; with frame generation on, the row shows who makes the frames, as Auto: DLSS FG, and why not DLSS FG when another does), Built-in FG. Changes at once | Auto |
 | | Frame pacing | Off, On | Off; a quality preset turns it on |
-| | Game frame rate cap | 60 (the console's), 90, 120, 144, 165, 240, Uncapped (changes at once) | 60 |
+| | Game frame rate cap | 30, 60 (the console's), 90, 120, 144, 165, 240, Uncapped (changes at once) | 60 |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
 | | Fullscreen | Off, On (the same as <kbd>F11</kbd>) | Off |
@@ -455,20 +455,24 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | HDR contrast | 50% to 200% around mid grey, in steps of 5 (while HDR is on) | 100% |
 | | HDR tone mapper | Vanilla (the game's curve), PsychoV35 (RenoDX's; with HDR set to Native). Compatible DLSS/DLAA, FSR 4/native AA and shared-chain FSR 3.1 upscaling run automatically; `RX_VK_PSYCHOV35_DLSS=0` disables that compatibility route. Off and the spatial/FXAA TAAU replacement support PsychoV35 directly. FSR 3.1 FG remains separately opt-in and 2x only; legacy own-input FSR upscaling remains unsupported | Vanilla |
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
+| | Shadow resolution | Auto (for the card's memory), Game's (1600), High (2200), Highest (3072): the sun's shadow maps, applies at once | Auto |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
 | | Threaded rendering | Auto, On, Off (after a restart). Auto is On with 12 or more processor threads for the game | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
-| | Audio output | Auto, Stereo, 5.1, Mono (layout changes after a restart; Mono/Stereo live on stereo output) | Auto |
+| | Output device | Default or a named Windows playback device; applies live | Default |
+| | Speaker layout | Auto, Stereo, 5.1, Mono (layout changes after a restart; Mono/Stereo live on stereo output) | Auto |
+| | Microphone | Off, Default, or each microphone by name | Default |
 | Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
 | | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
+| | FPS counter size | Auto, Small, Medium, Large | Auto |
+| | FPS counter details | Opens the FPS counter details page: Version and hardware at every level (Off, On; Off), then a line each of the Dev level (VRAM, Textures, Draws, Dispatches, Render passes, Draws skipped, Texture uploads, Pipelines built, GPU slot waits, Queue submits, Write-backs) and the CPU and GPU lines (Off, On; On) | Version and hardware off, every line on |
 | | Menu size | Small, Medium, Large | Medium |
 | | Game speed | Per frame, Real time | Real time |
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
 | | Skip title screen | Off, On (after a restart) | Off |
-| | Microphone | Off, Default, or each microphone by name | Default |
 | | Game language | The game's 16 languages, each by its own name (after a restart) | `language.txt`'s, else English (US) |
 | | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
 | | Discord status | Off, On ("Playing Longshot" and the time played in your Discord status, while Discord runs on this PC) | On |
@@ -479,6 +483,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Disable camera centering | Off, On | Off |
 | | Mouse sensitivity | 0.10 to 5.00, in steps of 0.10 | 1.00 |
 | | Invert mouse vertical | Off, On | Off |
+| | Invert mouse horizontal | Off, On | Off |
 | | Invert camera X | Off, On | Off |
 | | Invert camera Y | Off, On | Off |
 | | Camera speed | 50% to 400%, in steps of 25 | 100% |
@@ -502,10 +507,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Developer: ASTC as RGBA8 | Off, On (after a restart) | Off |
 | | Developer: Intel shader compiles | Auto, Side by side, One at a time (after a restart; Intel graphics on Windows only) | Auto |
 
-- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed and Profile
-  for a card with that much memory; how much video memory the textures use comes from the card itself. It leaves the
-  Upscaler and Frame generation as you chose them: with DLSS, FSR 3.1 or FSR 4, the preset's resolution becomes their
-  nearest mode. Changing most other rows yourself sets it back to Custom.
+- **Quality preset** sets Render resolution, Window scaling filter, Sharpness, Frame pacing, Game speed, Profile and
+  Shadow resolution (back to Auto) for a card with that much memory; how much video memory the textures use comes from the card itself.
+  It leaves the Upscaler and Frame generation as you chose them: with DLSS, FSR 3.1 or FSR 4, the preset's resolution
+  becomes their nearest mode. Changing most other rows yourself sets it back to Custom.
 - **Auto (this PC)**, which a first start begins on, chooses for the PC it runs on: the memory tier from the card's
   video memory (an integrated GPU, a Steam Deck or a card without mesh shaders at Minimum), DLSS on an NVIDIA RTX card
   or FSR 4 on an AMD RX 9000 where the build has them (else the game's own upscaler). It leaves the Output resolution as
@@ -540,8 +545,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Scarecrow's Song keeps the timing of its eight-note recording and playback above 60. Saved songs are not retimed;
   re-record a song after updating if its recorded rhythm was lost.
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
-  holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=<61-1000>` sets a cap for one
+  holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `HOS_FPS_MAX=<61-1000>` sets a cap for one
   run.
+  The 30 FPS cap uses host pacing and real-time stepping, including when Game speed is Per frame. It is saved as `frame_rate_cap=-1`; existing cap values 0–6 keep their meanings.
 - **Bug report** writes a folder `bug-reports/<date>_<time>` in the game folder with what an issue needs: `report.txt`,
   which answers the [game problem form](https://github.com/NotRexed/Hookshot/issues/new?template=1-game-problem.yml)'s
   questions under its own headings (the version, the map you are in, your graphics card and driver, CPU, RAM and
@@ -622,6 +628,13 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Anisotropic filtering** keeps textures sharp on surfaces seen at a slant: the paths and floors ahead of Link. The game
   asks for 1x or 2x, which at a PC's resolutions smears the ground a few metres off; 16x costs little on most cards, and
   Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's).
+- **Shadow resolution** sets the size of the sun's shadow maps. The game draws them 1600 pixels a side, which at a PC's
+  resolutions turns the shadows of thin things near Link (the drawbridge's chains, fences, ivy) into stair steps. High
+  (2200) and Highest (3072) are the game's own larger sizes, from its own table: by their size, Highest takes about
+  113 MB of video memory against the game's 31 MB, and on an RTX 4090 0.05 to 0.07 ms more GPU time a frame. Auto, the
+  default, picks by the card's memory, the Quality preset's tier or else the one Auto (this PC) chose: the game's size on
+  Minimum and Low (4 and 6 GB), High on Balanced (8 GB), Highest from High (12 GB) up. Choosing a preset puts the row back
+  on Auto. It applies at once and is saved as `shadow_resolution`.
 - **Upscaler Off** (`dlss=6` in `longshot_options.ini`) is for slow GPUs and for measuring: no DLSS, no FSR, and not the
   game's own network either, which otherwise runs on every frame (at the game's usual 3/4 share it scales the 3D up and
   smooths its edges; at 100% a pass of the same kind still smooths them). In its place the 3D is stretched to the output
@@ -668,7 +681,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   [Intel laptops](#intel-laptops). It applies after a restart.
 - **Game speed:** with Per frame, the game runs slower whenever it is below 60 fps. Real time keeps it at normal speed
   down to 15 fps.
-- **FPS counter** shows in a corner (**FPS counter position**; at the top right while the menu is open), at one of
+- **FPS counter** shows in a corner (**FPS counter position**; at the top right while the menu is open), as large as
+  **FPS counter size** says (Auto grows with the window, as the menu does; Small, Medium and Large keep the size Auto has
+  in a 720p, 1080p and 1440p window, whatever the window), at one of
   five levels. **FPS** is the number alone (an options file's old On); with frame generation on, it also shows the
   game's own rate and who makes the frames: `Base 60, DLSS FG` (NVIDIA DLSS Frame Generation), `FSR 3.1 FG` or `Built-in FG`. **Frame time** adds the game's frame time and its 1% low (the mean time of the slowest 1% of frames
   over the last 10 seconds). From this level on, the number and the frame time are green at the Game frame rate cap's rate,
@@ -680,8 +695,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   each of the graph's frames as the parts its time went to, stacked, with their values under the graph; the values add up
   to the frame time: the game's own code (Game), the renderer's part on the game's thread (Renderer: handing
   over the frame's work, or all of its recording with Threaded rendering off), then the waits under
-  Waiting on: for work the render thread had not recorded yet (Render thread), for the GPU to finish work the game waits
-  on (GPU fence) and for the GPU at the present (GPU present), and last the frame's turn (Pacing: the frame rate cap,
+  Waiting on: with Threaded rendering, for the game's main thread to finish writing the frame (Game's main thread), for
+  the render thread (Render thread: work it had not recorded yet, or the frame before it had not replayed), for the GPU to
+  finish work the game waits on (GPU fence) and for the GPU at the present (GPU present), and last the frame's turn (Pacing: the frame rate cap,
   vsync, Reflex). The colours keep one meaning: blue the game's work, red the GPU, purple the render thread, grey pacing
   and idle. With Threaded rendering on, a second lane under the graph shows the render thread's own frame in parallel,
   on the same scale: recording, waiting for the parallel replay's workers and for a GPU slot, and idle. Then the GPU's
@@ -689,19 +705,27 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   the last 4 seconds (red marks on the graph where they happened, the usual cause of a stutter). **Dev** adds the
   renderer's own numbers, for debugging and bug reports: video memory used of what the driver allows (red past it), the
   textures held and their memory, draws, dispatches and render passes a frame, draws skipped a frame (red when any),
-  texture uploads a second and the pipelines built since the start, and under the frame time three lines: the CPU, the
-  GPU and its driver.
+  texture uploads a second, the pipelines built since the start, and the renderer's pressure a frame: its waits for a
+  recording slot (the GPU behind), its queue submits (the driver's and the kernel's time) and the GPU's results written
+  back to the game's memory (VRAM on a line of its own, the rest two to a line while they fit, else on a line of
+  their own); at the counter's foot four lines: the
+  version (as the menu's banner shows it), the CPU, the GPU and its driver, at every level too with **FPS counter details**'
+  Version and hardware at every level. The details page turns each of the Dev level's lines on or off.
 - **Volume** scales the game's whole sound, on top of the game's own sound settings and Windows' volume. Its steps
   follow a curve so they sound about even: 50% is a quarter of the level (-12 dB). **Mute in background** silences the
   game while another window has the focus; an overlay such as Steam's or Discord's does not count as another window
   while the game was in front.
-- **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
+- **Output device**, under Audio, selects the Windows playback endpoint by its persistent ID, with Default following
+  the system output. Changes briefly restart the audio stream. A missing endpoint falls back to Default and is retried;
+  its saved choice is retained. `HOS_AUDIO_DEVICE` overrides selection for that run without changing the saved choice.
+  Named playback selection is Windows-only; Linux retains the default output.
+- **Speaker layout** is the speakers the game mixes its sound for. Auto is 5.1 when the selected/default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
   down). Mono averages the stereo channels into both ears, for one-sided hearing or one earbud. Mono/Stereo
   changes apply live while output is stereo; changing the channel layout (from or to 5.1) needs a restart.
   Auto never applies the mono average. Saved `audio_output` values remain 0 Auto, 1 Stereo, 2 5.1; Mono is 3.
   For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses the channel layout over the menu (6 leaves Mono inactive).
-- **Microphone** is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
+- **Microphone**, also under Audio, is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
   Default follows Windows' default recording device; the list shows up to 64 recording devices by name, and a change
   applies at once. Physical and virtual inputs share that limit; devices after the first 64 reported by the audio backend
   are not listed. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is

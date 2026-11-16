@@ -10,11 +10,12 @@ links to those public files.
 `manifest.json` records each image's dimensions, SHA-256, capture conditions, application release and reviewed UI
 source hashes. All six launcher images are UI-only captures built from Launcher nightly-52-b1d9f7a9 source
 `b1d9f7a9b19fa99b91ec3e8cd24455d4703d6d25`; they replace the earlier official-AppImage and rc.3 fixture captures.
-The Graphics image is rendered from Longshot main `b2911d33405e84fdad97248b409814a40dce69cb`.
-It was subsequently retained after [source review against main e9bed614](source-review-e9bed614.md).
-That review records the new dependency and the limits of retaining an older, explicitly captioned example.
+The Graphics image retains the upstream capture from main `b2911d33405e84fdad97248b409814a40dce69cb`.
+The [audio-output source review](source-review-audio-output.md) records why that illustration remains applicable.
+Its review revision is a SHA-256 of the sorted file/hash pairs in `reviewed_source.files`, so it remains verifiable
+after squash merging without depending on a temporary topic commit. Original capture provenance is unchanged.
 These are real maintained views rendered with synthetic state, not screenshots of a running game or a claim of
-reproducible official binaries. `captured_source` and `reviewed_source` record the exact sources used.
+reproducible official binaries. `captured_source` records the capture inputs; `reviewed_source` records the inputs reviewed for retention.
 
 The screenshots show Longshot's own UI and branding with the launcher's bundled Inter fonts. The launcher
 sources and their license are in [LongshotLauncher](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher);

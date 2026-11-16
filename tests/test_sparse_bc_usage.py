@@ -29,7 +29,17 @@ def main():
     if ("is_bc(x.format)" not in between or "~(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)" not in between
             or "x.usage = ci.usage" not in between):
         raise SystemExit("a sparse BC image is made with STORAGE/COLOR_ATTACHMENT, which its sparse residency was not asked with")
-    print("a sparse BC image is made with the usage its sparse residency was asked with")
+    # VUID-VkImageCreateInfo-imageCreateMaxMipLevels-02251 .. 02256: the sparse flags and usage within
+    # vkGetPhysicalDeviceImageFormatProperties' limits (the sparse format query does not cover them)
+    lim = between[between.find("vkGetPhysicalDeviceImageFormatProperties("):]
+    if (not lim.startswith("vkGetPhysicalDeviceImageFormatProperties(dev.physical, ci.format, ci.imageType, ci.tiling, "
+                           "ci.usage, ci.flags,")
+            or not all(k in lim for k in ("ifp.maxExtent.width", "ifp.maxExtent.height", "ifp.maxExtent.depth",
+                                          "ifp.maxMipLevels", "ifp.maxArrayLayers", "ifp.sampleCounts"))
+            or "bool ok = fits && vkCreateImage(" not in src[flag:make + 40]):
+        raise SystemExit("the sparse image is made without checking its flags and usage against "
+                         "vkGetPhysicalDeviceImageFormatProperties (VUID-VkImageCreateInfo 02251-02256)")
+    print("a sparse BC image is made with the usage its sparse residency was asked with, within the format's limits")
 
 
 if __name__ == "__main__":

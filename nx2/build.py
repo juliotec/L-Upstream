@@ -1629,6 +1629,7 @@ def main():
         vdeps_roots = (vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
                        os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
         vdeps = tree_headers(*vdeps_roots)
+        output_device_deps = open(os.path.join(HOST, "audio_output_devices.h"), "rb").read()
         # (longshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
         # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
         imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))
@@ -1668,6 +1669,7 @@ def main():
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             obj = os.path.join(obj_dir, "vk_" + name + ".o")
             extras = ((logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
+                      (output_device_deps if os.path.basename(src) == "vk_menu.cpp" else b"") +
                       (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
                       (xess_deps if os.path.basename(src) == "vk_xess.cpp" else b"") +
                       (imgui_deps if os.path.basename(src) in imgui_users else b""))
