@@ -99,6 +99,7 @@ static void call() { if (lost) vk_calls_after_lost++; }
 VkResult vkCreateCommandPool(VkDevice, const VkCommandPoolCreateInfo*, const void*, VkCommandPool* p) { *p = &the_pool; return VK_SUCCESS; }
 VkResult vkAllocateCommandBuffers(VkDevice, const VkCommandBufferAllocateInfo*, VkCommandBuffer* c) { *c = &the_cmd; return VK_SUCCESS; }
 VkResult vkCreateFence(VkDevice, const VkFenceCreateInfo*, const void*, VkFence* f) { *f = &the_fence; return VK_SUCCESS; }
+void vkDestroyCommandPool(VkDevice, VkCommandPool, const void*) {}
 VkResult vkResetCommandPool(VkDevice, VkCommandPool, uint32_t) {
     call();
     if (pending && !lost) violation("vkResetCommandPool with its command buffer still pending on the GPU");
