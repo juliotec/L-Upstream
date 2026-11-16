@@ -60,6 +60,7 @@ struct Saved {
     bool custom = false, reduced = false;
     VkSamplerReductionMode reduction{};
     float border[4]{};
+    VkFormat border_format = VK_FORMAT_UNDEFINED;   // (the custom border colour's format, VkSamplerCustomBorderColorCreateInfoEXT::format)
 };
 std::unordered_map<VkSampler, Saved> live;
 uint32_t row_times = 0;   // (the Anisotropic filtering row as vk_draw.cpp anisotropy_row reads it: 0 the game's own)
@@ -82,6 +83,7 @@ bool sampler_of(int id, nvn_samp_par* p) {
     if (policy == "anisotropy-nearest-mip") p->minf = 0x7E;
     if (policy == "compare-explicit") p->cmp_mode = 1, p->cmp_func = 1;
     if (policy == "custom-border" || policy == "custom-reduction") { p->border[0] = 0.25f; p->border[1] = 0.5f; p->border[2] = 0.75f; p->border[3] = 1; }
+    if (policy == "border-format") { p->border[0] = 1.5f; p->border[1] = -0.5f; p->border[2] = 0.75f; p->border[3] = 1; }   // (past what a UNORM format holds)
     if (policy == "standard-border") std::fill(std::begin(p->border), std::end(p->border), 1.0f);
     if (policy == "reduction" || policy == "compare-reduction" || policy == "custom-reduction") p->reduction = 1;
     if (policy == "wrap") p->ws = NVN_WRAP_MODE_REPEAT, p->wt = NVN_WRAP_MODE_MIRRORED_REPEAT, p->wr = NVN_WRAP_MODE_CLAMP_TO_BORDER;
@@ -130,7 +132,7 @@ VkResult vkCreateSampler(VkDevice, const VkSamplerCreateInfo* ci, const VkAlloca
     for (auto* next = static_cast<const VkBaseInStructure*>(ci->pNext); next; next = next->pNext) {
         if (next->sType == VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT) {
             auto* border = reinterpret_cast<const VkSamplerCustomBorderColorCreateInfoEXT*>(next);
-            saved.custom = true; std::copy(std::begin(border->customBorderColor.float32), std::end(border->customBorderColor.float32), saved.border);
+            saved.custom = true; saved.border_format = border->format; std::copy(std::begin(border->customBorderColor.float32), std::end(border->customBorderColor.float32), saved.border);
         }
         if (next->sType == VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO) {
             saved.reduced = true; saved.reduction = reinterpret_cast<const VkSamplerReductionModeCreateInfo*>(next)->reductionMode;
@@ -190,8 +192,22 @@ int ub_snap_dedup_mode() { return 1; }
 std::array<Pushed, 2>& pushed() { static std::array<Pushed, 2> state; return state; }
 
 std::string route;
-VkSampler get(int id = 0, bool compare = false, bool one_level = false) {
-    return route == "make" ? sampler_make(id, compare, one_level) : sampler_for(id, compare, one_level);
+// (the view's format joined the samplers' arguments with VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015; a tree
+// before it, --source, takes none)
+VkSampler make(int id, bool compare = false, bool one_level = false, VkFormat view = VK_FORMAT_UNDEFINED) {
+#if SAMPLER_VIEW_FORMAT
+    return sampler_make(id, compare, one_level, view);
+#else
+    (void)view; return sampler_make(id, compare, one_level);
+#endif
+}
+VkSampler get(int id = 0, bool compare = false, bool one_level = false, VkFormat view = VK_FORMAT_UNDEFINED) {
+    if (route == "make") return make(id, compare, one_level, view);
+#if SAMPLER_VIEW_FORMAT
+    return sampler_for(id, compare, one_level, view);
+#else
+    return sampler_for(id, compare, one_level);
+#endif
 }
 void valid(VkSampler sampler) { assert(sampler && live.count(sampler)); }
 void retry(const std::string& test) {
@@ -356,14 +372,14 @@ void run(const std::string& test) {
         // A distinct ID forces the parameter acceleration insertion.
         // Use sampler_make directly to test this cache even when the outer ID table is bypassed.
         if (!cache_off) {
-            fail_cache = Seen; auto next = sampler_make(1, false, false); valid(next); assert(allocation_faults == 1);
+            fail_cache = Seen; auto next = make(1); valid(next); assert(allocation_faults == 1);
             assert(live.at(next).ci.mipLodBias == 0.25f && live.at(next).ci.maxLod == 8);
         } else valid(get(1));
         assert(destroyed == 0); return;
     }
     if (test == "mine-commit") {
-        auto first = sampler_make(0, false, false); valid(first);
-        fail_cache = Mine; assert(sampler_make(0, false, false) == first);
+        auto first = make(0); valid(first);
+        fail_cache = Mine; assert(make(0) == first);
         assert(allocation_faults == 1 && creates == 1 && destroyed == 0 && live.size() == 1); return;
     }
     if (test == "valid-after-failure" || test == "failure-commit") {
@@ -405,6 +421,25 @@ void run(const std::string& test) {
         auto first = get(); valid(first); VkSampler other{};
         std::thread worker([&] { other = get(); }); worker.join();
         assert(other == first && creates == 1); return;
+    }
+    if (test == "border-format") {   // (VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015: a custom border colour sampling
+        // a B4G4R4A4, B5G6R5, A1B5G5R5 or B5G5R5A1 view names that format; VUID-VkSamplerCreateInfo-borderColor-04442: its colour
+        // then within what the format holds. Other views keep no format, as customBorderColorWithoutFormat allows)
+        policy = test;
+        const VkFormat packed[4] = {VK_FORMAT_B4G4R4A4_UNORM_PACK16, VK_FORMAT_B5G6R5_UNORM_PACK16, VK_FORMAT_A1B5G5R5_UNORM_PACK16,
+                                    VK_FORMAT_B5G5R5A1_UNORM_PACK16};
+        const VkSampler plain = get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM); valid(plain);
+        assert(live.at(plain).custom && live.at(plain).border_format == VK_FORMAT_UNDEFINED && live.at(plain).border[0] == 1.5f);
+        for (int i = 0; i < 4; i++) {
+            const VkSampler s = get(0, false, false, packed[i]); valid(s);
+            const Saved& saved = live.at(s);
+            assert(saved.custom && saved.ci.borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT);
+            assert(saved.border_format == packed[i] && s != plain);
+            assert(saved.border[0] == 1 && saved.border[1] == 0 && saved.border[2] == 0.75f && saved.border[3] == 1);
+            assert(get(0, false, false, packed[i]) == s && creates == (unsigned)i + 2);
+        }
+        assert(get(0, false, false, VK_FORMAT_UNDEFINED) == plain && get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM) == plain && creates == 5);
+        return;
     }
     policy = test;
     if (test == "upscale-bias" || test == "upscale-bias-plain") up_bias = -0.25f;
