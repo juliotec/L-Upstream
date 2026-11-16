@@ -26,11 +26,15 @@ def main():
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     nvn = (a.source / "gpu/render/rx_nvn.h").read_text(encoding="utf-8")
+    # (the view's format as the samplers' third argument: VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015)
+    view_format = "VkSampler sampler_make(int id, bool compare, VkFormat view_format) {" in source
     # The samplers' section up to its first function: what owns the samplers made (the book, sampler_room and the rest)
     head = source[source.index("// ---- samplers (by NVN sampler parameters) ----"):source.index("VkSamplerAddressMode wrap(")]
     actual = head + "\n".join(block(source, marker) for marker in [
         "VkSamplerAddressMode wrap(", "uint32_t aniso_override() {", "VkCompareOp compare_op(",
-        "VkSampler sampler_make(int id, bool compare) {", "VkSampler sampler_for(int id, bool compare) {"])
+        *(("VkSampler sampler_make(int id, bool compare, VkFormat view_format) {",
+           "VkSampler sampler_for(int id, bool compare, VkFormat view_format) {") if view_format else
+          ("VkSampler sampler_make(int id, bool compare) {", "VkSampler sampler_for(int id, bool compare) {"))])
     # Keep standard-container behavior, replacing only the allocator to target an individual cache.
     owner = [
         ("std::unordered_map<SamplerInfo, Made, SamplerInfoHash> made", "FaultMap<SamplerInfo, Made, Owner, SamplerInfoHash> made"),
@@ -54,11 +58,12 @@ def main():
     descriptors = block(source, "struct Pushed {") + ";\n" + "\n".join(block(source, marker) for marker in [
         "void write_words(", "void words_append(", "int words_same_store(", "bool bind_descriptors("])
     fixture = fixture.replace("/* DESCRIPTORS */", descriptors)
+    fixture = "#define SAMPLER_VIEW_FORMAT %d\n" % view_format + fixture
     fixture = fixture.replace("/* PARAMS */", params).replace("/* ENUMS */", enums).replace("/* ACTUAL */", actual)
     cases = ["healthy", "host-oom", "device-oom", "unknown", "error-output", "generation-retry", "thread-retry",
              "independent", "valid-after-failure", "owner-commit", "seen-commit", "mine-commit", "failure-commit",
              "registration", "shared-thread", "concurrent", "nearest", "linear", "compare", "compare-explicit",
-             "compare-pcf-off", "custom-border", "standard-border", "reduction", "compare-reduction", "anisotropy",
+             "compare-pcf-off", "custom-border", "border-format", "standard-border", "reduction", "compare-reduction", "anisotropy",
              "anisotropy-row", "anisotropy-game", "anisotropy-env-off", "anisotropy-change",
              "anisotropy-no-mips", "anisotropy-nearest-mip",
              "upscale-bias", "upscale-bias-plain", "upscale-bias-change",
