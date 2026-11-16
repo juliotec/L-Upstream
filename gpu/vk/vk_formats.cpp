@@ -37,6 +37,16 @@ bool astc_native() {
     }
     return known == 1;
 }
+/// R5G5B5A1 has no mandatory support: A1BGR5 textures are left out where the GPU does not sample it
+bool r5g5b5a1_sampled() {
+    static signed char known = -1;
+    if (known < 0) {
+        VkFormatProperties p{};
+        vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_R5G5B5A1_UNORM_PACK16, &p);
+        known = (p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ? 1 : 0;
+    }
+    return known == 1;
+}
 } // namespace
 
 VkFormatInfo vk_format(int nvn_format) {
@@ -98,7 +108,8 @@ VkFormatInfo vk_format(int nvn_format) {
     // (the 5-5-5 formats, low bits first as RGB565's: BGR5A1 has B in the low bits, A1BGR5 A)
     case NVN_FORMAT_BGR5A1: return {VK_FORMAT_A1R5G5B5_UNORM_PACK16, false, 1, 1};
     case NVN_FORMAT_BGR5: return {VK_FORMAT_A1R5G5B5_UNORM_PACK16, false, 1, 1};
-    case NVN_FORMAT_A1BGR5: return {VK_FORMAT_R5G5B5A1_UNORM_PACK16, false, 1, 1};
+    case NVN_FORMAT_A1BGR5:
+        return {r5g5b5a1_sampled() ? VK_FORMAT_R5G5B5A1_UNORM_PACK16 : VK_FORMAT_UNDEFINED, false, 1, 1};
     case NVN_FORMAT_RGBA16: return {VK_FORMAT_R16G16B16A16_UNORM, false, 1, 1};
     case NVN_FORMAT_RGBA16SN: return {VK_FORMAT_R16G16B16A16_SNORM, false, 1, 1};
     case NVN_FORMAT_RGBA16UI: return {VK_FORMAT_R16G16B16A16_UINT, false, 1, 1};
