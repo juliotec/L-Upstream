@@ -39,6 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       LONGSHOT_TEAM_CHAT_DIR: ${{ github.workspace }}/.team-chat
+      MAGICBEAN_TOOLING: ${{ github.workspace }}/Tooling
+      FORGE_USER: jcabarca
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,10 +53,19 @@ jobs:
           key: team-chat-${{ github.run_id }}
           restore-keys: team-chat-
 
+      - name: MagicBeanDev/Tooling (forge.py, team_chat.py)
+        env:
+          MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
+        run: |
+          auth=$(printf '%s:%s' "$FORGE_USER" "$MAGICBEAN_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" clone --depth 1 https://git.magicbean.dev/MagicBeanDev/Tooling.git "$MAGICBEAN_TOOLING"
+          git -C "$MAGICBEAN_TOOLING" log -1 --format='Tooling @ %h %s'
+
       - name: Sign in
         env:
           MATRIX_TOKEN: ${{ secrets.MATRIX_TOKEN }}
-        run: printf '%s\n' "$MATRIX_TOKEN" | python3 -I scripts/team_chat.py login --access-token-stdin
+        run: printf '%s\n' "$MATRIX_TOKEN" | python3 -I "$MAGICBEAN_TOOLING/scripts/team_chat.py" login --access-token-stdin
 
       - name: Read
         if: inputs.action == 'read'
@@ -63,9 +74,9 @@ jobs:
           LIMIT: ${{ inputs.limit }}
         run: |
           if [ -n "$ROOM" ]; then
-            python3 -I scripts/team_chat.py read --limit "${LIMIT:-20}" --room "$ROOM"
+            python3 -I "$MAGICBEAN_TOOLING/scripts/team_chat.py" read --limit "${LIMIT:-20}" --room "$ROOM"
           else
-            python3 -I scripts/team_chat.py read --limit "${LIMIT:-20}"
+            python3 -I "$MAGICBEAN_TOOLING/scripts/team_chat.py" read --limit "${LIMIT:-20}"
           fi
 
       - name: Post
@@ -75,9 +86,9 @@ jobs:
           ROOM: ${{ inputs.room }}
         run: |
           if [ -n "$ROOM" ]; then
-            python3 -I scripts/team_chat.py post "$MESSAGE" --room "$ROOM"
+            python3 -I "$MAGICBEAN_TOOLING/scripts/team_chat.py" post "$MESSAGE" --room "$ROOM"
           else
-            python3 -I scripts/team_chat.py post "$MESSAGE"
+            python3 -I "$MAGICBEAN_TOOLING/scripts/team_chat.py" post "$MESSAGE"
           fi
 
       - name: Drop the token

@@ -52,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       LONGSHOT_TEAM_CHAT_DIR: ${{ github.workspace }}/.forge-session
+      MAGICBEAN_TOOLING: ${{ github.workspace }}/Tooling
       FORGE_USER: jcabarca
       FORK_URL: https://git.magicbean.dev/jcabarca/Longshot.git
       ACTION: ${{ inputs.action }}
@@ -83,6 +84,15 @@ jobs:
           ref: ${{ inputs.branch }}
           path: src
           fetch-depth: 0
+
+      - name: MagicBeanDev/Tooling (forge.py, team_chat.py)
+        env:
+          MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
+        run: |
+          auth=$(printf '%s:%s' "$FORGE_USER" "$MAGICBEAN_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" clone --depth 1 https://git.magicbean.dev/MagicBeanDev/Tooling.git "$MAGICBEAN_TOOLING"
+          git -C "$MAGICBEAN_TOOLING" log -1 --format='Tooling @ %h %s'
 
       - name: Sign in to git.magicbean.dev
         env:
