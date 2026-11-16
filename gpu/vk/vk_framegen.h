@@ -11,8 +11,10 @@ bool framegen_on();
 /// (the present goes to the window as without it)
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4], bool native_pq);
 /// (longshot) Who made the made frames of the sets shown lately (the last 64, about a second at 60): what the Insert menu's
-/// Frame generation by row and the FPS counter name. None: none made (Off, nothing to blend from, none for half a second)
-enum class FgMaker { None, BuiltIn, Dlss, Fsr3 };
+/// Frame generation by row and the FPS counter name. None: none made (Off, nothing to blend from, none for half a second).
+/// DlssPaused: DLSS FG chosen, and the sets were the game's frames alone, with no Upscaler picture to make frames from (the
+/// game's own menus, movies and loading screens: vk_dlss.cpp dlss_fg_holds)
+enum class FgMaker { None, BuiltIn, Dlss, Fsr3, DlssPaused };
 FgMaker framegen_maker();
 /// The first frame the last framegen_record made (null when it made none), w x h, GENERAL
 VkImage framegen_made_image(uint32_t* w, uint32_t* h);

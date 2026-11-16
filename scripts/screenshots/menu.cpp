@@ -21,7 +21,10 @@ std::vector<gpu_choice::Card> gpu_device_cards;
 std::string options_path() { std::abort(); } // Capture never reads or writes player settings.
 bool dlss_built() { return false; }
 DlssWhy dlss_why() { return DLSS_NOT_BUILT; }
+uint64_t device_vram_bytes() { return 0; } // No physical device: the DLSS model row as on an unknown card (K).
 int dlss_fg_skip(unsigned* most) { if (most) *most = 0; return FG_SKIP_NOT_BUILT; }
+int dlss_fg_unavailable() { return FG_SKIP_NOT_BUILT; }
+bool dlss_fg_forced() { return false; }
 bool fsr4_built() { return false; }
 FsrWhy fsr4_why() { return FSR_NOT_BUILT; }
 bool xess_built() { return false; }

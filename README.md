@@ -434,11 +434,11 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Custom output size | A size of your own, typed as `<width>x<height>` (after a restart) | None |
 | | Profile | Docked, Handheld (after a restart) | Docked; a quality preset sets it |
 | | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, below, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on, below), AMD FSR 4 (only in builds with FSR 4, below, on GPUs AMD's files cover), Off (no upscaling), Intel XeSS (Windows, with Intel's `libxess.dll` beside the game, below). NVIDIA DLAA, AMD FSR 4 Native AA and Intel XeSS Native AA are DLSS's, FSR 4's and XeSS's Native, chosen on the Render resolution row | Game's own; Auto (this PC) chooses DLSS or FSR 4 where they run, never XeSS |
-| | DLSS model | Transformer (K), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K) |
+| | DLSS model | Transformer (K) (CNN (E) in its place on cards with less than 7 GB of video memory), Transformer 2 (M), Transformer 2 (L), NVIDIA default (shown where DLSS runs; used by DLSS and DLAA) | Transformer (K); CNN (E) under 7 GB |
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 4: Auto, Native (DLAA or FSR 4 Native AA: the 3D at full size), 92%, 83%, 75%, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With Intel XeSS the same stops, named by the XeSS mode each runs under: Native (XeSS Native AA), Ultra Quality Plus (92%, 83%), 75%, Ultra Quality (67%), Balanced (58%, 50%), Ultra Performance (33%). With FSR 3.1: Auto, 100% (its native AA), then the same as DLSS from 92%. With Off: Auto, 100%, 75%, 67%, 50%, 33% | Auto; a quality preset sets it |
 | | Sharpness | 0 to 100%, in steps of 10 | 0%; a quality preset sets it |
 | | Frame generation | Off, Auto, 2x to 8x | Off |
-| | Frame generation by | Auto (NVIDIA DLSS Frame Generation where it runs: RTX 40 and newer, with a temporal Upscaler; else the built-in one; with frame generation on, the row shows who makes the frames, as Auto: DLSS FG, and why not DLSS FG when another does), Built-in FG. Changes at once | Auto |
+| | Frame generation by | DLSS FG (NVIDIA DLSS Frame Generation: RTX 40 and newer, with a temporal Upscaler), Built-in FG. DLSS FG is offered only where it runs; elsewhere the row has Built-in FG alone and its line says why (the log has NVIDIA's answer). At DLSS FG, the game's own menus, movies and loading screens show only the game's own frames (they have no Upscaler picture to make frames from): the row's line and the FPS counter say DLSS FG paused. With an Upscaler that is not temporal, the built-in one makes the frames and the line says why. `RX_VK_DLSS_FG=1` fixes the row at DLSS FG for a run. Changes at once | DLSS FG where it runs, else Built-in FG (an options file's Auto from before is this default) |
 | | Frame pacing | Off, On | Off; a quality preset turns it on |
 | | Game frame rate cap | 30, 60 (the console's), 90, 120, 144, 165, 240, Uncapped (changes at once) | 60 |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
@@ -463,6 +463,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Output device | Default or a named Windows playback device; applies live | Default |
 | | Speaker layout | Auto, Stereo, 5.1, Mono (layout changes after a restart; Mono/Stereo live on stereo output) | Auto |
 | | Microphone | Off, Default, or each microphone by name | Default |
+| | Microphone gain | Software input level, 0–400%; applies to new samples without changing system volume | 100% |
+| | Test microphone | Start/stop capture; live levels appear in the help box for Test microphone and Microphone gain | Stopped |
 | Gameplay | FPS counter | Off, FPS, Frame time, Graph, Breakdown, Dev | Off |
 | | FPS counter position | Top right, Top left, Bottom right, Bottom left | Top right |
 | | FPS counter size | Auto, Small, Medium, Large | Auto |
@@ -559,8 +561,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   PC”. They are not counted as changed settings; the report does not invent a default from a run-time list index. The rows
   a preset sets keep their fixed defaults on Custom while Auto (this PC) has never chosen for the options file; with a
   preset, or once Auto has chosen, they depend on this PC.
-  Fixed defaults, including GPU Auto, the system-default microphone and Frame generation by's Auto, still report actual
-  changes; the Aspect ratio's default is the monitor's shape, and the Game language's `language.txt`'s.
+  Fixed defaults, including GPU Auto, the system-default microphone and Frame generation by's DLSS FG, still report actual
+  changes (Frame generation by where DLSS FG cannot run has Built-in FG alone: no change); the Aspect ratio's default is
+  the monitor's shape, and the Game language's `language.txt`'s.
   Your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name `<user>` in the logs' paths. A switch's
   value is written only when it is a number, a size or on/off, and never for a name with `TOKEN`, `KEY`, `ROOM`,
   `SECRET`, `PASS`, `SERVER` or `USER` in it; other values read `(value left out)`. Nothing else goes in (no saves, no
@@ -731,6 +734,16 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   are not listed. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is
   back. On Linux (SDL2) two microphones with the same name cannot be told apart: the first is used. Windows must allow desktop apps to use the microphone
   (Settings, Privacy & security, Microphone). `HOS_MIC_LOG=1` logs what the game reads, a line a second.
+- **Microphone gain** changes captured samples for Longshot only, from 0% to 400% (100% unchanged); it does not change
+  the system's input volume. Boosting raises noise too, and excessive levels clip. It applies to newly captured samples;
+  samples already buffered for the game keep their previous gain.
+- **Test microphone** starts/stops capture explicitly. During a test, the help box for Test microphone and Microphone gain
+  shows a read-only bar labeled Testing, with the incoming percentage before gain and adjusted percentage after gain.
+  The same explanation and percentage bullets appear on both rows. The meter reports
+  clipping, a default-device fallback, unavailable capture, or no recent samples. Opening Audio alone never starts a test;
+  Microphone Off prevents one. Leaving Audio, closing the overlay or losing focus stops it at the next menu tick.
+  The test shares the game's 48 kHz mono capture when active; stopping a test leaves capture needed by the game running.
+  No microphone sound is played back or saved. Test-only samples are drained before a first game stream joins.
 - **Game language** is the game's own text, `language.txt` in the game folder: the row writes it once you leave the row,
   and the game reads it at its next start (`HOS_LANGUAGE`, when set, wins over the file, as for the game). Where the
   folder cannot be written the row goes back to the file's language. **Menu language** is this menu's: Auto follows the
@@ -1049,7 +1062,8 @@ license. Never share a game folder built with them, and do not post builds made 
   that folder in `RX_VK_DLSS_DIR`.
 
 The **DLSS model** row chooses DLSS's network, by NVIDIA's preset letter, for every mode: **Transformer (K)**, the
-transformer model and the one tested most here (the default); **Transformer 2 (M)**, NVIDIA's second-generation
+transformer model and the one tested most here (the default; on a card with less than 7 GB of video memory **CNN (E)**
+in its place, NVIDIA's CNN model, for less video memory and GPU time); **Transformer 2 (M)**, NVIDIA's second-generation
 transformer as it picks it for Performance; **Transformer 2 (L)**, the same generation as tuned for Ultra Performance;
 **NVIDIA default**, which lets DLSS's runtime pick for each mode, so it can change with a runtime update. The runtime
 the SDK comes with (310.9.16) has all of them. A change applies at once, without a restart (`dlss_model=` in

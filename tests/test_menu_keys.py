@@ -85,6 +85,10 @@ using HWND = int;
 using DWORD = unsigned;
 static int down_key, queued_key;
 static bool focused, pad_last;
+// The key-poll extraction contains its lifetime guard. Full mic state is checked in test_microphone_test_gain.py.
+static int mic_lifetime_calls;
+static bool mic_lifetime_focus;
+static void mic_test_tick(bool has_focus) { mic_lifetime_calls++; mic_lifetime_focus = has_focus; }
 // OPTIONS
 static Options opts;
 static HWND GetForegroundWindow() { return 1; }
@@ -131,6 +135,9 @@ static void test_keyboard() {
     CHECK(!keyboard_toggle(0, VK_INSERT, false));   // A held key still needs a new press after re-enabling it.
     CHECK(!keyboard_toggle(0, 0, false));
     CHECK(keyboard_toggle(0, VK_INSERT, false));
+    const int before = mic_lifetime_calls;
+    CHECK(!keyboard_toggle(0, 0, false, false));
+    CHECK(mic_lifetime_calls == before + 1 && !mic_lifetime_focus);
     std::puts("PASS: menu shortcuts respect the saved mode, focus and key edges");
 }
 
@@ -146,6 +153,7 @@ static bool compact_key_held;     // (menu_tick's tune_down: Right Shift, or Rig
 static bool restart_ask() { return false; }
 static int detect_pad_layout() { return 0; }
 static void dlss_probe() {}
+static void dlss_fg_probe() {}
 static void fsr4_probe() {}
 static void xess_probe() {}
 static void refresh_mics() {}

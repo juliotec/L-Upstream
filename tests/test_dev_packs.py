@@ -200,8 +200,8 @@ def test_guards(d):
 
 
 def test_pack_folders(d):
-    """The lift key hashes the work and game folders' paths (make_game passes them to the lift as OOT_WORK and OOT_DUMP): a game
-    pack reuses a translation only when every pack of a base builds in the same two folders"""
+    """Every pack of a base builds in the same two folders, so a game pack after the first finds the translation there. The lift
+    key leaves the folders' paths out (make_game.py LIFT_PATH_ENV): the same in another folder"""
     f = packs.pack_folders(str(d))
     check("the same folders for every pack", f == packs.pack_folders(str(d)) and not f["game_work"].startswith(os.path.join(str(d), "packs")))
     exefs, work, out = d / "exefs", Path(f["game_work"]), Path(f["game_out"])
@@ -209,8 +209,8 @@ def test_pack_folders(d):
     env = lambda w, o: {"OOT_WORK": str(w), "OOT_DUMP": str(o), "RX_RELEASE": "1", "A64_HOT_CHUNK": "1"}
     key = make_game.lift_key(str(exefs), str(work), env(work, out))
     check("the key is the same in the same folders", key == make_game.lift_key(str(exefs), str(work), env(work, out)))
-    check("...and differs in another (why packs share one folder)",
-          key != make_game.lift_key(str(exefs), str(d / "other"), env(d / "other", out)))
+    check("...and in another (the folders' paths are not in it)",
+          key == make_game.lift_key(str(exefs), str(d / "other"), env(d / "other", out)))
     base = d / "base-work"
     write(base / "objcache" / "ab" / "abcdef.o", b"object")
     write(base / "system_headers.txt", b"headers")

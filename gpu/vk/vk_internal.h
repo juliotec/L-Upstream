@@ -402,6 +402,10 @@ void destroy_sparse_buffer(VkBuffer buffer);
 bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free = nullptr);
 /// (vk_memory.cpp) the largest device-local heap's size: the card's video memory (0: none)
 uint64_t device_vram_bytes();
+/// (a test: RX_VK_TEST_VRAM_MB=<n> takes the card's VRAM as at most n MB wherever the renderer sizes something by it: the
+/// texture pool's blocks at the start, the mirrors' budget, the texture budget's rule, the auto settings. With RX_VK_TEST_ALLOWED_MB a
+/// large card plays a small one's whole policy. Unset: the card's own)
+uint64_t test_vram_bytes(uint64_t heap);
 /// vram_usage asked of the driver now (VMA asks again for a new frame index), for the status line; false when the driver
 /// gives no budget (VK_EXT_memory_budget): used is then the game's own allocations
 bool vram_usage_now(uint64_t* used, uint64_t* budget);

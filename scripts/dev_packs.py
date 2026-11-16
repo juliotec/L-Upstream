@@ -415,10 +415,10 @@ def write_base(d, b):
 
 
 def pack_folders(d):
-    """Where a base's packs are built: one work folder for the game and one for the renderer, the same for every pack. The lift key
-    (make_game.lift_key) hashes the work and game folders' paths with the lift's environment, so a translation is reused only in
-    the folder, and for the game folder, it was made for: a game pack after the first on a base skips the lift while the translator,
-    the HLE list and the hot list are the base's. One pack builds at a time"""
+    """Where a base's packs are built: one work folder for the game and one for the renderer, the same for every pack. A translation
+    is kept in the work folder it was made in (make_game.lift_key; LONGSHOT_LIFT_STORE shares it with other folders): a game pack
+    after the first on a base skips the lift while the translator, the HLE list and the hot list are the base's. One pack builds at
+    a time"""
     return {"game_work": os.path.join(d, "game-work"), "game_out": os.path.join(d, "game-out"),
             "renderer_work": os.path.join(d, "renderer-work")}
 

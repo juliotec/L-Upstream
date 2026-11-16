@@ -20,7 +20,8 @@ job queue*). Python's standard library only.
         others' go between its runs (default: the name's first word).
     python -I scripts/job_queue.py status [--json]     who plays, what runs, the queue and why each waits, memory and disk
     python -I scripts/job_queue.py history [-n N] [--json]   the last jobs: waited, ran, status, and a timed run's noise
-    python -I scripts/job_queue.py cancel ID|NAME      stop a job of yours (its runner gets SIGTERM and stops its command)
+    python -I scripts/job_queue.py cancel ID|NAME      stop a job of yours (its runner gets SIGTERM and stops its command; on
+                                                       Windows the runner and every process under it end, its job object's)
 
 Inside a job (LONGSHOT_JOB set) run runs CMD directly: a script under the queue may call it again.
 
@@ -255,6 +256,77 @@ def _win_start(pid):
         return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
     finally:
         k.CloseHandle(h)
+
+
+# (Windows) A job's command and everything it starts, in a job object of the runner's. Windows has no signal a runner can
+# clean up on: cancel's os.kill is TerminateProcess, and a runner that ends that way (or crashes, or loses its console) runs
+# no finally, so its command and the command's own children went on as orphans: builds and games of a cancelled job running
+# on beside the next one. With JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE the runner's handle is the job's only one, and its end,
+# however it comes, kills them all. A command that ends by itself lets what it started go on, as on Linux (_win_job_release)
+_KILL_ON_JOB_CLOSE = 0x2000
+_CREATE_SUSPENDED = 0x00000004
+
+
+def _win_job_limits(job, flags):
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+    class Io(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in ("Read", "Write", "Other", "ReadBytes", "WriteBytes", "OtherBytes")]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [("Basic", Basic), ("Io", Io), ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    info = Extended()
+    info.Basic.LimitFlags = flags
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    return bool(k.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)))   # (JobObjectExtendedLimitInformation)
+
+
+def _win_job_start(child):
+    """The suspended child into a new kill-on-close job object, then let go. Returns the job's handle, or None when it could not
+    be made (the child runs anyway, as before)"""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    nt = ctypes.WinDLL("ntdll")
+    nt.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    job = k.CreateJobObjectW(None, None)
+    if job and not (_win_job_limits(job, _KILL_ON_JOB_CLOSE) and k.AssignProcessToJobObject(job, int(child._handle))):
+        k.CloseHandle(job)
+        job = None
+    nt.NtResumeProcess(int(child._handle))   # (started suspended, so nothing it starts is outside the job)
+    return job
+
+
+def _win_job_release(job, keep_running):
+    """The runner's handle on the job closed: what is still in it ends, unless keep_running (the command ended by itself: what it
+    left running, a game it started, goes on as without the queue)"""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    if keep_running:
+        _win_job_limits(job, 0)
+    k.CloseHandle(job)
+
+
+def _win_kill_tree(pid):
+    """pid and every process under it (taskkill /T): a runner from before the job object, or one whose job could not be made"""
+    r = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, text=True)
+    return r.returncode == 0
 
 
 def pidns():
@@ -763,7 +835,7 @@ def run(name, mode, cmd, prio="normal", idle=False, grp="", environ=None, s=None
           "cpu": cpu, "prio": prio, "t": time.time(), "state": "waiting", "ready": True, "idle": idle, "group": grp,
           "cmd": " ".join(cmd), "cwd": os.getcwd()}
     lock = os.path.join(qdir, ".lock")
-    said, last_idle, child = None, 0.0, None
+    said, last_idle, child, job = None, 0.0, None, None
     noise = Noise()
     if cpu == "heavy":
         free = disk_free_gb(os.getcwd())
@@ -823,7 +895,11 @@ def run(name, mode, cmd, prio="normal", idle=False, grp="", environ=None, s=None
             run_cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
                        "--unit=longshot-job-%s-%d" % (safe(name), me["pid"])] + props + ["--"] + run_cmd
         stop = threading.Event()
-        child = subprocess.Popen(run_cmd, env=env, preexec_fn=pre)
+        if WINDOWS:
+            child = subprocess.Popen(run_cmd, env=env, creationflags=_CREATE_SUSPENDED)
+            job = _win_job_start(child)
+        else:
+            child = subprocess.Popen(run_cmd, env=env, preexec_fn=pre)
         me.update(child=child.pid, child_start=proc_start(child.pid))
         with Lock(lock):
             write_ticket(qdir, me)
@@ -844,12 +920,15 @@ def run(name, mode, cmd, prio="normal", idle=False, grp="", environ=None, s=None
         history_append(s, rec)
         return rc
     finally:
-        if child is not None and child.poll() is None:
+        ended = child is None or child.poll() is not None
+        if not ended:
             child.terminate()
             try:
                 child.wait(10)
             except subprocess.TimeoutExpired:
                 child.kill()
+        if job is not None:
+            _win_job_release(job, keep_running=ended)
         try:
             os.remove(os.path.join(qdir, "%d.json" % me["pid"]))
         except OSError:
@@ -964,6 +1043,9 @@ def cancel(s, what):
         sys.exit("job_queue: no job %s in the queue" % what)
     for t in hits:
         try:
+            if WINDOWS and _win_kill_tree(t["pid"]):   # (the runner and its command's whole tree, for a runner without a job object too)
+                say("stopped %s (pid %d) and every process it started" % (t["name"], t["pid"]))
+                continue
             os.kill(t["pid"], signal.SIGTERM)
             say("stopped %s (pid %d)" % (t["name"], t["pid"]))
         except OSError as e:

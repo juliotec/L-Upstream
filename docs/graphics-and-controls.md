@@ -20,7 +20,7 @@ below, then look up any single setting in the list at the bottom.
 
 </a>
 
-*UI-only example from development build b2911d33 on Linux. The Custom values shown are illustrative, not recommended defaults.*
+*UI-only example from development build 5307877d on Linux. The Custom values shown are illustrative, not recommended defaults.*
 
 Your choices are saved as you go, in `longshot_options.ini`: with your saves when the launcher starts the game on Windows, the
 same file for every version, else in the game folder (the README says where). A setting marked **After a restart**

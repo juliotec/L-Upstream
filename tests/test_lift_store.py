@@ -84,7 +84,8 @@ with tempfile.TemporaryDirectory() as top:
     lift_store.prune(str(store), keep=2, now=now)
     assert sorted(os.listdir(store)) == ["k1", "s4"], sorted(os.listdir(store))
 
-    # (the share key: the same in two work folders and game folders, though the lift key is not; another setting changes it)
+    # (the share key: the same in two work folders and game folders, as the lift key is now (its environment leaves the paths out,
+    # make_game.py LIFT_PATH_ENV); another setting changes it)
     exefs_a, exefs_b = a / "exefs", b / "exefs"
     for e in (exefs_a, exefs_b):
         e.mkdir()
@@ -102,7 +103,7 @@ with tempfile.TemporaryDirectory() as top:
         share_a = make_game.lift_share_key(str(exefs_a), str(a), str(out_a), env(a, out_a))
         share_b = make_game.lift_share_key(str(exefs_b), str(b), str(out_b), env(b, out_b))
         assert share_a == share_b
-        assert make_game.lift_key(str(exefs_a), str(a), env(a, out_a)) != make_game.lift_key(str(exefs_b), str(b), env(b, out_b))
+        assert make_game.lift_key(str(exefs_a), str(a), env(a, out_a)) == make_game.lift_key(str(exefs_b), str(b), env(b, out_b))
         assert make_game.lift_share_key(str(exefs_b), str(b), str(out_b), dict(env(b, out_b), A64_HOT_CHUNK="")) != share_a
         (b / "image" / "chunks.txt").write_text("80002000\n")   # (other boundaries: another lift)
         assert make_game.lift_share_key(str(exefs_b), str(b), str(out_b), env(b, out_b)) != share_a

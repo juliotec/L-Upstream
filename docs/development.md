@@ -558,6 +558,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_FALLBACK_LOADED=0` | Where mesh programs are drawn through the compute fallback: the start makes the compute pipelines only of the fallback programs it reads in for that, as before, and not of those read in earlier in the same start (the state lists' programs, in the start that prepares the shaders), whose first draws are then left out until their pipelines are compiled in play |
 | `RX_VK_FALLBACK_PHI_LIMIT=<n>` | RADV on GCN 1-4 cards (RX 400/500, R9 2xx/3xx/Fury): a mesh fallback compute stage with more than this many phis is not built and its draws are left out (default 50000; `0`: no limit; anything but decimal digits is ignored with a warning; the limit in use is logged). Its compiler did not finish the two biggest mesh programs (80,000 phis) and grew past 25 GB (`gpu/vk/fallback_size_policy.h`) |
 | `RX_VK_DRIVER_FAULTS=0` or `2` | 0: programs the driver's compiler faulted on are asked of it again. By default they are left out for the rest of the run and, through `longshot_driver_faults.txt` in the game folder's `cache`, on later runs with the same driver, and on AMD one program's builds go to the driver one at a time (issue 996). 2: one at a time on every driver |
+| `RX_VK_MMA_UNROLL=0` or `1` | How the game's upscale networks multiply where the GPU has no cooperative matrices (the Steam Deck and other AMD GPUs before RDNA 3, GTX 10 and 16, Intel's integrated GPUs; `gpu/vk/eden/shader_recompiler/backend/spirv/mma_software.h`): 0 the loop, as before; 1 the unrolled form, tried on any GPU. By default it is tried on RADV, where it was measured: on the Steam Deck the gameplay network at Resolution 100% takes 3.82 ms a frame instead of 8.61. Either way a self-test at start runs both forms on the device and keeps the unrolled one only where every word of it is the loop's; the log's `vk: software matrix multiplies` line says which. It changes the shaders' translation (one preparation of the shaders) |
 | `RX_VK_NO_INTEL_SERIAL=1` or `0` | On Windows, Intel's compiler (UHD and Arc) is entered by one thread, and a fault creating a shader or pipeline leaves that one out; on the Arc B-series from driver 101.9154 it is entered side by side by default (the row's Auto, `gpu/vk/intel_compiles.h`: a first visit to an area froze the picture for 4 to 7 minutes one at a time on a B580 and not at all side by side). 1 builds them side by side, as on every other GPU and on Intel elsewhere, 0 one at a time, for the run: the Debug tab's Intel shader compiles row shows it and is not changed (`longshot_options.ini` keeps the row's own, `intel_shader_compiles=`). The log says which |
 | `RX_VK_COMPUTE_QUICK_FIRST=0` | With Intel's compute pipelines built one at a time on Windows (Intel's own driver; not on Linux, where Mesa's ANV ignores the optimizer flag), a dispatch's pipeline is built first without the driver's optimizer (seconds where the optimizer took up to minutes on a UHD Graphics) and the optimized one is bound once it is built behind the others. This builds the optimized one only, as before, for the run: the Debug tab's Intel quick compute builds row shows it (`longshot_options.ini` keeps the row's own, `intel_quick_compute_builds=`) |
 | `HOS_VIDEO_NO_CATCHUP=1` | A movie does not skip pictures that are behind its sound. By default, pictures already decoded are skipped, and a decoder that keeps up decodes ahead to skip a late one (at most one picture's time in a frame). A decoder slower than the gap between pictures, timed over its recent pictures, shows the late one instead of decoding the next in order to drop it |
@@ -594,7 +595,8 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_IMPORT_HIGH=<percent>`, `RX_VK_IMPORT_LOW=<percent>`, `RX_VK_IMPORT_CAP_MB=<MB>` | The valve that gives idle imports of the game's memory back to the driver (`imports_give_back`, `gpu/vk/vk_memory.cpp`): past HIGH percent (85) of the system heap's budget the imports bound least lately go, down to LOW percent (75); at a 12 GB budget and above the budget is capped at `RX_VK_IMPORT_CAP_MB` (4500; `0`: no cap; setting HIGH or LOW without it uses the full budget). On by default on Linux and on Windows NVIDIA; off by default on Windows AMD and Intel (device losses there, issues 17, 309 and 571), where `RX_VK_IMPORT_HIGH=85` turns it on and its pools wait `RX_VK_RETIRE_SECS` before they are freed. `RX_VK_IMPORT_HIGH=0`: off everywhere. HIGH and LOW also set the retired imports' valve's watermarks |
 | `RX_VK_RETIRE_SECS=<s>`, `RX_VK_RETIRE_MIN_SECS=<s>` | Windows AMD and Intel: how long a retired pool's import (and, with the valve above on there, an idle pool given back) is held after it leaves the page table before its memory is freed (30); under pressure past `RX_VK_IMPORT_HIGH` a retired pool waits `RX_VK_RETIRE_MIN_SECS` (2) instead. Not read elsewhere |
 | `RX_VK_IMAGE_PREALLOC=<blocks>` | Initial 128 MiB image blocks: by default 15% of the real device-local heap, from 2 to 24 blocks (9 on an 8 GiB card); `0` makes them only as needed. They belong to the sampled-texture pool, or the images' pool with `RX_VK_COMPACT=0`, never both. A failed initial allocation retries with no initial blocks. VMA keeps these blocks even when empty: compaction counts only space it can return, and the 97% squeeze waits while only kept texture blocks remain. This avoids charging an unused utility-image pool against the texture budget ([Hookshot issue 2690](https://github.com/NotRexed/Hookshot/issues/2690)); it does not lower the driver's actual memory count in a scene with few textures |
-| `RX_VK_TEST_ALLOWED_MB=<MiB>` | Diagnostic upper bound on the allowance reported to the renderer's eviction policy; does not reduce the real heap or emulate OS paging. To model [Hookshot issue 2690](https://github.com/NotRexed/Hookshot/issues/2690) on a larger card use `7000` with `RX_VK_IMAGE_PREALLOC=9`, since the automatic initial-block count still follows the real heap. Other heap-based defaults, including the mirror budget, also remain real-card defaults unless explicitly overridden |
+| `RX_VK_TEST_ALLOWED_MB=<MiB>` | Diagnostic upper bound on the allowance reported to the renderer's eviction policy; does not reduce the real heap or emulate OS paging. To model [Hookshot issue 2690](https://github.com/NotRexed/Hookshot/issues/2690) on a larger card use `7000` with `RX_VK_IMAGE_PREALLOC=9`, since the automatic initial-block count still follows the real heap (or `RX_VK_TEST_VRAM_MB`, below). Other heap-based defaults, including the mirror budget, also remain real-card defaults unless `RX_VK_TEST_VRAM_MB` or their own switch says otherwise |
+| `RX_VK_TEST_VRAM_MB=<MiB>` | Diagnostic: the card's VRAM taken as at most this many MiB wherever the renderer sizes something by it (the texture pool's blocks at the start, the mirrors' budget, the texture budget's rule, the auto settings). With `RX_VK_TEST_ALLOWED_MB` a large card plays a small one's whole policy: `6144` and `5233` for a 6 GB RTX 3050 Laptop. Like it, it does not shrink the real heap or emulate paging, so going over costs a Linux NVIDIA card next to nothing; to make the driver really short, another program has to hold VRAM |
 | `RX_VK_TEST_ALLOWED_FILE=<file>` | The same bound, read from the number of MiB in that file once a second, so a run can shrink the allowance in play as Windows does when another program takes VRAM (`echo 5000 > <file>`). A missing file or `0` leaves the driver's. Diagnostic only |
 | `RX_VK_TEST_ALLOWED_FOLLOW=1` | With either test bound: once the count is past it, the allowance is reported as the count itself, as AMD's Windows driver does ([#933](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/933), [#1025](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/1025)). With `RX_VK_ALLOWED_AT_COUNT=0` the log shows `at the driver's limit, room in the blocks: not squeezed` on any card. Diagnostic only |
 | `RX_VK_ALLOWED_AT_COUNT=0` | An allowance the driver gives as the count itself (within 16 MiB) is taken as it is. By default it is past: the rules take the allowance as a tenth under the count (`vram_compact::past_allowance`), so the 97% squeeze and the hold give back until the driver reports an allowance over the count again. AMD's Windows driver reports a process over what it allows that way; read as within it, the textures were not squeezed while the driver paged VRAM out: frames of 1.2-15.7 s on 8 GB RX 6600s |
@@ -639,6 +641,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `LONGSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (default one per CPU thread but one, so the PC stays usable, each started when the free memory holds it; `LONGSHOT_MEM_GATE=0` turns that check off) |
 | `LONGSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C and make its edits (default the cores, at most 16, one per 2 GB free; on Windows, where they start as new processes, one per 0.75 GB free) |
 | `A64_FASTFP=0`, `hot` or `check`; `A64_FASTFP_MIN=<n>` | The lift's fast float regions (`nx2/fastfp.py`): a straight run of at least `A64_FASTFP_MIN` (8) single-precision float ops is lifted twice, a plain-SSE copy checked once by MXCSR and the exact copy as its fallback. On by default; `0` lifts without them, `hot` makes them in the `A64_HOT_FUNCS` list only, `check` runs both copies every time and compares them (`fastfp check:` lines in the log, a mismatch with its guest address). A lift-time switch: the lift key holds it |
+| `LONGSHOT_ROMFS_FROM=<folder>` (or `--romfs-from`) | With `--nup`: another game folder unpacked from the same `.nup`; its game files are hard-linked into this build's, with its kept exefs and its damaged-texture check, instead of reading the `.nup` again. A folder from another `.nup`, with no game files, on another drive or a disk without hard links, or whose linking stops part-way, is passed over: the `.nup` is read. The files are then shared, so nothing may write into either folder's `romfs` |
 | `LONGSHOT_KEEP_BUILD_FILES=1` | Keeps the lifted C and the objects after a build, so that the next one compiles only what changed |
 | `LONGSHOT_PROMPT_JOBS=<n>` | Processes that draw the button prompts' faces (default one a face, at most the CPU threads and one per GB free) |
 | `LONGSHOT_OBJ_STORE=<dir>` | One store of compiled objects for every work folder (`nx2/object_store.py`): a build in a new `--work` folder compiles only what no other folder built with the same compiler and headers. Hard links (a copy across drives), so keep it on the work folders' drive. Off when unset, empty or `0`; `scripts/dev_packs.py` turns it on (below) |
@@ -654,6 +657,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_VK_PGO=gen` or `RX_VK_PGO=<file>` | The Vulkan back end's own files counting their branches for a profile, or built with one (`make_game.py` passes `work/longshot_vk.profdata` when it is there, else the committed `assets/profiles/longshot_vk.profdata.xz`; a compiler that can't read it builds without): [the renderer's play profile](#the-renderers-play-profile) |
 | `RX_HOT_OPT=<level>` | The hot pieces' optimisation level (default `O2`); `O1` for [a faster build for development](#a-faster-build-for-development) |
 | `LONGSHOT_SPLIT_GIANTS=<KB>` | Compiles each lifted function of 256 KB of C or more as pieces of about `<KB>` (8 is the measured best) cut at its labels, with a dispatch loop under its own name (`nx2/split_giants.py`). Measured on a Ryzen 5 5600, 16 GB: the 15 giant-function chunks compile 2.6x faster one at a time (their largest compile's peak memory 2,263 -> 586 MB; a single 2-6 MB function's peak falls to about a fifth), and a whole first build's compile (`--jobs 4`) takes ~21% less time, with ~6% less summed compiler memory. The lifted files are not changed (`build.py` compiles a copy). On by default at 8; `0` turns it off |
+| `LONGSHOT_LIGHT_PASSES=0` | Turns off the light passes (on by default): lifted chunks whose functions are all under `LONGSHOT_LIGHT_PASSES_KB` (1024) KB of C compile at `-O1` without its module passes (the inliner, ipsccp, globalopt, function-attrs ...; `-mllvm -opt-disable`). Those chunks compile about a fifth faster for ~3% more code (Ryzen 5 5600, `--jobs 4`). 56 of the game's 75 chunks are light (-21% on them, ~15% of a first build's compile), their `LONGSHOT_SPLIT_GIANTS` pieces too; the giant functions' chunks and the hot pieces keep every pass. It needs LLVM 22 or newer (`-opt-disable`): with an older clang (a Linux system's) the build says so and keeps every pass |
 | `RX_MARCH=<level>` | The CPU level to build for. Default: `native` (this PC's own CPU) on a CPU with `x86-64-v3`'s features, else `x86-64-v2`, else `x86-64`; `x86-64-v3` if clang can't say what `native` is here. With `native` the CPU clang finds goes into the object keys (`-DLONGSHOT_NATIVE_CPU=`, in the build log), so another CPU compiles again ([issue 182](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/182)). `RX_MARCH=x86-64-v3` builds as before. `native` also tunes for this CPU (the Steam Deck's Zen 2 too), so there is no tuning switch. The third-party code is built for `x86-64-v3` on every CPU that has it, not `native`, so the objects a release ships fit (`LONGSHOT_THIRD_PARTY_OBJECTS`); with an `RX_MARCH`, or below v3, it is built as the rest |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
@@ -666,12 +670,13 @@ up to 4 on Windows, still run under a smaller number). The builders' `--cli` pas
 
 **What a build compiles again.** Each object is named by its source, its flags and the headers it depends on
 (`nx2/build.py` `object_key`), and kept in the object cache under that name. The Vulkan back end's own files (`gpu/vk`,
-not eden or sirit) are compiled with `-MD`, and the next build names each by the headers its depfile says it read
-(`renderer_deps`), so a renderer header edit compiles the files that include it. A file with no depfile yet (the first
-build, or one fetched from the object store, `LONGSHOT_OBJ_STORE` above) is named by every header under `gpu/vk`,
-`gpu/render` and `gpu/compat`, as before. Lifted files depend on every runtime header, and the host's on every
-`host/*.h`. `vk_menu.cpp` and `host/hos_main.c` carry the version, a fingerprint of every source, so any source change
-compiles those two again.
+not eden or sirit) and the host's (`host/`) are compiled with `-MD`, and the next build names each by the headers its
+depfile says it read (`renderer_deps`), so a header edit compiles the files that include it. A file with no depfile yet
+(the first build, or one fetched from the object store, `LONGSHOT_OBJ_STORE` above) is named by every header it could
+read: for the back end, every header under `gpu/vk`, `gpu/render` and `gpu/compat`; for the host, every header under
+`host/`, the lifted ones, and `gpu/`'s own (not eden's, sirit's or `gpu/third_party`'s). Lifted files depend on every
+runtime header. `vk_menu.cpp` and `host/hos_main.c` carry the version, a fingerprint of every source, so any source
+change compiles those two again.
 
 Builds keep the button prompts when their source, fonts, game assets, button tables, image overrides,
 Python, package/library versions and generation options still match, and every generated file still has its recorded
@@ -711,6 +716,15 @@ The objects are cached by their flags, so `-O1` and `-O2` objects can sit side b
 `LONGSHOT_KEEP_BUILD_FILES=1`, switching back and forth therefore neither translates the game again nor recompiles
 anything built before. In any other `--work` folder, `make_game.py`'s clean-up keeps only the last build's objects and a
 translation that fits them, so each switch translates the game again and recompiles the hot pieces.
+
+**What translates the game again.** The lift key (`make_game.py` `lift_key`) covers the game's code, the translator's
+sources, the HLE functions, the hot list, the chunk boundaries and hot pieces, the Python, and of the environment only
+the variables whose values change the translated C: `A64_*`, the emitter's `SUYU_RECOMP_*` and `RX_TARGET`. The folders'
+paths (`OOT_WORK`, `OOT_EXEFS`, `OOT_ROMFS`, `OOT_DUMP`, `A64_HOT_FUNCS`) are not in it, since what the lift reads
+through them is hashed by its contents. So an `RX_VK_*` switch or `RX_RELEASE` left set in the shell keeps the
+translation, and the key is the same in another work folder (where `LONGSHOT_LIFT_STORE` can copy a translation over). A
+variable the lift's sources read must be in the key or in `LIFT_ENV_NOT_OUTPUT` with the reason it changes nothing
+written; `tests/test_lift_cache.py` fails otherwise.
 
 What it saves, from the per-file compile times (`build_times.json`) of six earlier full builds on one 24-thread
 desktop, with other work running (not a measured `-O1` build):
@@ -866,8 +880,8 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
     A base prepares once its outputs are recorded, as `make_game.py` does: `LONGSHOT_NO_PREPARE` (set and not `0`)
     skips it, and a preparation that fails (no usable Vulkan, a driver that stopped responding) keeps the base, with
     the reason in `base.json`'s `not_prepared`, and leaves the work to its first start.
-  - **Where:** game packs share one work folder per base (`<base>/game-work`). The lift key holds that folder's
-    path, so the first game pack translates the game once (or copies the base's translation from the lift store,
+  - **Where:** game packs share one work folder per base (`<base>/game-work`). The translation is kept in the
+    work folder it was made in, so the first game pack translates the game once (or copies the base's translation from the lift store,
     below) and the later ones skip the lift while the translator, the HLE functions and the hot list stay the same;
     the base's compiled objects are linked in. Build one pack at a time.
 - **`rt`** makes a game folder to run: the base's, with `romfs` hard-linked (it is never written), the other files
@@ -899,7 +913,7 @@ your own it costs nothing. `scripts/dev_build.py` builds through it.
 ```
 python -I scripts/dev_build.py base                 # the base where this checkout left main: one per commit, shared
 python -I scripts/dev_build.py pack                 # this checkout as a pack over it
-python -I scripts/dev_build.py rt                   # build-linux/rt-<checkout>/, a game folder to run
+python -I scripts/dev_build.py rt                   # build-linux/rt-<checkout>/ (build-windows\ on Windows), a game folder to run
 python -I scripts/dev_build.py rt --empty           # build-linux/rt-base/: the base alone, the other half of an A/B
 python -I scripts/job_queue.py run shots --mode shared -- <your run in that folder>
 python -I scripts/job_queue.py run fps --mode timing -- <your measurement>
@@ -932,6 +946,16 @@ The rules worth knowing (the script's notes have all of them):
   installed once under `~/.cache/longshot-dev/builder/`), the object and translation stores `dev_packs.py` uses, and one base
   per commit of main (`~/.cache/longshot-dev/bases/`), so the second checkout to build anything compiles only what differs.
   A checkout's own build files (`build`, `vk`, runtimes) stay in its `build-linux/`, and go when the checkout does.
+- **On Windows too.** The same commands, with Windows' folders: `LONGSHOT_DEV_HOME` is `%LOCALAPPDATA%\Longshot\dev`, the
+  stores are `dev_packs.py`'s (`%LOCALAPPDATA%\Longshot\objects` and `lifts`), the settings file is
+  `%APPDATA%\Longshot\dev_build.json` (beside `job_queue.json`) and a checkout's own files go in its `build-windows\`. The
+  build tools are tools.lock's `windows-x64` lines, installed by `scripts/tools.py install` and set as the Windows builder
+  has them (its `llvm-mingw` as `LONGSHOT_MINGW`, `EMSDK`, `RX_CPM`); its Python, which has the build's packages, runs the
+  build, and the tree a build reads gets the builder's prebuilt `SDL2.dll` and `SDL3.dll` in `third_party\sdl2` (git
+  ignores them). `env` prints PowerShell's `$env:` lines; `vk` builds `longshot_vk.dll` and checks it exports `mkwvk_init`
+  (an undefined symbol already fails the link there). The game's files are found in `~\Games` and `~\Games\Longshot` (the
+  launcher's builds), else name them (`LONGSHOT_DEV_ROMFS`, `LONGSHOT_DEV_EXEFS`). A drive with little room: point
+  `LONGSHOT_DEV_HOME` and the two stores at one folder on a bigger drive, so the objects stay hard links.
 
 ### Build times
 
@@ -1208,6 +1232,26 @@ only 30 seconds of successfully submitted and returned audio blocks reset that b
 or healthy fallback does not establish that the named device plays. Explicitly changing the chosen device resets its
 retry state. Device discovery refreshes when the menu opens, rather than polling on the render thread.
 
+`microphone_gain` persists independently of the device choice (0..400%, default 100%). `nn_audio_in.c` processes each
+fresh SDL block once before distributing it to started guest streams, with saturation and pre/post-gain peak measurements.
+The guest Set/GetInputStreamGain API is unchanged. SDL2 and SDL3 use the same processing path.
+`MkwVkHost.mic_test` is appended after the output-device callbacks (API version 25, preserving `take_text` and `options_path`).
+An explicit Audio test holds a separate source reference, sharing the guest's 48 kHz mono source when possible, with
+one extra source slot reserved for tests. Menu ticks serialize draining with guest reads under the input lock. A test-only
+source has no guest ring; its queued audio is drained before a first guest joins. Releasing the test cannot close a source
+still referenced by the game. The test state is never saved, and menu-tick cleanup releases it on tab/page/close/focus/Off
+transitions. Levels expire after 250 ms without samples; clipping is held for one second. Silence arriving from SDL is valid
+input, not a stalled capture. No system mixer changes, audio playback or audio-file writes are introduced.
+The full menu shows the live read-only meter inside the help box for both Test microphone and Microphone gain; there is
+no separate Microphone level row. Each row's instructions share the same before/after-gain percentage bullets. During an
+explicit test the bar reads `Testing: <incoming>% -> <adjusted>%`, with clipping, fallback and capture availability shown
+separately. Both help measurement and drawing reserve the same meter/status space, so test start/stop does not resize the
+box. Navigating between Test microphone and Microphone gain keeps the existing Audio-tab capture lifetime.
+`tests/test_mic_help_meter.py` adds fake-UI fixtures for shared explanations, status flags, meter bounds and stable sizing
+at multiple scales and widths. Actual font metrics and visual layout still require a game play-test.
+`tests/test_microphone_test_gain.py` covers sample formats, gain, meter freshness and shared capture lifetime using fake SDL
+and clock inputs; actual Windows/Linux capture and menu rendering still require runtime verification.
+
 | Key | Values |
 |---|---|
 | `quality_preset` | 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+) |
@@ -1230,6 +1274,7 @@ retry state. Device discovery refreshes when the menu opens, rather than polling
 | `game_speed` | 0 Per frame, 1 Real time |
 | `text_speed` | 0 Normal, 1 2x, 2 4x, 3 Instant |
 | `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
+| `microphone_gain` | 0–400 percent software capture gain; 100 unchanged. Applied once before distribution to guest streams, on SDL2 and SDL3 |
 | `mouse_camera` | 0 As the stick, 1 Native, 2 Off (the mouse is never captured) |
 | `walk_mode` | 0 Hold, 1 Toggle |
 | `layout_preset` | 0 Nintendo, 1 Xbox / PC, 2 Swap Face, 3 Custom |

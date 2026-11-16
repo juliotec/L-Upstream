@@ -49,8 +49,9 @@ def main():
     need("uint64_t memory_captures_begun();" in header, "vk_internal.h no longer declares memory_captures_begun")
     make = block(memory, "std::unique_ptr<Capture> capture_make() {")
     need("captures_begun.fetch_add(" in make, "capture_make no longer counts the capture as begun")
-    need(make.index("if (!capture_on()) return nullptr;") < make.index("captures_begun.fetch_add(") < make.index("collect_written_in("),
+    need(make.index("if (!capture_on()) return nullptr;") < make.index("captures_begun.fetch_add(") < make.index("capture_scan("),
          "a capture must be counted as begun before it collects the written pages (and only when captures are on)")
+    need("collect_written_in(" in block(memory, "int64_t capture_scan("), "capture_scan no longer collects the written pages")
 
     signal = block(replay, "void event_signal_queued(")
     need("ev_cpu_captures[gpu] = memory_captures_begun();" in signal, "a CPU signal no longer notes the captures begun")

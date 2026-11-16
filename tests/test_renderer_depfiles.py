@@ -190,9 +190,11 @@ class RendererDepsTests(unittest.TestCase):
         self.assertIn("vk_lib_deps + tp_deps if lib else renderer_deps(vdeps, vdeps_roots, obj) + extras", loop)
         self.assertIn("DEPFILE_JOBS[obj] = (vdeps, vdeps_roots, extras)", loop)
         main = src[src.index("\ndef main("):]
-        self.assertLess(main.index("    if still:\n        return 1"), main.index("rekey_depfiles(vk_jobs)"))
+        # (jobs: the back end's own objects are in it with the host's, tests/test_host_depfiles.py)
+        self.assertIn("        jobs += vk_jobs\n", main)
+        self.assertLess(main.index("    if still:\n        return 1"), main.index("rekey_depfiles(jobs)"))
         # (the objects rekey_depfiles caches by their depfile's key go to the object store with the rest)
-        self.assertLess(main.index("rekey_depfiles(vk_jobs)"), main.index('"object store: %d new objects to it" % object_store.share('))
+        self.assertLess(main.index("rekey_depfiles(jobs)"), main.index('"object store: %d new objects to it" % object_store.share('))
 
 
 if __name__ == "__main__":

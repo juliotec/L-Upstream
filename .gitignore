@@ -39,6 +39,9 @@ __pycache__/
 build-linux/
 *.so
 
+# ---- a checkout's own development builds on Windows (scripts/dev_build.py) ----
+build-windows/
+
 # ---- NVIDIA's DLSS SDK (scripts/ngx_sdk.py): NVIDIA's files, never committed ----
 ngx-sdk/
 test-results/

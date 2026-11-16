@@ -105,7 +105,9 @@ def main():
     if not border or same(border) != same(kept) or dev.index(border.group(0)) > dev.index("dev.maintenance5 = dev.maintenance5"):
         bad.append("maintenance5 is not turned off where custom border colors are made without a format")
     draw = (a.source / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
-    if "bc.format = VK_FORMAT_UNDEFINED;" not in draw:
+    # (either every custom border color has no format, or an A1B5G5R5 view's gets that format)
+    formatted = re.search(r"case VK_FORMAT_A1B5G5R5_UNORM_PACK16:[^}]*return view_format;", draw) and "bc.format = bfmt;" in draw
+    if "bc.format = VK_FORMAT_UNDEFINED;" not in draw and not formatted:
         bad.append("vk_draw.cpp's custom border colors now have a format: recheck the maintenance5 rule")
     if not re.search(r"VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR, &fp\);\s*const VkFormatFeatureFlags need = "
                      r"VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT \| VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;\s*"

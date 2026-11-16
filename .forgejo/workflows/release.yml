@@ -155,26 +155,36 @@ jobs:
           ref: ${{ needs.version.outputs.ref }}
           fetch-depth: 0
           persist-credentials: false
+      # (the builders from Forgejo's own address, RELEASE_UPLOAD_API on this runner's network, where the artifacts are on its
+      # disk: through its public address behind Cloudflare, as download-artifact fetches them, they came at about 1 MB/s,
+      # two of this job's three minutes (nightly-325). When that fails (no variable, an API that answers otherwise), the
+      # download-artifact steps below fetch them as before)
+      - id: artifacts
+        name: The builders, from Forgejo's own address
+        continue-on-error: true
+        run: python3 -I scripts/release.py artifacts files --run "$GITHUB_RUN_ID" Longshot-linux-x86_64 LongshotBuilder-windows
       # (from Forgejo's public address behind Cloudflare, as the build jobs' upload: fetched once more when it failed)
       - id: download_1
+        if: steps.artifacts.outcome == 'failure'
         continue-on-error: true
         uses: https://data.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e   # v4 (4.1.4 with the GHES check off)
         with:
           name: Longshot-linux-x86_64
           path: files
-      - if: steps.download_1.outcome == 'failure'
+      - if: steps.artifacts.outcome == 'failure' && steps.download_1.outcome == 'failure'
         uses: https://data.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e   # v4 (4.1.4 with the GHES check off)
         with:
           name: Longshot-linux-x86_64
           path: files
       # (from Forgejo's public address behind Cloudflare, as the build jobs' upload: fetched once more when it failed)
       - id: download_2
+        if: steps.artifacts.outcome == 'failure'
         continue-on-error: true
         uses: https://data.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e   # v4 (4.1.4 with the GHES check off)
         with:
           name: LongshotBuilder-windows
           path: files
-      - if: steps.download_2.outcome == 'failure'
+      - if: steps.artifacts.outcome == 'failure' && steps.download_2.outcome == 'failure'
         uses: https://data.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e   # v4 (4.1.4 with the GHES check off)
         with:
           name: LongshotBuilder-windows

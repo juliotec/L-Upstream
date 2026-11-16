@@ -630,7 +630,7 @@ void display_main() {
 // (longshot) The last sets' makers (framegen_maker): each framegen_record notes its set's on the replay thread; the menu's
 // thread reads the counts. A ring of kMakerSets, the counts of each maker in it
 constexpr int kMakerSets = 64;
-std::atomic<int> maker_count[4] = {kMakerSets, 0, 0, 0};
+std::atomic<int> maker_count[5] = {kMakerSets, 0, 0, 0, 0};   // (by FgMaker)
 uint8_t maker_ring[kMakerSets] = {};
 int maker_pos = 0;
 std::atomic<int64_t> maker_at{0};
@@ -652,7 +652,9 @@ FgMaker framegen_maker() {
     const int b = maker_count[(int)FgMaker::BuiltIn].load(std::memory_order_relaxed);
     const int d = maker_count[(int)FgMaker::Dlss].load(std::memory_order_relaxed);
     const int f = maker_count[(int)FgMaker::Fsr3].load(std::memory_order_relaxed);
-    if (!b && !d && !f) return FgMaker::None;
+    const int p = maker_count[(int)FgMaker::DlssPaused].load(std::memory_order_relaxed);
+    if (!b && !d && !f && !p) return FgMaker::None;
+    if (p > b && p > d && p > f) return FgMaker::DlssPaused;
     return d >= b && d >= f ? FgMaker::Dlss : f >= b ? FgMaker::Fsr3 : FgMaker::BuiltIn;
 }
 
@@ -1012,12 +1014,16 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
         set->made = dlss_fg_frames(cmd, fg.frames[cur].image, fg.frames[cur].view, uw, uh, m - 1, outs, views, blend, sequence);
     }
     FgMaker maker = set->made ? FgMaker::Dlss : FgMaker::None;
+    // (longshot) DLSS FG chosen, on a temporal Upscaler, and no picture from it for this set (the game's own menus, movies and
+    // loading screens draw no 3D: dlss_fg_holds): the game's frame alone, neither FSR 3.1's frames nor the built-in one's
+    const bool held = set->made == 0 && blend && m > 1 && dlss_fg_holds();
+    if (held) maker = FgMaker::DlssPaused;
     // (longshot) At 2x, AMD FSR 3.1's frame interpolation where it runs; it makes the midpoint only, so 3x and more (and Auto,
     // above) stay with the interpolation below, as does any present it does not take
-    if (set->made == 0 && blend && m == 2 && fsr3fi::frames_wanted())
+    if (!held && set->made == 0 && blend && m == 2 && fsr3fi::frames_wanted())
         set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence, native_pq);
     if (maker == FgMaker::None && set->made) maker = FgMaker::Fsr3;
-    if (set->made == 0 && blend && m > 1) {
+    if (!held && set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);
         pass(cmd, fg.median, {{fg.flows[0].view, fg.nearest}, {fg.flows[1].view, VK_NULL_HANDLE}}, cw, ch);

@@ -187,6 +187,7 @@ struct State {
     // temporal_scene_size. Read on the game's draws without the lock)
     std::atomic<uint32_t> out_w{0}, out_h{0};
     std::atomic<uint64_t> last_frame{0};   // (the frame an engine last drew: read on the game's thread too)
+    std::atomic<uint64_t> asked_frame{0};  // (longshot: the frame the game last asked for its gameplay upscale, temporal_scene_now)
     float last_jitter[2]{};   // (its camera's jitter: the frame before's, for the next one)
     float last_vp[16]{};      // (its camera's view-projection: the frame before's)
     TemporalJitter jitter;    // (one completed scene size, sequence and frame)
@@ -940,6 +941,11 @@ int temporal_status(char* b, size_t n) {
     return mode;
 }
 
+bool temporal_scene_now() {
+    const uint64_t asked = st().asked_frame.load(std::memory_order_relaxed);
+    return asked && texture_frame_no() - asked <= 2;
+}
+
 void temporal_reset_failure() {
     State& s = st();
     std::lock_guard lk(s.mu);
@@ -1120,6 +1126,8 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
                                             (unsigned long long)key, in->width, in->height, out->width >> out_level,
                                             out->height >> out_level);
     }
+    // (the game's gameplay upscale, asked for: a 3D scene this frame, whether or not an engine then draws it)
+    s.asked_frame.store(texture_frame_no(), std::memory_order_relaxed);
     free_dead(false);
     if (known && in && out && temporal_colour_pair(in->format, out->format)) note_output(out, out_level);
     const Camera cam = s.cam;

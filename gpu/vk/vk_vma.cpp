@@ -90,7 +90,7 @@ static size_t blocks_at_start(bool holds_textures) {
     if (!holds_textures) return 0;
     uint64_t heap = 0;
     for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
-        if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, dev.memory.memoryHeaps[h].size);
+        if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, test_vram_bytes(dev.memory.memoryHeaps[h].size));
     if (const char* e = getenv("RX_VK_IMAGE_PREALLOC")) return (size_t)std::max(0, atoi(e));
     return (size_t)vram_compact::blocks_at_start(heap, kImageBlock, holds_textures,
                                                  dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU);

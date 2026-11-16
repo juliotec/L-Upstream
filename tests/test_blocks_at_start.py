@@ -112,6 +112,7 @@ const char* test_getenv(const char* name) {
 }
 #define getenv test_getenv
 void logf(const char*, ...) {}
+uint64_t test_vram_bytes(uint64_t heap) { return heap; }   // (RX_VK_TEST_VRAM_MB unset)
 int vmaFindMemoryTypeIndexForImageInfo(int, const VkImageCreateInfo*, const VmaAllocationCreateInfo*, uint32_t* type) {
     *type = 7; return VK_SUCCESS;
 }

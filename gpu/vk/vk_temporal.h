@@ -72,6 +72,10 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
 /// engine's own state, the chain's images and deferred frees are let go, so their video memory comes back. Nothing to do
 /// costs one atomic load
 void temporal_idle();
+/// (longshot) The game asked for its gameplay upscale (temporal_upscale) in this frame or the two before: it draws a 3D
+/// scene now, whether or not an engine then drew it (failed, refused, not this frame). Not in its own menus, movies and
+/// loading screens. Without the lock (an atomic frame number)
+bool temporal_scene_now();
 void temporal_reset_failure();
 
 /// For the renderer's status line (vk_replay.cpp status_tick): while an engine draws, its details since the last call into b

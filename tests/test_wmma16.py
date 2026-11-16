@@ -58,7 +58,7 @@ def wiring():
     need("ctx.wmma16_function" in mul and "ctx.software_matrix_function.value != 0" in mul,
          "EmitMatrixMulAddF16 does not call the function that was defined")
     shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
-    need("(mma_wmma16 ? 256u : 0u)" in shader and "(mma_wmma16_fast ? 512u : 0u)" in shader,
+    need("(mma_wmma16 ? 2048u : 0u)" in shader and "(mma_wmma16_fast ? 4096u : 0u)" in shader,
          "the program cache's stamp does not tell WMMA16 programs apart")
     need("!Shader::Backend::SPIRV::mma_wmma16)" in shader, "the networks are still left out on AMD with WMMA16")
     need("inline bool mma_wmma16_full_subgroups = false;" in layout, "mma_layout.h lacks mma_wmma16_full_subgroups")

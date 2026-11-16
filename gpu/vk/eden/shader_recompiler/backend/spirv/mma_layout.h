@@ -16,6 +16,10 @@ inline std::array<uint32_t, 8> mma_order_a{0, 1, 2, 3, 4, 5, 6, 7};
 inline std::array<uint32_t, 4> mma_order_b{0, 1, 2, 3};
 inline std::array<uint32_t, 4> mma_order_c{0, 1, 2, 3};
 inline bool mma_software = false;   // (HMMA_nx2 in software: emit_spirv_warp.cpp, RX_VK_MMA_SOFTWARE=1)
+// (longshot) and in which form (mma_software.h SoftwareMmaForm: 0 the loop, 1 unrolled, 2 unrolled with the GPU's f16 rounding),
+// chosen by vk_coopmat.cpp's self-test; and whether its quad broadcasts may be used (the device has quad operations in every stage)
+inline uint32_t mma_software_form = 0;
+inline bool mma_software_quad = false;
 // (longshot, AMD RDNA 3/4) HMMA_nx2 on 16x16x16 f16 cooperative matrices: the console's fragments are staged through a
 // per-subgroup tile of shared memory at their PTX m16n8k16 positions, so the device's own lane layout does not matter
 // (emit_spirv_warp.cpp DefineWmma16MatrixFunction, vk_coopmat.cpp). B and C are padded to 16 columns with zeros.

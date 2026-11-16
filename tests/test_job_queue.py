@@ -9,6 +9,8 @@
   queue's OOT_STATUS_* is dropped.
 - The RAM file system check takes the longest mount holding a path.
 - Two exclusive jobs run one after the other, two shared ones together (a real queue in a temporary folder).
+- Windows: a cancelled job's command and its children end, so do those of a runner killed outright (the job object), and a
+  command that ends by itself leaves what it started running.
 
 python -I -B tests/test_job_queue.py
 """
@@ -129,6 +131,69 @@ class RealQueue(unittest.TestCase):
     def test_exclusive_one_at_a_time_shared_together(self):
         self.assertFalse(self.run_two("gpu"))
         self.assertTrue(self.run_two("shared"))
+
+
+@unittest.skipUnless(os.name == "nt", "Windows' job object")
+class WindowsTree(unittest.TestCase):
+    """On Windows a job's command and what it starts end with the job (a real queue in a temporary folder): cancel ends the
+    command's own children too, so does a runner killed outright (its job object), and a command that ends by itself leaves
+    what it started running. Before the job object a cancelled job's children ran on: builds and games beside the next job"""
+    GRAND = ("import os, sys, time; open(sys.argv[1] + '.tmp', 'w').write(str(os.getpid())); "
+             "os.replace(sys.argv[1] + '.tmp', sys.argv[1]); time.sleep(120)")
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.env = dict(os.environ, LONGSHOT_QUEUE_DIR=os.path.join(self.d, "q"), LONGSHOT_QUEUE_STATE=os.path.join(self.d, "s"),
+                        LONGSHOT_QUEUE_SCOPE="0", LONGSHOT_QUEUE_MIN_FREE_GB="0", LONGSHOT_QUEUE_MAX_PRESSURE="100",
+                        LONGSHOT_QUEUE_MAX_SWAP_GB="100000", LONGSHOT_QUEUE_LEGACY=os.path.join(self.d, "none"))
+        for k in ("LONGSHOT_JOB", "OOT_STATUS_LOCK"):
+            self.env.pop(k, None)
+        self.pidfile = os.path.join(self.d, "grandchild")
+        self.grand = None
+
+    def tearDown(self):
+        if self.grand and q._win_start(self.grand) is not None:
+            subprocess.run(["taskkill", "/F", "/PID", str(self.grand)], capture_output=True)
+        subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", self.d], capture_output=True)
+
+    def start(self, waits):
+        """A runner whose command starts a grandchild, then waits for it (waits) or ends at once; the grandchild's pid"""
+        inner = "import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', %r, %r])%s" % (
+            self.GRAND, self.pidfile, "; p.wait()" if waits else "")
+        runner = subprocess.Popen([sys.executable, "-I", SCRIPT, "run", "tree", "--mode", "light", "--",
+                                   sys.executable, "-c", inner], env=self.env, stderr=subprocess.DEVNULL)
+        for _ in range(200):
+            if os.path.exists(self.pidfile):
+                break
+            time.sleep(0.1)
+        with open(self.pidfile) as f:
+            self.grand = int(f.read())
+        return runner
+
+    def gone(self, pid):
+        for _ in range(50):
+            if q._win_start(pid) is None:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def test_cancel_ends_the_commands_children(self):
+        runner = self.start(waits=True)
+        subprocess.run([sys.executable, "-I", SCRIPT, "cancel", "tree"], env=self.env, capture_output=True, check=True)
+        runner.wait(20)
+        self.assertTrue(self.gone(self.grand), "the cancelled job's grandchild still runs")
+
+    def test_a_runner_killed_outright_ends_them(self):
+        runner = self.start(waits=True)
+        runner.kill()   # (TerminateProcess: no finally runs, as cancel's os.kill did; only the job object is left to act)
+        runner.wait(20)
+        self.assertTrue(self.gone(self.grand), "a killed runner's grandchild still runs")
+
+    def test_a_command_that_ends_leaves_what_it_started(self):
+        runner = self.start(waits=False)
+        self.assertEqual(runner.wait(30), 0)
+        time.sleep(1)
+        self.assertIsNotNone(q._win_start(self.grand), "the job's end took what its command left running")
 
 
 if __name__ == "__main__":

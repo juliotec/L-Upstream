@@ -6,6 +6,23 @@ Validate both input matrices and each result coefficient before converting to fl
 
 The game-free fixture compiles actual reprojection math, both preparation policies, the shared frame reset and all four consumer assignments (DLSS, FSR4, XeSS, FSR3.1). It covers singular and non-finite inputs, float overflow/boundaries, recovery, frame gaps, FSR3.1 size changes and valid perspectives at16:9 and ultrawide. Engine SDKs and a GPU are not required. CPU cases do not prove in-game frequency, visual gains or GPU handling of injected invalid matrices.
 
+## DLSS feature creation and dynamic input sizes
+
+NGX feature creation uses the selected quality mode's recommended render dimensions from
+`NGX_DLSS_GET_OPTIMAL_SETTINGS`. The minimum and maximum dimensions returned by that call describe
+the supported dynamic-resolution range; they size the shared input images and decide when an existing
+feature can be reused. Each evaluation still receives the frame's actual render subrect. Native AA
+creates its feature at the full render/output size.
+
+Keep those dimensions separate: creating at the dynamic maximum instead of the recommendation can
+increase the cost of models L and M even when the evaluation's render subrect is smaller. NVIDIA's
+[Streamline DLSS implementation](https://github.com/NVIDIA-RTX/Streamline/blob/main/source/plugins/sl.dlss/dlssEntry.cpp)
+also creates the feature using the recommended dimensions. `tests/test_dlss_feature_size.py` compiles
+the actual preparation function with a recording SDK stand-in and checks creation, requested input
+dimensions, range reuse, rounded sizes, native AA and failed queries for K, L and M. The fixture does
+not allocate GPU images or execute NGX evaluation. In particular, a rounded Ultra Performance input
+of 1147x480 against an advertised 1146x480 maximum still needs validation with the real NGX runtime.
+
 ## PsychoV35 with temporal upscalers
 
 The gameplay TAAU replacement also supports Native HDR PsychoV35's RGBA16F buffers without this switch. It remains a

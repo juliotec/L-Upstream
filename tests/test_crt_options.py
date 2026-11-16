@@ -94,6 +94,7 @@ int upscaler() { return opts.dlss; }
 unsigned upscalers_available() { return ur::bit(ur::GAME) | ur::dlss_bits(true); }
 bool filter_needed() { return true; }
 const char* dlss_preset_env() { return nullptr; }
+bool framegen_by_fixed() { return false; }   // (vk_menu.cpp: Frame generation by with nothing to choose)
 /* ROW_FIXED */
 /* STOPS */
 /* BUDGETS */
