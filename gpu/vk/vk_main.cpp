@@ -876,6 +876,13 @@ bool create_device() {
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
         dev.max_push_descriptors = pp.maxPushDescriptors;
     }
+    if (dev.vertex_divisor) {
+        VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT vp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &vp;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        dev.max_vertex_divisor = vp.maxVertexAttribDivisor;
+    }
     return true;
 }
 
