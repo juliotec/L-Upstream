@@ -94,8 +94,19 @@ def main():
         bad.append("the sampled view swaps R and B on A1B5G5R5 too (maintenance5)")
     if "optional(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, dev.maintenance5);" not in dev:
         bad.append("create_device does not ask for VK_KHR_maintenance5")
-    if not re.search(r"dev\.maintenance5 = dev\.maintenance5 && m5\.maintenance5 && f13\.dynamicRendering;", dev):
-        bad.append("maintenance5 is not kept to its feature and dynamic rendering")
+    if not re.search(r"dev\.maintenance5 = dev\.maintenance5 && m5\.maintenance5 && f13\.dynamicRendering && "
+                     r"!formatless_borders;", dev):
+        bad.append("maintenance5 is not kept to its feature and dynamic rendering, or is kept with format-less borders")
+    # (a custom border color made without a format must not sample an A1B5G5R5 view:
+    # VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015)
+    border = re.search(r"const bool formatless_borders = ([^;]+);", dev)
+    kept = re.search(r"dev\.custom_border_color = ([^;]+);", dev)
+    same = lambda m: re.sub(r"\s+", " ", m.group(1)).strip() if m else None
+    if not border or same(border) != same(kept) or dev.index(border.group(0)) > dev.index("dev.maintenance5 = dev.maintenance5"):
+        bad.append("maintenance5 is not turned off where custom border colors are made without a format")
+    draw = (a.source / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
+    if "bc.format = VK_FORMAT_UNDEFINED;" not in draw:
+        bad.append("vk_draw.cpp's custom border colors now have a format: recheck the maintenance5 rule")
     if not re.search(r"VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR, &fp\);\s*const VkFormatFeatureFlags need = "
                      r"VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT \| VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;\s*"
                      r"if \(\(fp\.optimalTilingFeatures & need\) != need\) dev\.maintenance5 = false;", dev):
