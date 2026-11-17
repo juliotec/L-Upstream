@@ -72,6 +72,8 @@ struct Options { int preset = 1, fps_cap = 0, vram_budget = 1, output_res = 0, u
 struct Row { const char* name; int* value; };
 int output_pick = 0;
 std::string output_want, output_saved_name;
+int monitor_pick = 0;
+std::string monitor_want, monitor_saved_name; // Real save() also persists this identity; this fixture tests atomicity.
 Row rows[] = {{"Quality preset", &opts.preset}, {"Game frame rate cap", &opts.fps_cap}, {"VRAM budget", &opts.vram_budget},
               {"Output resolution", &opts.output_res}, {"Aspect ratio", &opts.ultrawide}, {"Game language", &opts.game_lang},
               {"Output device", &output_pick}};

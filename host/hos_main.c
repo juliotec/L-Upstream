@@ -496,8 +496,7 @@ static int env_line_allowed(const char *name, const char *value) {
         "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
         "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_SLOW_FRAMES", "HOS_CHAIN", "HOS_WATCH", "HOS_CRASH_TEST", "LONGSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
-        "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
-        "RX_WGSL_OVERRIDE"};
+        "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT"};
     for (size_t i = 0; i < sizeof by_name / sizeof *by_name; i++) names_file |= !strcmp(name, by_name[i]);
     /* RX_VK_DLSS_DIR: a folder on this PC, not a share (\\server\x or //server/x) or a device path */
     if (!strcmp(name, "RX_VK_DLSS_DIR"))
@@ -559,18 +558,10 @@ static void load_longshot_env(void) {
 }
 
 /* Switches this build no longer reads, still set (in the environment or longshot_env.txt, as older issues told players):
-   one log line each, naming what took its place, so a bug report shows the switch did nothing */
+   one log line each, naming what took its place, so a bug report shows the switch did nothing. The host's own: the
+   renderer's removed switches (RX_) are the GONE rows of gpu/vk/switches.def, said by its start (switches.h) */
 static void removed_switch_notes(void) {
     static const char *const gone[][2] = {
-        {"RX_VK_NO_DESC_REUSE", "RX_VK_DESC_REUSE=never"},
-        {"RX_VK_DESC_SLOTGEN", "RX_VK_DESC_REUSE (the same 0 and 1) or the Descriptor reuse row"},
-        {"RX_VK_DESC_REUSE_DGEN", NULL},
-        {"RX_VK_NO_NAN_GUARD", "RX_VK_NAN_GUARD=0"},
-        {"RX_VK_FOLLOW_MESH", NULL},
-        {"RX_VK_OOT", NULL},
-        {"RX_VK_OOT_EXPOSURE", NULL},
-        {"RX_VK_OOT_FOG", NULL},
-        {"RX_VK_OOT_VISUAL", NULL},
         {"HOS_FIX_RES", NULL},
         {"HOS_RECORD_STUTTERS", "HOS_PROFILE=1 (the profiling mode: docs/development.md#the-profiling-mode)"},
         {"HOS_SCENE_NATIVE", NULL},
@@ -2095,7 +2086,13 @@ static int game_main(int argc, char **argv) {
                 }
                 fclose(o);
             }
-            const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+            void hos_monitor_prepare(void);
+            int hos_monitor_screen_size(int *,int *);
+            hos_monitor_prepare();
+            int sw=0,sh=0;
+            if (!hos_monitor_screen_size(&sw,&sh)) {
+                sw=GetSystemMetrics(SM_CXSCREEN); sh=GetSystemMetrics(SM_CYSCREEN);
+            }
             /* (no line: the monitor's shape; an older file's 16:9 on a screen narrower than 16:9 too: hos_aspect_on) */
             const int on = hos_aspect_on(saved, version, sw, sh);
             if (on && sh > 0) want = (float)sw / (float)sh;

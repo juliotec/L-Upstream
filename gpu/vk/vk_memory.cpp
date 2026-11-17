@@ -28,6 +28,7 @@
 #include <windows.h>
 
 #include "vk_internal.h"
+#include "vk_new.h"   // (NewNothrow)
 #include "readback_early.h"  // (RX_VK_READBACK_EARLY's and RX_VK_LATE_DEFER's rules)
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "vk_draw.h"      // (linux_pressure_shortfall)
@@ -1022,7 +1023,10 @@ bool stage_get(Capture& c, size_t need) {   // (a block of at least need bytes i
         }
     }
     const size_t sz = (need + (1u << 20) - 1) & ~size_t((1u << 20) - 1);   // (rounded to 1 MB: blocks of near sizes fit each other)
-    c.stage.reset(new (std::nothrow) uint8_t[sz]);
+    {
+        const NewNothrow nothrow;   // (a refusal: no staging block, as before the new_handler, not its wait and stop)
+        c.stage.reset(new (std::nothrow) uint8_t[sz]);
+    }
     c.stage_bytes = c.stage ? sz : 0;
     return c.stage != nullptr;
 }

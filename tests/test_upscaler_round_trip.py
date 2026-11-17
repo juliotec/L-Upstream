@@ -39,6 +39,7 @@ FIXTURE = r'''
 #define _CRT_SECURE_NO_WARNINGS
 #include "upscaler_rows.h"
 #include "auto_settings.h"
+#include "monitor_choice.h"
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -107,6 +108,8 @@ const char* hn_preset(int, int) { return ""; }
 Row rows[] = {/* UPSCALER_ROW */, /* RESOLUTION_ROW */, /* MODEL_ROW */, /* PRESET_ROW */};
 constexpr int kRows = sizeof rows / sizeof rows[0];
 /* OVERRIDES */
+int monitor_pick;
+std::string monitor_want, monitor_saved_name;
 /* INI_KEY */
 std::string ini_file, mic_want;
 int output_pick;
@@ -117,6 +120,9 @@ bool output_forced() { return false; }
 bool can_outputs() { return false; }
 void output_chosen() { CHECK(false); } // No playback-device row is exercised by this fixture.
 void refresh_outputs() {}
+bool can_monitors() { return false; }
+void refresh_monitors() {}
+void monitor_chosen() { CHECK(false); } // No fullscreen-monitor row is exercised here.
 std::string ini_path() { return ini_file; }
 std::string mic_key(const char* v) { return v; }
 void mic_tell_host() {}
@@ -125,7 +131,8 @@ int rumble_step(int v) { return v; }
 constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
 constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;
 const char* bind_names[1] = {"a"};
-struct Host { int (*binding)(int, int, int); float (*aspect_ratio)(); void (*audio_output_select)(const char*); } *host = nullptr;
+struct Host { int (*binding)(int, int, int); float (*aspect_ratio)(); void (*audio_output_select)(const char*);
+              void (*monitor_select)(const char*); } *host = nullptr;
 bool can_bind() { return false; }
 // No hardware profile or measured tuning owns the manual round trips.
 uint64_t auto_for = 0, auto_fp = 0, auto_tuned = 0;

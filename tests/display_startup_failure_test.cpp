@@ -54,6 +54,13 @@ static int hos_sdl_init(unsigned flags) {
     return mode != "init_failure";
 }
 static int hos_sdl_desktop_size(int* w, int* h) { *w = 2560; *h = 1440; return 1; }
+// Display metadata is inert here; the complete production init must reach it only after SDL init.
+[[maybe_unused]] static void hos_monitor_load() { require(inits == 1, "monitor settings read before SDL startup"); }
+[[maybe_unused]] static void refresh_monitors() { require(inits == 1, "monitor enumeration before SDL startup"); }
+[[maybe_unused]] static int hos_monitor_screen_size(int* w, int* h) {
+    require(inits == 1, "monitor dimensions read before SDL startup");
+    *w = 2560; *h = 1440; return 1;
+}
 static void* hos_sdl_window(const char*, int w, int h) {
     require(w == 1280 && h == 720, "changed default window size");
     ++windows;

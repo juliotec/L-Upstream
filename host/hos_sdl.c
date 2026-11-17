@@ -8,6 +8,7 @@
 #include <string.h>
 #include <limits.h>
 #include "audio_output_devices.h"
+#include "fullscreen_monitor.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -19,6 +20,7 @@ static struct {
         *GetDesktopDisplayMode, *Vulkan_CreateSurface, *PixelSize, *GetKeyboardState, *GetMouseState, *WaitEventTimeout,
         *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode;
     void *StartTextInput, *StopTextInput, *GetClipboardText;   /* (longshot: the menu's text fields; optional) */
+    void *GetDisplays, *GetNumVideoDisplays, *GetDisplayName, *GetCurrentVideoDriver, *GetWindowPosition, *GetWindowFlags, *SyncWindow;
     /* sound */
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
@@ -87,10 +89,16 @@ static int get_all(HMODULE m, int three) {
     *(FARPROC *)&f.StartTextInput = GetProcAddress(m, "SDL_StartTextInput");
     *(FARPROC *)&f.StopTextInput = GetProcAddress(m, "SDL_StopTextInput");
     *(FARPROC *)&f.GetClipboardText = GetProcAddress(m, "SDL_GetClipboardText");
+    GET(GetDisplayName,"SDL_GetDisplayName");
+    GET(GetCurrentVideoDriver,"SDL_GetCurrentVideoDriver");
+    GET(GetWindowPosition,"SDL_GetWindowPosition");
+    GET(GetWindowFlags,"SDL_GetWindowFlags");
     if (three) {
         *(FARPROC *)&f.GetJoystick = GetProcAddress(m, "SDL_GetGamepadJoystick");   /* (optional: diagnostics only) */
         GET(SetWindowPosition, "SDL_SetWindowPosition");
         GET(GetPrimaryDisplay, "SDL_GetPrimaryDisplay");
+        GET(GetDisplays,"SDL_GetDisplays");
+        *(FARPROC *)&f.SyncWindow=GetProcAddress(m,"SDL_SyncWindow");
         GET(OpenAudioDeviceStream, "SDL_OpenAudioDeviceStream");
         GET(ResumeAudioStreamDevice, "SDL_ResumeAudioStreamDevice");
         GET(PutAudioStreamData, "SDL_PutAudioStreamData");
@@ -103,6 +111,8 @@ static int get_all(HMODULE m, int three) {
         *(FARPROC *)&f.GetWindowDisplay = GetProcAddress(m, "SDL_GetDisplayForWindow");   /* (the refresh: hos_sdl_refresh_mhz) */
         *(FARPROC *)&f.GetCurrentDisplayMode = GetProcAddress(m, "SDL_GetCurrentDisplayMode");
     } else {
+        GET(SetWindowPosition,"SDL_SetWindowPosition");
+        GET(GetNumVideoDisplays,"SDL_GetNumVideoDisplays");
         *(FARPROC *)&f.Free = GetProcAddress(m, "SDL_free");   /* (optional: do not request an allocated mapping without it) */
         *(FARPROC *)&f.GetWindowDisplay = GetProcAddress(m, "SDL_GetWindowDisplayIndex");   /* (the refresh: hos_sdl_refresh_mhz) */
         *(FARPROC *)&f.GetCurrentDisplayMode = GetProcAddress(m, "SDL_GetCurrentDisplayMode");
@@ -182,6 +192,102 @@ void *hos_sdl_window(const char *title, int width, int height) {
 void hos_sdl_fullscreen(void *window, int on) {
     if (version == 3) CALL(_Bool (*)(void *, _Bool), SetWindowFullscreen)(window, on != 0);
     else CALL(int (*)(void *, uint32_t), SetWindowFullscreen)(window, on ? 0x1001 /* FULLSCREEN_DESKTOP */ : 0);
+}
+uint32_t hos_sdl_window_display(void *window) {
+    if (!window || !f.GetWindowDisplay) return UINT32_MAX;
+    if (version==3) {
+        uint32_t id=CALL(uint32_t (*)(void *),GetWindowDisplay)(window);
+        return id?id:UINT32_MAX;
+    }
+    int id=CALL(int (*)(void *),GetWindowDisplay)(window);
+    return id>=0?(uint32_t)id:UINT32_MAX;
+}
+int hos_sdl_monitor_list(void *window,MkwVkMonitor *out,uint32_t *tokens,int cap) {
+    if (!version || !out || !tokens || cap<=0) return 0;
+    int count=0;
+    uint32_t *ids=version==3?CALL(uint32_t *(*)(int *),GetDisplays)(&count):NULL;
+    if (version==2) count=CALL(int (*)(void),GetNumVideoDisplays)();
+    if (count<0 || count>4096 || (version==3 && !ids)) { if (ids) hos_sdl_free(ids); return 0; }
+    const char *driver=CALL(const char *(*)(void),GetCurrentVideoDriver)();
+    if (!driver) driver="unknown";
+    uint32_t current=hos_sdl_window_display(window);
+    uint32_t primary=version==3?CALL(uint32_t (*)(void),GetPrimaryDisplay)():0;
+    int made=0;
+    for (int i=0;i<count && made<cap;i++) {
+        uint32_t token=version==3?ids[i]:(uint32_t)i;
+        const char *name=CALL(const char *(*)(uint32_t),GetDisplayName)(token);
+        if (!name || !*name || strlen(name)>=sizeof out[0].name) continue;
+        MkwVkMonitor item={0};
+        if (!hos_monitor_copy_id(item.name,sizeof item.name,name)) continue;
+        int same=0;
+        for (int j=0;j<count;j++) {
+            const char *other=CALL(const char *(*)(uint32_t),GetDisplayName)(version==3?ids[j]:(uint32_t)j);
+            if (other && !strcmp(name,other)) same++;
+        }
+        if (same==1 && token<=0xffff) {
+            int n=snprintf(item.id,sizeof item.id,"sdl%d:%s:%s",version,driver,name);
+            if (n<0 || n>=(int)sizeof item.id) item.id[0]=0;
+        } /* Ambiguous names remain metadata-only: no persistent preference silently targets a twin. */
+        if (version==3) {
+            const uint8_t *mode=CALL(const uint8_t *(*)(uint32_t),GetDesktopDisplayMode)(token);
+            if (!mode) continue;
+            int w,h; float scale;
+            memcpy(&w,mode+8,4); memcpy(&h,mode+12,4); memcpy(&scale,mode+16,4);
+            if (!(scale>0)) scale=1;
+            item.width=(int)(w*scale+0.5f); item.height=(int)(h*scale+0.5f);
+        } else {
+            struct {uint32_t format; int w,h,refresh;void *data;} mode;
+            if (CALL(int (*)(int,void *),GetDesktopDisplayMode)((int)token,&mode)) continue;
+            item.width=mode.w; item.height=mode.h;
+        }
+        item.flags=(token==current?HOS_MONITOR_CURRENT:0)|(token==primary?HOS_MONITOR_PRIMARY:0);
+        out[made]=item; tokens[made++]=token;
+    }
+    if (ids) hos_sdl_free(ids);
+    return made;
+}
+int hos_sdl_is_fullscreen(void *window) {
+    if (!version || !window) return 0;
+    return version==3 ? (CALL(uint64_t (*)(void *),GetWindowFlags)(window)&1)!=0 :
+                       (CALL(uint32_t (*)(void *),GetWindowFlags)(window)&1)!=0;
+}
+int hos_sdl_fullscreen_target(void *window,int on,uint32_t token) {
+    static int saved, old_x, old_y;
+    if (!window || !version) return 0;
+    if (on && token!=UINT32_MAX && token>0xffff) return 0;
+    if (on && !saved) {
+        if (version==3) CALL(_Bool (*)(void *,int *,int *),GetWindowPosition)(window,&old_x,&old_y);
+        else CALL(void (*)(void *,int *,int *),GetWindowPosition)(window,&old_x,&old_y);
+        saved=1;
+    }
+    if (on && token!=UINT32_MAX) {
+        /* SDL2 ignores an unchanged FULLSCREEN_DESKTOP request, and positioning while
+           fullscreen changes only its saved windowed placement. Leave first so the
+           next entry selects this display; keep our original saved placement across
+           retargets and failed re-entry. SDL3 supports pending fullscreen positions. */
+        if (version==2 && hos_sdl_is_fullscreen(window) &&
+            CALL(int (*)(void *,uint32_t),SetWindowFullscreen)(window,0)!=0) return 0;
+        /* SDL's CENTERED_DISPLAY encoding reserves 16 bits for the display token. */
+        int centered=0x2fff0000 | (int)token;
+        /* SDL3 deliberately retains pending positions for fullscreen display selection, even on
+           Wayland where positioning a windowed toplevel returns Unsupported. Source reviewed:
+           https://github.com/libsdl-org/SDL/blob/release-3.2.0/src/video/SDL_video.c
+           SDL_GetVideoDisplayForFullscreenWindow; Wayland_SetWindowPosition also handles already-fullscreen moves.
+           This requests a display; the published CURRENT flag still comes from SDL's observed display. */
+        if (version==3) CALL(_Bool (*)(void *,int,int),SetWindowPosition)(window,centered,centered);
+        else CALL(void (*)(void *,int,int),SetWindowPosition)(window,centered,centered);
+    }
+    int ok=version==3?CALL(_Bool (*)(void *,_Bool),SetWindowFullscreen)(window,on!=0):
+        CALL(int (*)(void *,uint32_t),SetWindowFullscreen)(window,on?0x1001:0)==0;
+    if (ok && version==3 && f.SyncWindow) CALL(_Bool (*)(void *),SyncWindow)(window);
+    /* SyncWindow can time out after SDL accepted the request. Keep the saved placement, and publish
+       observed flags separately rather than treating a timeout as an undone mode change. */
+    if (ok && !on && saved && !hos_sdl_is_fullscreen(window)) {
+        if (version==3) CALL(_Bool (*)(void *,int,int),SetWindowPosition)(window,old_x,old_y);
+        else CALL(void (*)(void *,int,int),SetWindowPosition)(window,old_x,old_y);
+        saved=0;
+    }
+    return ok;
 }
 void hos_sdl_relative_mouse(void *window, int on) {
     if (version == 3) CALL(_Bool (*)(void *, _Bool), SetRelativeMouseMode)(window, on != 0);

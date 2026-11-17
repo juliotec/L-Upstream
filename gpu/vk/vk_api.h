@@ -14,7 +14,14 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 27
+#define MKWVK_API_VERSION 29
+enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
+typedef struct MkwVkMonitor {
+    char id[512];             /* opaque persistent preference; never a runtime handle or list index */
+    char name[256];           /* UTF-8 label, may collide: the UI also shows dimensions */
+    int width, height;        /* desktop pixels, not DPI-scaled window coordinates */
+    int flags;                /* HOS_MONITOR_* */
+} MkwVkMonitor;
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (longshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -265,6 +272,16 @@ typedef struct MkwVkHost {
        thread's (sead::MainThread) time so far, in ns: [0] waiting for a virtual core, [1] blocked in a wait or sleep, both
        counted while fps_timing is on, [2] its CPU time. 0 before the game names that thread */
     int (*main_thread_times)(int64_t out[3]);
+    /* Version 28 (longshot, issue 1280): a C++ allocation of the renderer's refused for 5 s (its new_handler, gpu/vk/vk_main.cpp
+       new_refused, tried again meanwhile): the host's out-of-memory line and notice, waited for, then the game stops, as for the
+       host's own allocations (host/mkw_glue.c hos_alloc_gave_up). what names it in the log. Does not return */
+    void (*out_of_memory)(const char *what);
+    /* Version 29: named fullscreen output selection. Snapshot metadata is copied; empty ID means the
+       current window's screen. select queues work to the window thread, never moves it here.
+       The saved preference may be unavailable; flags describe the actual current/primary screen. */
+    int (*monitor_count)(void);
+    int (*monitor_info)(int index, struct MkwVkMonitor *out);
+    void (*monitor_select)(const char *id);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */

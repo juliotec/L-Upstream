@@ -176,6 +176,16 @@ when those hooks are needed. SIGKILL always bypasses them.
 
 ## Switches for testing and debugging
 
+**Every renderer switch (`RX_`) has a row in `gpu/vk/switches.def`:** its name, its kind, what the renderer does with
+it unset and what setting it does. The kinds are `diag` (logs, dumps, checks), `tune` (a number with one default),
+`kill` (turns off something that is on for everyone), `attempt` (turns on something nobody ships), `hw` (unset, it
+follows the PC) and `player` (a setting the player has). A new switch needs a row, and a switch that is done with
+goes: delete its reads and make its row `GONE(name, date, what became of it)`. `tests/test_switch_table.py` fails on
+a name the source reads without a row, a row nothing reads and a removed name still read. At its start the renderer
+logs `vk: switches set (n): ...` with every switch the run has set, and a line for each `RX_` name set that is none
+(misspelt, removed, or from another build). The table below describes the switches people use most; the table in
+the source has all of them.
+
 Set `HOS_OOT_TRACE_SAVES=1` to log save requests and report when the transition autosave is suppressed. The trace defaults to off.
 
 The running game reads its switches from the environment or from `longshot_env.txt` beside `image.bin` (one
@@ -304,7 +314,7 @@ format, tone mapper, encoding and luminance changes reset the corresponding hist
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
-| `HOS_TEST_ALLOC_REFUSE=<text>` | A test, off when unset: every host allocation through `hos_xmalloc` / `hos_xcalloc` / `hos_xrealloc` (`host/mkw_glue.c`) whose label contains the text is refused, as at Windows' commit limit, to see what a player sees there: 5 s of tries, the out-of-memory line and notice, then the game stops. `recording handle set` fails at the first recording, before the title; `recording copy` in play |
+| `HOS_TEST_ALLOC_REFUSE=<text>` | A test, off when unset: every host allocation through `hos_xmalloc` / `hos_xcalloc` / `hos_xrealloc` (`host/mkw_glue.c`) whose label contains the text is refused, as at Windows' commit limit, to see what a player sees there: 5 s of tries, the out-of-memory line and notice, then the game stops. `recording handle set` fails at the first recording, before the title; `recording copy` in play. `renderer` (the renderer's C++ allocations, `gpu/vk/vk_main.cpp` `new_refused`, issue 1280): at the 600th present one allocation of 1 PB is asked for, refused on any PC, and waited for as at the limit |
 | `HOS_CV_SIGNAL_ALWAYS` (set) | SignalConditionVariable takes its lock and wakes even when no thread waits, as before it returned at once for no waiter (`host/nn_os_sync.c`); a control for a hang or a movie stutter |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |
@@ -1275,6 +1285,11 @@ same one (`host/options_path.c`: `HOS_OPTIONS_FILE`, else `--user`'s folder, the
 else beside the game, as before: RecompLauncher sets its rows there and updates in place). The host chooses it at the start and
 gives the renderer its path (`MkwVkHost.options_path`; `gpu/vk/vk_paths.h` `options_path`); the log's `options: the settings
 file is <path>` says which. A game folder's file from a build before this is copied there once, when the user folder has none.
+The Fullscreen monitor row saves `fullscreen_monitor_id` (an opaque destination identity) and
+`fullscreen_monitor_name` (the label retained when that destination is unavailable). Both are empty for
+Auto (current monitor). The transient menu ordinal is not saved. Windows identities are monitor interface
+paths; Linux identities use unique SDL backend-qualified display names. Choose through the menu rather
+than editing these keys; unavailable choices fall back temporarily without discarding the saved identity.
 Only `compile_shaders=`, the build's choice, stays in the game folder's file, where `make_game.py` writes it. The file holds the Insert menu's rows as `<key>=<number>`: the row's name in lower
 case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
 `gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=5`,
@@ -1318,7 +1333,7 @@ under Audio with its existing settings keys and behavior unchanged.
 The host reads the startup output preference from `hos_options_file()`, the same settings path the menu receives through
 `MkwVkHost.options_path`: `HOS_OPTIONS_FILE`, then `--user`, otherwise beside the game. A missing or unchosen file means
 Default, without independently falling back to another settings file. API version 24 appends the playback callbacks after
-version 22's `take_text` and version 23's `options_path`, version 25 the microphone test's `mic_test`, version 26 the performance summary's `perf_info` and version 27 the frame trace's `main_thread_times` after it; build the host and renderer together. `tests/test_audio_output_devices.py`
+version 22's `take_text` and version 23's `options_path`, version 25 the microphone test's `mic_test`, version 26 the performance summary's `perf_info`, version 27 the frame trace's `main_thread_times` and version 28 the renderer's out-of-memory stop, `out_of_memory`, after it; build the host and renderer together. `tests/test_audio_output_devices.py`
 checks their positional wiring and layout, and `tests/test_audio_output_preferences.py` compiles the actual settings-path
 and preference modules together against synthetic settings files, without enumerating or opening a device.
 

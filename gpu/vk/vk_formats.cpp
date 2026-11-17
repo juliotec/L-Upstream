@@ -37,6 +37,16 @@ bool astc_native() {
     }
     return known == 1;
 }
+/// R5G5B5A1 has no mandatory support: A1BGR5 textures are left out where the GPU does not sample it
+bool r5g5b5a1_sampled() {
+    static signed char known = -1;
+    if (known < 0) {
+        VkFormatProperties p{};
+        vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_R5G5B5A1_UNORM_PACK16, &p);
+        known = (p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ? 1 : 0;
+    }
+    return known == 1;
+}
 
 /// A 24-bit depth format, or its 32-bit float twin where the GPU cannot render to it or sample it (AMD's GPUs have
 /// neither X8_D24_UNORM_PACK32 nor D24_UNORM_S8_UINT as depth attachments: RDNA 2, 3 and 4). The twin is used only
@@ -61,17 +71,6 @@ VkFormat depth24_or_32(VkFormat d24, VkFormat d32) {
         }
     }
     return k ? d24 : d32;
-}
-
-/// R5G5B5A1 has no mandatory support: A1BGR5 textures are left out where the GPU does not sample it
-bool r5g5b5a1_sampled() {
-    static signed char known = -1;
-    if (known < 0) {
-        VkFormatProperties p{};
-        vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_R5G5B5A1_UNORM_PACK16, &p);
-        known = (p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ? 1 : 0;
-    }
-    return known == 1;
 }
 } // namespace
 

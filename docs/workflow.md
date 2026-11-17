@@ -44,6 +44,11 @@ and both change, so read them again rather than trusting old ones:
   issue forms (it needs the `gh` CLI). As of 2026-11-10, of 399 issues that named their hardware: AMD 51%, NVIDIA 35%,
   Intel 3.5%; by class RX 6000 16%, AMD APUs and handhelds 12%, RX 9000 10%, RTX 40 9%, RTX 50 8.5%, RTX 30 7%, cards
   without mesh shaders 14.5%; Windows 57%, Linux and SteamOS 17%. This over-counts hardware where things break.
+- **How the crash reports end:** `python -I scripts/crash_groups.py` reads the issues the crash window titled, with
+  their attached records and log ends, and lists them in named groups, the largest first: how the run ended (GPU
+  device lost, an access violation, an uncaught C++ exception, no crash record), whose code the fault was in (the
+  graphics driver, the renderer, the game's lifted code) and whether VRAM or Windows' commit was at its limit.
+  `--markdown` gives a list to paste. A crash fix's reach is its group's share of the reports.
 - **Who plays:** the [Steam Hardware Survey](https://store.steampowered.com/hwsurvey/) is the best public picture of
   PC gaming hardware (vendor, card, OS). Use its current numbers for the installed base.
 

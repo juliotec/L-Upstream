@@ -25,6 +25,8 @@ def main():
     parser.add_argument('--vulkan-headers', type=Path, default=Path('/usr/include'), help='include directory containing vulkan/vulkan.h')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cxx', default='clang++')
+    parser.add_argument('--views', nargs='+', choices=['graphics', 'graphics-screen', 'audio', 'controls'],
+                        default=['graphics', 'audio', 'controls'], help='maintained views to capture; graphics-screen selects Fullscreen')
     args = parser.parse_args()
     source, output = args.source.resolve(), args.output.resolve()
     if not (args.vulkan_headers / 'vulkan/vulkan.h').is_file():
@@ -70,7 +72,7 @@ def main():
         # also prevents accidentally reading files in the checkout or game installation.
         env = {k: v for k, v in os.environ.items() if not k.startswith(('HOS_', 'RX_', 'LONGSHOT_'))}
         env['HOS_DISPLAY_MODES'] = '1280x720'
-        for view in ['graphics', 'audio', 'controls']:
+        for view in dict.fromkeys(args.views):
             run([str(exe), str(source / 'third_party/fonts/libertinus'), view, str(output / f'settings-{view}.png')], cwd=tmp, env=env)
     metadata = {'source_revision': revision, 'source_version': describe, 'source_files': hashes,
                 'fixture_files': {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
@@ -81,10 +83,11 @@ def main():
                 'toolchain': {'compiler': run([args.cxx, '--version'], capture_output=True).stdout.splitlines()[0],
                               'sdl2': run(['pkg-config', '--modversion', 'sdl2'], capture_output=True).stdout.strip(),
                               'libpng': run(['pkg-config', '--modversion', 'libpng'], capture_output=True).stdout.strip()},
+                'views': list(dict.fromkeys(args.views)),
                 'images': {f'settings-{view}.png': hashlib.sha256((output / f'settings-{view}.png').read_bytes()).hexdigest()
-                           for view in ['graphics', 'audio', 'controls']}}
+                           for view in dict.fromkeys(args.views)}}
     (output / 'menu-capture.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
-    print('Captured graphics, audio and controls from ' + describe + ' @ ' + revision)
+    print('Captured ' + ', '.join(dict.fromkeys(args.views)) + ' from ' + describe + ' @ ' + revision)
 
 
 if __name__ == '__main__':

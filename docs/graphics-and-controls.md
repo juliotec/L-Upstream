@@ -20,12 +20,16 @@ below, then look up any single setting in the list at the bottom.
 
 </a>
 
-*UI-only example from development build a06f7e2e on Linux. The Custom values shown are illustrative, not recommended defaults.*
+*UI-only example from development build 54d25c79 on Linux. The Custom values shown are illustrative, not recommended defaults.*
 
 Your choices are saved as you go, in `longshot_options.ini`: with your saves when the launcher starts the game on Windows, the
 same file for every version, else in the game folder (the README says where). A setting marked **After a restart**
 applies the next time the game starts: when you close the menu it asks whether to restart. **Later** keeps the change
 for next time; **Restart now** starts the game again, and you lose any progress since your last save.
+
+To choose which display fullscreen uses, open **Graphics → Screen → Fullscreen monitor**. **Auto (current monitor)**
+keeps the window on its current screen. A named choice applies when you enter fullscreen, or moves the fullscreen
+window immediately. If that display is disconnected, the saved choice is retained while a connected screen is used.
 
 ## Good starting points
 

@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "vk_new.h"   // (NewNothrow)
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/ir_opt/fragment_output_guard.h"
@@ -1381,6 +1382,9 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
         ~ModuleProgram() { module_program = 0; }
     } module_for{p.key};
     try {
+        // (issue 1280: an allocation refused in the translation fails this program, as before the renderer's new_handler,
+        // rather than wait 5 s and stop the game: a bad shader can ask for a size no PC has)
+        const NewNothrow nothrow;
         if (driver_faulted_program(p.key)) throw std::runtime_error("the driver faulted on this program before: not asked of it again");
         Shader::Backend::Bindings bindings{};
         int questions = 0;
@@ -1626,6 +1630,9 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         Shader::Optimization::g_nvn2_miss_log_this = !only || !strncmp(hex, only, strlen(only));
     }
     try {
+        // (issue 1280: an allocation refused in the translation fails this program, as before the renderer's new_handler,
+        // rather than wait 5 s and stop the game: a bad shader can ask for a size no PC has)
+        const NewNothrow nothrow;
         Shader::Backend::Bindings bindings{};
         std::vector<std::vector<uint32_t>> kept;   // (each stage's SPIR-V, for the program cache: mesh programs were never kept,
                                                    // so each was translated and its pipeline built in the middle of play, every run)

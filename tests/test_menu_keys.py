@@ -28,6 +28,7 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 
 FIXTURE = r'''#include "gpu/vk/vk_menu_keys.h"
+#include "gpu/vk/monitor_choice.h"
 // API_ENUMS
 #include <algorithm>
 #include <atomic>
@@ -40,6 +41,7 @@ FIXTURE = r'''#include "gpu/vk/vk_menu_keys.h"
 #include <string>
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 using namespace mkwvk::menu_keys;
+namespace monitor_choice = mkwvk::monitor_choice;
 static void expect(int a, int b, int confirm, int back, int line) {
     int c = -9, k = -9;
     confirm_back(a, b, &c, &k);
@@ -105,7 +107,8 @@ static struct {
     float (*aspect_ratio)();
     int64_t (*now_ns)();
     void (*audio_output_select)(const char*);
-} queue_host{take_key_press, nullptr, nullptr, nullptr}, *host;
+    void (*monitor_select)(const char*);
+} queue_host{take_key_press, nullptr, nullptr, nullptr, nullptr}, *host;
 
 static bool keyboard_toggle(int mode, int key, bool queued, bool has_focus = true) {
     opts.menu_shortcut = mode;
@@ -158,7 +161,9 @@ static void fsr4_probe() {}
 static void xess_probe() {}
 static void refresh_mics() {}
 static void refresh_outputs() {}   // Playback discovery is covered by test_audio_output_devices.py.
+static void refresh_monitors() {}  // Monitor discovery is covered by test_fullscreen_monitor_menu.py.
 static bool can_outputs() { return false; }
+static bool can_monitors() { return false; }
 // TX_MENU_SHORTCUT
 
 // One tick with key pressed (0: none) and the options o, the menu open before it or not: whether it is open after. *back:
@@ -219,6 +224,8 @@ static int parse_output(const char*) { return 0; }
 static std::string mic_want;
 [[maybe_unused]] static std::string gpu_saved_card;   // (menu_init reads gpu_device_id=: gpu_choice.h)
 static std::string output_want, output_saved_name;
+static int monitor_pick;
+static std::string monitor_want, monitor_saved_name;
 static std::string output_id_key(const char* text) { return text; }
 static std::string output_name_key(const char* text) { return text; }
 [[maybe_unused]] static uint64_t auto_for = 0, auto_tuned = 0;   // (the Quality preset Auto (this PC)'s fingerprints, which save() writes)

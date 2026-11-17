@@ -20,6 +20,11 @@ void hos_sdl_identity(const char *name, const char *app_id);
 /* ---- the window: centred, resizable, at the display's pixel density, for Vulkan ---- */
 void *hos_sdl_window(const char *title, int width, int height);
 void hos_sdl_fullscreen(void *window, int on);   /* (the desktop's mode, borderless) */
+struct MkwVkMonitor;
+int hos_sdl_monitor_list(void *window, struct MkwVkMonitor *out, uint32_t *tokens, int cap);
+uint32_t hos_sdl_window_display(void *window); /* UINT32_MAX when unknown; SDL2 index zero is valid */
+int hos_sdl_fullscreen_target(void *window, int on, uint32_t token);
+int hos_sdl_is_fullscreen(void *window);
 void hos_sdl_relative_mouse(void *window, int on);
 int hos_sdl_desktop_size(int *width, int *height);
 int hos_sdl_refresh_mhz(void *window);   /* the refresh rate of the window's display in mHz, 0 when not known (the main thread) */

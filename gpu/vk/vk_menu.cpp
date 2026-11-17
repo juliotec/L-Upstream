@@ -47,6 +47,7 @@
 #include "vk_bug_report.h"   // (the Gameplay tab's Bug report: what it writes, and how)
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "../../host/audio_output_devices.h"
+#include "monitor_choice.h"
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
 #include "vk_fsr4.h"
@@ -850,6 +851,33 @@ const char* tx_gpu(int v) {
     return buf;
 }
 const char* tx_pad_layout(int v);
+std::vector<monitor_choice::Choice> fullscreen_monitors;
+int monitor_pick = 0;
+std::string monitor_want, monitor_saved_name;
+bool monitor_missing = false;
+bool can_monitors() { return host && host->monitor_count && host->monitor_info && host->monitor_select; }
+const char* tx_fullscreen_monitor(int value) {
+    static std::string text;
+    if (value <= 0) return "Auto (current monitor)";
+    if (monitor_missing && value == (int)fullscreen_monitors.size() + 1) {
+        text = (monitor_saved_name.empty() ? std::string(i18n::tr("Selected monitor")) : monitor_saved_name) +
+               i18n::tr(" (not connected)");
+        return text.c_str();
+    }
+    if ((size_t)(value - 1) >= fullscreen_monitors.size()) return "Auto (current monitor)";
+    const auto& choice = fullscreen_monitors[value - 1];
+    text = choice.name + " (" + std::to_string(choice.width) + "x" + std::to_string(choice.height) + ")";
+    int duplicates = 0;
+    for (const auto& c : fullscreen_monitors) if (c.name == choice.name) duplicates++;
+    if (duplicates > 1) text += " [" + std::to_string(value) + "]";
+    return text.c_str();
+}
+const char* hn_fullscreen_monitor(int, int variant) {
+    if (variant > 0) return nullptr;
+    if (variant < 0) return "Choose the screen used by Fullscreen, F11 and Alt+Enter. Auto uses the window's current monitor.";
+    if (monitor_missing) return "The selected monitor is unavailable. The current monitor is used temporarily; the saved choice is kept.";
+    return "While windowed, this chooses the next fullscreen screen. While fullscreen, it moves the game now. Leaving fullscreen restores the window.";
+}
 // The playback row stores an endpoint ID, never its position or possibly duplicated display name.
 // Menu state uses menu_mu, shared by menu_tick and the control bridge; the host mailbox has its own lock.
 struct OutputChoice { std::string id, name; };
@@ -1504,6 +1532,8 @@ Row rows[] = {
     {TAB_GRAPHICS, "Screen", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
+    {TAB_GRAPHICS, "Fullscreen monitor", &monitor_pick, 0, 0, 1, tx_fullscreen_monitor,
+     "Choose the screen used by Fullscreen, F11 and Alt+Enter. Auto uses the window's current monitor.", hn_fullscreen_monitor, false, true},
     {TAB_GRAPHICS, "V-Sync", &opts.vsync, 0, 2, 1, tx_vsync,
      "Whether a frame waits for the display's refresh before it is shown. Changes at once.", hn_vsync, false, true},
     {TAB_GRAPHICS, "Window scaling filter", &opts.upscale, 0, 2, 1, tx_filter,
@@ -2150,6 +2180,7 @@ bool env_holds(const int* value) {
 Out player_custom_output{0, 0};   // (the player's own Output resolution size when HOS_OUTPUT_RES names another of its own)
 std::string ini_path() { return options_path(); }   // (the user folder's when --user names one: vk_paths.h)
 const char* ini_key(const Row& r) {
+    if (r.value == &monitor_pick) return "fullscreen_monitor";
     if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
     if (r.value == &opts.vsync) return "vsync";
     // (rows renamed since their values were first saved keep their keys: an options file from before still loads)
@@ -2210,6 +2241,38 @@ int detect_pad_layout() {
 // (longshot) the row's choice to the host: off, the default, or a microphone by its name (and its place in the host's list,
 // -1 while it is unplugged: of two with one name, the one chosen). Unplugged, the name is the kept one, cut: the host takes
 // a name that starts with it
+void refresh_monitors() {
+    const int old_count = (int)fullscreen_monitors.size(), old_pick = monitor_pick;
+    const bool old_missing = monitor_missing;
+    const std::string old_name = monitor_saved_name;
+    fullscreen_monitors.clear();
+    if (can_monitors()) {
+        const int count = std::min(64, std::max(0, host->monitor_count()));
+        for (int i = 0; i < count; i++) {
+            MkwVkMonitor monitor{};
+            if (!host->monitor_info(i, &monitor)) continue;
+            monitor.id[sizeof monitor.id - 1] = monitor.name[sizeof monitor.name - 1] = 0;
+            const std::string id = monitor_choice::id_key(monitor.id);
+            if (!id.empty()) fullscreen_monitors.push_back({id, output_name_key(monitor.name), monitor.width, monitor.height, monitor.flags});
+        }
+    }
+    monitor_pick = monitor_choice::pick(fullscreen_monitors, monitor_want);
+    monitor_missing = monitor_pick > (int)fullscreen_monitors.size();
+    if (monitor_pick > 0 && !monitor_missing) monitor_saved_name = fullscreen_monitors[monitor_pick - 1].name;
+    for (Row& r : rows) if (r.value == &monitor_pick) r.hi = (int)fullscreen_monitors.size() + (monitor_missing ? 1 : 0);
+    if (old_count != (int)fullscreen_monitors.size() || old_pick != monitor_pick ||
+        old_missing != monitor_missing || old_name != monitor_saved_name) menu_refresh = true;
+}
+void monitor_chosen() {
+    if (!can_monitors()) return;
+    if (monitor_pick <= 0) monitor_want.clear(), monitor_saved_name.clear();
+    else if ((size_t)(monitor_pick - 1) < fullscreen_monitors.size()) {
+        monitor_want = fullscreen_monitors[monitor_pick - 1].id;
+        monitor_saved_name = fullscreen_monitors[monitor_pick - 1].name;
+    }
+    host->monitor_select(monitor_want.c_str());
+    refresh_monitors();
+}
 void refresh_outputs() {
     output_devices.clear();
     if (can_outputs()) {
@@ -2305,6 +2368,8 @@ void save() {
             bool mine = key == "audio_output_device_id" || key == "audio_output_device_name" || key == "output_device" ||
                         key == "microphone_device" || key == "options_version" || key == "memory_budget" || key == "auto_for" ||
                         key == "auto_tuned" || key == "auto_output" || key == "auto_steps";
+            mine |= key == "fullscreen_monitor_id";
+            mine |= key == "fullscreen_monitor_name";
             // (and the Mesh shaders row's line, no longer read (gpu/vk/mesh_mode.h): dropped, not kept for nothing)
             mine |= key == "mesh_shaders";
             // (and the VRAM budget row's, removed: one rule by the card, texture_budget.h and mirror_budget.h)
@@ -2327,7 +2392,7 @@ void save() {
                 // ultrawide= is kept, unless the row was changed in the menu)
                 const int v = saved_value(r.value);
                 fprintf(f, "%s=%d\n", ini_key(r), env_holds(&opts.output_res) && v == aspect_started ? ultrawide_read : aspect_follows_host(v) ? 1 : 0);
-            } else if (r.value && r.value != &opts.game_lang && r.value != &output_pick) { // The device is saved by ID below.
+            } else if (r.value && r.value != &opts.game_lang && r.value != &output_pick && r.value != &monitor_pick) { // Device choices are saved by ID below.
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
             }
         }
@@ -2335,6 +2400,10 @@ void save() {
         if (!output_want.empty()) {
             fprintf(f, "audio_output_device_id=%s\n", output_want.c_str());
             fprintf(f, "audio_output_device_name=%s\n", output_saved_name.c_str());
+        }
+        if (!monitor_want.empty()) {
+            fprintf(f, "fullscreen_monitor_id=%s\n", monitor_want.c_str());
+            fprintf(f, "fullscreen_monitor_name=%s\n", monitor_saved_name.c_str());
         }
         // (not a row: the preset Custom came from, whose mip trimming it keeps: opts.budget)
         fprintf(f, "memory_budget=%d\n", opts.budget);
@@ -2916,6 +2985,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.transition_autosave) sync_transition_autosave();
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (longshot)
     if (r.value == &output_pick) output_chosen();
+    if (r.value == &monitor_pick) monitor_chosen();
     // (longshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
         samplers_changed();
@@ -5182,12 +5252,16 @@ void menu_init() {
             }
             if (!strcmp(line, "audio_output_device_id")) output_want = output_id_key(eq + 1);
             if (!strcmp(line, "audio_output_device_name")) output_saved_name = output_name_key(eq + 1);
+            if (!strcmp(line, "fullscreen_monitor_id")) monitor_want = monitor_choice::id_key(eq + 1);
+            if (!strcmp(line, "fullscreen_monitor_name")) monitor_saved_name = output_name_key(eq + 1);
         }
         fclose(f);
         // (the saved microphone by its name, not its place; the host told the row's choice. Off or the default: no list, no SDL
         // audio at the start)
         refresh_outputs();
         if (can_outputs()) host->audio_output_select(output_want.c_str());
+        refresh_monitors();
+        if (can_monitors()) host->monitor_select(monitor_want.c_str());
         if (!mic_want.empty()) refresh_mics();
         else {
             if (opts.mic >= 2) opts.mic = 1;
@@ -5827,10 +5901,18 @@ void game_lang_tick() {
 /// the list as given
 void outputs_follow_screen() {
     static int every = 0;
-    if (++every % 30 || getenv("HOS_DISPLAY_MODES")) return;
+    static std::string followed_monitor;
+    if (++every % 30) return;
+    const std::string previous_monitor = followed_monitor;
+    const int previous_pick = monitor_pick;
+    refresh_monitors();
+    const std::string current_monitor = monitor_choice::current_id(fullscreen_monitors);
+    if (previous_pick != monitor_pick || previous_monitor != current_monitor) menu_refresh = true;
+    if (getenv("HOS_DISPLAY_MODES")) return;
     uint32_t sw = 0, sh = 0;
-    if (!screen_size(&sw, &sh) || (sw == outputs_screen.w && sh == outputs_screen.h)) return;
+    if (!screen_size(&sw, &sh) || (sw == outputs_screen.w && sh == outputs_screen.h && previous_monitor == current_monitor)) return;
     outputs_screen = {sw, sh};
+    followed_monitor = current_monitor;
     const int slot = [] {
         for (const Row& r : rows)
             if (r.value == &opts.ultrawide) return restart_slot_of(r);
@@ -6083,6 +6165,7 @@ void menu_tick() {
         if (open_now.load()) dlss_probe(), dlss_fg_probe(), fsr4_probe(), xess_probe();
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
         if (open_now.load()) refresh_outputs();
+        if (open_now.load()) refresh_monitors();
     }
     if (open_now.load() && debug_warning) {
         if (press[3] || press[4]) debug_warning_choice = 1 - debug_warning_choice, changed = true;

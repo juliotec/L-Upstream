@@ -102,6 +102,7 @@ int dlss_fg_skip(unsigned* most) {
 Row rows[] = {
 /* ROWLINE */
 };
+int monitor_pick; // Fullscreen selection is not exercised by this frame-generation fixture.
 /* INIKEY */
 int parse_output(const char*) { return 0; }
 void load(const char* text) {   // (one line of longshot_options.ini, through the menu's own loop)

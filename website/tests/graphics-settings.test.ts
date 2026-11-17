@@ -10,6 +10,45 @@ const menu = await readFile(new URL('../../gpu/vk/vk_menu.cpp', import.meta.url)
 const guide = await readFile(new URL('../../docs/graphics-and-controls.md', import.meta.url), 'utf8');
 const processor = await createMarkdownProcessor();
 
+test('frame-generation visibility has a badge and still requires its documented condition', () => {
+  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+    .find(setting => setting.name === 'Frame generation by');
+  assert(setting.badges.includes('While Frame generation is on'));
+  const undocumented = readme.replace('Shown while Frame generation is on.', 'Choose the interpolation provider.');
+  assert.notEqual(undocumented, readme);
+  assert.throws(() => readGraphicsSettings(undocumented, menu), /no condition for Frame generation by/);
+});
+
+test('CRT-line visibility has a badge and still requires its documented condition', () => {
+  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+    .find(setting => setting.name === 'CRT lines');
+  assert(setting.badges.includes('With a CRT filter on'));
+  const undocumented = readme.replace('shown with a CRT filter on; ', '');
+  assert.notEqual(undocumented, readme);
+  assert.throws(() => readGraphicsSettings(undocumented, menu), /no condition for CRT lines/);
+});
+
+test('the registered fullscreen monitor selector retains its identity-backed choices; unsupported rows fail', () => {
+  const setting = readGraphicsSettings(readme, menu).flatMap(group => group.settings)
+    .find(setting => setting.name === 'Fullscreen monitor');
+  assert.equal(setting.defaultValue, 'Auto (current monitor)');
+  assert.equal(setting.restart, false);
+  assert.match(setting.choices, /named connected screen/);
+  assert.match(setting.summary, /F11 and Alt\+Enter/);
+  assert.equal(setting.id, 'setting-fullscreen-monitor');
+  const registration = '{TAB_GRAPHICS, "Fullscreen monitor", &monitor_pick, 0, 0, 1, tx_fullscreen_monitor,';
+  assert(menu.includes(registration));
+  for (const changed of [registration.replace('&monitor_pick', '&unknown_pick'),
+    registration.replace('tx_fullscreen_monitor', 'tx_unknown')]) {
+    assert.throws(() => readGraphicsSettings(readme, menu.replace(registration, changed)), /coverage mismatch at Fullscreen monitor/);
+  }
+  assert.throws(() => readGraphicsSettings(readme, menu.replace('hn_fullscreen_monitor, false, true}', 'nullptr, false, true}')),
+    /coverage mismatch at Fullscreen monitor/);
+  // A different Graphics row cannot borrow this selector's pointer or formatter registration.
+  assert.throws(() => readGraphicsSettings(readme, menu.replace('"Fullscreen", &opts.fullscreen', '"Fullscreen", &monitor_pick')),
+    /coverage mismatch at Fullscreen/);
+});
+
 test('HDR Native condition accepts current prose but remains required', () => {
   for (const wording of ['with HDR set to Native', 'shown only with HDR set to Native']) {
     const text = readme.replaceAll('with HDR set to Native.', `${wording}.`);

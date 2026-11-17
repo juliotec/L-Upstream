@@ -89,12 +89,14 @@ struct { void note(const int*) {} } restart_state;
 %(is_slider)s
 %(stops)s
 %(snap)s
+int monitor_pick; // Declared before the extracted ini_key() as well as set_row().
 %(ini_key)s
 /* (the Microphone row's hook in set_row: no microphones here) */
 bool can_mic() { return false; }
 int output_pick;
 bool output_forced() { return false; }
 void output_chosen() {}   // Playback selection is covered by test_audio_output_devices.py.
+void monitor_chosen() {}  // Fullscreen selection is covered by test_fullscreen_monitor_menu.py.
 /* (the Upscaler row's choices, which set_row steps through: the game's own only, here) */
 unsigned upscalers_available() { return 1; }
 void mic_chosen() {}
