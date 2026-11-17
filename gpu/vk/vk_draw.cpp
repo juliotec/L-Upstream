@@ -195,13 +195,14 @@ void fine_report(double frames) {
 }
 
 /// 32 lanes, where the stage can be held to it (workgroup_x: a compute stage's width, which full subgroups must divide)
-void pin_subgroup(VkPipelineShaderStageCreateInfo& st, uint32_t workgroup_x = 0) {
+/// (invocations: its whole workgroup, x * y * z, which 32-lane subgroups must cover: pins_32)
+void pin_subgroup(VkPipelineShaderStageCreateInfo& st, uint32_t workgroup_x = 0, uint64_t invocations = 64) {
     static const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size = [] {
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo r{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
         r.requiredSubgroupSize = 32;
         return r;
     }();
-    if (!(dev.sg32_stages & st.stage)) return;
+    if (!pins_32(st.stage, invocations)) return;
     st.pNext = &size;
     if (workgroup_x && !(workgroup_x % 32) && dev.vk13.computeFullSubgroups)
         st.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
@@ -1474,7 +1475,7 @@ VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) 
     ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.stage.module = q.stages[0].module;
     ci.stage.pName = "main";
-    pin_subgroup(ci.stage, q.workgroup[0]);
+    pin_subgroup(ci.stage, q.workgroup[0], uint64_t(q.workgroup[0]) * q.workgroup[1] * q.workgroup[2]);
     ci.layout = q.layout;
     static const bool noopt_on = env_on("RX_VK_NOOPT");
     if (noopt && noopt_on) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
@@ -9356,7 +9357,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         ci.stage.module = p.stages[0].module;
         ci.stage.pName = "main";
-        pin_subgroup(ci.stage, p.workgroup[0]);
+        pin_subgroup(ci.stage, p.workgroup[0], uint64_t(p.workgroup[0]) * p.workgroup[1] * p.workgroup[2]);
         ci.layout = p.layout;
         if (env_on("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         VkPipeline pl = VK_NULL_HANDLE;
