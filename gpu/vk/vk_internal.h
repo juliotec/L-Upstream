@@ -90,6 +90,8 @@ struct Device {
     }
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
+    VkPhysicalDeviceFloatControlsProperties float_controls{};   // (the float execution modes shaders may declare: make_profile)
+    VkShaderStageFlags subgroup_stages = 0;   // (subgroupSupportedStages: the stages subgroup operations may be used in)
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
     uint32_t subgroup_size = 32, subgroup_max = 32;   // (the lanes a stage not pinned runs at, and the most it can have)
     VkDriverId driver_id{};
