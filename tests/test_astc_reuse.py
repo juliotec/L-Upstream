@@ -13,8 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def check_source():
     src = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     for needle in ('#include "astc_reuse.h"',
-                   'getenv("RX_VK_ASTC_REUSE")',
-                   "if (!dirty && !tex.uploaded && reuse_on() && reuse_upload(tex, total)) return up_route = UP_ASTC, true;",
+                   "if (!dirty && !tex.uploaded && reuse_upload(tex, total)) return up_route = UP_ASTC, true;",
                    "freed.list(x->blocks_hash, x);",
                    "if (tex->freed_listed || tex->reuse_retire) reuse_drop(*tex);",
                    "if (tex->freed_listed || tex->reuse_retire) return false;",

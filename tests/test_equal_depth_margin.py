@@ -18,9 +18,14 @@ SOURCE = ROOT / "gpu" / "vk" / "vk_draw.cpp"
 def main():
     source = SOURCE.read_text(encoding="utf-8")
     state = block(source, "void dynamic_state(VkCommandBuffer cmd")
-    if 'getenv("RX_VK_EQ_BIAS")' not in state:
+    # (the margin's size is device_policy.h's equal_depth_bias: 64 on Intel, then RX_VK_EQ_BIAS, read by device_policy_env;
+    # tests/test_device_policy.py has it on each GPU and the switch's values)
+    if "static const float eq_bias = dev.policy.equal_depth_bias;" not in state:
+        raise SystemExit("the margin is not device_policy.h's equal_depth_bias")
+    policy = (ROOT / "gpu" / "vk" / "device_policy.h").read_text(encoding="utf-8")
+    if 'get("RX_VK_EQ_BIAS")' not in policy:
         raise SystemExit("no RX_VK_EQ_BIAS switch")
-    if "dev.props.vendorID == 0x8086 ? 64.0f : 0.0f" not in state:
+    if "p.equal_depth_bias = f.intel() ? 64.0f : 0.0f;" not in policy:
         raise SystemExit("the margin is not on by default on Intel only")
     cond = "if (eq_bias > 0 && d.dt && !d.dw && d.dop == VK_COMPARE_OP_EQUAL)"
     if cond not in state:

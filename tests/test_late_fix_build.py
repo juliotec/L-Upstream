@@ -657,7 +657,7 @@ def main():
                         + block(text, 'void late_fix_cpu_read(uint32_t page, VkBuffer buffer, uint8_t* slot) {'))
                .replace('@FORGET@', block(text, 'void shadows_forget_written() {')))
     env = {k: v for k, v in os.environ.items()
-           if k not in ('RX_VK_LATE_FIX', 'RX_VK_PARALLEL', 'RX_VK_NO_READBACK_WAIT', 'RX_VK_SHADOW_FOLLOWS_SYNC')}
+           if k not in ('RX_VK_LATE_FIX', 'RX_VK_PARALLEL')}
     with tempfile.TemporaryDirectory(prefix='late-fix-build-') as tmp:
         src = Path(tmp) / 'late_fix_build.cpp'
         exe = Path(tmp) / 'late_fix_build.exe'

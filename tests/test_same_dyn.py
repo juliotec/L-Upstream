@@ -25,7 +25,7 @@ def main():
         if needle not in pack:
             raise SystemExit(f"dynamic state is remembered without {needle}")
     # (the program in the key is what its write masks are made from: a draw of another program with the same masks is the same state)
-    if "program_wm_sig(*cur_program)" not in pack or "RX_VK_DYN_PROG_KEY" not in pack:
+    if "program_wm_sig(*cur_program)" not in pack:
         raise SystemExit("dynamic state is remembered by program, not by what the program makes of the write masks")
     reads = lambda text: set(re.findall(r"info\.(\w+)", text))
     mask, sig = block(source, "uint32_t target_write_mask("), block(source, "uint64_t program_wm_sig(")

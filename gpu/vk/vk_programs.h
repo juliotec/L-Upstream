@@ -42,7 +42,6 @@ void programs_slow_upload(double ms, uint32_t width, uint32_t height, uint32_t n
 // ---- shader module identifiers (VK_EXT_shader_module_identifier, module_ids.h) ----
 /// (the device's start) the extension is on: a compute module made from its code is learned by its identifier from now on, and
 /// a load at a create call asks for a learned variant's pipeline by it, with no code read and no module made.
-/// RX_VK_MODULE_IDS=0: off
 void module_ids_on();
 /// A compute program's module made from its code: its identifier kept for the next run (longshot_module_ids.bin)
 void module_id_learned(uint64_t key, uint64_t variant, VkShaderModule module);

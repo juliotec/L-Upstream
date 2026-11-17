@@ -3,8 +3,8 @@
 The two packing functions are cut out of the source and compiled alone: every count comes back as it went in, the three
 do not overlap, and counts that do not fit give the "not counted" word, never another count's. The source is then read
 for the rules the build keeps: the kept word is used only when it is not ~0, the counts are kept only for a program
-that is ready (its stages are final), the switch RX_VK_DESC_COUNTS=0 counts every time, and the reserve that keeps the
-writes' pointers stable is made from the counts either way.
+that is ready (its stages are final), and the reserve that keeps the writes' pointers stable is made from the counts
+either way.
 
 python -I -B tests/test_desc_counts.py [--cxx g++]
 """
@@ -67,7 +67,6 @@ def main():
         ("if (kept != ~0ull) {", "the kept word is used only when the program has one"),
         ("p.ready.load(std::memory_order_acquire)", "the counts are kept only for a program that is ready"),
         ("if (packed != ~0ull) p.desc_counts.store(", "counts that do not fit are not kept"),
-        ('getenv("RX_VK_DESC_COUNTS")', "the switch is read"),
         ("out.bufs.reserve(nbuf), out.imgs.reserve(nimg), out.views.reserve(nview);", "the reserve is made from the counts"),
     ):
         if needle not in build:

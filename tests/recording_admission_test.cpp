@@ -104,8 +104,6 @@ thread_local RecordingRes* cur = nullptr;
 const uint64_t kStream = 1024;
 constexpr VkBufferUsageFlags kStreamUse = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 std::atomic<uint64_t> stream_extra{0}, stream_grown{0}, stream_peak{0}, pools_extra{0};
-bool grow_off = false;
-bool stream_grow_off() { return grow_off; }
 struct BufferRef { VkBuffer buffer{}; uint64_t offset = 0, size = 0, address = 0; };
 /* POOL */
 /* STREAM */
@@ -231,9 +229,6 @@ int main(int argc, char** argv) {
             uint64_t n = mode == "overflow" ? UINT64_MAX : mode == "rounding" ? UINT64_MAX - 1024 : 16;
             uint64_t align = mode == "alignment-zero" ? 0 : mode == "alignment-three" ? 3 : 256;
             require(stream_alloc(n, align) == UINT64_MAX && cur->stream == old && cur->used == used && allocation_calls == calls, "invalid/overflow range changed or admitted");
-        } else if (mode == "grow-off") {
-            grow_off = true; require(!stream_reserve(4096, 256), "disabled growth accepted");
-            require(cur->stream == old && cur->used == used && buffers.size() == count, "disabled growth changed current stream");
         } else if (mode == "retention" || mode == "reuse") {
             copied(4096, 91); const auto grown = cur->stream;
             begin(0, 2); require(cur->stream == old && cur->used == 0 && cur->streams.size() == 2, "recording reuse reset");

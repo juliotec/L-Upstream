@@ -84,7 +84,6 @@ void logf(const char*, ...) {}
 void pin_subgroup(VkPipelineShaderStageCreateInfo&) {}
 VkFormat vertex_format(int fmt) { return fmt == 1 ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_UNDEFINED; }
 VkFormat supported_vertex_format(VkFormat fmt) { return fmt; }
-bool no_a2c() { return false; }
 VkBlendFactor blend_factor(int) { return VK_BLEND_FACTOR_ONE; }
 VkBlendOp blend_op(int) { return VK_BLEND_OP_ADD; }
 uint32_t target_write_mask(const Program&, const NvnState&, int) { return 15; }

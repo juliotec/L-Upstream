@@ -186,28 +186,6 @@ bool size_compatible(const Sub& a, const Sub& b) {
     return a.bpb == b.bpb && a.bw == b.bw && a.bh == b.bh;
 }
 
-/// 0: float or normalized, 1: unsigned integer, 2: signed integer (a blit may not mix them)
-int format_class(VkFormat f) {
-    switch (f) {
-    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT:
-    case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_A2R10G10B10_UINT_PACK32:
-    case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT:
-    case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_S8_UINT:
-    case VK_FORMAT_A8B8G8R8_UINT_PACK32: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_B8G8R8_UINT:
-    case VK_FORMAT_R64_UINT: case VK_FORMAT_R64G64_UINT: case VK_FORMAT_R64G64B64_UINT: case VK_FORMAT_R64G64B64A64_UINT:
-        return 1;
-    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT:
-    case VK_FORMAT_B8G8R8A8_SINT: case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT:
-    case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
-    case VK_FORMAT_R32G32B32_SINT: case VK_FORMAT_R32G32B32A32_SINT: case VK_FORMAT_A8B8G8R8_SINT_PACK32:
-    case VK_FORMAT_A2R10G10B10_SINT_PACK32: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_B8G8R8_SINT:
-    case VK_FORMAT_R64_SINT: case VK_FORMAT_R64G64_SINT: case VK_FORMAT_R64G64B64_SINT: case VK_FORMAT_R64G64B64A64_SINT:
-        return 2;
-    default:
-        return 0;
-    }
-}
-
 /// (shaders/d32_to_d24.comp) A DEPTH24 texture kept as D32_SFLOAT copied to a buffer: its floats turned in place into
 /// the 24-bit unorm words the game reads. Made the first time it is needed
 struct D32ToD24Push {
@@ -258,14 +236,34 @@ void d32_to_d24(VkCommandBuffer cmd, const Sub& s, const BufferRef& span, const 
     vkCmdDispatch(cmd, (uint32_t)gx, (uint32_t)gy, (uint32_t)gz);
     descriptors_disturbed();
 }
+/// 0: float or normalized, 1: unsigned integer, 2: signed integer (a blit may not mix them)
+int format_class(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT:
+    case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+    case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT:
+    case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_S8_UINT:
+    case VK_FORMAT_A8B8G8R8_UINT_PACK32: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_B8G8R8_UINT:
+    case VK_FORMAT_R64_UINT: case VK_FORMAT_R64G64_UINT: case VK_FORMAT_R64G64B64_UINT: case VK_FORMAT_R64G64B64A64_UINT:
+        return 1;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_B8G8R8A8_SINT: case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
+    case VK_FORMAT_R32G32B32_SINT: case VK_FORMAT_R32G32B32A32_SINT: case VK_FORMAT_A8B8G8R8_SINT_PACK32:
+    case VK_FORMAT_A2R10G10B10_SINT_PACK32: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_B8G8R8_SINT:
+    case VK_FORMAT_R64_SINT: case VK_FORMAT_R64G64_SINT: case VK_FORMAT_R64G64B64_SINT: case VK_FORMAT_R64G64B64A64_SINT:
+        return 2;
+    default:
+        return 0;
+    }
+}
 
 } // namespace
 
 void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to_image) {
     // (ASTC blocks into a decoded image: into the texture's storage on the CPU, which uploads it again. Other formats are
     // copied on the GPU: the buffer may hold what the GPU wrote this submission (not yet in guest memory), and the image
-    // it fills is kept (texture_frame: a texture the GPU filled once is not evicted). RX_VK_B2T_CPU=1: on the CPU too)
-    static const bool b2t_gpu = !env_on("RX_VK_B2T_CPU");
+    // it fills is kept (texture_frame: a texture the GPU filled once is not evicted))
     const bool astc = to_image && p.tex && vk_format(view_nvn_format(p.tex, p.has_view ? &p.view : nullptr)).astc;
     // (DEPTH24 kept as D32_SFLOAT, vk_formats.cpp: the buffer's 24-bit unorm words go through the texture's storage,
     // whose upload converts them to floats; to a buffer, d32_to_d24 turns the floats back)
@@ -276,7 +274,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
                               vk_format(NVN_FORMAT_DEPTH24_STENCIL8).format == VK_FORMAT_D32_SFLOAT_S8_UINT;
     if (to_image && p.tex) {   // (RX_VK_LOG_BIG_COPY)
         if (Texture* t = texture_get(p.tex, false))
-            log_big_copy(b2t_gpu && !astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
+            log_big_copy(!astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
                          view_layer(p.has_view ? &p.view : nullptr) + (uint32_t)std::max(0, p.r.zoffset), p.r.xoffset,
                          p.r.yoffset, (uint32_t)std::max(0, p.r.width), (uint32_t)std::max(0, p.r.height), p.buf);
     }
@@ -294,7 +292,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
                  p.r.yoffset, st.copy_stride);
         }
     }
-    if (to_image && p.tex && (!b2t_gpu || astc || d24_as_d32)) {
+    if (to_image && p.tex && (astc || d24_as_d32)) {
         uint64_t avail = 0;
         const uint8_t* src = host->gpu_ptr(p.buf, &avail);
         if (src && !texels_fit(p.tex, &p.r, st.copy_stride > 0 ? (uint64_t)st.copy_stride : 0, avail)) {

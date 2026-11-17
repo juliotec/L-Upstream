@@ -42,7 +42,12 @@ def main():
 
     # the switch: on by default on Intel, RX_VK_SPLIT_BEFORE_DRAW either way elsewhere
     on = block(replay, "bool part_ends_before_draw() {")
-    need("part_ends_before_draw", on, ['getenv("RX_VK_SPLIT_BEFORE_DRAW")', "!env_value_off(e)", "dev.props.vendorID == 0x8086"])
+    # (device_policy.h's split_before_draw: the rule, then the switch by device_policy_env's one rule, off words off and any
+    # other value on, as it was but for an empty value, now the PC's default; tests/test_device_policy.py runs both)
+    need("part_ends_before_draw", on, ["return dev.policy.split_before_draw;"])
+    policy = (ROOT / "gpu/vk/device_policy.h").read_text(encoding="utf-8")
+    need("device_policy.h", policy, ['flag(Sw::split_before_draw, "RX_VK_SPLIT_BEFORE_DRAW", p.split_before_draw);',
+                                     "p.split_before_draw = f.intel();"])
 
     # maybe_split only asks; the old behaviour (the end at once) is what the switch's off does
     ask = block(replay, "void maybe_split(VkCommandBuffer& cmd) {")

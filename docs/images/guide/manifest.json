@@ -896,7 +896,7 @@
       },
       "reviewed_source": {
         "repository": "https://git.magicbean.dev/MagicBeanDev/Longshot",
-        "revision": "sha256:30b7cb8a441d42d1a9a4a2b185b819a13672d263e9f28f1d309e555175b8a936",
+        "revision": "sha256:275a1444253595310fb7c021e58311b86b4e95ae111fa63d236395c285e4d678",
         "files": {
           "gpu/render/nvn_api.h": "f40e44b4b63aa20892399547167d367a652c1ed0793ca4a0f9299a8988289b82",
           "gpu/render/rx_nvn.h": "1e0ddee230142034e7859d859a12e9201b92b280d66cb992f5f2883cbdc96b4d",
@@ -916,7 +916,7 @@
           "gpu/vk/threaded_rendering.h": "82c8f5a5b7cc463f980f6517814150698eb1394114d029116d44ee7b63108f8c",
           "gpu/vk/upscaler_rows.h": "c77883df60bc52e74306c741a46f9344ddbe3cfe535cad291425474f6829c99a",
           "gpu/vk/vk_antilag.h": "e43538dde4493328eef266c1580a983e2187645c613d00a108fa92ed1376b5be",
-          "gpu/vk/vk_api.h": "2e37ee6c507989d83e642eaa9c3cbad2acdb8883f5f3e7b6b267fbef52c795a8",
+          "gpu/vk/vk_api.h": "8a8577fd9da6ffffaca7201180aae2ebf04c4bb4afac7257398e9c2de65b6363",
           "gpu/vk/vk_bug_report.h": "3a9d8bf79b99e8592cb008df93f247fae9b376dd8149a818a75fd9976b35183e",
           "gpu/vk/vk_dlss.h": "459c6f928b6d815d92bded239ba4b3bf7cf6edea35922de6e376b08f3fe64e65",
           "gpu/vk/vk_draw.h": "7d0a8891c7092daec2c8b492a0c26ceceb45c84de89d4c23bd2a726562ddc755",

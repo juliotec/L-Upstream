@@ -1223,13 +1223,20 @@ static void put_settings(Buf *b, const Shown *s, char *mic, size_t mic_cap) {
 /* The run's log again, from its file, for the crash's lines as they are (the ring of read_log is cut to fit the menu's
    report): the 150 lines before the crash's first and its own (at most 80). 0 when the log has no crash */
 typedef struct Lines { char **at; int n, cap; } Lines;
+/* (a line's copy, by the name each C runtime links it by: the Windows build for the MSVC target links without oldnames.lib,
+   issue 439, so plain strdup stopped it at "undefined symbol: strdup" after the whole game had been compiled) */
+#ifdef _WIN32
+#define line_copy _strdup
+#else
+#define line_copy strdup
+#endif
 static void lines_add(Lines *l, const char *line) {
     if (l->n == l->cap) {
         char **more = (char **)realloc(l->at, sizeof *more * (size_t)(l->cap ? l->cap * 2 : 256));
         if (!more) return;
         l->at = more, l->cap = l->cap ? l->cap * 2 : 256;
     }
-    l->at[l->n] = strdup(line);
+    l->at[l->n] = line_copy(line);
     if (l->at[l->n]) l->n++;
 }
 static void lines_free(Lines *l) {
@@ -1252,7 +1259,7 @@ static int crash_lines(const Shown *s, Lines *tail, Lines *crash) {
             else {
                 free(ring.at[0]);
                 memmove(ring.at, ring.at + 1, sizeof *ring.at * (HOS_CRASH_TAIL_LINES - 1));
-                ring.at[HOS_CRASH_TAIL_LINES - 1] = strdup(line);
+                ring.at[HOS_CRASH_TAIL_LINES - 1] = line_copy(line);
                 if (!ring.at[HOS_CRASH_TAIL_LINES - 1]) ring.n--;
             }
         } else if (crash->n < HOS_CRASH_CRASH_LINES && hos_crash_report_line(one, sizeof one, line)) {
@@ -1285,7 +1292,8 @@ static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why)
     char os[sizeof in.system];
     snprintf(os, sizeof os, "%s", f->os[0] ? f->os : in.system);
     const char *place = f->place[0] ? f->place : HOS_CRASH_TITLE_AND_INTRO;
-    putf(json, "{\n  \"version\": \"%s\",\n  \"release\": %s", version, in.release ? "true" : "false");
+    putf(json, "{\n  \"client\": \"Longshot\",\n  \"version\": \"%s\",\n  \"release\": %s", version,
+         in.release ? "true" : "false");
     put_field(json, ",\n  ", "os", os, HOS_CRASH_MAX_OS, s, devices, nd);
     put_field(json, ",\n  ", "renderer", f->renderer, HOS_CRASH_MAX_RENDERER, s, devices, nd);
     put_field(json, ",\n  ", "gpu", f->gpu, HOS_CRASH_MAX_GPU, s, devices, nd);
@@ -1299,7 +1307,7 @@ static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why)
     put(json, settings.s);
     put(json, "\n}\n");
     /* (the page: the card's rows, the crash's first lines, what else goes; the whole of it is the file Show all of it opens) */
-    putf(shown, "Version: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n"
+    putf(shown, "Client: Longshot\nVersion: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n"
                 "Settings: %d (%d changed from the defaults)\n\nThe crash:\n",
          version, in.release ? "Yes" : "No (a local or modified build)", os, f->renderer[0] ? f->renderer : "not known",
          f->gpu[0] ? f->gpu : "not known", f->cpu[0] ? f->cpu : "not known", place, in.settings, in.changed);

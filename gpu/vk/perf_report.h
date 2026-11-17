@@ -1,6 +1,6 @@
 /* (longshot) The performance summary (perf_report.cpp gathers it, the launcher sends it: nx2/perf_report.py): what a
    player who ticked "Send performance statistics" in the launcher sends about their frames, split by the map they were
-   on. Every few minutes and at the end the game writes one summary, the counts since the one before, into the game folder's
+   on. Frame totals are sampled every second with Link's position and camera view. Every few minutes and at the end the game writes one summary into the game folder's
    perf_pending folder; the launcher sends them to the perf relay (Longshot-api's telemetry, /telemetry/perf: telemetry/perf there, whose
    format this is) at its next start, and deletes them.
 
@@ -9,11 +9,13 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "fps_stats.h"
 
@@ -64,8 +66,14 @@ struct Waits {
 };
 
 /// Seconds of play between summaries: RX_VK_PERF_INTERVAL's whole seconds, 60 to 840, else 300. A summary ends on the frame
-/// past it, and the relay takes a map's seconds up to 900: 840 leaves a minute for that frame
+/// past it, and the relay takes a map's seconds up to 900: 840 leaves a minute for that frame. Its one-second samples are
+/// thinned to fit kMaxBody (summary_json), so a long period sends fewer than one a second, never a summary too big
 constexpr int kPeriodDefault = 300, kPeriodMin = 60, kPeriodMax = 840;
+/// The biggest summary the sender sends (nx2/perf_report.py MAX_BODY: tests/test_perf_report.py checks they agree). One
+/// bigger is refused there and deleted, its map totals with it
+constexpr size_t kMaxBody = 60 * 1024;
+/// What the sender may add when it re-encodes a summary: it fills in a version the game left empty
+constexpr size_t kSenderRoom = 64;
 /// The maps a summary holds at most: the relay refuses one with more (400), and the sender then deletes it. A map past them
 /// ends the summary early (perf_report.cpp where_now)
 constexpr int kMaxMaps = 16;
@@ -117,18 +125,29 @@ struct MapTotals {
     }
 };
 
+/// One second of performance at a map position and gameplay camera angle (exact here: summary_json sends the middle of
+/// its cell and of its angles' bins, never the exact place)
+struct PositionSample {
+    std::string map;
+    double x = 0, y = 0, z = 0, yaw = 0, pitch = 0;
+    uint64_t frames = 0, gpu_frames = 0, hitches = 0;
+    double frame_ms = 0, gpu_ms = 0;
+};
+
 /// usual_ms: the recent average frame. A hitch is measured against the longer of it and the target: a game the GPU holds
-/// at 20 fps under a 60 cap has slow frames, not stutters (its fps says so), and each of its frames would be one otherwise
-inline void add_frame(MapTotals& m, const fps_stats::Frame& f, const Waits& w, double target_ms, double last_ms,
+/// at 20 fps under a 60 cap has slow frames, not stutters (its fps says so), and each of its frames would be one otherwise.
+/// Returns whether the frame was a hitch (the one-second sample counts it too)
+inline bool add_frame(MapTotals& m, const fps_stats::Frame& f, const Waits& w, double target_ms, double last_ms,
                       double usual_ms = 0) {
     m.seconds += f.ms / 1000.0;
     m.frame[bucket_of(f.ms, kFrameBuckets)]++;
     m.frame_sum += f.ms;
     if (f.gpu_ms > 0) m.gpu[bucket_of(f.gpu_ms, kGpuBuckets)]++, m.gpu_sum += f.gpu_ms;
     for (int p = 0; p < fps_stats::kParts; p++) m.part[p] += f.part[p];
-    if (is_hitch(f.ms, std::max(target_ms, usual_ms))) m.hitch[cause_of(f, w)]++;
-    else if (is_pacing_miss(f.ms, last_ms, target_ms)) m.pacing_misses++;
     m.left_out += f.left_out;
+    if (is_hitch(f.ms, std::max(target_ms, usual_ms))) return m.hitch[cause_of(f, w)]++, true;
+    if (is_pacing_miss(f.ms, last_ms, target_ms)) m.pacing_misses++;
+    return false;
 }
 
 /// What the summary says of the machine and the settings (the relay derives the classes itself)
@@ -158,13 +177,29 @@ inline std::string json_text(const std::string& s, size_t limit = 120) {
     return out + "\"";
 }
 
-inline std::string json_num(double v) {
+inline std::string json_signed_num(double v) {
     char b[32];
-    snprintf(b, sizeof b, "%.3f", std::max(v, 0.0));
+    snprintf(b, sizeof b, "%.3f", v);
     std::string s = b;
     s.erase(s.find_last_not_of('0') + 1);
     if (s.back() == '.') s.pop_back();
     return s;
+}
+
+inline std::string json_num(double v) { return json_signed_num(std::max(v, 0.0)); }
+
+/// The sample's place as sent: the middle of its 100-unit cell, and of its 45-degree yaw and 30-degree pitch bins (the
+/// relay's, floor(value / size)), so the exact position and view never leave the PC and the relay bins them as before
+constexpr double kCell = 100, kYawBin = 3.14159265358979323846 / 4, kPitchBin = 3.14159265358979323846 / 6;
+inline double bin_middle(double v, double size) { return (std::floor(v / size) + 0.5) * size; }
+
+/// A summary's size once the sender has re-encoded it: Python's json.dumps writes each non-ASCII character as \u escapes,
+/// up to three bytes for each of its UTF-8 bytes ("é", 2 bytes, is 6; a 4-byte emoji, a 12-byte surrogate pair)
+inline size_t sent_size(const std::string& json) {
+    size_t n = json.size();
+    for (unsigned char ch : json)
+        if (ch >= 0x80) n += 2;
+    return n;
 }
 
 template <class T, size_t N>
@@ -174,10 +209,20 @@ std::string json_list(const T (&v)[N]) {
     return out + "]";
 }
 
-/// The summary, as the relay takes it (version 1)
+inline std::string sample_json(const PositionSample& s) {
+    return "{\"map\":" + json_text(s.map) + ",\"x\":" + json_signed_num(bin_middle(s.x, kCell)) +
+           ",\"y\":" + json_signed_num(bin_middle(s.y, kCell)) + ",\"z\":" + json_signed_num(bin_middle(s.z, kCell)) +
+           ",\"yaw\":" + json_signed_num(bin_middle(s.yaw, kYawBin)) +
+           ",\"pitch\":" + json_signed_num(bin_middle(s.pitch, kPitchBin)) + ",\"frames\":" + std::to_string(s.frames) +
+           ",\"frame_ms\":" + json_num(s.frame_ms) + ",\"gpu_frames\":" + std::to_string(s.gpu_frames) +
+           ",\"gpu_ms\":" + json_num(s.gpu_ms) + ",\"hitches\":" + std::to_string(s.hitches) + "}";
+}
+
+/// The summary, as the relay takes it (version 1). The maps' totals always go; the samples go whole when they fit
+/// kMaxBody, else an even spread of them that does (a long RX_VK_PERF_INTERVAL, or many maps with long names)
 inline std::string summary_json(const Machine& m, bool first, double session_s, const std::string& map, const Memory* mem,
-                                const std::map<std::string, MapTotals>& maps) {
-    std::string o = "{\"v\":1,\"version\":" + json_text(m.version, 40) + ",\"release\":" + (m.release ? "true" : "false") +
+                                const std::map<std::string, MapTotals>& maps, const std::vector<PositionSample>& samples = {}) {
+    std::string o = "{\"v\":1,\"client\":\"Longshot\",\"version\":" + json_text(m.version, 40) + ",\"release\":" + (m.release ? "true" : "false") +
                     ",\"first\":" + (first ? "true" : "false") + ",\"session_s\":" + json_num(session_s) +
                     ",\"os\":" + json_text(m.os, 60) + ",\"kernel\":" + json_text(m.kernel, 60) +
                     ",\"renderer\":" + json_text(m.renderer, 40) + ",\"gpu\":" + json_text(m.gpu) +
@@ -207,7 +252,20 @@ inline std::string summary_json(const Machine& m, bool first, double session_s, 
              ",\"fallbacks\":" + std::to_string(t.movie_fallbacks) + "}}";
         comma = true;
     }
-    return o + "}}";
+    o += "},\"samples\":[";
+    std::vector<std::string> parts;
+    parts.reserve(samples.size());
+    size_t total = 0, longest = 0;
+    for (const auto& s : samples) {
+        parts.push_back(sample_json(s));
+        const size_t n = sent_size(parts.back()) + 1;   // (and its comma)
+        total += n, longest = std::max(longest, n);
+    }
+    const size_t used = sent_size(o) + 2 + kSenderRoom;   // (and the closing "]}")
+    const size_t room = used < kMaxBody ? kMaxBody - used : 0;
+    const size_t keep = total <= room ? parts.size() : room / longest;   // (each at most the longest: an even spread fits)
+    for (size_t i = 0; i < keep; i++) o += (i ? "," : "") + parts[keep == parts.size() ? i : i * parts.size() / keep];
+    return o + "]}";
 }
 
 /// "6.12.3-arch1-1" out of uname's release, "10.0.26100" out of Windows' version: the relay cuts them to major.minor

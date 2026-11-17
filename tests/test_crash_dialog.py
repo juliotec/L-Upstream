@@ -1000,14 +1000,16 @@ esac
         calls = (folder / "curl-calls.txt").read_text(encoding="utf-8").splitlines()
         assert calls == ["https://d.example/telemetry/crash"], "posted once, to the stamp's address: %s" % calls
         report = json.loads((folder / "sent.json").read_text(encoding="utf-8"))
-        assert sorted(report) == ["cpu", "crash", "gpu", "log_tail", "map", "options", "os", "release", "renderer", "version"]
+        assert sorted(report) == ["client", "cpu", "crash", "gpu", "log_tail", "map", "options", "os", "release", "renderer", "version"]
+        assert report["client"] == "Longshot"
         assert (report["version"], report["release"], report["os"], report["map"]) == ("vtest-1", False, "Arch Linux", "Kokiri Forest")
         assert report["crash"] == ["CRASH: exception 0xc0000005 (read 0x8, guest 0x8) at longshot+0x1a2b",
                                    "CRASH: host backtrace: longshot+0x1a2b libc.so.6+0x10"], report["crash"]
         assert "[hos Main] reading ~/secret.txt" in report["log_tail"] and "private-user" not in json.dumps(report), report
         assert report["options"] == "ultrawide=1", "the settings, a value only as the menu's rules allow: %r" % report["options"]
         assert got[0][1].split("\n")[-1].startswith("Report automatically|Report manually|Open the log folder|Close"), got[0]
-        assert got[1][1].startswith("Longshot: send to the team\n") and "Version: vtest-1" in got[1][1] and \
+        assert got[1][1].startswith("Longshot: send to the team\n") and "Client: Longshot" in got[1][1] and \
+            "Version: vtest-1" in got[1][1] and \
             "CRASH: exception 0xc0000005" in got[1][1], got[1]
         assert got[1][1].split("\n")[-1] == "Send|Show all of it|Cancel|", got[1]
         if answer == "sent":

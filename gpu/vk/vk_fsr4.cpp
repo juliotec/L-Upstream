@@ -175,7 +175,7 @@ void* symbol(const char* name) {
 /// buffer instead. Later: the smaller layers with their loops unrolled from the library's own code (spirv_unroll.h, its
 /// weights then constants in the code), built one at a time on a thread of their own and bound in place of the library's once
 /// made (about a minute each the first time, the pipeline cache after). On an RX 6700 XT at 720p -> 1440p: 8.97 ms -> 4.04 ms.
-/// RX_VK_FSR4_TUNE=0: as AMD made them; RX_VK_FSR4_UNROLL=0: no unrolled layers. On AMD's GPUs only.
+/// RX_VK_FSR4_TUNE=0: as AMD made them. On AMD's GPUs only.
 /// The tail is kept per buffer: a pipeline reads it only in the buffer it was rewritten against, while that buffer lives and
 /// every binding of it seen takes the tail in (offset 0, the whole buffer). Otherwise (the buffer destroyed, a binding that
 /// leaves the tail out, or none seen through the functions watched here) AMD's own shader is built and bound in its place,
@@ -291,11 +291,7 @@ constexpr size_t kUnrollWords = 120000;              // (a layer unrolled to mor
 constexpr uint64_t kBuildHeadroom = 8ull << 30;     // (memory to spare before a build starts)
 
 bool on() {
-    static const bool v = env_switch("RX_VK_FSR4_TUNE") != 0 && dev.props.vendorID == 0x1002;
-    return v;
-}
-bool unroll_on() {
-    static const bool v = env_switch("RX_VK_FSR4_UNROLL") != 0;
+    static const bool v = dev.policy.fsr4_tune;   // (device_policy.h: AMD's GPUs, unless the switch says off)
     return v;
 }
 /// What the system can still commit: Windows' commit charge left (RAM and page file), Linux's available memory and free swap.
@@ -759,7 +755,7 @@ VKAPI_ATTR VkResult VKAPI_CALL create_compute_pipelines(VkDevice d, VkPipelineCa
         // (a layer with weight tables, from the library's own code: unrolled, its weights become constants in the code, which
         // is where the gain is. One without tables gains nothing: pass 3, 0.07 ms either way. Only one whose creation carried
         // nothing else: no specialization, no other structures)
-        if (!(kind[i] & 1) || !(kind[i] & 2) || !unroll_on() || closing || ci[i].stage.pSpecializationInfo || lanes[i].pNext || ci[i].pNext) continue;
+        if (!(kind[i] & 1) || !(kind[i] & 2) || closing || ci[i].stage.pSpecializationInfo || lanes[i].pNext || ci[i].pNext) continue;
         // (copies of its layouts, made now while the library's are alive: identically defined, so compatible with its sets)
         LayoutCopy lc;
         VkPipelineLayout layout = VK_NULL_HANDLE;

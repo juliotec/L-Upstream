@@ -67,3 +67,19 @@ Preprocessing adds only `gpu/vk/vk_new.h` and removes no input. The changed exis
 These allocation and interface changes do not alter the illustrated menu rows, values or help.
 The reviewed-source dependency hashes advance; the original capture revision, fixture and PNG identities
 remain unchanged. No new image capture, game build, runtime check or performance measurement is claimed.
+
+## Retention after the performance sample interface (ABI 30)
+
+The only changed input is `gpu/vk/vk_api.h`: `MKWVK_API_VERSION` 30, `perf_info` gains the player pose
+outputs, and an appended `perf_tracking` callback turns the opt-in per-second sample on and off. No other
+recorded menu input or capture helper calls either. The illustrated first Graphics view, its rows, values and help
+are unchanged. The reviewed-source hash advances to the inspected content; the capture revision, fixture and PNG
+identities remain unchanged. No new image capture, game build, runtime check or performance measurement is claimed.
+
+## Retention after the perf sample follow-up
+
+The only changed input is `gpu/vk/vk_api.h`, and only in comments: `perf_info`'s comment now gives the pose's order and
+units and when `has_pose` is 0, and `perf_tracking`'s says when it is called. No declaration, value or recorded menu
+input changes. The illustrated first Graphics view, its rows, values and help are unchanged. The reviewed-source hash
+advances to the inspected content; the capture revision, fixture and PNG identities remain unchanged. No new image
+capture, game build, runtime check or performance measurement is claimed.

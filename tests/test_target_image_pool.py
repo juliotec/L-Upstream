@@ -52,7 +52,6 @@ class TargetImagePoolTests(unittest.TestCase):
         image = block(vma, "bool create_image(const VkImageCreateInfo& ci")
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
         pool = block(vma, "VmaPool target_images_pool()")
-        self.assertIn('getenv("RX_VK_TARGET_BLOCKS")', pool)
         self.assertIn("pi.blockSize = kImageBlock;", pool)
         self.assertIn("void vma_log_image_blocks()", vma)
 
@@ -61,7 +60,7 @@ class TargetImagePoolTests(unittest.TestCase):
         every = block(self.tex, "uint64_t dead_every_presents()")
         self.assertIn('getenv("RX_VK_DEAD_EVERY")', every)
         self.assertIn(": 1;", every[every.index('getenv("RX_VK_DEAD_EVERY")'):])
-        self.assertIn("frame_no % (dead_targets ? dead_every : 600)", frame)
+        self.assertIn("(sweep && frame_no % dead_every)", frame)
         unused = block(self.tex, "uint64_t dead_min_unused_presents()")
         self.assertIn(": 1;", unused[unused.index('getenv("RX_VK_DEAD_MIN_UNUSED")'):])
         # (and the pass that reads them is not the only one that looks: it runs at every tenth present, and on the presents

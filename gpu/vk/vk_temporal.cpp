@@ -20,7 +20,7 @@
 //    vertex skinned with this frame's bones and the frame before's, so their pixels get their own motion. Their poses are
 //    copied on the GPU from where the game has them into two buffers that take turns; a pixel is the draw's where its depth is
 //    the scene's (within RX_VK_DLSS_ACTOR_TOL steps, default 64). What moves without bones (particles, water, foliage moved in
-//    its vertex shader, mesh-shader draws) keeps the camera's motion. RX_VK_DLSS_ACTORS=0: camera motion alone.
+//    its vertex shader, mesh-shader draws) keeps the camera's motion.
 //  - the engine scales them to the output's size; shaders/dlss_out.comp squares that back to linear colour into the
 //    network's output.
 // Anything unexpected (no camera this frame, other sizes, the engine not there or failing) leaves the network to run, the
@@ -585,8 +585,7 @@ int actor_motion(VkCommandBuffer cmd, const Camera& cam, const float* before, ui
     s.skins.clear();
     std::unordered_map<uint64_t, State::Pose> old = std::move(s.poses);
     s.poses.clear();
-    static const bool off = env_switch("RX_VK_DLSS_ACTORS") == 0;
-    if (off || skins.empty() || !make_actor_pipeline()) return 0;
+    if (skins.empty() || !make_actor_pipeline()) return 0;
     for (auto& b : s.pose_buffers)
         if (!b.buffer) {
             if (!create_device_buffer(kPoseBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -976,10 +975,8 @@ void temporal_idle() {
     if (now - s.asked <= 120) return;   // (in use, or off for under 120 frames (2 s): kept, a row stepped through comes back at once)
     // (longshot, a stutter: kept too while DLSS or FSR 4 is still the Upscaler's choice. Each area change's loading screen has no
     // gameplay upscale for 2 s and more, and DLSS's feature let go then was made again at the next area's first frame: 44-78 ms
-    // of the replay thread at every area entry (12 times in a 15-minute walk, 2026-11-10, #1520). Let go once the row leaves them.
-    // RX_VK_DLSS_IDLE_RELEASE=1: let go after 120 frames unused, as before)
-    static const bool release_idle = getenv("RX_VK_DLSS_IDLE_RELEASE") && atoi(getenv("RX_VK_DLSS_IDLE_RELEASE")) != 0;
-    if (!release_idle && temporal_wanted()) return;
+    // of the replay thread at every area entry (12 times in a 15-minute walk, 2026-11-10, #1520). Let go once the row leaves them)
+    if (temporal_wanted()) return;
     if (s.drawing) {
         logf("vk: %s: not used for 120 frames (the last at frame %llu, now %llu): what it made and its images let go; "
              "the next upscale with it makes them again", s.drawing->name, (unsigned long long)s.asked, (unsigned long long)now);
@@ -993,8 +990,7 @@ void temporal_idle() {
 }
 
 void temporal_note_skinned_draw(const SkinnedDraw& k) {
-    static const bool off = env_switch("RX_VK_DLSS_ACTORS") == 0;
-    if (off || (!temporal_wanted() && !temporal_fg_inputs()) || !k.depth || !k.bones || k.bones_size < 48 || !k.object ||
+    if ((!temporal_wanted() && !temporal_fg_inputs()) || !k.depth || !k.bones || k.bones_size < 48 || !k.object ||
         k.object_size < 0x4c)
         return;
     State& s = st();

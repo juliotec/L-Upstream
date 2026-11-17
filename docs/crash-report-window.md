@@ -18,7 +18,7 @@ in), its gold buttons (`gpu/vk/vk_crash_window.cpp`, with `gpu/vk/vk_ui.h`'s dra
 1. What happened and when, and why: **Report automatically** first, then **Report manually**, **Open the log folder**,
    **Close**. Report automatically is there only for a crash record (an unclean end has no crash to report), when
    `longshot_version.txt` has the addresses (below), and until the report has been sent.
-2. **Send to the team**: what Report automatically would send, and nothing else: the version, whether it is a release
+2. **Send to the team**: what Report automatically would send, and nothing else: the client (`Longshot`), game version, whether it is a release
    build, the system, the renderer, the graphics card, the CPU and RAM, the map, how many settings and how many changed,
    the crash's first lines, and how many log lines go with it; **Show all of it** opens the report itself, every field as
    it is sent (`bug-reports/pending/sending-<record>.json`). **Send** and **Cancel**.

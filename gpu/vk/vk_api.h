@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 29
+#define MKWVK_API_VERSION 30
 enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
 typedef struct MkwVkMonitor {
     char id[512];             /* opaque persistent preference; never a runtime handle or list index */
@@ -266,8 +266,12 @@ typedef struct MkwVkHost {
        Send performance statistics is ticked: the map Link is in and his age ("Kokiri Forest (child)", as the log's map: line;
        "" before a save is loaded) into map, and the movies' totals so far (host/nn_video.c): [0] pictures shown, [1] skipped to
        keep up with the sound, [2] shown late (over 50 ms after the one before), [3] decoding time in ns, [4] decoders that did
-       not start (another one took over). Returns the build's version (LONGSHOT_VERSION) */
-    const char *(*perf_info)(char *map, int cap, int64_t movie[5]);
+       not start (another one took over). Returns the build's version (LONGSHOT_VERSION).
+       Version 30: and Link's pose, for the one-second samples: pose = {x, y, z} his world position (game units), then the
+       gameplay camera's {yaw, pitch} (radians), exact (perf_report.h sends them as cells and bins). *has_pose is 1 only
+       when they are current: 0 unless perf_tracking(1) was called, and 0 while Link isn't updating (the title, the file
+       select, a load: nothing set in the last second) or camera zero isn't the gameplay view (a cutscene's) */
+    const char *(*perf_info)(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose);
     /* Version 27 (longshot): the frame trace's main-thread columns (RX_VK_FRAME_TRACE, gpu/vk/vk_replay.cpp): the game's main
        thread's (sead::MainThread) time so far, in ns: [0] waiting for a virtual core, [1] blocked in a wait or sleep, both
        counted while fps_timing is on, [2] its CPU time. 0 before the game names that thread */
@@ -282,6 +286,9 @@ typedef struct MkwVkHost {
     int (*monitor_count)(void);
     int (*monitor_info)(int index, struct MkwVkMonitor *out);
     void (*monitor_select)(const char *id);
+    /* Version 30: the opt-in performance sample is being collected (1, at the first frame with the tick on) or not (0: the
+       tick undone, the exit); the host reads Link's pose only while enabled, and forgets it at 0. */
+    void (*perf_tracking)(int enabled);
 } MkwVkHost;
 
 /* One completed temporal-upscale sample; all zero while inactive. */

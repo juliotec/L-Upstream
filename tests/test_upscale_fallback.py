@@ -282,7 +282,6 @@ def main():
     args = parser.parse_args()
     body = block(args.source.read_text(encoding='utf-8'), 'bool upscale_stub(')
     env = os.environ.copy()
-    env.pop('RX_VK_NO_UPSCALE_STUB', None)
     with tempfile.TemporaryDirectory(prefix='upscale-fallback-') as tmp:
         tmp = Path(tmp)
         source = tmp / 'check.cpp'

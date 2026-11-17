@@ -63,7 +63,7 @@ constexpr VkResult VK_ERROR_SURFACE_LOST_KHR = -1000000000;
 constexpr int VK_PRESENT_MODE_MAILBOX_KHR=1, VK_PRESENT_MODE_IMMEDIATE_KHR=2;
 struct VkSemaphoreCreateInfo { int type; };
 struct Extent { uint32_t width,height; };
-struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};
+struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;std::atomic<uint32_t> swap_spare{0};std::atomic<uint32_t> swap_slots{3};
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu;uint64_t swapchain_generation=0;
     int instance=1;uint64_t surface=1;bool present_queue_supported=true; } dev;
@@ -125,6 +125,7 @@ bool recreate() {
     uint32_t n=0,width=640,height=480; struct {int format=1;} fmt;
     struct {uint32_t minImageCount=2;} caps;   // (the surface's: present ahead holds images past it, vk_framegen.cpp)
     CreateInfo ci;int mode=0;VkResult result;
+    const uint32_t slots_made=6;   // (vk_main.cpp: present_slots_for's count for the chain, computed before the cut)
 ''' + tail + r'''
     reflex_swapchain_created(sc);
     return true;
@@ -207,6 +208,7 @@ int main() {
     image_count=5;idle=false;
     if(!recreate() || bad_destroy || dev.swap_rendered.size()!=5 || live.size()!=5)return 10;
     if(dev.swap_spare!=3)return 31;
+    if(dev.swap_slots!=6) {std::puts("FAIL: a chain made over an old one lost its frame slots (retire_swapchain's 3)");return 34;}
     for(unsigned image=0;image<5;++image)if(choose(image,image%3)!=dev.swap_rendered[image])return 11;
     // Once creation has been attempted, the old chain cannot be acquired or used as oldSwapchain again.
     image_count=4;made=0;fail_at=3;
@@ -225,6 +227,7 @@ int main() {
         std::puts("FAIL: retired swapchain remains published after creation failure");return 15;
     }
     if(dev.swap_spare) {std::puts("FAIL: images to spare still counted with no swapchain");return 32;}
+    if(dev.swap_slots!=3) {std::puts("FAIL: frame slots of a swapchain that is gone still counted");return 33;}
     create_result=0;
     if(!recreate() || !dev.swapchain || dev.swap_images.size()!=4)return 16;
     data_result=1; // VK_INCOMPLETE from the image-data query must not publish a partial chain.

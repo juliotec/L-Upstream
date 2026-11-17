@@ -647,7 +647,8 @@ void coopmat_init() {
         Shader::Backend::SPIRV::frag_nan_guard = !e || std::atoi(e) != 0;
     }
     if (Shader::Backend::SPIRV::frag_nan_guard) logf("vk: colour outputs NaN-guarded");
-    Shader::Backend::SPIRV::position_invariant = dev.props.vendorID != 0x10DE && !env_on("RX_VK_NO_INVARIANT");
+    // (device_policy.h position_invariant: every vendor but NVIDIA, unless RX_VK_NO_INVARIANT is on)
+    Shader::Backend::SPIRV::position_invariant = dev.policy.position_invariant;
     if (Shader::Backend::SPIRV::position_invariant) logf("vk: positions invariant (not an NVIDIA card)");
     Shader::Backend::SPIRV::global_table_loop = table_loop_wanted(dev.driver_id, dev.features.shaderStorageBufferArrayDynamicIndexing,
                                                                   std::getenv("RX_VK_GM_LOOP"));

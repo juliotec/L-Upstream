@@ -61,15 +61,14 @@ const uint64_t kImageBlock = (getenv("RX_VK_IMAGE_BLOCK_MB") ? (uint64_t)std::ma
 // (longshot) and the render targets' images in blocks of their own (texture_get's for a target: OoT's transient ones, made and let go
 // all the time). In the same blocks as the textures that stay, each one gone left a hole beside a texture that kept its block: the
 // pool's 47-54 blocks (6-6.9 GB) held 1.9-3.6 GB of images in Kokiri Forest, VRAM sat at 93-98% of what the driver allows, and an
-// image made there then took 30-70 ms (RTX 5070). RX_VK_TARGET_BLOCKS=0: in the textures' blocks, as before
+// image made there then took 30-70 ms (RTX 5070)
 VmaPool target_image_pool = VK_NULL_HANDLE;
 bool target_pool_tried = false;
 VmaPool images_pool();
 VmaPool target_images_pool() {
     if (target_pool_tried) return target_image_pool;
     target_pool_tried = true;
-    static const bool off = getenv("RX_VK_TARGET_BLOCKS") && !atoi(getenv("RX_VK_TARGET_BLOCKS"));
-    if (off || !images_pool()) return VK_NULL_HANDLE;
+    if (!images_pool()) return VK_NULL_HANDLE;
     VkImageCreateInfo rep{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};   // (the image pool's representative image: the same memory type)
     rep.imageType = VK_IMAGE_TYPE_2D;
     rep.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -234,9 +233,7 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
         dai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         if (vmaCreateImage(vma, &ci, &dai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
     }
-    static const bool no_pool = env_on("RX_VK_NO_IMAGE_POOL");
-    if (VmaPool pool = no_pool ? VK_NULL_HANDLE
-                       : textures && textures_pool() ? textures_pool()
+    if (VmaPool pool = textures && textures_pool() ? textures_pool()
                        : target && target_images_pool() ? target_images_pool() : images_pool()) {
         VmaAllocationCreateInfo pai = ai;
         pai.pool = pool;
@@ -253,7 +250,6 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
     }
     // (longshot) VRAM is full (a 4 GB card at a high resolution, #96): an image left unmade is a black screen, so it goes
     // to system memory instead, slow but drawn
-    if (env_on("RX_VK_IMAGES_VRAM_ONLY")) return false;
     VmaAllocationCreateInfo sai{};
     sai.usage = VMA_MEMORY_USAGE_AUTO;
     if (vmaCreateImage(vma, &ci, &sai, &image, &allocation, nullptr) != VK_SUCCESS) return false;
@@ -279,8 +275,7 @@ bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, V
     if (host_visible) ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     // (a buffer with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT gets VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT from VMA:
     // vma_init sets VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT)
-    static const bool blocks = env_on("RX_VK_BLOCK_BUFFERS");
-    if (dedicated && !blocks) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, &info) != VK_SUCCESS) return false;
     if (mapped) *mapped = info.pMappedData;
@@ -453,16 +448,14 @@ bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free) {
     // 5940 MB; another went from 5.3 of 6.5 GB to 6.6 of 6.6, the allowance rising with the count. Taken as it is, the count is
     // within it: room in the blocks kept the 97% squeeze waiting and the hold's line rose with the count, while the driver paged:
     // frames of 1.2-15.7 s (#933, #1025). vram_compact::past_allowance makes it a tenth under the count, so every rule sees the
-    // count past it and gives back until the driver reports an allowance over the count again. RX_VK_ALLOWED_AT_COUNT=0: as before
-    static const bool at_count_rule = !getenv("RX_VK_ALLOWED_AT_COUNT") || atoi(getenv("RX_VK_ALLOWED_AT_COUNT")) != 0;
-    if (at_count_rule) {
+    // count past it and gives back until the driver reports an allowance over the count again
+    {
         const uint64_t was = t;
         t = vram_compact::past_allowance(u, t);
         static std::atomic<int> told{0};
         if (t != was && told.fetch_add(1, std::memory_order_relaxed) < 8)
-            logf("vk: the driver's allowance is the count itself (%llu MB used of %llu): past it, taken as %llu MB "
-                 "(RX_VK_ALLOWED_AT_COUNT=0: as the driver says)", (unsigned long long)(u >> 20), (unsigned long long)(was >> 20),
-                 (unsigned long long)(t >> 20));
+            logf("vk: the driver's allowance is the count itself (%llu MB used of %llu): past it, taken as %llu MB",
+                 (unsigned long long)(u >> 20), (unsigned long long)(was >> 20), (unsigned long long)(t >> 20));
     }
     *used = u, *budget = t;
     if (block_free) *block_free = f;

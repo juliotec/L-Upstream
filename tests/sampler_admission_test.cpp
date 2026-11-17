@@ -101,10 +101,8 @@ bool sampler_of(int id, nvn_samp_par* p) {
     return true;
 }
 const char* getenv(const char* name) {
-    if (!std::strcmp(name, "RX_VK_PUSH_STATE_OLD") && descriptor_policy == "descriptor-old") return "1";
     if (!std::strcmp(name, "RX_VK_PUSH_ALL") && descriptor_policy == "descriptor-whole") return "1";
     if (!std::strcmp(name, "RX_VK_SAMPLER_CACHE") && cache_off) return "0";
-    if (!std::strcmp(name, "RX_VK_SHADOW_PCF") && policy == "compare-pcf-off") return "0";
     if (!std::strcmp(name, "RX_VK_ANISO") && policy == "anisotropy") return "16";
     if (!std::strcmp(name, "RX_VK_ANISO") && policy == "anisotropy-env-off") return "0";
     if (!std::strcmp(name, "RX_VK_FORCE_LINEAR") && policy == "force-linear") return "1";
@@ -196,19 +194,19 @@ std::array<Pushed, 2>& pushed() { static std::array<Pushed, 2> state; return sta
 std::string route;
 // (the view's format joined the samplers' arguments with VUID-VkSamplerCustomBorderColorCreateInfoEXT-format-04015; a tree
 // before it, --source, takes none)
-VkSampler make(int id, bool compare = false, VkFormat view = VK_FORMAT_UNDEFINED) {
+VkSampler make(int id, bool compare = false, bool one_level = false, VkFormat view = VK_FORMAT_UNDEFINED) {
 #if SAMPLER_VIEW_FORMAT
-    return sampler_make(id, compare, view);
+    return sampler_make(id, compare, one_level, view);
 #else
-    (void)view; return sampler_make(id, compare);
+    (void)view; return sampler_make(id, compare, one_level);
 #endif
 }
-VkSampler get(int id = 0, bool compare = false, VkFormat view = VK_FORMAT_UNDEFINED) {
-    if (route == "make") return make(id, compare, view);
+VkSampler get(int id = 0, bool compare = false, bool one_level = false, VkFormat view = VK_FORMAT_UNDEFINED) {
+    if (route == "make") return make(id, compare, one_level, view);
 #if SAMPLER_VIEW_FORMAT
-    return sampler_for(id, compare, view);
+    return sampler_for(id, compare, one_level, view);
 #else
-    return sampler_for(id, compare);
+    return sampler_for(id, compare, one_level);
 #endif
 }
 void valid(VkSampler sampler) { assert(sampler && live.count(sampler)); }
@@ -344,7 +342,7 @@ void run(const std::string& test) {
         assert(!bind_descriptors(cmd, bp, p));
         assert(descriptor_allocs == allocs && descriptor_updates == updates && descriptor_binds == binds && descriptor_pushes == pushes);
         const auto& after = pushed()[bp == VK_PIPELINE_BIND_POINT_COMPUTE];
-        assert(after.cmd == before.cmd && after.layout == before.layout && after.n == before.n && after.words == before.words && after.writes == before.writes && after.at == before.at);
+        assert(after.cmd == before.cmd && after.layout == before.layout && after.n == before.n && after.words == before.words && after.at == before.at);
         create_result = VK_SUCCESS; frame_no++; images[1].sampler = get(2); valid(images[1].sampler);
         assert(bind_descriptors(cmd, bp, p));
         assert(p.push ? descriptor_pushes == pushes + 1 : descriptor_updates == updates + 1 && descriptor_binds == binds + 1);
@@ -400,6 +398,14 @@ void run(const std::string& test) {
         assert(get() == second && creates == 2);
         row_times = 0; generation++; assert(get() == first && creates == 2); return;   // (the first kept: its key again)
     }
+    if (test == "anisotropy-one-level") {   // (an image of one level: the game's own anisotropy, not the row's 16x)
+        row_times = 16;
+        auto one = get(0, false, true); valid(one);
+        assert(!live.at(one).ci.anisotropyEnable && live.at(one).ci.maxAnisotropy == 1);
+        auto mipped = get(0, false, false); valid(mipped);   // (the same id with a mipmapped image: the row's, a sampler of its own)
+        assert(mipped != one && live.at(mipped).ci.anisotropyEnable && live.at(mipped).ci.maxAnisotropy == 8);
+        assert(get(0, false, true) == one && get(0, false, false) == mipped && creates == 2); return;
+    }
     if (test == "upscale-bias-change") {   // (another Render resolution: samplers_changed; the biased sampler made anew)
         policy = test;
         auto first = get(); valid(first); assert(live.at(first).ci.mipLodBias == -0.5f);
@@ -422,17 +428,17 @@ void run(const std::string& test) {
         policy = test;
         const VkFormat packed[4] = {VK_FORMAT_B4G4R4A4_UNORM_PACK16, VK_FORMAT_B5G6R5_UNORM_PACK16, VK_FORMAT_A1B5G5R5_UNORM_PACK16,
                                     VK_FORMAT_B5G5R5A1_UNORM_PACK16};
-        const VkSampler plain = get(0, false, VK_FORMAT_R8G8B8A8_UNORM); valid(plain);
+        const VkSampler plain = get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM); valid(plain);
         assert(live.at(plain).custom && live.at(plain).border_format == VK_FORMAT_UNDEFINED && live.at(plain).border[0] == 1.5f);
         for (int i = 0; i < 4; i++) {
-            const VkSampler s = get(0, false, packed[i]); valid(s);
+            const VkSampler s = get(0, false, false, packed[i]); valid(s);
             const Saved& saved = live.at(s);
             assert(saved.custom && saved.ci.borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT);
             assert(saved.border_format == packed[i] && s != plain);
             assert(saved.border[0] == 1 && saved.border[1] == 0 && saved.border[2] == 0.75f && saved.border[3] == 1);
-            assert(get(0, false, packed[i]) == s && creates == (unsigned)i + 2);
+            assert(get(0, false, false, packed[i]) == s && creates == (unsigned)i + 2);
         }
-        assert(get(0, false, VK_FORMAT_UNDEFINED) == plain && get(0, false, VK_FORMAT_R8G8B8A8_UNORM) == plain && creates == 5);
+        assert(get(0, false, false, VK_FORMAT_UNDEFINED) == plain && get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM) == plain && creates == 5);
         return;
     }
     policy = test;
@@ -452,7 +458,7 @@ void run(const std::string& test) {
     if (test == "upscale-bias-plain") assert(ci.mipLodBias == 0);   // (a sampler the game does not bias: as it asks)
     if (compare) {
         assert(ci.compareEnable && ci.compareOp == (test == "compare-explicit" ? VK_COMPARE_OP_NEVER : VK_COMPARE_OP_LESS_OR_EQUAL));
-        assert(ci.minFilter == (test == "compare-pcf-off" ? VK_FILTER_NEAREST : VK_FILTER_LINEAR));
+        assert(ci.minFilter == VK_FILTER_LINEAR);
     }
     if (test == "custom-border" || test == "custom-reduction") assert(saved.custom && ci.borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT && saved.border[0] == 0.25f && saved.border[3] == 1);
     if (test == "standard-border") assert(!saved.custom && ci.borderColor == VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE);

@@ -103,7 +103,7 @@ second game.
 
 1. **Cross-queue `nvnCommandBufferWaitEvent` is honoured.** MKW's queues pass stages back and forth with events;
    replaying them in arrival order on one Vulkan queue flashed. `gpu/vk/vk_replay.cpp` `submit_job` replays each
-   submission as far as its waits allow, with per-queue state (`RX_VK_EVENT_WAITS=0` turns it off, for A/B only).
+   submission as far as its waits allow, with per-queue state (always on: the `RX_VK_EVENT_WAITS` switch is gone).
    *Check early:* log the game's queues and event waits on the first boot (which queues, how many waits per frame).
 2. **Nothing the replay reads comes from live guest memory.** Games write per-frame data ahead of the GPU: every
    read is from submit-time captures, and pools are captured from their creation, not their first GPU use
@@ -278,8 +278,8 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
 - Dark frames, open: lit surfaces come out black for one frame, geometry and depth intact. 5% with `RX_VK_FRAMEGEN=0`, 2.9% with the menu's Off, about 0.1% at 4x.
   Not the cause: render conditions, clear flags, ClearBuffer order, GPU lag, write-back, the real-time step, the ambient cubemap.
   `HOS_COND_RECORD` and `RX_VK_COND_ALWAYS` look like fixes by count and are not: the picture goes white. Tools: the frame log's dark trap dumps probes, passes and conditions; `RX_VK_PROBE_MIN`, `RX_VK_PROBE_UBO_HEX`.
-  Also not the cause: colour write masks (`wm` in the pass trace: f on every lit pass), constants (`RX_VK_PROBE_UBO_HEX`), queue order (`RX_VK_EVENT_WAITS=0`), and the capture in
-  synchronous mode (`RX_VK_SYNC_CAPTURE=1`, which does take 380,000 pages per 600 submits). `RX_VK_QUEUE_STATE=0` stops the game at the Load menu, and `RX_VK_MIRROR=0` is 8 fps: neither says anything.
+  Also not the cause: colour write masks (`wm` in the pass trace: f on every lit pass), constants (`RX_VK_PROBE_UBO_HEX`), queue order, and the capture in
+  synchronous mode (which does take 380,000 pages per 600 submits). `RX_VK_MIRROR=0` is 8 fps, which says nothing.
   What holds: geometry and depth are right (black shapes against the fog), the prepass and the lit passes run with the same draw counts, and the lit passes output black.
   The lit materials' four storage buffers (c0+0x510..0x540) keep their addresses, sizes and non-zero counts in dark frames as seen in guest memory; the 720 KB one is all zeros in good
   frames too, so it is no cause, though its compute shader (4b03b304) runs every frame. Guest memory is not what the GPU reads, so these need comparing on the GPU's side.
@@ -313,3 +313,40 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
   output, a 240 Hz compositor and `RX_VK_IMMEDIATE=1` left the wait as it was.)
 - Measuring on this PC: two runs of the same build vary by 10% and more (other work on the machine); fps differences under that
   need many alternating runs. `chain.py`'s stretches are steadier: they say which part moved.
+
+## 13. Frame generation's presents at V-Sync Off, as rules
+
+Checked 2026-11-16 (Windows 11, RTX 5090, NVIDIA 621.24, 5120x2160 at 165 Hz with G-Sync, DLSS Frame Gen at 3x and 4x,
+PresentMon 2.3.0). Each fault these rules keep away looked like frame generation turned off: the FPS
+counter and the display thread's own counts said the frames were made and on time, and the screen showed the game's frame
+rate. `tests/test_framegen_fixed_pace.py` runs the timing functions through a model of the display loop.
+
+1. **Frame pacing is measured on the screen, not in the log.** The display thread's `frame interpolation: ... shown on time`
+   and `shown apart` counts are its present calls. After the call a present can still wait for the GPU: on 2026-11-16 the
+   log had no late frame while PresentMon showed 32% (3x) and 45% (4x) of the frames on the screen under 2 ms. Read
+   PresentMon's `DisplayedTime` (the share under 2 ms, its p10 to p90) and, for where a frame waited, `DisplayLatency` against
+   `CPUBusy` (the call) and `GPULatency` + `GPUTime` (its GPU work). The method: the measure skill,
+   `.claude/skills/measure/SKILL.md`.
+2. **Where the swapchain does not wait for a refresh, a fixed multiplier's set is shown on the game's timeline**
+   (`gpu/vk/vk_framegen.cpp` `fixed_on_timeline`, `fixed_dues`, `pace_lead`), whatever Frame pacing says. An immediate
+   (V-Sync Off) swapchain shows each present at once: a set presented as it came (its made frames and the game's within a
+   millisecond) showed the game's frame and hardly the made ones. Evenly apart (the smoothed frame time over the set) the
+   motion stutters as much as the game's frame times vary; on the game's timeline each frame moves as far as its time. FIFO
+   shows one a refresh and keeps its old path. `RX_VK_FG_TIMELINE=0` gives the old way back, for an A/B.
+3. **The GPU's delay is fed back only from sets taken as they came** (`pace_delay`, `display_main`'s `as_came`). A set's
+   frames are done with the game frame's GPU work, so its times wait for that (`fg.late_ns`). A set whose copies went to the
+   GPU late for another reason (no swapchain image free, the display thread busy with the set before) would raise the delay
+   by its own lateness, which sends the next set's copies later still: at 4x it ran to a whole game frame.
+4. **A set presented ahead needs a frame slot per frame of both sets in flight, and two sets' spare swapchain images**
+   (`gpu/vk/vk_replay.cpp` `present_slots_for`, `gpu/vk/vk_main.cpp` `create_swapchain`, `present_ahead_wanted`). Each present
+   waits for the copy last made in its slot: with fewer slots than a set's frames, its 4th copy waited for its own first
+   copy, and with a slot per frame of one set the next set's copy k waited for the shown set's copy k, each so for all the
+   game's work queued before it, while frames of the shown set were due. The slot count is the swapchain's
+   (`dev.swap_slots`), set when it is made for its sets; FIFO and `RX_VK_FG_TIMELINE=0` keep 3. An app may hold at most
+   imageCount - minImageCount acquired images (an NVIDIA surface: 8 images, 6 spare): the next set's copies go as images
+   come free (`copy_up_to`), never all or none.
+5. **A present waits on the queue it is made on.** On the replay's graphics queue it waits behind the game's next frame (3 to
+   12 ms at 5120x2160), and a second queue of the graphics family takes turns with it on the GPU. A compute family's queue
+   runs beside it (`RX_VK_PRESENT_QUEUE=1`, `vk_main.cpp` `create_device`): 0.1% of the frames under 2 ms, on the screen 4.9
+   to 6.9 ms apart at 3x (p10 to p90). It is off by default since Hookshot issue 1161, before the fork (a black screen on an RTX 4090 with NVIDIA's 621
+   driver); turning it on for everyone needs that fault found first.

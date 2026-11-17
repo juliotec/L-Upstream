@@ -77,7 +77,11 @@ int main() {
         for (int i = 0; i < 100; i++) pr::add_frame(m, frame(16.6f, 10, 4, 2, 0.6f), pr::Waits{}, 16.7, last), last = 16.6;
         pr::Waits w;
         w.pipeline = 40;
-        pr::add_frame(m, frame(60, 10, 45, 3, 2), w, 16.7, last);
+        CHECK("add_frame says a hitch", pr::add_frame(m, frame(60, 10, 45, 3, 2), w, 16.7, last));
+        {
+            pr::MapTotals other;
+            CHECK("nor an ordinary frame", !pr::add_frame(other, frame(16.6f, 10, 4, 2, 0.6f), pr::Waits{}, 16.7, 16.6));
+        }
         CHECK("frames", m.frame[4] == 100 && m.frame[9] == 1);
         CHECK("seconds", m.seconds > 1.71 && m.seconds < 1.73);
         CHECK("the hitch", m.hitch[pr::kPipelineWait] == 1 && m.pacing_misses == 0);
@@ -87,8 +91,11 @@ int main() {
         mc.driver = "radv Mesa 25.2.4", mc.cpu = "AMD Ryzen 7 7800X3D", mc.upscaler = "FSR 3.1", mc.preset = "High";
         mc.vram_gb = 16, mc.ram_gb = 32, mc.fps_cap = 60;
         pr::Memory mem{5.25, 15.5, 7.75};
-        const std::string j = pr::summary_json(mc, true, 312.5, "Kokiri Forest (child)", &mem, maps);
+        std::vector<pr::PositionSample> samples(1);
+        samples[0] = {"Kokiri Forest (child)", -123.5, 4, 98.25, -1.2, 0.25, 60, 59, 2, 1000, 800};
+        const std::string j = pr::summary_json(mc, true, 312.5, "Kokiri Forest (child)", &mem, maps, samples);
         CHECK("version 1", j.rfind("{\"v\":1,", 0) == 0);
+        CHECK("client identity before the game version", j.find("\"client\":\"Longshot\",\"version\":") != std::string::npos);
         CHECK("quotes escaped", j.find("\"AMD \\\"Radeon\\\" RX 7800 XT\"") != std::string::npos);
         CHECK("the map", j.find("\"Kokiri Forest (child)\":{\"new\":true,") != std::string::npos);
         CHECK("not the empty one", j.find("Hyrule Field") == std::string::npos);
@@ -96,7 +103,60 @@ int main() {
         CHECK("hitches", j.find("\"hitches\":{\"pipeline_wait\":1,") != std::string::npos);
         CHECK("memory", j.find("\"memory\":{\"vram_used_gb\":5.25,\"vram_allowed_gb\":15.5,\"ram_used_gb\":7.75}") != std::string::npos);
         CHECK("numbers", j.find("\"session_s\":312.5,") != std::string::npos && j.find("\"fps_cap\":60,") != std::string::npos);
+        // (the middle of the 100-unit cell and of the 45-degree yaw and 30-degree pitch bins, never the exact place:
+        // x -123.5 is in [-200, -100), yaw -1.2 in [-pi/2, -pi/4), pitch 0.25 in [0, pi/6))
+        CHECK("per-second position and view, as cells and bins", j.find("\"samples\":[{\"map\":\"Kokiri Forest (child)\",\"x\":-150,\"y\":50,\"z\":50,\"yaw\":-1.178,\"pitch\":0.262,\"frames\":60,\"frame_ms\":1000,\"gpu_frames\":59,\"gpu_ms\":800,\"hitches\":2}") != std::string::npos);
+        CHECK("no exact place", j.find("-123.5") == std::string::npos && j.find("98.25") == std::string::npos);
+        CHECK("a cell's middle stays in its cell", pr::bin_middle(pr::bin_middle(-123.5, pr::kCell), pr::kCell) == -150 &&
+                                                       pr::bin_middle(-0.001, pr::kCell) == -50 && pr::bin_middle(0, pr::kCell) == 50);
         CHECK("closed", j.back() == '}' && std::count(j.begin(), j.end(), '{') == std::count(j.begin(), j.end(), '}'));
+
+        std::vector<pr::PositionSample> five_minutes(pr::kPeriodDefault, samples[0]);
+        const std::string batch = pr::summary_json(mc, true, 312.5, "Kokiri Forest (child)", &mem, maps, five_minutes);
+        const auto sample_count = [](const std::string& s) {
+            size_t n = 0;
+            for (size_t at = s.find("\"pitch\":"); at != std::string::npos; at = s.find("\"pitch\":", at + 1)) n++;
+            return n;
+        };
+        CHECK("five minutes on one map: every sample", sample_count(batch) == (size_t)pr::kPeriodDefault);
+        CHECK("five minutes on one map fits", pr::sent_size(batch) <= pr::kMaxBody);
+
+        // the biggest summary there can be: 16 maps with long names and every count set, and a sample each second of the
+        // longest period, with the numbers play gives (positions and times with decimals, large counts). The sender
+        // refuses one over its MAX_BODY, and a refused summary is deleted, its map totals with it
+        std::map<std::string, pr::MapTotals> full;
+        std::vector<std::string> names;
+        for (int k = 0; k < pr::kMaxMaps; k++) {
+            char name[96];
+            snprintf(name, sizeof name, "Dungeon_%02d_LowerFloor_BossRoom_Main (adult) \xc3\xa9", k);   // ("é": escaped by the sender)
+            names.push_back(name);
+            auto& t = full[name];
+            t.fresh = k % 2, t.seconds = 52.517 + k;
+            for (auto& v : t.frame) v = 123456;
+            for (auto& v : t.gpu) v = 123456;
+            for (auto& v : t.hitch) v = 12345;
+            for (auto& v : t.event) v = 1234;
+            for (auto& v : t.part) v = 123456.789;
+            t.frame_sum = t.gpu_sum = 987654.321, t.pacing_misses = t.left_out = 123456;
+            t.movie_shown = t.movie_dropped = t.movie_late = t.movie_fallbacks = 12345, t.movie_decode_ms = 12345.678;
+        }
+        std::vector<pr::PositionSample> longest;
+        for (int i = 0; i < pr::kPeriodMax; i++)
+            longest.push_back({names[i % names.size()], -12345.678 + i * 7.123, 1234.567, 9876.543 - i, -3.14159 + i * 0.007,
+                               -1.23456 + i * 0.002, 61, 60, 3, 1016.667, 823.456});
+        const std::string big = pr::summary_json(mc, false, 840.25, names[0], &mem, full, longest);
+        CHECK("the biggest summary fits the sender's limit", pr::sent_size(big) <= pr::kMaxBody);
+        bool every_map = true;
+        for (const auto& n : names) every_map = every_map && big.find(pr::json_text(n) + ":{\"new\":") != std::string::npos;
+        CHECK("every map's totals kept", every_map);
+        const size_t kept = sample_count(big);
+        CHECK("the samples thinned, not dropped", kept > 100 && kept < (size_t)pr::kPeriodMax);
+        CHECK("an even spread, from the period's first second", big.find("\"samples\":[{\"map\":" + pr::json_text(names[0]) +
+                                                                          ",\"x\":-12350,") != std::string::npos);
+        CHECK("a spread over the whole period", big.find("\"x\":" + pr::json_signed_num(pr::bin_middle(-12345.678 + 800 * 7.123, pr::kCell)) + ",") !=
+                                                     std::string::npos);
+        CHECK("closed when thinned", big.substr(big.size() - 2) == "]}" &&
+                                         std::count(big.begin(), big.end(), '{') == std::count(big.begin(), big.end(), '}'));
     }
 
     // the kernel out of the Bug report's system line

@@ -830,8 +830,7 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
     }
     // (and the mesh fallback programs in memory already, whose records an earlier read took: the state lists' programs in the
     // start that prepared the shaders. They had no compute pipelines until their first draw, which was left out: fallback_loaded.h)
-    static const bool loaded_too = fallback_loaded::on(getenv("RX_VK_FALLBACK_LOADED"));
-    if (fallbacks && loaded_too) {
+    if (fallbacks) {
         std::unordered_set<uint64_t> given;
         for (const auto& w : work) given.insert(w.first);
         const size_t loaded = fallback_loaded::each(programs, given, fn);

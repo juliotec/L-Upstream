@@ -21,7 +21,6 @@ DRAW = (Path(__file__).resolve().parents[1] / "gpu" / "vk" / "vk_draw.cpp").read
 class ColdCacheCheckTests(unittest.TestCase):
     def test_the_sample_is_asked_of_the_driver_alone_without_a_compile(self):
         check = block(DRAW, "bool notes_lost_by_driver()")
-        self.assertIn('getenv("RX_VK_COLD_CHECK")', check)
         self.assertIn("pipelineCreationCacheControl", check)
         # (an empty scratch cache, and build_graphics asked with its cold flag: it compiles nothing)
         self.assertIn("driver_cache_only = true, driver_ask_cache = scratch;", check)

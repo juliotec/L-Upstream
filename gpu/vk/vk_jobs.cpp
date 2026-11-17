@@ -74,10 +74,9 @@ void worker() {
 }
 
 void start() {
-    // (longshot: with 16 hardware threads or more, 6 workers; RX_VK_WORKERS=<n>: n, 1 to 16)
-    const unsigned hw = std::thread::hardware_concurrency();
-    unsigned n = hw >= 16 ? 6u : std::clamp(hw / 3, 2u, 4u);
-    if (const char* e = getenv("RX_VK_WORKERS")) n = (unsigned)std::clamp(atoi(e), 1, 16);
+    // (longshot: with 16 hardware threads or more, 6 workers, else a third of them, 2 to 4; RX_VK_WORKERS=<n>: n, 1 to 16.
+    // device_policy.h workers: the rule and the switch, read as the device is made, before any job)
+    const unsigned n = dev.policy.workers;
     for (unsigned i = 0; i < n; i++) std::thread(worker).detach();
     started = true;
     logf("vk: %u background workers (shader translation, pipelines)", n);
@@ -140,14 +139,9 @@ bool jobs_wait(const std::atomic<bool>& flag) {
     // (still queued: run here, now. A draw that must wait for its pipeline waited for every job queued before it, and a new
     // area queues a hundred pipelines: with ten workers at 0.3-2 s a build, frames stopped for 6-12 s, the draw's own build
     // still in the queue; Mako's RX 6600 log, one draw 118 s behind 26 queued jobs. Taken out of the queue under the lock a
-    // worker takes jobs under, so it runs once, here or on a worker, and nothing is left queued for it. RX_VK_JOB_STEAL=0
-    // (or off, false, no: longshot_env.h's rule): waited for in turn, as before)
-    static const bool steal = [] {
-        const char* v = getenv("RX_VK_JOB_STEAL");
-        return !v || !env_value_off(v);
-    }();
+    // worker takes jobs under, so it runs once, here or on a worker, and nothing is left queued for it)
     bool ran = false;
-    if (steal && !flag.load(std::memory_order_acquire))
+    if (!flag.load(std::memory_order_acquire))
         for (auto it = queue.begin(); it != queue.end(); ++it)
             if (it->flag == &flag) {
                 std::function<void()> fn = std::move(it->fn);

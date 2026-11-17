@@ -404,7 +404,7 @@ bool init() {
     ii.Queue = dev.queue;   // (for the backend's own uploads, never used here: update_texture)
     ii.DescriptorPoolSize = 16;   // (the backend's own pool: the textures' descriptor sets)
     ii.MinImageCount = 2;
-    ii.ImageCount = 4;            // (its vertex buffers in turn: one more than the three frames present_image keeps in flight)
+    ii.ImageCount = kPresentSlotsMax + 1;   // (its vertex buffers in turn: one more than present_image's frame slots)
     ii.UseDynamicRendering = true;
     ii.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     ii.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;

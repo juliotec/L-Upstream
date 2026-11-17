@@ -373,6 +373,30 @@ def wiring():
           "a summary holds 16 maps at most, as the relay takes them: a 17th ends it early")
     check("shaders_preparing() ? pr::kPreparingShaders : pr::kTitleAndIntro" in cpp and
           "bool shaders_preparing()" in main_cpp, "before a map: Preparing shaders, then Title and intro (not 'not known')")
+    header = (vk / "perf_report.h").read_text(encoding="utf-8")
+    m = re.search(r"constexpr size_t kMaxBody = (\d+) \* (\d+);", header)
+    check(m is not None and int(m.group(1)) * int(m.group(2)) == pr.MAX_BODY,
+          "the game fits its summaries to the sender's MAX_BODY (a bigger one is refused and deleted)")
+    frame_fn = cpp[cpp.index("void perf_frame("):]
+    frame_fn = frame_fn[:frame_fn.index("\n}\n")]
+    check("since_sample" not in cpp and "if (!current || since_map >= kMapEvery) {" in frame_fn and
+          "constexpr double kMapEvery = 1;" in cpp, "one clock for the map and the one-second sample")
+    summarize = cpp[cpp.index("void summarize("):]
+    check("if (now) finish_sample();" in summarize[:summarize.index("\n}\n")],
+          "a summary mid-second keeps the second being sampled: the frames after it are sampled too")
+    host = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    pose_fn = host[host.index("static void oot_perf_pose("):]
+    pose_fn = pose_fn[:pose_fn.index("\n}\n")]
+    check("if (now - last < PERF_POSE_EVERY_NS) return;" in pose_fn and
+          pose_fn.index("PERF_POSE_EVERY_NS") < pose_fn.index("oot_gameplay_view(c)"),
+          "Link's pose is read a few times a second, not at every update")
+    check("recomp_load64(c, view) != 0x84c18a88ULL" in pose_fn and "fabsf(pose[i]) >" in pose_fn,
+          "the pose is read only from the gameplay camera's view, and a stray value is no pose")
+    info_fn = host[host.index("const char *hos_perf_info("):]
+    check("now - perf_pose_ns < PERF_POSE_STALE_NS" in info_fn[:info_fn.index("\n}\n")],
+          "a pose Link's update no longer sets (the title, a load) is no pose")
+    title = host[host.index("if (!loaded && logged[0]) {"):]
+    check("perf_pose_clear();" in title[:title.index("\n    }\n")], "back at the title: no pose from the last map")
 
 
 def unit(cxx):

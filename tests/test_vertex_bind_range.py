@@ -2,7 +2,7 @@
 
 The driver takes every binding it is handed. A draw whose streams differed from the last ones bound handed it all 16,
 the unused ones with the zero buffer again: 1.1 % of the replay thread on a Steam Deck, in the driver. vertex_bind_range
-gives the bindings that differ from what this command buffer has, and only those are bound. RX_VK_VB_RANGE=0: all 16.
+gives the bindings that differ from what this command buffer has, and only those are bound.
 
 Cuts vertex_bind_range out of the source and runs it; checks draw() binds its range and still remembers all 16.
 
@@ -36,7 +36,7 @@ def main():
     draw = block(source, "void draw(")
     ask = "vertex_bind_range(vbufs, voffs, vsizes, vstrides, last_vb.b, last_vb.o, last_vb.z, last_vb.s, last_vb_valid, &vb_first, &vb_count);"
     bind = "vkCmdBindVertexBuffers2(cmd, vb_first, vb_count, vbufs + vb_first, voffs + vb_first, vsizes + vb_first, vstrides + vb_first);"
-    for needle in (ask, bind, '"RX_VK_VB_RANGE"', "if (vb_count && vb_all) vb_first = 0, vb_count = 16;"):
+    for needle in (ask, bind):
         if needle not in draw:
             raise SystemExit("draw() no longer has: " + needle)
     if source.count("vkCmdBindVertexBuffers2(") != 1 or "vkCmdBindVertexBuffers2(cmd, 0, 16," in source:

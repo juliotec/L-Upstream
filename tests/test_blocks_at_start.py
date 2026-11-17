@@ -63,7 +63,7 @@ def check_source(source):
     need("vk_texture.cpp: texture_frame()", block(tex, "void texture_frame(uint64_t completed)"),
          ["if (textures_pool_usage(&pool_blocks, &pool_free, &pool_kept)) reclaim = vram_compact::reclaimable(block_free, pool_free);",
           "kept_only = vram_compact::kept_only(pool_blocks, pool_kept);",
-          "!(kept_only && !squeeze_always) && used > count_line && !room_in_blocks)"])
+          "if (known && !kept_only && used > count_line && !room_in_blocks)"])
 
 
 # Compile the real pool constructors, not a second implementation of their policy.

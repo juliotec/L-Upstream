@@ -38,7 +38,6 @@ static Host host_value{gpu_ptr, gpu_guest}, *host = &host_value;
 static void logf(const char*, ...) {}
 static bool prefetch_on;   // (RX_VK_PREFETCH_CHUNKS=1: read once, at prefetch_chunks' first call)
 static const char* getenv(const char* name) { return prefetch_on && !std::strcmp(name, "RX_VK_PREFETCH_CHUNKS") ? "1" : nullptr; }
-static bool env_on(const char*) { return false; }
 static int64_t import_now_ms() { return 1000; }
 
 /* TYPES */

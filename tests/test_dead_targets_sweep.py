@@ -53,7 +53,7 @@ int main() {
     CHECK("at RX_VK_DEAD_EVERY=2 the sweep runs at the even presents between", looked == 40);
     CHECK("0 is taken as 1", dead_targets::sweep_due(3, 0, true));
 
-    // (off: RX_VK_DEAD_TARGETS=0 or RX_VK_NO_EVICT)
+    // (off: RX_VK_NO_EVICT)
     looked = 0;
     for (unsigned long long f = 1; f <= 100; f++) looked += dead_targets::sweep_due(f, 1, false);
     CHECK("off, the sweep never runs", looked == 0);
@@ -93,7 +93,7 @@ def wiring():
         body = frame[gate:frame.index("return;", gate)]
         need("dead_targets::sweep_due(frame_no, dead_every_presents()," in body, "the gate asks sweep_due with RX_VK_DEAD_EVERY")
         need("dead_targets_sweep(completed);" in body, "the gate calls the sweep before it returns")
-        need('env_on("RX_VK_NO_EVICT")' in body and "dead_targets_on()" in body, "the sweep is off with RX_VK_NO_EVICT or RX_VK_DEAD_TARGETS=0")
+        need('env_on("RX_VK_NO_EVICT")' in body and "dead_every_presents(), evicting)" in body, "the sweep is off with RX_VK_NO_EVICT")
         need(frame.index("pool_trim();") < gate, "the pool is trimmed before the gate, every present")
     sweep = block(tex, "void dead_targets_sweep(uint64_t completed)")
     for part in ("dead_min_unused_presents()", "dead_targets::candidate(frame_no, tex->last_frame, need, tex->last_value, completed,",

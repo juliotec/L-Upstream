@@ -322,9 +322,7 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
                                           kPresetSettle);
     // (the game's native HDR: State::feature_hdr. What the game presents, not the option and the swapchain: with Native
     // picked and the game's picture not PQ, the scene is LDR, and an HDR feature would get LDR colour)
-    // (RX_VK_DLSS_HDR=0: the LDR feature and the clamped colour with Native too, as before this; for comparisons)
-    static const bool hdr_allowed = !getenv("RX_VK_DLSS_HDR") || atoi(getenv("RX_VK_DLSS_HDR")) != 0;
-    const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);
+    const bool hdr = present_native_pq.load(std::memory_order_relaxed);
     if (s.feature && s.feature_ow == ow && s.feature_oh == oh && rw <= s.feature_rw && rh <= s.feature_rh &&
         rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset && s.feature_hdr == hdr &&
         (!native_aa || s.feature_aa))

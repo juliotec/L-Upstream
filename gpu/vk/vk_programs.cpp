@@ -156,7 +156,7 @@ bool ids_ready() {
         ids.open(cache.substr(0, cache.find_last_of("\\/") + 1) + "longshot_module_ids.bin", program_cache_stamp(),
                  ip.shaderModuleIdentifierAlgorithmUUID);
         logf("vk: module identifiers: %zu known (longshot_module_ids.bin): a learned compute variant's pipeline is made at its "
-             "program's create call without its code (RX_VK_MODULE_IDS=0: off)", ids.size());
+             "program's create call without its code", ids.size());
     });
     return ids_on.load(std::memory_order_acquire);
 }
@@ -439,8 +439,7 @@ void module_id_learned(uint64_t key, uint64_t variant, VkShaderModule module) {
     if (ids.add(key, variant, got.identifier, got.identifierSize)) ids_learned++;
 }
 void module_ids_on() {
-    static const bool off = getenv("RX_VK_MODULE_IDS") && !atoi(getenv("RX_VK_MODULE_IDS"));
-    if (!off) ids_on.store(true, std::memory_order_release);
+    ids_on.store(true, std::memory_order_release);
 }
 
 void programs_frames_note() {

@@ -77,7 +77,7 @@ def main():
     a = p.parse_args()
     xfer = (a.source / "gpu/vk/vk_xfer.cpp").read_text(encoding="utf-8")
     b2t = block(xfer, "void copy_b2t(")
-    if "d24_as_d32" not in b2t or "(!b2t_gpu || astc || d24_as_d32)" not in b2t:
+    if "d24_as_d32" not in b2t or "(astc || d24_as_d32)" not in b2t:
         raise SystemExit("copy_b2t copies the game's 24-bit words as they are into a DEPTH24 texture kept as D32_SFLOAT")
     t2b = b2t[b2t.index("vkCmdCopyImageToBuffer"):]
     if "if (d24_as_d32 || d24s8_as_d32) d32_to_d24(cmd, s, span, c, size);" not in t2b.split("\n", 2)[1]:

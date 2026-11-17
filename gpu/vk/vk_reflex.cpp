@@ -26,8 +26,7 @@
 // against ~21 ms from simulation start to present end (an RTX 5080 at 4x, PR 2118's review). A batch (RX_VK_BATCH,
 // vk_replay.cpp) is tagged with the frame of its first command buffer, read when the batch starts: one that spans two game
 // frames counts as the first's, and one begun before the frame's sleep returned goes untagged. An approximation that only
-// batching makes, and batching is on by default only with RADV, which has no Reflex. RX_VK_REFLEX_SUBMIT_IDS=0 (or false,
-// off, no: longshot_env.h's rule) leaves every submit untagged, for comparisons.
+// batching makes, and batching is on by default only with RADV, which has no Reflex.
 //
 // RX_VK_REFLEX_LOG=1: every 300 frames with Reflex on, the driver's own timings (vkGetLatencyTimingsNV) averaged in the log:
 // simulation start to present end, and to the GPU's end of rendering.
@@ -247,9 +246,6 @@ void reflex_game_submitted() {
 }
 
 const void* reflex_submit_id(const void* next, uint64_t frame) {
-    static const char* const e = getenv("RX_VK_REFLEX_SUBMIT_IDS");
-    static const bool off = e && env_value_off(e);   // (=0, false, off or no: the switches' one rule)
-    if (off) return next;
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on()) return next;

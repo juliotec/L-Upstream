@@ -57,13 +57,38 @@ const char *hos_version(void) { return LONGSHOT_VERSION; }   /* (discord_rpc.c's
    through MkwVkHost perf_info): "" while no save is loaded (before one, and back at the title) */
 static SRWLOCK map_lock = SRWLOCK_INIT;
 static char map_now[100];
+/* (Link's pose for the same summary's one-second samples: oot_perf_pose sets it from his update, at most every
+   PERF_POSE_EVERY_NS; one not set for PERF_POSE_STALE_NS is no pose, since Link isn't updating: the title, the file
+   select, a reset, a load) */
+#define PERF_POSE_EVERY_NS 250000000LL
+#define PERF_POSE_STALE_NS 1000000000LL
+static SRWLOCK perf_pose_lock = SRWLOCK_INIT;
+static float perf_pose_now[5];
+static int perf_pose_valid;
+static int64_t perf_pose_ns;
+static volatile LONG perf_pose_enabled;
+static void perf_pose_clear(void) {
+    AcquireSRWLockExclusive(&perf_pose_lock);
+    perf_pose_valid = 0;
+    ReleaseSRWLockExclusive(&perf_pose_lock);
+}
 void hos_movie_stats(int64_t out[5]);   /* nn_video.c */
-const char *hos_perf_info(char *map, int cap, int64_t movie[5]) {
+const char *hos_perf_info(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose) {
     AcquireSRWLockShared(&map_lock);
     snprintf(map, (size_t)cap, "%s", map_now);
     ReleaseSRWLockShared(&map_lock);
     hos_movie_stats(movie);
+    const int64_t now = hos_now_ns();
+    AcquireSRWLockShared(&perf_pose_lock);
+    *has_pose = perf_pose_valid && now - perf_pose_ns < PERF_POSE_STALE_NS;
+    if (*has_pose) memcpy(pose, perf_pose_now, sizeof perf_pose_now);
+    ReleaseSRWLockShared(&perf_pose_lock);
     return LONGSHOT_VERSION;
+}
+
+void hos_perf_tracking(int enabled) {
+    InterlockedExchange(&perf_pose_enabled, enabled != 0);
+    if (!enabled) perf_pose_clear();
 }
 
 #ifdef A64_MEM_ZERO
@@ -558,13 +583,11 @@ static void load_longshot_env(void) {
 }
 
 /* Switches this build no longer reads, still set (in the environment or longshot_env.txt, as older issues told players):
-   one log line each, naming what took its place, so a bug report shows the switch did nothing. The host's own: the
-   renderer's removed switches (RX_) are the GONE rows of gpu/vk/switches.def, said by its start (switches.h) */
+   one log line each, naming what took its place, so a bug report shows the switch did nothing. Only the names of
+   another family are left here: a removed RX_ or HOS_ switch is a GONE row of gpu/vk/switches.def, said by the
+   renderer's start (switches.h) */
 static void removed_switch_notes(void) {
     static const char *const gone[][2] = {
-        {"HOS_FIX_RES", NULL},
-        {"HOS_RECORD_STUTTERS", "HOS_PROFILE=1 (the profiling mode: docs/development.md#the-profiling-mode)"},
-        {"HOS_SCENE_NATIVE", NULL},
         {"TOTK_MINIMAL_LAYOUT", NULL},
     };
     for (size_t i = 0; i < sizeof gone / sizeof *gone; i++)
@@ -731,6 +754,7 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
         AcquireSRWLockExclusive(&map_lock);
         map_now[0] = 0;
         ReleaseSRWLockExclusive(&map_lock);
+        perf_pose_clear();   /* (nor is Link's last place in the field: the title's samples have no pose) */
     }
     if (loaded) {   /* the map Link is in and his age, logged when either changes: where a log's problem happened, the "Where in
                        the game" of the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp reads the last of these lines) */
@@ -1342,6 +1366,35 @@ static float oot_load_float(Ctx *c, uint64_t addr) {
     return value;
 }
 
+/* The opt-in performance sample's latest Link position and gameplay camera angles. No game memory is read while unticked,
+   and at most every PERF_POSE_EVERY_NS while ticked (the samples take it once a second: not a lock and the camera's
+   pointers at every update). Camera zero's view is the gameplay one only while it is that type, as the flight and the free
+   camera check: in a cutscene it can be another object, whose floats at these offsets mean nothing. A value no place or
+   angle has (a stray read) is no pose either */
+static void oot_perf_pose(Ctx *c, uint64_t actor) {
+    if (!InterlockedCompareExchange(&perf_pose_enabled, 0, 0)) return;
+    static int64_t last;   /* (Link's update's: the game thread) */
+    const int64_t now = hos_now_ns();
+    if (now - last < PERF_POSE_EVERY_NS) return;
+    last = now;
+    const uint64_t view = oot_gameplay_view(c);
+    if (!view || recomp_load64(c, view) != 0x84c18a88ULL) {
+        perf_pose_clear();
+        return;
+    }
+    float pose[5] = {oot_load_float(c, actor + 796), oot_load_float(c, actor + 800), oot_load_float(c, actor + 804),
+                     oot_load_float(c, view + 0x1a4), oot_load_float(c, view + 0x18c)};
+    for (int i = 0; i < 5; i++)
+        if (!isfinite(pose[i]) || fabsf(pose[i]) > (i < 3 ? 1e6f : 64.0f)) {
+            perf_pose_clear();
+            return;
+        }
+    AcquireSRWLockExclusive(&perf_pose_lock);
+    memcpy(perf_pose_now, pose, sizeof pose);
+    perf_pose_valid = 1, perf_pose_ns = now;
+    ReleaseSRWLockExclusive(&perf_pose_lock);
+}
+
 static _Thread_local uint64_t flight_transform_controller;
 static _Thread_local uint64_t flight_pose_actor;
 static _Thread_local float flight_transform_yaw;
@@ -1391,6 +1444,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     static uint64_t flying_actor, marked_actor, marked_controller;
     static int64_t last_tick, last_player_tick;
     static float target[3], velocity[3], mark[3], yaw;
+    oot_perf_pose(c, actor);
     int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;
     /* An event that takes Link (a map change he flew into, the age toggle's, a cutscene) waits for him to stand, and the
        flight holds him in the air: the screen the event had faded stayed black until the flight was switched off, and a

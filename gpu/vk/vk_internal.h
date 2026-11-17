@@ -14,6 +14,7 @@
 #include "compat/longshot_env.h"
 #endif
 #include "vk_vendor.h"
+#include "device_policy.h"
 #include "gpu_choice.h"
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -90,6 +91,11 @@ struct Device {
     VkDriverId driver_id{};
     bool radv_gcn = false;   // (longshot) RADV on a GCN 1-4 card (GFX6-8: RX 400/500, R9 2xx/3xx/Fury): fallback_size_policy.h
     VendorFixes fixes{};   // (longshot) the vendor and driver workarounds this device needs (vk_vendor.h; vk_main.cpp create_device)
+    // (longshot) what create_device learnt of this PC and the defaults it gets by it (device_policy.h); driver is what facts'
+    // driver_info points into. Here and not in vk_state.h, which is part of the translator's stamp
+    VkPhysicalDeviceDriverProperties driver{};
+    DeviceFacts facts{};
+    DevicePolicy policy{};
     uint32_t max_push_descriptors = 0;
     uint32_t max_vertex_divisor = 0;   // (maxVertexAttribDivisor, with dev.vertex_divisor)
     // no window (HOS_HEADLESS): presents go to an image of their own, which RX_VK_SHOTS can write out
@@ -104,6 +110,9 @@ struct Device {
     // (longshot) how many of its images may be held acquired at once with no acquire timeout: the count less the surface's
     // minImageCount (the Vulkan spec's limit). vk_framegen.cpp's present ahead holds two
     std::atomic<uint32_t> swap_spare{0};
+    // (longshot) present_image's frame slots while frame generation runs, as create_swapchain made the chain for frame
+    // generation's sets (present_slots_for: 3, or a slot per frame of two sets where the swapchain does not wait for a refresh)
+    std::atomic<uint32_t> swap_slots{3};
     std::vector<VkImageView> swap_views;   // (longshot) a view of each, for Dear ImGui's overlays (VK_NULL_HANDLE: none)
     VkFormat swap_view_format = VK_FORMAT_UNDEFINED;   // (their format: the UNORM one of an sRGB swapchain when it can be)
     bool swap_mutable = false;   // (VK_KHR_swapchain_mutable_format: an sRGB swapchain's images viewed as UNORM)
@@ -436,7 +445,7 @@ void destroy_image(VkImage image, VmaAllocation allocation);
 /// What an allocation really takes (VkMemoryRequirements.size: padding, alignment, the driver's metadata), 0 for none
 uint64_t allocation_size(VmaAllocation allocation);
 /// (dedicated: its own memory object, not a share of a 64 MB block: for the 16 to 32 MB ones that fit two to a block and leave
-/// the rest of it free; RX_VK_BLOCK_BUFFERS=1: as before)
+/// the rest of it free)
 bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer,
                    VmaAllocation& allocation, void** mapped, bool dedicated = false);
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation);
@@ -472,6 +481,9 @@ int shot_ask_next(const char* path, void (*done)(void* ctx, int64_t present, int
 bool create_swapchain(uint32_t width, uint32_t height);
 void present_thread_drain();   // (vk_replay.cpp: the presenter thread's present made, RX_VK_PRESENT_THREAD)
 int swapchain_framegen();   // (vk_main.cpp: frame generation's fixed multiplier as the swapchain is made for it, 0 none)
+/// (longshot) present_image's frame slots (vk_replay.cpp frames[]), at most; ImGui keeps one more vertex buffer (vk_imgui.cpp)
+constexpr int kPresentSlotsMax = 8;
+int present_slots_for(int framegen, bool two_sets);   // (vk_replay.cpp: the slots present_image uses; create_swapchain's)
 bool swapchain_dlssg();     // (vk_main.cpp: and DLSS-G makes its sets: V-Sync Auto's FIFO)
 void retire_swapchain();   // (dev.present_mu held)
 bool invalidate_lost_surface(VkResult result);   // (dev.present_mu held)

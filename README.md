@@ -550,7 +550,11 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   runs (RTX 40 and newer, at 2x to 8x; AMD FSR 3.1 makes the frames it does not, such as Frame generation's Auto), and the
   default there; **FSR 3.1 FG**, AMD FSR 3.1's frame interpolation (any GPU it runs on, at every multiplier and at Auto,
   from the scene's depth and motion; below), the default everywhere else; **Built-in FG**, the renderer's own. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
-  the frames that frame generation shows, so it has no effect while Frame generation is Off.
+  the frames that frame generation shows, so it has no effect while Frame generation is Off. With V-Sync Off, a fixed
+  multiplier shows each frame at its own time on the game's timeline whether Frame pacing is On or Off (where the
+  window's swapchain holds all of a set's frames at once: up to 6x on an NVIDIA card). For the most even of those frames,
+  put `RX_VK_PRESENT_QUEUE=1` in `longshot_env.txt`: the presents then get a queue of their own, and no made frame waits
+  there behind the game's next frame (off by default since Hookshot issue 1161, before the fork, where it gave an RTX 4090 a black screen).
 - **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
@@ -643,7 +647,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   bypasses CRT and keeps the choice for SDR. **Off**, the default, adds no CRT passes or GPU images.
 - **Anisotropic filtering** keeps textures sharp on surfaces seen at a slant: the paths and floors ahead of Link. The game
   asks for 1x or 2x, which at a PC's resolutions smears the ground a few metres off; 16x costs little on most cards, and
-  Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's).
+  Game's is the console's own. `RX_VK_ANISO=<n>` sets it for one run (0: the game's). It is for the game's textures:
+  a picture the game drew itself and reads back (one level, no mipmaps) keeps the game's own anisotropy.
 - **Shadow resolution** sets the size of the sun's shadow maps. The game draws them 1600 pixels a side, which at a PC's
   resolutions turns the shadows of thin things near Link (the drawbridge's chains, fences, ivy) into stair steps. High
   (2200) and Highest (3072) are the game's own larger sizes, from its own table: by their size, Highest takes about
@@ -772,8 +777,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Discord status** shows "Playing Longshot" and the time played in your Discord status. It is on by default and does
   nothing unless a Discord client is running on this PC; with the row Off nothing is sent to it.
 - **Send performance statistics** (a tick on the launcher's page, off by default): the game counts how its frames,
-  hitches and movies went on each map, and the launcher sends the counts to the team at its next start, with the GPU,
-  driver, CPU, OS and renderer but no paths, user name or ID. It costs a few nanoseconds a frame; unticking it deletes
+  hitches and movies went on each map, with one-second samples of Link's X/Y/Z position and camera yaw/pitch. The
+  launcher sends five-minute batches to the team at its next start, with the GPU, driver, CPU, OS and renderer but no
+  paths, user name or ID. The relay rounds positions into 100-unit cells and angles into 45-degree yaw and 30-degree
+  pitch bins. It costs a few nanoseconds a frame; unticking it deletes
   what hasn't been sent. What is in a summary: [performance statistics](docs/performance-statistics.md).
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.

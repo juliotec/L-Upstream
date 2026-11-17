@@ -38,10 +38,20 @@ enum : uint32_t { NOP_DRAW = 1, NOP_DRAW_IDX, NOP_DRAW_INDIRECT, NOP_DRAW_MESH, 
 static bool env_value_off(const char* e) {
     return !*e || !strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "false") || !strcmp(e, "no");
 }
-static bool env_on(const char* n) { const char* e = getenv(n); return e && !env_value_off(e); }
+[[maybe_unused]] static bool env_on(const char* n) { const char* e = getenv(n); return e && !env_value_off(e); }
 static int64_t env_int(const char* n, int64_t d) { const char* e = getenv(n); return e ? atoll(e) : d; }
-static struct { struct { uint32_t vendorID; } props; } dev = {{(uint32_t)strtoul(getenv("VENDOR") ? getenv("VENDOR") : "0", nullptr, 0)}};
-static bool pools_mirrored() { return false; }
+// (dev.policy's two fields that part_ends_before_draw and split_part read. gpu/vk/device_policy.h makes them, of the GPU
+// and the switches, and tests/test_device_policy.py checks that; this fixture's command buffers are not Vulkan's, so it
+// cannot take that header and says them itself: the part ends before a plain draw on Intel (VENDOR) or as
+// RX_VK_SPLIT_BEFORE_DRAW says, and the uniform updates are written at each part's end but on Intel, whose pools have no
+// mirrors here)
+static bool policy_flag(const char* name, bool by_gpu) { const char* e = getenv(name); return e && *e ? !env_value_off(e) : by_gpu; }
+static const uint32_t the_vendor = (uint32_t)strtoul(getenv("VENDOR") ? getenv("VENDOR") : "0", nullptr, 0);
+static struct {
+    struct { uint32_t vendorID; } props;
+    struct { bool split_before_draw, split_ub_flush; } policy;
+} dev = {{the_vendor}, {policy_flag("RX_VK_SPLIT_BEFORE_DRAW", the_vendor == 0x8086), policy_flag("RX_VK_SPLIT_UBFLUSH", the_vendor != 0x8086)}};
+[[maybe_unused]] static bool pools_mirrored() { return false; }
 static bool dump_on() { return false; }
 struct Recording { VkCommandBuffer cmd = 0; uint64_t part = 0; };
 static std::vector<std::vector<uint32_t>> parts;   // (the ops each part recorded)

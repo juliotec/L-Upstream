@@ -52,9 +52,14 @@ constexpr int kMaxPending = 48;      // (summaries waiting in perf_pending at mo
 
 std::mutex mu;   // (the presenting thread's frames, against the exit's and a lost device's last summary)
 std::map<std::string, pr::MapTotals> maps;
+std::vector<pr::PositionSample> samples;
 std::map<std::string, bool> seen_maps;   // (maps this session has sent: the relay counts a session on a map once)
 pr::MapTotals* current = nullptr;
 std::string current_map;
+float latest_pose[5] = {};
+bool latest_pose_valid = false;
+pr::PositionSample collecting;
+bool collecting_pose_valid = false;
 pr::Machine machine;
 std::filesystem::path folder;   // (the game folder: vk_paths.h, wide on Windows)
 std::atomic<int64_t> events[pr::kEvents];
@@ -143,7 +148,11 @@ void read_settings() {
 bool where_now() {
     char map[120] = "";
     int64_t movie[5] = {};
-    const char* version = host->perf_info ? host->perf_info(map, sizeof map, movie) : nullptr;
+    int has_pose = 0;
+    float pose[5] = {};
+    const char* version = host->perf_info ? host->perf_info(map, sizeof map, movie, pose, &has_pose) : nullptr;
+    latest_pose_valid = has_pose != 0;
+    if (latest_pose_valid) memcpy(latest_pose, pose, sizeof latest_pose);
     if (machine.gpu.empty()) read_machine(version);
     // (before a map: the start-up screen while the shaders are prepared, then the intro, the title and the file select)
     const std::string name = map[0] ? map : shaders_preparing() ? pr::kPreparingShaders : pr::kTitleAndIntro;
@@ -160,6 +169,22 @@ bool where_now() {
     current->movie_fallbacks += movie[4] - last_movie[4];
     memcpy(last_movie, movie, sizeof last_movie);
     return full;
+}
+
+void finish_sample() {
+    if (collecting_pose_valid && collecting.frames > 0) samples.push_back(collecting);
+    collecting = {};
+    collecting_pose_valid = false;
+}
+
+void begin_sample() {
+    collecting = {};
+    collecting.map = current_map;
+    collecting_pose_valid = latest_pose_valid;
+    if (collecting_pose_valid) {
+        collecting.x = latest_pose[0], collecting.y = latest_pose[1], collecting.z = latest_pose[2];
+        collecting.yaw = latest_pose[3], collecting.pitch = latest_pose[4];
+    }
 }
 
 void write_summary(const std::filesystem::path& dir, const std::string& name, const std::string& json) {
@@ -184,12 +209,16 @@ void write_summary(const std::filesystem::path& dir, const std::string& name, co
 }
 
 /// The summary of what came in since the one before (under mu), written on a thread of its own unless `now` (the exit, a
-/// lost device: the process ends next)
+/// lost device: the process ends next). The second being sampled carries on into the next summary, so the frames just
+/// after this one are sampled too; the last summary takes it as it is
 void summarize(bool now) {
     if (!current) return;
+    if (now) finish_sample();
     if (!ticked(folder)) {   // (unticked in the launcher while the game ran: nothing more measured or written)
+        if (host->perf_tracking) host->perf_tracking(0);
         perf_measure.store(false, std::memory_order_relaxed);
-        maps.clear(), current = nullptr;
+        maps.clear(), samples.clear(), current = nullptr;
+        collecting = {}, collecting_pose_valid = false;
         logf("vk: performance statistics off (unticked in the launcher): nothing more is written");
         return;
     }
@@ -212,12 +241,12 @@ void summarize(bool now) {
     if (vram_usage_now(&used, &allowed)) mem.vram_used_gb = used / 1073741824.0, mem.vram_allowed_gb = allowed / 1073741824.0;
     mem.ram_used_gb = ram_used_gb();
     const double session_s = (fps_clock() - started_ns) / 1e9;
-    std::string json = pr::summary_json(machine, first, session_s, current_map, &mem, maps);
+    std::string json = pr::summary_json(machine, first, session_s, current_map, &mem, maps, samples);
     char name[48];
     snprintf(name, sizeof name, "%lld-%d", (long long)std::time(nullptr), seq++);
     for (auto& [n, t] : maps)
         if (t.any()) seen_maps[n] = true;
-    maps.clear();
+    maps.clear(), samples.clear();
     current = &maps[current_map];
     current->fresh = !seen_maps.count(current_map);   // (a map entered just before this summary, with nothing yet: still new)
     first = false;
@@ -243,6 +272,7 @@ bool perf_report_init() {
             if (it->path().extension() == ".tmp") std::filesystem::remove(it->path(), ec);
     }
     period = pr::summary_period(getenv("RX_VK_PERF_INTERVAL"));
+    if (host->perf_tracking) host->perf_tracking(1);
     started_ns = fps_clock();
     int64_t translated = 0;
     shader_stats(&translated, &l_failed);   // (the renderer's counts so far: only what comes after is counted)
@@ -281,10 +311,12 @@ void perf_frame(const fs::Frame& f, double wait_ms) {
     if (!primed) w = pr::Waits{}, primed = true;
 
     std::lock_guard lk(mu);
-    if (!current || since_map >= kMapEvery) {
+    if (!current || since_map >= kMapEvery) {   // (each second: where Link is, and the next one-second sample)
+        finish_sample();
         // (a 17th map in one period: that summary now, with the 16 it has, then the new map in the next)
         if (where_now()) summarize(false), since_summary = 0, where_now();
         since_map = 0;
+        begin_sample();
     }
     // (the target: the cap's, else uncapped the recent average. A hitch is twice the longer of the target and the recent
     // average, before this frame: a frame twice the usual, never every frame of a game the GPU holds under its cap)
@@ -292,7 +324,13 @@ void perf_frame(const fs::Frame& f, double wait_ms) {
     avg_ms = usual * 0.98 + f.ms * 0.02;
     const double cap_ms = menu_target_ms();
     const double target = cap_ms > 0 ? cap_ms : usual;
-    pr::add_frame(*current, f, w, target, last_ms, usual);
+    const bool hitch = pr::add_frame(*current, f, w, target, last_ms, usual);
+    if (collecting_pose_valid) {
+        collecting.frames++;
+        collecting.frame_ms += f.ms;
+        if (f.gpu_ms > 0) collecting.gpu_frames++, collecting.gpu_ms += f.gpu_ms;
+        collecting.hitches += hitch;
+    }
     last_ms = f.ms;
     since_map += f.ms / 1000.0, since_summary += f.ms / 1000.0;
     if (since_summary >= period) summarize(false), since_summary = 0;
@@ -303,6 +341,7 @@ void perf_report_final(int event) {
     perf_event(event);
     std::lock_guard lk(mu);
     summarize(true);
+    if (host->perf_tracking) host->perf_tracking(0);
 }
 
 }   // namespace mkwvk

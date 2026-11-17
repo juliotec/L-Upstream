@@ -382,7 +382,10 @@ def run(exe, tmp, ops, mode="1", pre=()):
             parts.append(struct.pack("<QI", a, len(b)) + b)
         parts.append(struct.pack("<I8Q", len(x) == 8, *(list(x) + [0] * (8 - len(x)))))
     case.write_bytes(b"".join(parts))
-    r = subprocess.run([str(exe), str(case), str(res)], env=dict(os.environ, HOS_NATIVE_ZSTD=mode, HOS_NATIVE_ZSTD_FRAMES=mode))
+    env = {k: v for k, v in os.environ.items() if k not in ("HOS_NATIVE_ZSTD", "HOS_NATIVE_ZSTD_FRAMES")}
+    if mode is not None:   # (None: both switches unset, the default)
+        env.update(HOS_NATIVE_ZSTD=mode, HOS_NATIVE_ZSTD_FRAMES=mode)
+    r = subprocess.run([str(exe), str(case), str(res)], env=env)
     if r.returncode:
         raise Crash("the fixture stopped with %#x" % (r.returncode & 0xFFFFFFFF))
     raw = res.read_bytes()
@@ -413,7 +416,7 @@ def check_calls(chk, name, calls, mode="1"):
     for k, (h, changed, unmarked, aways, backs, x0, *_) in enumerate(calls):
         chk(unmarked == 0, "%s: call %d changed %d page(s) without a mark after the change" % (name, k, unmarked))
         if h:
-            chk(aways == backs and aways == (1 if mode == "1" else 0) or (aways == backs == 0 and signed(x0) == -1),
+            chk(aways == backs and aways == (1 if mode in ("1", "", None) else 0) or (aways == backs == 0 and signed(x0) == -1),
                 "%s: call %d gave the core up %d times and took it back %d" % (name, k, aways, backs))
         else:
             chk(changed == 0, "%s: call %d left to the lifted code but wrote %d page(s)" % (name, k, changed))
@@ -533,6 +536,9 @@ def checks(exe, tmp, quick=False):
     chk(calls[65][0] == 1 and signed(calls[65][5]) == 0 and calls[66][0] == 1, "64 entries: not free again after a stream ended")
     # the core kept with =2
     good(chk, exe, tmp, "HOS_NATIVE_ZSTD=2", text, compress(text), 4096, mode="2")
+    # the default: unset or empty, done on the host and the core given up, as with =1
+    good(chk, exe, tmp, "the switch unset", text, compress(text), 4096, mode=None)
+    good(chk, exe, tmp, "the switch empty", text, compress(text), 4096, mode="")
     return chk.failed
 
 
@@ -629,6 +635,10 @@ def frames_checks(exe, tmp, quick=False):
                                ("another format", "1", whole(compress(small), len(small)), fmt)):
         calls, _ = run(exe, tmp, [x], mode=mode, pre=pre)
         chk(calls[0][0] == 0 and calls[0][1] == 0, "whole %s: done on the host (%s)" % (name, calls[0][:2]))
+    for name, mode in (("unset", None), ("empty", "")):   # (the default: done on the host)
+        calls, mem = run(exe, tmp, [whole(compress(small), len(small))], mode=mode)
+        chk(calls[0][0] == 1 and mem[DST - BASE:DST - BASE + len(small)] == small,
+            "whole, the switch %s: not done on the host (%s)" % (name, calls[0][:2]))
     return chk.failed
 
 

@@ -223,8 +223,8 @@ def check_dlss():
             sys.exit("FAIL: temporal_upscale does not give an engine made for HDR colour the HDR pair: " + want)
     dlss = (VK / "vk_dlss.cpp").read_text(encoding="utf-8")
     prepare = function(dlss, "int prepare(")
-    if "const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);" not in prepare or \
-            'getenv("RX_VK_DLSS_HDR")' not in prepare or "opts.hdr" in prepare or \
+    if "const bool hdr = present_native_pq.load(std::memory_order_relaxed);" not in prepare or \
+            "opts.hdr" in prepare or \
             "s.feature_hdr == hdr" not in prepare or \
             "NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure" not in prepare:
         sys.exit("FAIL: DLSS's feature is not made for HDR colour while the game presents PQ (and again when that changes)")

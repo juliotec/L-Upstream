@@ -66,7 +66,8 @@ int hos_mic_test(int enabled, int gain, int *levels);
 void hos_bind(int set, int button, int slot, int code);
 int hos_prompts_face(void);         /* prompts.c */
 int hos_prompts_live_parts(void);   /* prompts.c */
-const char *hos_perf_info(char *map, int cap, int64_t movie[5]);   /* hos_main.c: the performance summary's map and movies */
+const char *hos_perf_info(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose);   /* hos_main.c */
+void hos_perf_tracking(int enabled);   /* hos_main.c: read Link's pose only for the opt-in performance summary */
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 void hos_mark_written(const void *p, size_t n);
 #endif
@@ -285,7 +286,7 @@ static const MkwVkHost vk_host = {
     host_take_text, hos_options_file,
     hos_audio_output_count, hos_audio_output_info, hos_audio_output_select, hos_audio_output_state,
     hos_mic_test, hos_perf_info, host_main_thread_times, host_out_of_memory,
-    hos_monitor_count, hos_monitor_info, hos_monitor_select,
+    hos_monitor_count, hos_monitor_info, hos_monitor_select, hos_perf_tracking,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
