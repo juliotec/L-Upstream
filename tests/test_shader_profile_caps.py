@@ -52,7 +52,7 @@ enum VkShaderFloatControlsIndependence {
 };
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
-	uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+	uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0, max_workgroup_subgroups = 32;
 	VkShaderStageFlags subgroup_stages = 0;
 	struct {
 		VkShaderFloatControlsIndependence denormBehaviorIndependence{}, roundingModeIndependence{};
@@ -121,7 +121,7 @@ def main():
 	args = parser.parse_args()
 	shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
 	internal = (VK / "vk_internal.h").read_text(encoding="utf-8")
-	fixture = (FIXTURE + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
+	fixture = (FIXTURE + section(internal, "inline bool pins_32(" if "inline bool pins_32(" in internal else "inline uint64_t storage_binding_align()", "/// A range of guest memory")
 			   + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
 			   + section(shader, "const Shader::Profile& profile()", "/// The profile of a graphics stage") + CASES)
 	with tempfile.TemporaryDirectory(prefix="longshot-profile-caps-") as tmp:
