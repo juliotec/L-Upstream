@@ -50,6 +50,10 @@
 #include "upscaler_rows.h"
 #include "linux_pressure.h"
 #include "pcache_stamp.h"
+#include "pcache_load.h"     // (longshot, issue 388: whether the pipeline cache file is read)
+#ifndef _WIN32
+#include <unistd.h>          // (sysconf: the RAM, pcache_load_off)
+#endif
 #include "vk_reactive.h"   // (the upscalers' reactive mask: the scene copied before its transparent draws)
 #include "vk_dump.h"
 #include "vk_gprof.h"
@@ -418,6 +422,7 @@ struct RecordingRes {
     uint32_t idle = 0;             // (recordings of the slot that stayed in the first stream)
     // (flat (flat_map.h): an unordered_map put a malloc into every c1 upload kept, and a free into the next recording's clear)
     FlatMap<uintptr_t, std::pair<VkBuffer, uint64_t>> c1_at;   // (c1 of a stage, by the stage's address: uploaded once a recording)
+    uint64_t ub_snap_epoch = 0;   // (this recording's number among all: its uniform copies in ub_snaps)
 };
 // (a recording's first stream: one for each of the kRecordings slots. RX_VK_STREAM_MB=<n>: that size, 2 by default; a recording
 // that needs more is given a bigger stream for the rest of it (RX_VK_STREAM_GROW_OFF=1: draws are skipped instead, and the default
@@ -865,9 +870,14 @@ size_t play_file_write(VkPipelineCache cache, const std::string& path, int wait_
     }
     return data.publish(n) ? n : 0;
 }
+extern bool pcache_no_save;   // (pcache_init, below: the file not read, RX_VK_PCACHE_LOAD or pcache_load.h)
 /// (pcache_init, before any other thread has pcache) the play files the last starts wrote, merged into pcache; at kPlayFilesKept
 /// of them pcache is written into its file and they are removed. A file of another driver is of no use: removed. The number merged
 size_t play_files_merge() {
+    // (longshot, issue 388) The file not read: nothing merged into the cache, which started empty, and above all that cache never
+    // written over the file at kPlayFilesKept (a session without it wrote its 38 MB over a 1.2 GB file a start loading programs
+    // before the title then lacked). The play files stay for a start that reads the file
+    if (pcache_no_save) return 0;
     std::vector<std::string> merged;
     size_t merged_kb = 0;
     std::error_code ec;
@@ -917,7 +927,11 @@ PlayCache* play_cache_make() {
 /// (the start-up done, vk_main's start) play begins: what is made from now on goes into the play generations
 void play_cache_begin() {
     static const bool off = getenv("RX_VK_PLAY_CACHE") && atoi(getenv("RX_VK_PLAY_CACHE")) == 0;
-    if (pcache_no_save || off || !pcache || !dev.vk13.pipelineCreationCacheControl || play_cache.load()) return;
+    // (#415) RX_VK_PCACHE_LOAD=0 is the A/B of the cache with nothing kept: no play generations either. (issue 388) The file
+    // left unread by the automatic rule (pcache_load.h) keeps them: what play makes goes into them and play_cache_save lets
+    // each go at a save, not written
+    static const bool switched_off = [] { const char* e = getenv("RX_VK_PCACHE_LOAD"); return e && *e && env_value_off(e); }();
+    if ((pcache_no_save && switched_off) || off || !pcache || !dev.vk13.pipelineCreationCacheControl || play_cache.load()) return;
     if (PlayCache* g = play_cache_make()) {
         play_cache.store(g);
         logf("vk: pipeline cache: what play makes goes into play files (RX_VK_PLAY_CACHE=0: into the one cache)");
@@ -951,6 +965,17 @@ void play_cache_save(int wait_ms = -1, bool queue = true) {
             static std::atomic<int> told{0};
             if (told++ < 4) logf("vk: pipeline cache: a play file not written yet: a pipeline was still being built in it");
             ++it;
+            continue;
+        }
+        if (pcache_no_save) {   // (longshot, issue 388: the file not read, nor saved: what play made is in the driver's own cache)
+            static std::atomic<int> told{0};
+            if (const int n = ++told; n <= 4 || n % 16 == 0)
+                logf("vk: pipeline cache: play's generation %d let go, not written (the file not read): %lld pipelines, %lld from the "
+                     "driver's cache, %lld compiled", n, (long long)old->built.load(), (long long)old->from_driver.load(),
+                     (long long)old->compiled.load());
+            vkDestroyPipelineCache(dev.device, old->cache, nullptr);
+            old->cache = VK_NULL_HANDLE;
+            it = unsaved.erase(it);
             continue;
         }
         if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1), wait_ms, queue)) {
@@ -1038,20 +1063,62 @@ bool play_cache_in_use() { return play_cache.load() != nullptr; }
 // ---- (end of the play caches) ----
 
 // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
-// starts empty and is not saved; the driver's own shader cache is all there is)
+// starts empty and is not saved; the driver's own shader cache is all there is.) (longshot, issue 388) Unset, the file is
+// not read either on a Linux PC with NVIDIA's own driver, 20 GB of RAM or less and programs loaded at their create calls,
+// where NVIDIA's own shader cache is on and not nearly empty: the driver's copy of the file was most of a gigabyte of a 16 GB
+// PC's swap (pcache_load.h). RX_VK_PCACHE_LOAD=1 reads it there too. One log line gives the answer and why, on every PC
 bool pcache_load_off() {
-    static const bool off = [] { const char* e = getenv("RX_VK_PCACHE_LOAD"); return e && env_value_off(e); }();   // (longshot_env.h: 0/off/false/no)
+    static const bool off = [] {
+        const char* e = getenv("RX_VK_PCACHE_LOAD");
+        const int sw = e && *e ? (env_value_off(e) ? 0 : 1) : -1;   // (longshot_env.h: 0/off/false/no)
+        const bool preparing = env_on("LONGSHOT_PREPARE_ONLY"), at_create = programs_load_at_create();
+#ifdef _WIN32
+        const bool linux_nvidia = false;
+        const uint32_t ram_mb = 0;
+#else
+        const bool linux_nvidia = dev.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;   // (not NVK: Mesa's, with Mesa's cache)
+        const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+        const uint32_t ram_mb = pages > 0 && page > 0 ? (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20) : 0;
+#endif
+        // (NVIDIA's folder walked only where everything else says not to read the file; its size alone counts, not Mesa's)
+        pcache_load::Measured cache{pcache_load::Cache::kUnknown, 0};
+        std::string dir;
+        const bool looked = pcache_load::needs_cache(sw, preparing, at_create, linux_nvidia, ram_mb);
+        if (looked) {
+            const char* c = getenv("__GL_SHADER_DISK_CACHE");
+            cache = pcache_load::nvidia_cache(c && *c && env_value_off(c), getenv("__GL_SHADER_DISK_CACHE_PATH"),
+                                              getenv("XDG_CACHE_HOME"), getenv("HOME"), &dir);
+        }
+        const pcache_load::Choice choice =
+            pcache_load::choose(sw, preparing, at_create, linux_nvidia, ram_mb, cache.cache, cache.bytes >> 20);
+        std::string seen;   // (what was looked at: the switch, or the RAM and NVIDIA's cache where they were)
+        if (sw >= 0) seen = std::string("RX_VK_PCACHE_LOAD=") + e;
+        else if (choice.why == pcache_load::Why::kRam || looked)
+            seen = std::to_string(ram_mb) + " MB of RAM";
+        if (looked) {
+            seen += ", NVIDIA's own shader cache ";
+            seen += cache.cache == pcache_load::Cache::kOff       ? std::string("off (__GL_SHADER_DISK_CACHE, or no folder for it)")
+                    : cache.cache == pcache_load::Cache::kUnknown ? "not measured: " + dir + " could not be walked through"
+                                                                  : std::to_string(cache.bytes >> 20) + " MB in " + dir;
+        }
+        if (!choice.load && sw < 0) seen += "; RX_VK_PCACHE_LOAD=1 reads it";
+        logf("vk: pipeline cache file %s: %s%s%s%s", choice.load ? "read" : "not read", pcache_load::why_text(choice.why),
+             seen.empty() ? "" : " (", seen.c_str(), seen.empty() ? "" : ")");
+        return !choice.load;
+    }();
     return off;
 }
 /// (longshot) The pipeline cache's files go when they were made for another translator than this one (program_cache_stamp,
 /// which the program cache and the prepare record start over by): their pipelines can no longer be hit, and the file only grew,
 /// read whole at every start and held by the driver (pcache_stamp.h). Once a run, before the first of pcache_init and
 /// prepare_run: whether files went, so that prepare_run makes the stage libraries the warm pass kept in them again
-/// (prepared_for.warmed), whatever its record says. RX_VK_PCACHE_STAMP=0: kept whatever made them, as before
+/// (prepared_for.warmed), whatever its record says. RX_VK_PCACHE_STAMP=0: kept whatever made them, as before. (longshot, issue
+/// 388) With the file not read (pcache_load_off) they go too: a start that reads it would drop them, and kept they were 1.2 GB
+/// of disk after every update that changed the translator
 bool pcache_drop_stale() {
     static const bool dropped = [] {
         static const bool by_stamp = [] { const char* e = getenv("RX_VK_PCACHE_STAMP"); return !e || !env_value_off(e); }();
-        if (pcache_load_off() || !by_stamp) return false;
+        if (!by_stamp) return false;
         const std::string dir = cache_path("");   // (where pcache_init keeps them: the game folder's cache/, vk_paths.h)
         const pcache_stamp::Dropped gone = pcache_stamp::check(dir, program_cache_stamp());
         if (gone.files)
@@ -3401,6 +3468,114 @@ bool ub_snapshot_wanted() {
     if (const char* e = getenv("RX_VK_UB_SNAPSHOT")) return !env_value_off(e);
     return dev.props.vendorID == 0x8086;
 }
+/// (longshot) A draw's uniform copies (uniform_range) are read from guest memory together once its descriptors are built, with
+/// pools_mu taken once for all of them (memory_read_as_submitted_many) rather than once a copy: the lock and its release were
+/// two thirds of a copy's time on an Arc B580 (HOS_SAMPLE, Castle Town's market: about 10,000 copies a frame, 4 a draw). The
+/// stream's bytes they fill are read by the GPU alone, after the recording is submitted. RX_VK_UB_READ_BATCH=0: each read where
+/// it is asked, as before; 2 (a test): both, compared, the differences counted in the log
+int ub_read_batch_mode() {
+    static const int mode = [] {
+        const char* e = getenv("RX_VK_UB_READ_BATCH");
+        return e && *e ? std::clamp(atoi(e), 0, 2) : 1;
+    }();
+    return mode;
+}
+TLS_OBJECT(ub_reads_pending, std::vector<SubmittedRead>)   // (the build's reads not made yet: ub_reads_flush)
+void ub_reads_flush() {
+    std::vector<SubmittedRead>& p = ub_reads_pending();
+    if (p.empty()) return;
+    if (ub_read_batch_mode() == 2) {
+        static thread_local std::vector<uint8_t> again;
+        static std::atomic<int64_t> asked{0}, differ{0};
+        for (const SubmittedRead& r : p) {
+            again.resize(r.n);
+            const SubmittedRead one{r.gpu, again.data(), r.n};
+            memory_read_as_submitted_many(&one, 1);
+            if (std::memcmp(again.data(), r.dst, r.n)) differ++;
+            if (++asked % 200000 == 0)
+                logf("vk: ub read batch (check): %lld reads made again at their draw's end, %lld differed", (long long)asked.load(),
+                     (long long)differ.load());
+        }
+    } else {
+        memory_read_as_submitted_many(p.data(), p.size());
+    }
+    p.clear();
+}
+struct UbReadsScope {   // (build_descriptors: its reads made when it is over, whichever way it ends)
+    ~UbReadsScope() { ub_reads_flush(); }
+};
+/// (longshot) A recording's uniform copies, by address and size: a draw that binds the range an earlier draw of the recording had
+/// copied into the stream, with the same captures in view (memory_capture_view), is given that copy instead of one of its own. In
+/// Castle Town's market on an Arc B580 the snapshot made 10,400 copies a frame, 19 MB, of 4,200 distinct ranges, 2.4 MB, and a
+/// range's contents were the same in every copy of it within a recording (RX_VK_UB_SNAP_DEDUP=2 in the market: 9.9 million
+/// compared, none differed). By size as well as address: an address is bound with different sizes (a program's used size of
+/// it). The stream's own updates to a range (ub_overlay) come before this, as before. RX_VK_UB_SNAP_DEDUP=0: a copy for every
+/// binding, as before; 2 (a test): a copy for every binding all the same, each compared with the recording's first copy of its
+/// range, the differences counted in the log
+int ub_snap_dedup_mode() {
+    static const int mode = [] {
+        const char* e = getenv("RX_VK_UB_SNAP_DEDUP");
+        return e && *e ? std::clamp(atoi(e), 0, 2) : 1;
+    }();
+    return mode;
+}
+struct UbSnap {
+    uint64_t addr = 0, n = 0, view = 0, epoch = 0, at = 0;
+    VkBuffer buf = VK_NULL_HANDLE;
+    std::vector<uint8_t> bytes;   // (RX_VK_UB_SNAP_DEDUP=2: the first copy's contents)
+};
+constexpr size_t kUbSnaps = 4096;   // (a thread's: a recording in the market held about 130 distinct ranges)
+TLS_OBJECT(ub_snaps, std::vector<UbSnap>)
+/// The slot of (addr, n) in the thread's table: its own (hit: this recording's copy, with these captures in view), or one to fill
+/// (another recording's, or this one's of the range with other captures in view); nullptr when 16 probes found neither
+UbSnap* ub_snap_slot(uint64_t addr, uint64_t n, uint64_t view, bool& hit) {
+    hit = false;
+    if (!cur) return nullptr;
+    std::vector<UbSnap>& snaps = ub_snaps();
+    if (snaps.empty()) snaps.resize(kUbSnaps);
+    uint64_t h = (addr ^ n * 0x9E3779B97F4A7C15ull) * 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 31;
+    const uint64_t epoch = cur->ub_snap_epoch;
+    for (size_t i = 0; i < 16; i++) {
+        UbSnap& e = snaps[(h + i) & (kUbSnaps - 1)];
+        if (e.epoch != epoch) return &e;
+        if (e.addr == addr && e.n == n) {
+            hit = e.view == view;
+            return &e;
+        }
+    }
+    return nullptr;
+}
+void ub_snap_count(bool hit, uint64_t n) {
+    static thread_local int64_t asked, given, saved;
+    asked++;
+    if (hit) given++, saved += (int64_t)n;
+    if (asked % 4000000 == 0)
+        logf("vk: uniform copies (RX_VK_UB_SNAP_DEDUP=%d): %lld of %lld given the recording's earlier copy of their range, %.1f MB not "
+             "copied", ub_snap_dedup_mode(), (long long)given, (long long)asked, saved / 1048576.0);
+}
+/// (RX_VK_UB_SNAP_DEDUP=2) The copy made now, as with the switch off, and compared with the recording's first of the range
+void ub_snap_check(UbSnap* memo, bool hit, uint64_t addr, uint8_t* dst, uint64_t n) {
+    static thread_local std::vector<uint8_t> now;
+    now.assign(n, 0);
+    memory_read_as_submitted(addr, now.data(), n);
+    std::memcpy(dst, now.data(), n);   // (the stream is written, never read back: write-combined)
+    if (hit && memo && memo->bytes.size() == n) {
+        static std::atomic<int64_t> compared{0}, differ{0};
+        if (std::memcmp(memo->bytes.data(), now.data(), n)) {
+            static std::atomic<int> shown{0};
+            if (shown++ < 8)
+                logf("vk: uniform copies (check): %#llx +%#llx differs from the recording's first copy of it",
+                     (unsigned long long)addr, (unsigned long long)n);
+            differ++;
+        }
+        if (++compared % 100000 == 0)
+            logf("vk: uniform copies (check): %lld compared with the recording's first copy of their range, %lld differed",
+                 (long long)compared.load(), (long long)differ.load());
+    } else if (memo) {
+        memo->bytes.assign(now.begin(), now.end());
+    }
+}
 VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_t index) {
     VkDescriptorBufferInfo bi{VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
@@ -3518,12 +3693,28 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         static std::atomic<int64_t> after_gpu[2][2];
         if (gpu_written) after_gpu[gpu_written - 1][b && b.offset % align == 0 ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
+        // (the sharing and the batched reads are the snapshot's alone: with it off, a range that can't be bound in place, unaligned
+        // or outside the pools, is read and copied at its binding as before, and bind_descriptors keeps its delta push)
+        static const int dedup = snapshot ? ub_snap_dedup_mode() : 0;   // (the recording's earlier copy of the range: ub_snap_slot)
+        bool hit = false;
+        const uint64_t view = dedup ? memory_capture_view() : 0;
+        UbSnap* memo = dedup ? ub_snap_slot(u.addr, n, view, hit) : nullptr;
+        if (dedup) ub_snap_count(hit && dedup == 1, n);
+        if (hit && dedup == 1) return {memo->buf, memo->at, n};
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
         if (at == UINT64_MAX) return bi;
         FINE_N(FC_UBO_STREAM, 1);
         // (as the submission had it, not as the game has rewritten it since: the captures' pages. A range the GPU wrote that
         // can't be bound in place, unaligned or outside the pools, is copied all the same, without that write, as before)
-        memory_read_as_submitted(u.addr, cur->mapped + at, n);
+        static const int batch = snapshot ? ub_read_batch_mode() : 0;
+        if (dedup == 2) {
+            ub_snap_check(memo, hit, u.addr, cur->mapped + at, n);
+        } else {
+            if (batch != 1) memory_read_as_submitted(u.addr, cur->mapped + at, n);
+            if (batch != 0) ub_reads_pending().push_back({u.addr, cur->mapped + at, n});   // (read at the build's end: UbReadsScope)
+        }
+        if (memo && !hit)
+            memo->addr = u.addr, memo->n = n, memo->view = view, memo->epoch = cur->ub_snap_epoch, memo->at = at, memo->buf = cur->stream;
         static int64_t copied;
         if (++copied % 5000 == 1)
             logf("vk: uniform buffer %#llx +%#llx copied into the stream (%s; %lld so; after a GPU write in the submission: "
@@ -3781,6 +3972,7 @@ void desc_counts_unpack(uint64_t packed, size_t* nbuf, size_t* nimg, size_t* nvi
 void build_descriptors(const NvnState& s, const Program& p) {
     // (longshot) the thread's writer asked for once: each dw() is a thread-local lookup, a call in a shared library, and a
     // build made dozens of them
+    const UbReadsScope ub_reads;   // (the uniform copies' reads made together when the build is over: ub_read_batch_mode)
     DescWriter& out = dw();
     out.reset();
     out.prog = &p;
@@ -4385,10 +4577,21 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
         static thread_local std::vector<VkWriteDescriptorSet> changed;
         static thread_local std::vector<uint64_t> words;
         changed.clear();
+        // (longshot) With the uniform copies shared within a recording (ub_snap_dedup_mode), a draw's uniform buffer writes are
+        // often the ones pushed for the draw before. An Arc B580 (driver 32.0.101.9154) draws wrong when a push carries some of a
+        // draw's uniform buffer writes and leaves others out as unchanged: objects with other objects' matrices (Castle Town's
+        // market), as with the snapshot off (RX_VK_UB_SNAPSHOT=0: main's delta push there). Pushing those left out along with them
+        // puts it right; adding them to a push with no uniform buffer write, or to a draw that pushes nothing, does not (one
+        // session each, PR 952). The banks and c1, left out unchanged beside a draw's own new copies, draw right: what tells the
+        // two apart is not known. Before the sharing each draw had copies of its own, so every one of its uniform buffer writes
+        // had changed and was pushed: they still all are, the textures and storage buffers only when changed, as before
+        static const bool ub_every = ub_snapshot_wanted() && ub_snap_dedup_mode() == 1;
+        const auto again = [&](const VkWriteDescriptorSet& w) { return ub_every && w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; };
         if (old_state) {
             for (size_t i = 0; i < wr.writes.size(); i++) {
                 write_words(wr.writes[i], words);
                 if (words != ps.writes[i]) changed.push_back(wr.writes[i]), ps.writes[i].swap(words);
+                else if (again(wr.writes[i])) changed.push_back(wr.writes[i]);
             }
         } else {   // (the same layout, so the same count of words in each write: compared and kept in place)
             for (size_t i = 0; i < wr.writes.size(); i++) {
@@ -4398,7 +4601,7 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
                     ps.cmd = VK_NULL_HANDLE;
                     return bind_descriptors(cmd, bp, p);
                 }
-                if (!same) changed.push_back(wr.writes[i]);
+                if (!same || again(wr.writes[i])) changed.push_back(wr.writes[i]);
             }
         }
         if (!changed.empty()) {
@@ -4482,7 +4685,8 @@ void checkpoint(VkCommandBuffer cmd, const Program& p, char kind) {
 const char* checkpoint_kind(char c) {
     return c == 'd' ? "draw of program" : c == 'c' ? "dispatch of program" : c == 'i' ? "INDIRECT dispatch of program"
          : c == 'm' ? "mirror sync of pool"
-         : c == 'b' ? "write-back of pool" : c == 'u' ? "upload of texture" : c == 'g' ? "GPU unswizzle of texture"
+         : c == 'b' ? "write-back of pool" : c == 'w' ? "write-back diff pass, chunk count" : c == 'u' ? "upload of texture"
+         : c == 'g' ? "GPU unswizzle of texture"
          : "?";
 }
 
@@ -5630,6 +5834,8 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
              c1_peak.load(std::memory_order_relaxed), (unsigned long long)pools_extra.load(std::memory_order_relaxed));
     r.used = 0, r.before = 0;
     r.c1_at.reset();   // (its array kept: emptied at every recording's start, it fills again to about the same size)
+    static std::atomic<uint64_t> ub_snap_epochs{0};   // (every recording a number of its own: ub_snap_slot gives out only its copies)
+    r.ub_snap_epoch = ++ub_snap_epochs;   // (the uniform copies of the slot's last recording are no longer given out)
     cur = &r;
     pass() = Pass{};
     work_since_barrier = false;
@@ -7218,7 +7424,7 @@ static void dlss_trace_draw(const NvnState& s, const Program& p, const DrawArgs&
 static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, const Targets& at) {
     if (d.mesh || !d.indexed || d.indirect || d.instances != 1 || !at.n || !at.color[0] || !at.depth ||
         !temporal_scene_size(at.width, at.height) || !temporal_scene_format(at.color_format[0]) || s.nvattr < 7 ||
-        !temporal_wanted())
+        (!temporal_wanted() && !temporal_fg_inputs()))   // (longshot: and for frame generation's inputs alone)
         return;
     const auto attr = [&](int i) { return *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]); };
     const nvn_va_st pos = attr(0);
@@ -8700,7 +8906,8 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     // share of the Render resolution row (67%: 6676619641320ba7, 58% f10782f9e58b6a7c, 50% 72ba090c70fe2614, 33%
     // 0775215f8da720e6 at 2048x1152), by their shape: a network sampling one texture into one image. temporal_upscale takes those
     // only when the texture is this frame's scene, in the gameplay networks' input format, and the image the picture)
-    if ((!temporal_wanted() && !temporal_off()) || p.stages.empty()) return false;   // (Off: the network's stretch)
+    // (Off: the network's stretch; with no engine, frame generation's inputs alone: temporal_fg_inputs, the network runs)
+    if ((!temporal_wanted() && !temporal_off() && !temporal_fg_inputs()) || p.stages.empty()) return false;
     const Stage& st = p.stages[0];
     if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
                                       st.info.image_descriptors.size() == 1))
@@ -8754,7 +8961,8 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     // another upscaler draws. Without it, on a card that leaves these networks out, FSR 3.1's own Render resolution steps
     // were a plain stretch: issue #1829)
     const bool fsr3 = fsr3_upscale(cmd, key, false, src, in_view, dst, out_view, 0);
-    const bool done = fsr3 || ((temporal_wanted() || temporal_off()) && temporal_upscale(cmd, key, false, src, in_view, dst, out_view, 0));
+    const bool done = fsr3 || ((temporal_wanted() || temporal_off() || temporal_fg_inputs()) &&
+                               temporal_upscale(cmd, key, false, src, in_view, dst, out_view, 0));
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
     vertex_set.on = false, last_ib.on = false;
     if (!done) return false;
@@ -10935,10 +11143,13 @@ void pipeline_cache_between_builds() {
 void pipeline_cache_save(bool force) {
     using Outcome = precompile_save::Outcome;
     pcache_save_outcome = {};
+    // (longshot, issue 388) The file not read (pcache_no_save): the cache's own part is skipped, never written, but play's
+    // generations are still taken away and freed at each save (play_cache_save writes none then), as they are written and freed
+    // where the file is read. Returning here, what play made would pile up in one generation, in memory, until the close
     const bool between = pcache_save_between;
     if (!pcache) pcache_save_outcome.what = Outcome::kNoCache;
     else if (pcache_no_save) pcache_save_outcome.what = Outcome::kOff;
-    if (!pcache || pcache_no_save || (!force && !between && pcache_built_since_save < 32)) return;
+    if (!pcache || (!force && !between && pcache_built_since_save < 32)) return;
     const int64_t built = pcache_built_since_save.exchange(0);
     // (on a thread of its own unless forced, at exit: ~100 MB fetched and written took the replay thread 100+ ms at
     // each scene change; the cache is internally synchronized, pipelines go on being built meanwhile)
@@ -10968,7 +11179,7 @@ void pipeline_cache_save(bool force) {
             had = lock.held();
             return had && vkGetPipelineCacheData(dev.device, pcache, n, data) == VK_SUCCESS;
         };
-        try {
+        if (!pcache_no_save) try {
             size_t n = 0;
             // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
             // (in play only once it has grown by a good deal: what play makes is in the play files, and the little pcache still

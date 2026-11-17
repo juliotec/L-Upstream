@@ -220,8 +220,8 @@ bool run_shader(const std::vector<uint32_t>& code, std::vector<uint32_t>& data, 
         const bool submitted = fence && vkQueueSubmit2(dev.queue, 1, &si, fence) == VK_SUCCESS;
         ok = submitted && vkWaitForFences(dev.device, 1, &fence, VK_TRUE, 5000000000ull) == VK_SUCCESS;
         if (ok) std::memcpy(data.data(), words, size);
-else logf("vk: %s: the dispatch did not complete", what);
-if (submitted && !ok) {
+        else logf("vk: %s: the dispatch did not complete", what);
+        if (submitted && !ok) {
             if (module) vkDestroyShaderModule(dev.device, module, nullptr);
             return false;
         }

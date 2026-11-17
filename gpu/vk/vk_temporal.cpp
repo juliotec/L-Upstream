@@ -64,6 +64,8 @@
 #include "vk_draw.h"
 #include "fsr3_math.h"   // (longshot: FSR 3.1's depth constants from the projection)
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own; fsr3_engine: on this chain)
+#include "vk_fsr3_inputs.h"   // (longshot: take_motion, this chain's motion for FSR 3.1's frame interpolation)
+#include "vk_fsr3fi.h"        // (frames_wanted: that interpolation is asked for)
 #include "vk_fsr4.h"
 #include "vk_xess.h"
 #include "xess_rules.h"
@@ -197,6 +199,12 @@ struct State {
     int reason_repeats = 0;
     const TemporalEngine* told_first = nullptr;
     bool told_camera = false;
+    // (longshot) frame generation's inputs with no engine drawing (fg_inputs, temporal_fg_inputs): their own camera history,
+    // apart from the engine's, so neither takes the other's frame before for its own
+    float fg_last_vp[16]{};
+    float fg_last_jitter[2]{};
+    uint64_t fg_last_frame = 0;
+    bool fg_told = false;
     // (actor motion: the skinned draws into the scene since the last upscale; the poses the engine last drew, by draw: the
     // frame before's, where they were copied to in one of the two pose buffers (each frame's poses go to the other one))
     struct Skin {
@@ -563,9 +571,10 @@ constexpr uint64_t kPoseBytes = 4 << 20;   // (a pose buffer: 280 bones of 48 by
 /// image over the camera's motion. Each one's pose (bones and origin), as its draw read it (temporal_note_skinned_draw),
 /// else copied on the GPU from where the game has it, goes into this frame's pose buffer, for this frame and the next.
 /// before: the frame before's camera without its jitter. history:
-/// the engine has the frame before. Returns the draws drawn
+/// the engine has the frame before. last: the frame the poses to pair with were kept at (the engine's last frame, or frame
+/// generation's inputs' last: fg_inputs), a pose of any other frame not paired. Returns the draws drawn
 int actor_motion(VkCommandBuffer cmd, const Camera& cam, const float* before, uint32_t rw, uint32_t rh, VkImageView dview,
-                 bool history) {
+                 bool history, uint64_t last) {
     State& s = st();
     struct Timed {
         State& s;
@@ -704,7 +713,7 @@ int actor_motion(VkCommandBuffer cmd, const Camera& cam, const float* before, ui
         } else if (paired[i]) {
             it = old.find(pair_key[i]);
         }
-        if (!history || it == old.end() || it->second.frame != s.last_frame || it->second.nbones != k.nbones) {
+        if (!history || it == old.end() || it->second.frame != last || it->second.nbones != k.nbones) {
             s.actor_skipped++;
             continue;
         }
@@ -857,7 +866,8 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     // below: the format, the camera's own size and perspective, the largest in the frame, and the upscale's input)
     if (!color0 || !depth || !camera || camera_size < 0x230 || !temporal_scene_size(width, height)) return;
     // (with the Upscaler Off too: its stretch takes the fixed shares' networks only with the frame's scene as their input)
-    if (!temporal_scene_format(color0->format) || (!temporal_wanted() && !temporal_off())) return;
+    // (and with no engine, for frame generation's inputs: temporal_fg_inputs)
+    if (!temporal_scene_format(color0->format) || (!temporal_wanted() && !temporal_off() && !temporal_fg_inputs())) return;
     State& s = st();
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
@@ -984,7 +994,9 @@ void temporal_idle() {
 
 void temporal_note_skinned_draw(const SkinnedDraw& k) {
     static const bool off = env_switch("RX_VK_DLSS_ACTORS") == 0;
-    if (off || !temporal_wanted() || !k.depth || !k.bones || k.bones_size < 48 || !k.object || k.object_size < 0x4c) return;
+    if (off || (!temporal_wanted() && !temporal_fg_inputs()) || !k.depth || !k.bones || k.bones_size < 48 || !k.object ||
+        k.object_size < 0x4c)
+        return;
     State& s = st();
     const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     // (the time this draw's actor motion costs, less the time it waited for the lock: another thread's work there is counted
@@ -1102,11 +1114,105 @@ bool stretch(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImage
     }
     return true;
 }
+
+/// (longshot) Frame generation's inputs with no engine drawing (temporal_fg_inputs: the game's own upscaler, or the Upscaler's
+/// Off, with AMD FSR 3.1's frame interpolation asked for): the chain's motion, the camera's and the skinned draws' own
+/// (actor_motion), made as an engine's would be and handed to FSR's (vk_fsr3_inputs.h take_motion), whose own is the
+/// camera's alone. Nothing is upscaled: the network runs (or Off's stretch, after this), and no jitter is asked of the host
+/// (s.jitter is not published), so the scene is drawn as the game draws it. The same dispatches as temporal_upscale, found
+/// the same way: known, one of the gameplay networks; else one of that shape whose input is this frame's scene
+void fg_inputs(VkCommandBuffer cmd, bool known, Texture* in, VkImageView in_view, Texture* out, uint32_t out_level) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    if (!in || !in_view || !out || !temporal_colour_pair(in->format, out->format)) return;
+    if (!known && (out->width >> out_level) <= in->width) return;
+    note_output(out, out_level);   // (the scene sizes the camera and the skinned draws are taken at follow from it)
+    const Camera cam = s.cam;
+    if (!temporal_off()) s.cam.valid = false;   // (each frame's own camera; with Off, the stretch after this takes it)
+    struct SkinsDone {   // (the skinned draws, each frame's own: actor_motion takes them, or they go here)
+        State& s;
+        ~SkinsDone() { s.skins.clear(); }
+    } skins_done{s};
+    const uint64_t now = texture_frame_no();
+    if (!cam.valid || now - cam.frame > 1 || in->width != cam.width || in->height != cam.height) return;
+    if (cam.depth_gen != texture_destroy_generation() || !temporal_scene_format(cam.scene_format)) return;
+    const uint32_t rw = in->width, rh = in->height;
+    if (cam.depth->width != rw || cam.depth->height != rh || !(cam.depth->usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||
+        cam.depth->samples != VK_SAMPLE_COUNT_1_BIT || !(cam.depth->aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
+        return;
+    if (!make_pipelines()) return;
+    const VkImageView dview = depth_view(cam.depth);
+    if (!dview) return;
+    free_dead(false);
+    s.asked = now, s.holding = true;   // (temporal_idle lets them go 120 frames after the last)
+    struct Disturbed {   // (from here commands are recorded: the program's descriptor pushes are pushed again after)
+        ~Disturbed() { descriptors_disturbed(); }
+    } disturbed;
+    const VkImageUsageFlags copied = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, rw, rh) ||
+        !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, rw, rh, copied) ||
+        !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, rw, rh, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | copied))
+        return;
+    // (the motion as temporal_upscale makes it: from this frame's jittered clip space to the frame before's without its
+    // jitter, the depth plain. The camera has no jitter here, none being asked of the host, but one is taken off if it has)
+    float previous[16];
+    std::memcpy(previous, s.fg_last_vp, sizeof previous);
+    dlss_math::unjitter(previous, s.fg_last_jitter);
+    struct {
+        float reproject[16];
+        float jitter[2];
+        int32_t size[2];
+        int32_t flags;
+    } pc{};
+    const bool history = s.fg_last_frame && now - s.fg_last_frame <= 2;
+    const bool motion = history && dlss_math::reprojection(cam.current, previous, pc.reproject);
+    pc.jitter[0] = cam.jitter[0], pc.jitter[1] = cam.jitter[1];
+    pc.size[0] = (int32_t)rw, pc.size[1] = (int32_t)rh;
+    pc.flags = motion ? 1 : 0;
+    const uint64_t fg_last = s.fg_last_frame;   // (the poses actor_motion pairs with were kept at that frame)
+    s.fg_last_frame = now;
+    std::memcpy(s.fg_last_vp, cam.current, sizeof s.fg_last_vp);
+    s.fg_last_jitter[0] = cam.jitter[0], s.fg_last_jitter[1] = cam.jitter[1];
+    // (without a frame before to move from the motion is zero and not handed over, FSR's own inputs this frame; the skinned
+    // draws are drawn all the same, as their poses are the next frame's frame before)
+    full_barrier(cmd);   // (the scene's colour and depth, written before)
+    {
+        const VkDescriptorImageInfo info[5] = {{s.point, in_view, VK_IMAGE_LAYOUT_GENERAL},
+                                               {s.point, dview, VK_IMAGE_LAYOUT_GENERAL},
+                                               {VK_NULL_HANDLE, s.color.view, VK_IMAGE_LAYOUT_GENERAL},
+                                               {VK_NULL_HANDLE, s.depth.view, VK_IMAGE_LAYOUT_GENERAL},
+                                               {VK_NULL_HANDLE, s.motion.view, VK_IMAGE_LAYOUT_GENERAL}};
+        VkWriteDescriptorSet w[5]{};
+        for (uint32_t i = 0; i < 5; i++) {
+            w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            w[i].dstBinding = i, w[i].descriptorCount = 1, w[i].pImageInfo = &info[i];
+            w[i].descriptorType = i < 2 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        }
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.prep);
+        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s.prep_layout, 0, 5, w);
+        vkCmdPushConstants(cmd, s.prep_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+        vkCmdDispatch(cmd, (rw + 7) / 8, (rh + 7) / 8, 1);
+    }
+    full_barrier(cmd);
+    const int actors = actor_motion(cmd, cam, previous, rw, rh, dview, motion, fg_last);
+    if (actors) full_barrier(cmd);
+    const bool taken = motion && fsr3_inputs::take_motion(cmd, s.motion.image, rw, rh);
+    if (!s.fg_told && taken) {
+        s.fg_told = true;
+        logf("vk: frame generation: the chain's motion (the skinned draws' own in it: %d this frame) for AMD FSR 3.1, "
+             "%ux%u, with no engine drawing", actors, rw, rh);
+    }
+}
 }  // namespace
+
+bool temporal_fg_inputs() { return temporal_mode() == ur::GAME && fsr3fi::frames_wanted() != 0; }
 
 bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                       VkImageView out_view, uint32_t out_level) {
     const int mode = temporal_mode();
+    // (longshot) no engine, and AMD FSR 3.1's frame interpolation asked for: the chain's motion for it all the same, the
+    // network (or Off's stretch) drawing the picture as before
+    if (temporal_fg_inputs()) fg_inputs(cmd, known, in, in_view, out, out_level);
     if (mode == ur::GAME) return temporal_off() && stretch(cmd, key, known, in, in_view, out, out_view, out_level);
     State& s = st();
     std::lock_guard lk(s.mu);
@@ -1293,7 +1399,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     prep();
     full_barrier(cmd);
     // (what moves by itself: the skinned draws drawn again over the camera's motion, with their own)
-    const int actors = actor_motion(cmd, cam, previous, rw, rh, dview, motion);
+    const int actors = actor_motion(cmd, cam, previous, rw, rh, dview, motion, s.last_frame);
     if (actors) full_barrier(cmd);
     if (show_motion && actors) {   // (RX_VK_DLSS_DEBUG=motion: the motion as it is now, the actors' in it)
         pc.flags = 4;
@@ -1342,6 +1448,9 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     // (NVIDIA DLSS Frame Generation through NGX, vk_dlss.cpp: this frame's depth, motion and camera for the present's made
     // frames. Nothing unless the run asked for it)
     dlss_fg_inputs(cmd, f, cam.projection, cam.current, cam.jitter, motion);
+    // (longshot) and AMD FSR 3.1's frame interpolation: this motion, the skinned draws' own in it, over the camera's alone that
+    // its own inputs made at this dispatch (vk_fsr3_inputs.h take_motion). Nothing unless it is asked for
+    if (motion && fsr3fi::frames_wanted()) (void)fsr3_inputs::take_motion(cmd, f.motion.image, rw, rh);
     s.last_frame = now;
     s.drawn_mode = draw_mode;
     s.last_jitter[0] = cam.jitter[0], s.last_jitter[1] = cam.jitter[1];

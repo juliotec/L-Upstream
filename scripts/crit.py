@@ -14,6 +14,7 @@ import collections, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import prof  # noqa: E402
+import samples  # noqa: E402
 
 RUN_MODS = prof.RUN_MODS
 
@@ -39,7 +40,7 @@ def main():
         return r
 
     ticks = collections.defaultdict(dict)   # ms -> thread -> (running, frames named)
-    for line in open(path, encoding="utf-8", errors="replace"):
+    for line in samples.lines(path):   # (plain or packed)
         head, _, stack = line.rstrip("\n").partition("|")
         ms, _, thread = head.partition(" ")
         if not stack or not ms.isdigit():

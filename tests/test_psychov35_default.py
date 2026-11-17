@@ -62,7 +62,8 @@ int main(int argc,char**){
    assert(temporal_colour_pair(in,out)==((in==122 && out==122)||(rgba && in==97 && out==97)));
    for(int multiplier:{0,1,2,3,8})for(int wanted:{0,1}){
     opts.framegen=multiplier;fg=wanted;
-    const bool fi_rgba=enabled && psycho && multiplier==2 && wanted;
+    // (any multiplier and Auto: frames_wanted says whether Frame generation is on and asks for FSR)
+    const bool fi_rgba=enabled && psycho && wanted;
     assert(independent::scene_format(in)==(in==122 || (fi_rgba && in==97)));
     assert(independent::colour_pair(in,out)==(in==out && (in==122 || (fi_rgba && in==97))));
    }

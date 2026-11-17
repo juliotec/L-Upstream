@@ -89,18 +89,21 @@ frame after a hot switch is insufficient evidence; a menu selection alone is ins
 
 ## Native HDR and FSR 3.1 frame generation
 
-FSR 3.1 interpolation prepares its own scene depth and camera motion, independently of the shared upscaler chain.
-`RX_VK_FSR_FG=1` asks for its midpoint at Frame generation 2x. Native HDR PsychoV35 also needs the existing
+FSR 3.1 interpolation prepares its own scene depth and camera motion, and takes the shared chain's motion over it, the
+skinned draws' own in it, whenever the chain makes one: with an engine drawing, or for the interpolation alone with none
+(`temporal_fg_inputs`). It makes the frames at any Frame generation setting with Frame generation by at FSR 3.1 FG, or at DLSS FG where DLSS FG
+does not (`RX_VK_FSR_FG=0` never, `=1` over the row). Native HDR PsychoV35 also needs the existing
 compatibility policy (enabled unless `RX_VK_PSYCHOV35_DLSS=0`) to accept matching RGBA16F network buffers. Known and shape-detected networks use
 matching sampled/storage views; mixed formats and unrelated dispatches are rejected. This does not enable the legacy
-FSR 3.1 upscaler. Frame generation remains a separate opt-in; its PsychoV35 input compatibility now defaults on.
+FSR 3.1 upscaler. Its PsychoV35 input compatibility defaults on. With PsychoV35 and no engine drawing, the chain does not
+take the RGBA16F scene, so the interpolation keeps its own camera motion there.
 
 The present copied into frame generation can contain PQ codes despite its UNORM capture storage. Pass the captured
 present's native-PQ flag from both presentation paths; give the same transfer function and peak luminance to the AMD
 frame-interpolation and optical-flow constant blocks. SDR retains transfer 0 and its unused 0..1 range; native PQ uses
 transfer 1 and 0..the selected HDR peak in nits. This corrects Native HDR metadata for Vanilla too. The SDK fields are
 documented in [AMD's frame-interpolation guide](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/frame-interpolation/).
-No vendored shader or constant-block layout changes are needed.
+The constant-block layout is the SDK's; its one padding word carries the made frame's place (below).
 
 Scene input format or tone-map changes reset depth/motion history. Encoding or PQ peak changes, frame gaps, cuts and
 resizes reset interpolation history, so frames in different colour spaces are never blended. A reset frame keeps the
@@ -111,6 +114,12 @@ On NVIDIA hardware, disable NVIDIA FG to isolate FSR. Inspect `fsr3fi` generated
 PQ/peak diagnostic and actual generated captures; a selected menu row proves none of these. Record GPU/driver/OS,
 scene and exact commits. These are functional checks, not an uncapped performance measurement or calibrated HDR proof.
 
-Existing limitations remain: a single midpoint at 2x only, camera-derived motion without the shared chain's actor
-vectors, and no HUD-less colour. HUD smearing/ghosting can remain, so FSR generation stays opt-in; 3x and higher use
-the renderer's existing generation path. This change does not solve the separate general scene-transition flicker.
+AMD's passes make the midpoint only and move the HUD with the scene. `scripts/fsr3_shaders.py` (`FI_PATCHES`) compiles
+them from a patched copy of the SDK's headers, `third_party/` unchanged: the made frame's place `t` (0 the frame before, 1
+this one) comes from cbFI's padding word, so a set makes each of its frames at its own place (k/m at a fixed multiplier;
+at Auto, each refresh's), and a pixel the same in both frames while the scene there moves (the HUD drawn over it) is kept
+where it is (dispatchFlags bit 16; `RX_VK_FSR_FG_HUD=0` turns it off). The optical flow and the dilated inputs run once
+a game frame, the rest once a made frame, and the interpolation is given every present it is asked for, with no frame to
+make too, so its history is the frame before whatever the next set asks for. A semi-transparent HUD over a moving scene is
+not the same in both frames and can still smear a little. This does not solve the separate general scene-transition
+flicker.

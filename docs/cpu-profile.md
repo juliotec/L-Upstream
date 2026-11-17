@@ -1073,7 +1073,7 @@ Each row is priced from these runs: **cost** is the on-CPU time of every sample 
 2. **Capture each scene**, one game at a time, with these switches beside the scene's own:
    `HOS_FPS_MAX=240 HOS_FPS_LOG=1 HOS_WINDOW_SIZE=2560x720 HOS_ASPECT=3.5556 HOS_PRESENT_TRACE=<run>/presents.csv`
    - **Unsampled runs:** at least three; this is the *Measured without the sampler* table.
-   - **Sampled runs:** at least three, with `HOS_PROFILE=5 HOS_SAMPLE_ALL=<run>/all.txt`. The sampler records while the file `<run>/all.txt.go` exists, so create it at the start of the measured window and delete it at the end.
+   - **Sampled runs:** at least three, with `HOS_SAMPLE_ALL=<run>/all.txt`. The sampler records while the file `<run>/all.txt.go` exists, so create it at the start of the measured window and delete it at the end.
    - **One run for call counts** (optional) with `HOS_HLE_STATS=1` on a counter-enabled build. Keep `game.log`, the native `presents.csv` and `load.json`; complete counter blocks wholly inside its measured play window supply calls/frame over their own clock span. For **estimated sampled occupancy us/call**, also collect timestamped `HOS_SAMPLE_ALL` stacks in this same run, covering that span. Counts, native frame returns and stack samples then share one interval. Old logs without clock boundaries cannot be normalized; unavailable per-call estimates show as `-`. Counting and sampling add overhead, so measure performance separately with them off ([development.md](development.md#time-and-profiles)).
 3. **What a run folder must hold:**
 

@@ -17,13 +17,15 @@ stand-ins for the GPU's progress, guest memory and the texture ranges:
     page again from guest memory into the copy's slot and flushes that slot, once; a read of the page in another capture (other
     generation or slot) copies nothing and the stale note goes.
 
-take_capture and memory_read_as_submitted are read as text:
+take_capture and the replay's reads of guest memory as submitted are read as text:
   - the wait's value is c->late_value unless the split gives another one, a wait of 0 waits for nothing, and the copies again
     after it leave out the pages the split left to their reads;
   - a page left to its reads is noted only when the capture's buffer is kept and the page's entry is that capture's slot, and a
     later capture that takes the page again drops the note;
   - the texture shadow reads such a page from guest memory (as a page the GPU fixes), never from the capture's stale copy;
-  - memory_read_as_submitted asks late_defer_cpu_read after it has found the page's kept capture, before copying from it.
+  - submitted_read_locked, the captures' part of a replay's read, asks late_defer_cpu_read after it has found the page's kept
+    capture, before copying from it; and both reads go through it, one at a time (memory_read_as_submitted) and a draw's at
+    once (memory_read_as_submitted_many).
 
 python -I -B tests/test_late_defer.py [--cxx g++]
 """
@@ -226,10 +228,15 @@ def check_text(text):
     make = block(text, 'std::unique_ptr<Capture> capture_make() {')
     if 'c->late.push_back((uint32_t)i), c->late_pv.push_back(pv);' not in make or 'c->late_pv.clear()' not in make:
         raise SystemExit("capture_make: the late pages' write-backs (late_pv) are not kept beside them")
-    read = block(text, 'bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {')
-    hook = read.index('if (late_defer_any()) late_defer_cpu_read((uint32_t)page, e.gen, e.slot, b->second.alloc, (uint8_t*)b->second.map);')
-    if not read.index('if (b == cap_bufs.end() || !b->second.map) continue;') < hook < read.index('std::memcpy('):
-        raise SystemExit("memory_read_as_submitted: the late copy is not taken again before it is read")
+    read = block(text, 'int64_t submitted_read_locked(uint64_t guest, void* dst, uint64_t n) {')
+    hook = read.find('if (late_defer_any()) late_defer_cpu_read((uint32_t)page, e.gen, e.slot, b->second.alloc, (uint8_t*)b->second.map);')
+    if not 0 <= read.index('if (b == cap_bufs.end() || !b->second.map) continue;') < hook < read.index('std::memcpy('):
+        raise SystemExit("submitted_read_locked: the late copy is not taken again before it is read")
+    for head in ('bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {',
+                 'void memory_read_as_submitted_many(const SubmittedRead* reads, size_t count) {'):
+        if 'submitted_read_locked(' not in block(text, head):
+            raise SystemExit(head.split('(')[0].split()[-1] + ": its reads of the captures skip submitted_read_locked, and the late "
+                             "copies with it")
 
 
 def main():

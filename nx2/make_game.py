@@ -975,6 +975,44 @@ def bundled_mingw():
     return os.environ.get("LONGSHOT_MINGW", "")
 
 
+def compiler_failure(r):
+    """What a compiler run that failed said, for one line of a message: its first error, else its last line (issue 1010: clang that
+    could not start said only "<clang.exe>: permission denied", and the message had "no message"), with the exit code when it
+    names no error. A Windows code is an NTSTATUS in hex (0xC0000135: a DLL not found; 0xC0000022: access denied)"""
+    lines = [l.strip() for l in (r.stderr + "\n" + r.stdout).splitlines() if l.strip()]
+    errors = [l for l in lines if "error" in l]
+    if errors:
+        return errors[0]
+    code = "exit code 0x%08X" % (r.returncode & 0xFFFFFFFF) if os.name == "nt" else "exit code %d" % r.returncode
+    return "%s, %s" % (lines[-1], code) if lines else "no output, %s" % code
+
+
+def unlistable_above(path):
+    """(issue 1010) The highest folder above path that Windows lets no program list, or None. The compiler (LLVM) looks up its own
+    long name as it starts (GetLongPathNameW), which lists every folder on the way: C:\\Users\\<name>\\Cookies and the other junctions
+    Windows keeps for old programs deny everyone that, and a Desktop moved into one took the launcher there. The launcher says it
+    before it runs the builder (MakeGameRun.Blocked); this is for a builder run otherwise. Windows only"""
+    if os.name != "nt":
+        return None
+    chain = []
+    at = os.path.dirname(os.path.abspath(path))
+    while True:
+        chain.append(at)
+        up = os.path.dirname(at)
+        if up == at:
+            break
+        at = up
+    for folder in reversed(chain):   # (the drive first: the folder named is the one to move out of)
+        try:
+            with os.scandir(folder) as entries:
+                next(entries, None)
+        except PermissionError:
+            return folder
+        except OSError:
+            pass   # (a folder not there, or another error: not this one's to say)
+    return None
+
+
 def check_mingw():
     """The bundled compiler builds and links a Windows program: found now, not 40 minutes in"""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
@@ -991,9 +1029,12 @@ def check_mingw():
                            [src, "-o", os.path.join(d, "t.exe")], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         print(r.stdout + r.stderr, flush=True)
-        errors = [l for l in r.stderr.splitlines() if "error" in l]
+        blocked = unlistable_above(cc)
+        if blocked:   # (issue 1010: LLVM's tools stop at once there, "<clang.exe>: permission denied", before they compile anything)
+            fail("Windows doesn't let programs look inside %s, a folder above the builder's own compiler, so it can't start. Move "
+                 "Longshot's folder out of it (for example to C:\\Longshot) and start Longshot from there." % blocked)
         fail("The builder's own compiler (tools/llvm-mingw) could not build a test program: %s. Unpack the zip again into a folder "
-             "your antivirus allows." % (errors[0] if errors else "no message"))
+             "your antivirus allows." % compiler_failure(r))
     print("the compiler: %s (no Visual Studio needed)" % os.environ["LONGSHOT_MINGW"], flush=True)
 
 
@@ -1695,7 +1736,8 @@ def build_language(a, out):
 
 def profile_readable(prof, any_os=False):
     """(linux) the profile is made by a recent clang (the Windows tools'): an older one, the system's, cannot read it and stops the
-    build. Then the game is built without it (a little slower in play), not at all. any_os: asked on Windows too (the renderer's
+    build. Then the game is built without it (a little slower in play), not at all, and the line says which clang and where the
+    one that reads it is (profile_unread_message). any_os: asked on Windows too (the renderer's
     committed profile is recorded on Linux, and llvm-mingw's clang is another LLVM)"""
     if not LINUX and not any_os:
         return True
@@ -1709,9 +1751,36 @@ def profile_readable(prof, any_os=False):
         r = subprocess.run([toolchain.find("clang"), "-O2", "-Wno-everything", "-fprofile-instr-use=" + prof, "-c", src, "-o",
                             os.path.join(d, "t.o")], capture_output=True, text=True, encoding="utf-8", errors="replace", **quiet)
     if r.returncode:
-        print("this compiler cannot read the play profile (%s): building without it" % (r.stderr.strip().splitlines() or ["?"])[-1],
-              flush=True)
+        ver = subprocess.run([toolchain.find("clang"), "--version"], capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", **quiet).stdout
+        print(profile_unread_message(prof, ver, r.stderr, LINUX, build_tools_llvm()), flush=True)
     return r.returncode == 0
+
+
+def build_tools_llvm(root=ROOT):
+    """The LLVM of the Linux build tools (tools.lock's, the AppImage's: scripts/linux/deps.sh's LLVM_VER), or None without it"""
+    try:
+        with open(os.path.join(root, "scripts", "linux", "deps.sh"), encoding="utf-8") as f:
+            m = re.search(r"^LLVM_VER=(\S+)", f.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def profile_unread_message(prof, version_text, stderr, linux, wanted):
+    """The line a build prints when this clang cannot read a play profile: which clang, which profile, what it costs (nothing
+    stops), and on Linux, with a clang older than the build tools' LLVM (a system clang: a distro's 18 reads no LLVM 23
+    profile), where the one that reads it is. version_text: clang --version's output; stderr: the test compile's"""
+    m = re.search(r"clang version (\d+)([\w.]*)", version_text or "")
+    who = "clang %s%s" % (m.group(1), m.group(2)) if m else "this compiler"
+    why = (stderr or "").strip().splitlines()
+    line = ("%s cannot read the play profile %s (%s): building without it, a little slower in play"
+            % (who, os.path.basename(prof), why[-1] if why else "no message"))
+    major = re.match(r"\d+", wanted or "")
+    if linux and major and (not m or int(m.group(1)) < int(major.group(0))):
+        line += (". The build tools' LLVM %s reads it: `python -I scripts/dev_build.py env` installs them and prints the "
+                 "variables that point the build at them (EMSDK), or install clang %s or newer" % (wanted, major.group(0)))
+    return line
 
 
 VK_PROFILE = "longshot_vk.profdata"   # (the renderer's play profile, llvm-profdata's merge of an RX_VK_PGO=gen run's counters)
@@ -3097,8 +3166,20 @@ def main(a=None):
     if tag:
         with open(os.path.join(out, "longshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("version=%s\n" % tag)
+            # (packaged tools (a tag comes from their VERSION or version.txt; a checkout has neither): their sources'
+            # fingerprint, as the game's first log line names it. The crash report's release flag (host/hos_crash_dialog.c) wants
+            # the two equal and a release's version, so a checkout's build, or a log from another build of the folder, is not a
+            # release)
+            import version as _version
+            f.write("source=%s\n" % _version.fingerprint(ROOT))
             if os.environ.get("LONGSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["LONGSHOT_BUILDER_EXE"])
+            # (where the crash window's Report automatically posts the report, and the issue its Sent page may link to: the game
+            # sends it itself, with the system's curl (host/hos_crash_dialog.c). Either left out of nx2/addresses.ini: no Send)
+            import addresses as _addresses
+            reports, issue = _addresses.address("crash_reports"), _addresses.address("crash_issue")
+            if reports.startswith("https://") and issue.startswith("https://"):
+                f.write("crash_reports=%s\ncrash_issue=%s\n" % (reports, issue))
     PHASES.part("pipeline lists, icon and stamps")
     # (the game's code as read: written again by every build, so not left behind in the work folder. The translated code (sa\gen)
     # and the compiled objects stay: the next build skips the lift when nothing it reads changed (#428) and compiles only what

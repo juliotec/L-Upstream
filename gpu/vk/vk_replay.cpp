@@ -41,6 +41,7 @@
 #include "vk_framegen.h"
 #include "vk_dlss.h"   // (longshot: dlss_fg_idle)
 #include "vk_fps.h"
+#include "perf_report.h"
 #include "vk_menu.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
@@ -4466,7 +4467,10 @@ uint64_t vk_retirement_value() {
 /// too waits for it, instead of ending the process before it is written), then the process ends as replay_fatal does
 [[noreturn]] void device_lost(const char* why) {
     static std::once_flag once;
-    std::call_once(once, checkpoints_report);
+    std::call_once(once, [] {
+        perf_report_final(perf_report::kDeviceLost);   // (the performance summary's last, once, before the process ends)
+        checkpoints_report();
+    });
     replay_fatal(why ? why
                      : "the GPU device was lost (VK_ERROR_DEVICE_LOST): the driver stopped or reset the GPU, and nothing sent "
                        "to it runs any more (on Linux, dmesg or journalctl -k around this time names the reset)");
@@ -4763,9 +4767,11 @@ void log_frame_stats() {
             static const bool keep_all = getenv("RX_VK_NETWORK_KEEP") && !strcmp(getenv("RX_VK_NETWORK_KEEP"), "all");
             const double gpu_ms = (st_gpu_ns - l_gpu) / 120.0 / 1e6, draws = (d - l_d) / 120.0;
             menu_auto_tune(gpu_ms, draws, 120.0 / secs);   // (the Quality preset Auto (this PC): measured in play)
-            if (!keep_all && gpu_ms > 40.0 && draws < 40.0 && !movie_networks_slow.exchange(true))
+            if (!keep_all && gpu_ms > 40.0 && draws < 40.0 && !movie_networks_slow.exchange(true)) {
+                perf_event(perf_report::kMovieUpscalerDropped);
                 logf("vk: %.0f ms of GPU time a frame for %.0f draws (a movie): its upscaler networks are left out from now on "
                      "(a linear upscale; RX_VK_NETWORK_KEEP=all keeps them)", gpu_ms, draws);
+            }
         }
         l_made = texture_made();
         {
@@ -4799,10 +4805,14 @@ void status_tick() {
     // pipeline compiles, the GPU behind. RX_VK_FRAME_LOG has the frame times alone)
     static FILE* trace = [] {
         if (!getenv("RX_VK_FRAME_TRACE") || !atoi(getenv("RX_VK_FRAME_TRACE"))) return (FILE*)nullptr;
-        FILE* f = fopen(log_path("longshot_frames.csv").c_str(), "w");   // (the game folder's logs/: vk_paths.h)
+        // (the game folder's logs/: vk_paths.h; with HOS_PROFILE=1, frames.csv in that run's profile folder, which the host
+        // chose: host/profiling.c)
+        const char* dir = getenv("HOS_PROFILE_DIR");
+        FILE* f = fopen(dir && *dir ? (std::string(dir) + "/frames.csv").c_str() : log_path("longshot_frames.csv").c_str(), "w");
         if (f) fprintf(f, "frame,ms,pipe_waits,pipe_wait_ms,left_out,translate_ms,uploads,upload_mb,textures,memsync_ms,pipelines_ms,"
                           "uploads_ms,programs_ms,slot_wait_ms,gpu_behind_ms,draw_ms,desc_ms,cmds_ms,tex_lookup_ms,textures_gone,"
-                          "late_wait_ms,readback_wait_ms,tex_frame_ms\n");
+                          "late_wait_ms,readback_wait_ms,tex_frame_ms,game_ms,render_ms,gpu_wait_ms,pace_ms,wait_render_ms,"
+                          "wait_gpu_ms,wait_main_ms,main_cpu_ms,main_blocked_ms,main_vcore_ms,at_ns\n");
         return f;
     }();
     if (trace && last_ns) {
@@ -4820,13 +4830,28 @@ void status_tick() {
         // texture_frame as a whole (the present's eviction and sweeps; the read-back's wait is inside it when an eviction asked))
         static int64_t l_late, l_rb, l_tf;
         const int64_t late = memory_late_wait_ns(), rb = texture_readback_wait_ns(), tf = texture_frame_ns();
-        fprintf(trace, "%llu,%.2f,%lld,%.2f,%lld,%.1f,%lld,%.2f,%zu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f\n",
+        // (longshot) the game's frame as the FPS counter's Breakdown splits it (vk_fps.cpp: measured while the trace is on; the
+        // presenting thread's frame, which with the render thread on is the game's present before this one), and the game's main
+        // thread's own time over the trace's frame (MkwVkHost main_thread_times): on the CPU, blocked in waits and sleeps, and
+        // waiting for a virtual core. Its time running but off the CPU (the system's other work) is the frame less the three
+        const fps_stats::Frame ff = fps_last_frame();
+        static int64_t l_mt[3];
+        int64_t mt[3] = {0, 0, 0};
+        if (host->main_thread_times) host->main_thread_times(mt);
+        fprintf(trace, "%llu,%.2f,%lld,%.2f,%lld,%.1f,%lld,%.2f,%zu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,"
+                       "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lld\n",
                 (unsigned long long)frames, (now_ns - last_ns) / 1e6, (long long)(pw - l_pw), pwms - l_pwms, (long long)(ps - l_ps),
                 tr - l_tr, (long long)(up - l_up), (upb - l_upb) / 1048576.0, texture_count(), dp(PROF_MEMSYNC), dp(PROF_PIPE),
                 dp(PROF_UPLOAD), dp(PROF_PROGRAM), dp(PROF_SLOTWAIT), (st_wait_ns - l_wait) / 1e6, dp(PROF_DRAW), dp(PROF_DESC),
                 dp(PROF_CMDS), dp(PROF_TEXGET), (unsigned long long)(gone - l_gone), (late - l_late) / 1e6, (rb - l_rb) / 1e6,
-                (tf - l_tf) / 1e6);
+                (tf - l_tf) / 1e6, ff.part[fps_stats::kGame], ff.part[fps_stats::kRender], ff.part[fps_stats::kGpuWait],
+                ff.part[fps_stats::kPace], ff.part[fps_stats::kWaitRender], ff.part[fps_stats::kWaitGpu], ff.part[fps_stats::kWaitMain],
+                (mt[2] - l_mt[2]) / 1e6, (mt[1] - l_mt[1]) / 1e6, (mt[0] - l_mt[0]) / 1e6,
+                // (at_ns: this present on the host's clock, hos_now_ns: the clock of the profile's samples, presents.csv and
+                // events.txt, so a frame is found in them)
+                (long long)(host->now_ns ? host->now_ns() : 0));
         l_gone = gone, l_late = late, l_rb = rb, l_tf = tf;
+        std::memcpy(l_mt, mt, sizeof l_mt);
         if (frames % 60 == 0) fflush(trace);
         l_ps = ps, l_pw = pw, l_pwms = pwms, l_up = up, l_upb = upb, l_tr = tr, l_wait = st_wait_ns;
         std::memcpy(l_prof, prof_ns, sizeof l_prof);
@@ -4845,6 +4870,7 @@ void status_tick() {
     const int mode = line ? temporal_status(dlss, sizeof dlss) : temporal_mode();   // (temporal_status: since the last line, so only for one)
     static bool over = false;
     if (known && sl::crossed(over, used, allowed)) {
+        if (over) perf_event(perf_report::kVramOverBudget);
         char w[200];
         sl::over_text(w, sizeof w, used, allowed, mode);
         logf("%s", w);
@@ -7009,6 +7035,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_FPS_CAP) return opts.fps_cap;
         if (id == HOS_OPT_HOLD_TOGGLE) return opts.hold_toggle;
         if (id == HOS_OPT_MOUSE_INVERT_X) return opts.mouse_invert_x;
+        if (id == HOS_OPT_HUD_LAYOUT) return opts.hud_layout;
         if (id == HOS_OPT_SKIP_TITLE) return opts.skip_title != 0;
         if (id == HOS_OPT_RENDER_THREAD) return async_on();   // (host/nvn_native.c: the present poll answered at once)
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :

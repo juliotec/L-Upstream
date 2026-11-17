@@ -7,6 +7,7 @@ exact same fail-before checks.
 """
 import argparse
 import contextlib
+from functools import partial
 import importlib.util
 import io
 import os
@@ -66,6 +67,9 @@ class LinuxPreflightTests(unittest.TestCase):
         self.checkout.mkdir()
         (self.checkout / "requirements.txt").write_bytes((ROOT / "requirements.txt").read_bytes())
         self.stack.enter_context(mock.patch.object(self.make, "ROOT", str(self.checkout)))
+        # Keep the shipped-profile lookup in the authored checkout, not the import-time ROOT.
+        self.stack.enter_context(mock.patch.object(self.make, "vk_profile_for",
+                                                  partial(self.make.vk_profile_for, root=str(self.checkout))))
         self.stack.enter_context(mock.patch.object(self.make, "LINUX", True))
         self.stack.enter_context(mock.patch.object(self.make, "CROSS", False))
         self.stack.enter_context(mock.patch.object(self.build, "LINUX", True))

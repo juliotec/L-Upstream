@@ -11,9 +11,10 @@ namespace mkwvk {
 struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
     int framegen_by = 0;  // (longshot) who makes them at 2x and up: 0 DLSS FG (NVIDIA DLSS Frame Generation), 1 Built-in FG
-                          // (the renderer's own, vk_framegen.cpp; vk_dlss.cpp dlss_fg_wanted). Where DLSS-G cannot run, the
-                          // row has Built-in FG alone and keeps the 0 saved. An options file's 0 from before was Auto, DLSS FG
-                          // where it runs: the same default
+                          // (the renderer's own, vk_framegen.cpp; vk_dlss.cpp dlss_fg_wanted), 2 FSR 3.1 FG (AMD FSR 3.1's
+                          // frame interpolation, vk_fsr3fi.cpp asked). At 0, FSR 3.1 makes what DLSS-G does not (Frame
+                          // generation's Auto); where DLSS-G cannot run, 0 is FSR 3.1 FG and the row has it and Built-in FG.
+                          // An options file's 0 from before was Auto, DLSS FG where it runs: the same default
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int vsync = 0;        // (longshot) V-Sync, the swapchain's present mode (vk_main.cpp create_swapchain, made again at once): 0 Auto
                           // (mailbox where the driver has it), 1 On (FIFO), 2 Off (immediate). RX_VK_FIFO / RX_VK_IMMEDIATE over it
@@ -56,6 +57,7 @@ struct Options {
                           // options_version 6: host/hos_wide_size.h hos_aspect_on). In the menu, from menu_init on: a place in
                           // vk_menu.cpp's output_shapes, the shapes of the sizes offered, the monitor's own marked; another shape than
                           // 16:9 and the monitor's is output_res's own (outputs_sync, save)
+    int hud_layout = 0;   // the HUD on a screen not 16:9: 0 its corners at the screen's edges, 1 in the middle 16:9 (HOS_OPT_HUD_LAYOUT)
     int wide_menus = 1;   // ultrawide: the pause, item and map menus 0 at full width (stretched), 1 in the middle 16:9 with the sides
                           // blurred, 2 with black bars (nx2/oot_wide.py, vk_framegen.cpp)
     int show_fps = 0;     // (longshot) the FPS counter: 0 Off, 1 FPS, 2 Frame time, 3 Graph, 4 Breakdown (fps_stats.h; saved as fps_counter=, an old On is 1)

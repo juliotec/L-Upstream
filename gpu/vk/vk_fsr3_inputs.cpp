@@ -86,6 +86,8 @@ struct State {
     const char* reason = nullptr;
     int reason_repeats = 0;
     bool told = false;
+    bool told_chain = false;  // (take_motion's line, once)
+    std::atomic<uint64_t> taken{0};   // (take_motion's copies, for frame interpolation's log: motions_taken)
 };
 State& st() {
     static State s;
@@ -127,7 +129,8 @@ bool make_image(VkCommandBuffer cmd, Image& im, VkFormat format, uint32_t w, uin
     VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ic.imageType = VK_IMAGE_TYPE_2D, ic.format = format, ic.extent = {w, h, 1}, ic.mipLevels = 1, ic.arrayLayers = 1;
     ic.samples = VK_SAMPLE_COUNT_1_BIT, ic.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ic.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // (TRANSFER_DST: the chain's motion copied over this one's, take_motion)
+    ic.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (!create_image(ic, im.image, im.memory)) return im = {}, false;
     VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vc.image = im.image, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = format;
@@ -225,8 +228,8 @@ bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0; }
 bool scene_format(VkFormat format) {
     if (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) return true;
     static const bool enabled = upscaler_rows::psychov35_compatibility(env_switch("RX_VK_PSYCHOV35_DLSS"));
-    return enabled && format == VK_FORMAT_R16G16B16A16_SFLOAT && scene_tonemap_on() && opts.framegen == 2 &&
-           fsr3fi::frames_wanted() != 0;
+    // (frame interpolation at any multiplier and at Auto: frames_wanted says whether Frame generation is on and asks for it)
+    return enabled && format == VK_FORMAT_R16G16B16A16_SFLOAT && scene_tonemap_on() && fsr3fi::frames_wanted() != 0;
 }
 
 bool colour_pair(VkFormat input, VkFormat output) {
@@ -376,6 +379,41 @@ bool take(Frame& out) {
     if (have) out = s.frame;
     return have;
 }
+
+bool take_motion(VkCommandBuffer cmd, VkImage motion, uint32_t width, uint32_t height) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    // (this frame's inputs, made at this dispatch, at the chain's size, with a frame before: the chain's then has one too)
+    if (!motion || !s.have_frame || s.frame.frame != texture_frame_no() || s.frame.reset || s.frame.width != width ||
+        s.frame.height != height || !s.motion.image)
+        return false;
+    const auto barrier = [cmd](VkPipelineStageFlags2 src, VkAccessFlags2 src_access, VkPipelineStageFlags2 dst,
+                               VkAccessFlags2 dst_access) {
+        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        b.srcStageMask = src, b.srcAccessMask = src_access, b.dstStageMask = dst, b.dstAccessMask = dst_access;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.memoryBarrierCount = 1, di.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &di);
+    };
+    // (the chain's motion written by its prep pass and its actor draws; this one's by fsr3_prep.comp)
+    barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                        {width, height, 1}};
+    vkCmdCopyImage(cmd, motion, VK_IMAGE_LAYOUT_GENERAL, s.motion.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    barrier(VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+    s.taken.fetch_add(1, std::memory_order_relaxed);
+    if (!s.told_chain) {
+        s.told_chain = true;
+        logf("vk: fsr3 inputs: the temporal chain's motion (the skinned draws' own in it) in place of the camera's alone, "
+             "%ux%u (frame %llu)", width, height, (unsigned long long)s.frame.frame);
+    }
+    return true;
+}
+
+uint64_t motions_taken() { return st().taken.load(std::memory_order_relaxed); }
 
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh) {
     State& s = st();

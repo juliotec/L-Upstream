@@ -193,7 +193,9 @@ struct Constants {
     uint32_t back_buffer_transfer_function;
     float min_max_luminance[2];
     float tan_half_fov;
-    int32_t pad1;
+    /// (longshot) AMD's _pad1: the made frame's place between the frame before (0) and this one (1), which the patched
+    /// passes read (scripts/fsr3_shaders.py FI_PATCHES; AMD's own fix it at 0.5)
+    float interpolation_t;
     float jitter[2];
     float motion_vector_scale[2];
 };
@@ -241,7 +243,10 @@ static_assert(sizeof(OfSpdConstants) == 32, "cbOF_SPD must match the SDK's layou
 
 // ---- state ----
 
-constexpr uint32_t kMaxMade = 1;        ///< one midpoint frame between two of the game's (vk_fsr3fi.h)
+constexpr uint32_t kMaxMade = kFsr3fiMaxMade;   ///< made frames between two of the game's (vk_fsr3fi.h)
+/// (longshot) cbFI's dispatchFlags bit the patched interpolation reads: the HUD kept where it is (scripts/fsr3_shaders.py
+/// FI_PATCHES, KeepStaticPixels). AMD's own bits are 0 to 2, its debug views, which this backend never sets
+constexpr uint32_t kKeepStatic = 1u << 16;
 constexpr uint32_t kOfLevels = 7;       ///< advancedAlgorithmIterations in ffx_opticalflow.cpp
 constexpr uint32_t kOfBlockSize = 8;    ///< opticalFlowBlockSize, likewise
 constexpr uint32_t kPyramidMips = 13;   ///< the mip UAVs the two inpainting pyramid passes declare
@@ -306,7 +311,9 @@ struct State {
 
     uint32_t width = 0, height = 0, render_width = 0, render_height = 0;
     VkFormat present_format = VK_FORMAT_UNDEFINED;
-    uint32_t ready = 0;                  ///< how many of `made` exist
+    bool sized = false;                  ///< the images but `made` exist, at the sizes above
+    uint32_t ready = 0;                  ///< how many of `made` exist (as many as a set has asked for: ensure_made)
+    uint32_t general = 0;                ///< made[0..general) are in GENERAL; those after, made since, are not yet
     uint32_t flow_width[kOfLevels]{}, flow_height[kOfLevels]{};
 
     // Constant block layout; storage belongs to each recording, not a fixed frame ring.
@@ -326,17 +333,29 @@ State g;
 constexpr VkImageSubresourceRange ALL_LEVELS{VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS,
                                              0, 1};
 
-/// The made frame of Frame generation at 2x by this backend: RX_VK_FSR_FG=1 (opt-in). Without it the renderer's own blend
-/// makes it, as at 3x and more. FSR 3.1's interpolation has no HUD-less colour here (the game draws its HUD into the same
-/// picture), so it moved the HUD with the scene: smeared HUD, a ghost trail behind Link, a see-through rectangle, at 2x only
-/// (#1635 and seven duplicates, 2026-11-10). RX_VK_FSR_FG=1 asks for it over the row, =0 never.
+/// The made frames of Frame generation by this backend: at FSR 3.1 FG on the Frame generation by row (the default where DLSS
+/// FG cannot run) all of them, and at DLSS FG where NVIDIA DLSS Frame Generation does not make them (vk_framegen.cpp asks it
+/// first: Frame generation's Auto), at any multiplier. Built-in FG on the row: the renderer's own blend. RX_VK_FSR_FG=1 asks for it over the row, =0 never.
+/// It was opt-in (RX_VK_FSR_FG=1, 2x only) while it moved the HUD with the scene, as this game draws its HUD into the same
+/// picture and has no HUD-less colour: smeared HUD, a ghost trail behind Link, a see-through rectangle (#1635 and seven
+/// duplicates, 2026-11-10). The patched passes keep it where it is (kKeepStatic; RX_VK_FSR_FG_HUD=0: AMD's as they were).
 uint32_t asked() {
     static const int env = []() {
         const char* e = getenv("RX_VK_FSR_FG");
         return e && *e ? std::max(0, atoi(e)) : -1;
     }();
     if (env >= 0) return env ? 1u : 0u;
-    return 0u;   // (opt-in: the renderer's own blend at 2x, see above)
+    // (DLSS FG on the row: where DLSS-G makes none; FSR 3.1 FG: all of them; Built-in FG: the renderer's own)
+    return opts.framegen >= 1 && opts.framegen_by != 1 ? 1u : 0u;
+}
+
+/// kKeepStatic, unless RX_VK_FSR_FG_HUD=0 (AMD's passes, the HUD moved with the scene: for an A/B)
+uint32_t keep_static_flag() {
+    static const bool off = []() {
+        const char* e = getenv("RX_VK_FSR_FG_HUD");
+        return e && *e && atoi(e) == 0;
+    }();
+    return off ? 0u : kKeepStatic;
 }
 
 /// A memory dependency over the whole queue, in the synchronization2 form this renderer loads.
@@ -556,7 +575,8 @@ void make_uniform_layout() {
     g.slot_pyramid = round_up(sizeof(PyramidConstants));
     g.slot_of = round_up(sizeof(OfConstants));
     g.slot_of_spd = round_up(sizeof(OfSpdConstants));
-    g.frame_stride = g.slot_fi + 2 * g.slot_pyramid + (kOfLevels + 1) * g.slot_of + g.slot_of_spd;
+    // (a cbFI for each made frame: they differ in its interpolation_t)
+    g.frame_stride = kMaxMade * g.slot_fi + 2 * g.slot_pyramid + (kOfLevels + 1) * g.slot_of + g.slot_of_spd;
 }
 
 /// Records one pass: its descriptors pushed at the binding numbers its GLSL fixes them to, then the
@@ -685,8 +705,27 @@ uint32_t frames_wanted() {
     return asked() && capable() ? 1u : 0u;
 }
 
+/// The made frames' images, made[0..n): those not there yet are made (at the sizes prepare made the rest for) and left for
+/// generate to take to GENERAL (g.general). Only as many as a set has asked for: at 2x one, at 8x seven, each a frame at the
+/// display's size
+bool ensure_made(uint32_t n) {
+    n = std::min(n, kMaxMade);
+    if (n <= g.ready) return true;
+    for (uint32_t i = g.ready; i < n; i++) {
+        if (!make_image(g.made[i], g.present_format, g.width, g.height)) {
+            // (not the end of it: the frames there are kept, and the set asks for as many as there are)
+            logf("vk: fsr3fi: made frame %u of %u could not be made: %u made a frame", i + 1, n, i);
+            g.ready = i;
+            return i > 0;
+        }
+        g.ready = i + 1;
+    }
+    logf("vk: fsr3fi: %u made frame(s) at %ux%u", g.ready, g.width, g.height);
+    return true;
+}
+
 bool prepare(uint32_t width, uint32_t height, uint32_t render_width, uint32_t render_height,
-             VkFormat present_format) {
+             VkFormat present_format, uint32_t made_frames) {
     if (!capable() || g.failed) return false;
     if (!width || !height || !render_width || !render_height) return false;
     if (present_format == VK_FORMAT_UNDEFINED) return false;
@@ -716,11 +755,10 @@ bool prepare(uint32_t width, uint32_t height, uint32_t render_width, uint32_t re
         if (g.ok) logf("vk: fsr3fi: %d pass pipelines ready", (int)P_COUNT);
     }
     if (!g.ok) return false;
-    const uint32_t n = kMaxMade;
-    if (g.ready == n && g.width == width && g.height == height &&
+    if (g.sized && g.width == width && g.height == height &&
         g.render_width == render_width && g.render_height == render_height &&
         g.present_format == present_format)
-        return true;
+        return ensure_made(made_frames);
 
     const uint32_t rw = render_width, rh = render_height, uw = width, uh = height;
     // The flow pyramid's levels are halved rounding up, which is not what a mip chain does: the SDK
@@ -773,55 +811,59 @@ bool prepare(uint32_t width, uint32_t height, uint32_t render_width, uint32_t re
                               pyramid_h, pyramid_levels);
     made = made && make_image(g.fi_previous_source, present_format, uw, uh);
     made = made && make_image(g.fi_distortion_field, VK_FORMAT_R8G8_UNORM, 1, 1);
-    for (uint32_t i = 0; i < n && made; i++)
-        made = made && make_image(g.made[i], present_format, uw, uh);
-    for (uint32_t i = n; i < kMaxMade; i++) drop_image(g.made[i]);
+    // (the made frames of the size before: made again at this one, as many as asked, by ensure_made below)
+    for (Image& t : g.made) drop_image(t);
+    g.ready = g.general = 0;
     if (!made) {
         g.failed = true;
         for (Image* t : all_images()) drop_image(*t);
-        for (Image& t : g.made) drop_image(t);
-        g.ready = 0;
+        g.sized = false;
         g.width = g.height = g.render_width = g.render_height = 0;
         return false;
     }
     g.width = uw, g.height = uh, g.render_width = rw, g.render_height = rh;
     g.present_format = present_format;
-    g.ready = n;
+    g.sized = true;
     g.in_general = false;
     g.first_frame = true;
     g.parity = 0;
     g.of_frame_index = 0;
-    logf("vk: fsr3fi: %ux%u from %ux%u inputs, flow %ux%u, pyramid %ux%u with %u levels, %u made "
-         "frame(s) (format %d)",
-         uw, uh, rw, rh, g.flow_width[0], g.flow_height[0], pyramid_w, pyramid_h, pyramid_levels, n,
+    logf("vk: fsr3fi: %ux%u from %ux%u inputs, flow %ux%u, pyramid %ux%u with %u levels (format %d)",
+         uw, uh, rw, rh, g.flow_width[0], g.flow_height[0], pyramid_w, pyramid_h, pyramid_levels,
          (int)present_format);
-    return true;
+    return ensure_made(made_frames);
 }
 
-bool generate(VkCommandBuffer cmd, const Inputs& in) {
+uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uint32_t count) {
     free_dead();
-    if (!frames_wanted()) return false;
-    if (!in.color || !in.color_image || !in.depth || !in.motion) return false;
-    if (in.color_format == VK_FORMAT_UNDEFINED) return false;
-    if (!in.width || !in.height || !in.render_width || !in.render_height) return false;
-    if (!(in.camera.device_to_view_depth[1] > 0.0f)) return false;   // (no camera: vk_fsr3_inputs.cpp)
+    if (!frames_wanted()) return 0;
+    if (!in.color || !in.color_image || !in.depth || !in.motion) return 0;
+    if (in.color_format == VK_FORMAT_UNDEFINED) return 0;
+    if (!in.width || !in.height || !in.render_width || !in.render_height) return 0;
+    if (!(in.camera.device_to_view_depth[1] > 0.0f)) return 0;   // (no camera: vk_fsr3_inputs.cpp)
+    if (count && !times) return 0;
     if (in.native_pq && (!std::isfinite(in.max_luminance) || in.max_luminance <= 0.0f || in.max_luminance > 10000.0f))
-        return false;
-    if (!prepare(in.width, in.height, in.render_width, in.render_height, in.color_format))
-        return false;
-
-    Image& out = g.made[0];
-    if (!out.image) return false;
+        return 0;
+    // (at least one made frame's image even for a set with none: the history below is kept for the next set either way)
+    if (!prepare(in.width, in.height, in.render_width, in.render_height, in.color_format, std::max(1u, count)))
+        return 0;
+    count = std::min(count, g.ready);   // (as many as could be made: ensure_made)
 
     const UniformUpload uniforms = uniform_upload(g.frame_stride);
-    if (!uniforms.binding) return false;
+    if (!uniforms.binding) return 0;
 
     // Everything this backend owns starts UNDEFINED and lives in GENERAL from here on, as the rest
-    // of this renderer's compute resources do.
-    if (!g.in_general) {
+    // of this renderer's compute resources do. A made frame's image made since (a set asked for more) is taken there alone.
+    if (!g.in_general || g.general < g.ready) {
+        const bool all_of_them = !g.in_general;
         g.in_general = true;
         std::vector<VkImageMemoryBarrier2> to_general;
-        const std::vector<Image*> all = all_images();
+        std::vector<Image*> all = all_images();
+        if (!all_of_them) {
+            all.clear();
+            for (uint32_t i = g.general; i < g.ready; i++) all.push_back(&g.made[i]);
+        }
+        g.general = g.ready;
         to_general.reserve(all.size());
         for (const Image* t : all) {
             if (!t->image) continue;
@@ -844,7 +886,7 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
         for (const Image* t : all)
             if (t->image)
                 vkCmdClearColorImage(cmd, t->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &ALL_LEVELS);
-        vkCmdFillBuffer(cmd, g.counters, 0, kCountersBytes, 0);
+        if (all_of_them) vkCmdFillBuffer(cmd, g.counters, 0, kCountersBytes, 0);
         memory_barrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
@@ -882,7 +924,7 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
     // luma pixels into the UV motion the vector field packs.
     k.optical_flow_scale[0] = 1.0f / (float)uw, k.optical_flow_scale[1] = 1.0f / (float)uh;
     k.optical_flow_block_size = (int32_t)kOfBlockSize;
-    k.dispatch_flags = 0;            // (no debug view, no debug bar)
+    k.dispatch_flags = keep_static_flag();   // (no debug view, no debug bar; the HUD kept where it is)
     k.max_render_size[0] = rw, k.max_render_size[1] = rh;
     k.optical_flow_half_res_mode = 0;
     k.num_instances = 1;
@@ -894,6 +936,7 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
     k.jitter[0] = in.jitter[0], k.jitter[1] = in.jitter[1];
     k.motion_vector_scale[0] = in.motion_scale[0] / (float)rw;
     k.motion_vector_scale[1] = in.motion_scale[1] / (float)rh;
+    k.interpolation_t = 0.5f;   // (each made frame's own below; a set with none: AMD's midpoint, for the setup on a reset)
 
     // The two inpainting pyramids downsample different rectangles -- the game vector field's is at
     // the render size and the frame's is at the display size -- so each gets its own block.
@@ -935,12 +978,17 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
     // This evaluation owns its constants until its recording has completed.
     const VkDeviceSize base = uniforms.binding.offset;
     uint8_t* const mapped = uniforms.mapped;
-    const VkDeviceSize at_fi = 0;
-    const VkDeviceSize at_game_pyramid = at_fi + g.slot_fi;
+    const VkDeviceSize at_fi = 0;   // (made frame i's cbFI at at_fi + i * slot_fi: make_uniform_layout)
+    const VkDeviceSize at_game_pyramid = at_fi + kMaxMade * g.slot_fi;
     const VkDeviceSize at_frame_pyramid = at_game_pyramid + g.slot_pyramid;
     const VkDeviceSize at_of = at_frame_pyramid + g.slot_pyramid;
     const VkDeviceSize at_of_spd = at_of + (kOfLevels + 1) * g.slot_of;
-    memcpy(mapped + at_fi, &k, sizeof k);
+    for (uint32_t i = 0; i < std::max(1u, count); i++) {
+        Constants made = k;
+        // (its place between the two frames; the ends are the game's own frames, not made ones)
+        if (i < count) made.interpolation_t = std::clamp(times[i], 0.01f, 0.99f);
+        memcpy(mapped + at_fi + (VkDeviceSize)i * g.slot_fi, &made, sizeof made);
+    }
     memcpy(mapped + at_game_pyramid, &game_pyramid, sizeof game_pyramid);
     memcpy(mapped + at_frame_pyramid, &frame_pyramid, sizeof frame_pyramid);
     memcpy(mapped + at_of, &of, sizeof of);   // (slot 0: the passes before the flow's own pyramid)
@@ -953,6 +1001,10 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
     flush_mapped_range(uniforms.memory, uniforms.binding.offset, uniforms.binding.size);
 
     const Resource cb_fi{VK_NULL_HANDLE, uniforms.binding.buffer, base + at_fi, g.slot_fi};
+    // (made frame i's block; the passes once a game frame take the first's, cb_fi: the blocks differ only in t)
+    const auto cb_fi_of = [&](uint32_t made) {
+        return Resource{VK_NULL_HANDLE, uniforms.binding.buffer, base + at_fi + (VkDeviceSize)made * g.slot_fi, g.slot_fi};
+    };
     const Resource cb_game_pyramid{VK_NULL_HANDLE, uniforms.binding.buffer, base + at_game_pyramid,
                                    g.slot_pyramid};
     const Resource cb_frame_pyramid{VK_NULL_HANDLE, uniforms.binding.buffer, base + at_frame_pyramid,
@@ -977,8 +1029,8 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
     }
     // The nearest-depth scratch is cleared every frame, to zero because the depth is reversed and
     // the SDK clears it to the far value, which under a reversed depth is zero.
+    // (the made frame's estimated depth too, once a made frame: below)
     clear_images(cmd, {&g.fi_reconstructed_depth_previous});
-    if (!reset) clear_images(cmd, {&g.fi_reconstructed_depth_interpolated});
     if (reset) {
         // A cut, a load or a resize: every history the flow and the scene-change detector carry
         // belongs to a scene that is gone, and the SDK clears exactly this set.
@@ -1080,32 +1132,51 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
                              tex(g.fi_dilated_motion_vectors), tex(g.fi_dilated_depth), cb_fi};
         record_pass(cmd, P_FI_RECONSTRUCT_AND_DILATE, res, 6, render_x, render_y);
     }
-    {   // Zeroes both vector fields and the disocclusion mask, and moves the frame counter the
-        // interpolation reads along -- which is why it runs even on a reset.
-        const Resource res[]{tex(g.of_scd_output),   tex(g.fi_game_mv_x), tex(g.fi_game_mv_y),
-                             tex(g.fi_of_mv_x),      tex(g.fi_of_mv_y),   tex(g.fi_disocclusion_mask),
-                             counters,               cb_fi};
-        record_pass(cmd, P_FI_SETUP, res, 8, render_x, render_y);
-    }
-    if (!reset) {
+    // (longshot) The SDK makes one frame, the midpoint, from here on. This makes `count` of them, each at its own t
+    // (scripts/fsr3_shaders.py FI_PATCHES: the patched passes read it from cbFI): everything above, the flow and the
+    // dilated inputs, is once a game frame and shared by them; the vector fields, the made frame's depth, the disocclusion
+    // mask and the frame itself depend on t, so each made frame runs them again, from the setup that zeroes them.
+    // A reset makes none (nothing to interpolate from), but its setup still runs once: it is what sets the frame counter
+    // the interpolation reads back to zero.
+    const uint32_t sets = reset ? 1u : count;
+    for (uint32_t i = 0; i < sets; i++) {
+        const Resource cb = cb_fi_of(i);
+        const Resource out = tex(g.made[i]);
+        if (!reset) {   // (the made frame's estimated depth, nearest wins: zero, the far value under a reversed depth)
+            memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            clear_images(cmd, {&g.fi_reconstructed_depth_interpolated});
+            memory_barrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+        }
+        {   // Zeroes both vector fields and the disocclusion mask, and moves the frame counter the
+            // interpolation reads along -- which is why it runs even on a reset.
+            const Resource res[]{tex(g.of_scd_output),   tex(g.fi_game_mv_x), tex(g.fi_game_mv_y),
+                                 tex(g.fi_of_mv_x),      tex(g.fi_of_mv_y),   tex(g.fi_disocclusion_mask),
+                                 counters,               cb};
+            record_pass(cmd, P_FI_SETUP, res, 8, render_x, render_y);
+        }
+        if (reset) break;
         {
             const Resource res[]{tex(g.fi_dilated_motion_vectors), tex(g.fi_dilated_depth), color,
                                  tex(g.fi_distortion_field),
-                                 tex(g.fi_reconstructed_depth_interpolated), cb_fi};
+                                 tex(g.fi_reconstructed_depth_interpolated), cb};
             record_pass(cmd, P_FI_RECONSTRUCT_PREVIOUS_DEPTH, res, 6, render_x, render_y);
         }
         {
             const Resource res[]{tex(g.fi_dilated_motion_vectors), tex(g.fi_dilated_depth),
                                  tex(g.fi_previous_source),        color,
                                  tex(g.fi_distortion_field),       tex(g.fi_game_mv_x),
-                                 tex(g.fi_game_mv_y),              cb_fi};
+                                 tex(g.fi_game_mv_y),              cb};
             record_pass(cmd, P_FI_GAME_MOTION_VECTOR_FIELD, res, 8, render_x, render_y);
         }
         {
             const Resource res[]{tex(g.fi_game_mv_x), tex(g.fi_game_mv_y), counters,
                                  pyramid(0),  pyramid(1),  pyramid(2),  pyramid(3),  pyramid(4),
                                  pyramid(5),  pyramid(6),  pyramid(7),  pyramid(8),  pyramid(9),
-                                 pyramid(10), pyramid(11), pyramid(12), cb_fi, cb_game_pyramid};
+                                 pyramid(10), pyramid(11), pyramid(12), cb, cb_game_pyramid};
             record_pass(cmd, P_FI_GAME_VECTOR_FIELD_PYRAMID, res, 18, game_groups[0],
                         game_groups[1]);
         }
@@ -1113,7 +1184,7 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
             const Resource res[]{tex(g.of_vector),           tex(g.of_confidence),
                                  tex(g.fi_dilated_depth),    tex(g.fi_previous_source),
                                  color,                      tex(g.fi_of_mv_x),
-                                 tex(g.fi_of_mv_y),          cb_fi};
+                                 tex(g.fi_of_mv_y),          cb};
             record_pass(cmd, P_FI_OPTICAL_FLOW_VECTOR_FIELD, res, 8, flow_x, flow_y);
         }
         {
@@ -1125,32 +1196,33 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
                                  tex(g.fi_inpainting_pyramid),
                                  tex(g.fi_distortion_field),
                                  tex(g.fi_disocclusion_mask),
-                                 cb_fi};
+                                 cb};
             record_pass(cmd, P_FI_DISOCCLUSION_MASK, res, 9, render_x, render_y);
         }
-    }
-    {   // The frame itself. Where it could not decide a colour it leaves the alpha low, and the two
-        // passes after it fill those pixels in from the pyramid they build over this very output.
-        const Resource res[]{tex(g.fi_game_mv_x),         tex(g.fi_game_mv_y),
-                             tex(g.fi_of_mv_x),           tex(g.fi_of_mv_y),
-                             tex(g.fi_previous_source),   color,
-                             tex(g.fi_disocclusion_mask), tex(g.fi_inpainting_pyramid),
-                             counters,                    tex(out),
-                             cb_fi};
-        record_pass(cmd, P_FI_INTERPOLATE, res, 11, display_x, display_y);
-    }
-    {
-        const Resource res[]{tex(out), counters,
-                             pyramid(0),  pyramid(1),  pyramid(2),  pyramid(3),  pyramid(4),
-                             pyramid(5),  pyramid(6),  pyramid(7),  pyramid(8),  pyramid(9),
-                             pyramid(10), pyramid(11), pyramid(12), cb_fi, cb_frame_pyramid};
-        record_pass(cmd, P_FI_INPAINTING_PYRAMID, res, 17, frame_groups[0], frame_groups[1]);
-    }
-    {   // The present backbuffer and the interpolation source are the same image here: this game has
-        // no separate HUD-less colour, so there is nothing to take the HUD from.
-        const Resource res[]{tex(g.of_scd_output), tex(g.fi_inpainting_pyramid), color, color,
-                             tex(out), cb_fi};
-        record_pass(cmd, P_FI_INPAINTING, res, 6, display_x, display_y);
+        {   // The frame itself. Where it could not decide a colour it leaves the alpha low, and the two
+            // passes after it fill those pixels in from the pyramid they build over this very output.
+            const Resource res[]{tex(g.fi_game_mv_x),         tex(g.fi_game_mv_y),
+                                 tex(g.fi_of_mv_x),           tex(g.fi_of_mv_y),
+                                 tex(g.fi_previous_source),   color,
+                                 tex(g.fi_disocclusion_mask), tex(g.fi_inpainting_pyramid),
+                                 counters,                    out,
+                                 cb};
+            record_pass(cmd, P_FI_INTERPOLATE, res, 11, display_x, display_y);
+        }
+        {
+            const Resource res[]{out, counters,
+                                 pyramid(0),  pyramid(1),  pyramid(2),  pyramid(3),  pyramid(4),
+                                 pyramid(5),  pyramid(6),  pyramid(7),  pyramid(8),  pyramid(9),
+                                 pyramid(10), pyramid(11), pyramid(12), cb, cb_frame_pyramid};
+            record_pass(cmd, P_FI_INPAINTING_PYRAMID, res, 17, frame_groups[0], frame_groups[1]);
+        }
+        {   // The present backbuffer and the interpolation source are the same image here: this game has
+            // no separate HUD-less colour, so there is nothing to take the HUD from (the patched interpolation keeps
+            // it where it is instead: kKeepStatic).
+            const Resource res[]{tex(g.of_scd_output), tex(g.fi_inpainting_pyramid), color, color,
+                                 out, cb};
+            record_pass(cmd, P_FI_INPAINTING, res, 6, display_x, display_y);
+        }
     }
 
     // This frame becomes the next one's "previous", and the luma pyramids swap, so the next flow
@@ -1173,10 +1245,10 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
     // the interpolation wrote is the current frame over a previous frame that is not there yet.
     // Everything above still ran, which is what gives the next frame its luma pair and its previous
     // source; this one is refused, and the caller's own colour interpolation takes it.
-    return !reset;
+    return reset ? 0u : count;
 }
 
-VkImage made_image() { return g.ready ? g.made[0].image : VK_NULL_HANDLE; }
+VkImage made_image(uint32_t i) { return i < g.ready ? g.made[i].image : VK_NULL_HANDLE; }
 
 void reset() { g.first_frame = true; }
 

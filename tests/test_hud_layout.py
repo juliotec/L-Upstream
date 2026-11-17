@@ -5,9 +5,11 @@ a narrower one's; past 12:5 (a 32:9 screen) they stop at 12:5's sides, and at 48
 one. Narrower than 3:2 (4:3, 5:4) the HUD is drawn smaller, by the ratio over 3:2, and what sits at the top or bottom moves
 out to the screen's top or bottom. The HUD's layouts are known by their root layout's name; every other layout is a menu's,
 kept at its 16:9 shape and not moved: in the middle 16:9 of a wider screen, and on a narrower one drawn smaller from its
-root pane to fit the width. The map page (the minimap's layout showing it) is drawn as a menu's; the text box's choices
-are held where the game puts them at the HUD's size, and its button guide is the HUD's. At 16:9 nothing changes. The UI
-projection's site scales every screen not kept whole.
+root pane to fit the width. The map page (the minimap's layout showing it) is drawn as a menu's; the text box and its
+choices are held where the game puts them at the HUD's size, but for the choices' column, at the canvas's right edge: on a
+screen where the HUD's canvas is wider than the screen (16:10 and narrower) it moves in to the screen's right side, so the
+choices stay on it (Longshot #1050). The text box's button guide is the HUD's. At 16:9 nothing changes. The UI projection's
+site scales every screen not kept whole.
 
 python -I -B tests/test_hud_layout.py [--cc gcc]
 """
@@ -66,9 +68,9 @@ static void place(uint64_t p, uint64_t parent, float x, float y) {
     px = getf(p + 0x4c), py = getf(p + 0x50);
 }
 static uint64_t sroot, hearts, rupees, buttons, minimap, banner, mroot, mleft, froot, fpane, ficon;
-static uint64_t maproot, mapicons, mapframe, droot, dchoice, lroot, lguide;
+static uint64_t maproot, mapicons, mapframe, droot, dchoice, dcol, dbox, lroot, lguide;
 static float hx, hy, rx_, ry, bx, mx, my, nx, menux, mrx, mry, mrs, ix, iy;
-static float map_ix, maps, mapfx, ds, dcx, dcy, lgx, lgy;   /* (map_ix: the map's icons' group, at the origin on the map page) */
+static float map_ix, maps, mapfx, ds, dcx, dcy, dbtn, dbx, dby, lgx, lgy;   /* (map_ix: the map's icons' group, at the origin on the map page) */
 /* the pane's size as drawn (f_8154ac30: its width in v0, its height in v1) */
 static void drawn_size(uint64_t p, float *w, float *h) {
     *w = getf(p + 0x58), *h = getf(p + 0x5c);
@@ -91,9 +93,11 @@ static void frame(void) {
     putf(maproot + 0x28, 1.0f), putf(maproot + 0x38, 1.0f);   /* (MapMenu_00: the map page, or the HUD's minimap) */
     place(maproot, 0, 0, 0); maps = getf(maproot + 0x28);
     place(mapicons, maproot, map_ix, 0); place(mapframe, maproot, -1700, 0); mapfx = px;
-    putf(droot + 0x28, 1.0f), putf(droot + 0x38, 1.0f);   /* (the text box's choices) */
+    putf(droot + 0x28, 1.0f), putf(droot + 0x38, 1.0f);   /* (MessageDialog_00: the text box and its choices) */
     place(droot, 0, 0, 0); ds = getf(droot + 0x28);
-    place(dchoice, droot, 1500, -500); dcx = px, dcy = py;
+    place(dbox, droot, 0, -704); dbx = px, dby = py;        /* (the box, across the middle) */
+    place(dcol, droot, 1460, 0); dcx = px;                  /* (the choices' column: its boxes reach x 1930) */
+    place(dchoice, dcol, dcx, -500); dbtn = px, dcy = py;   /* (a choice, made from its column's transform as moved) */
     place(lroot, 0, 0, 0); place(lguide, lroot, 1600, -900); lgx = px, lgy = py;   /* (the text box's button guide) */
 }
 static void at(float ratio) {
@@ -119,7 +123,9 @@ int main(void) {
     mapicons = pane_at(MAP, 12, "N_MapIcon_00", 60, 60, 0);
     mapframe = pane_at(MAP, 13, "P_Frame_00", 400, 1500, 1);
     droot = pane_at(DIALOG, 14, "RootPane", 0, 0, 0);
-    dchoice = pane_at(DIALOG, 15, "N_BtnIn_00", 300, 100, 1);
+    dchoice = pane_at(DIALOG, 15, "Pa_Btn_00", 940, 226, 1);
+    dcol = pane_at(DIALOG, 18, "N_BtnNum_00", 90, 120, 0);
+    dbox = pane_at(DIALOG, 19, "P_MessageBase_00", 2200, 600, 1);
     lroot = pane_at(GUIDE, 16, "RootPane", 0, 0, 0);
     lguide = pane_at(GUIDE, 17, "A_GuideAll_00", 300, 80, 1);
     const float G = 16.0f / 9.0f;
@@ -135,9 +141,10 @@ int main(void) {
     CHECK(near(hx, -1500 - e) && near(rx_, -1600 - e) && near(bx, 1600 + e) && near(mx, 1500 + e));
     CHECK(hy == 880 && ry == -900 && my == -760 && nx == 0);   /* (up and down as at 16:9) */
     CHECK(menux == -1700);
-    /* (the map page: a menu's, not moved; the text box's choices held where the game puts them; its button guide out with
-       the minimap) */
-    CHECK(mapfx == -1700 && maps == 1.0f && dcx == 1500 && ds == 1.0f && near(lgx, 1600 + e) && lgy == -900);
+    /* (the map page: a menu's, not moved; the text box and its choices held where the game puts them, beside each other; its
+       button guide out with the minimap) */
+    CHECK(mapfx == -1700 && maps == 1.0f && dcx == 1460 && dbtn == 1460 && dbx == 0 && ds == 1.0f && near(lgx, 1600 + e) &&
+          lgy == -900);
     /* (the loading fade, its layout in the middle 16:9 as the centred Ultrawide menus modes draw it: its pane over the whole
        picture, its icon as it is, Longshot #82) */
     drawn_size(fpane, &fw, &fh), drawn_size(ficon, &iw, &ih);
@@ -173,6 +180,11 @@ int main(void) {
     CHECK(near(mrs, r / G) && near(mrx, 100 * r / G) && near(mry, 40 * r / G));
     /* (drawn: the menu's whole width in the screen's) */
     CHECK(near(3840.0f * mrs * hos_ui_qx, 3840.0f));
+    /* (the text box held at the HUD's size in the middle; its choices' column in to the screen's right side, its boxes with
+       it and not moved again, as far from the screen's edge as at 16:9 (the canvas's half width there, 1920 / hos_ui_qx).
+       Left where the game puts it, its boxes' right 200 units were off the screen, Longshot #1050) */
+    CHECK(ds == 1.0f && dbx == 0 && dby == -704 && near(dcx, 1460 + e) && near(dbtn, dcx) && dcy == -500);
+    CHECK(near(1920.0f / hos_ui_qx - (dbtn + 470.0f), 1920.0f - (1460.0f + 470.0f)));
 
     at(1.5f);   /* 3:2: still the 16:9 size */
     CHECK(near(hos_ui_qy, 1.0f));
@@ -187,7 +199,8 @@ int main(void) {
     CHECK(nx == 0);
     /* (the map page fitted to the width with the rest of the pause menu, never moved; the text box's choices at the HUD's
        size, as the box, where the game puts them; its button guide in the corner, as the minimap) */
-    CHECK(near(maps, r / G / k) && mapfx == -1700 && ds == 1.0f && dcx == 1500 && dcy == -500);
+    CHECK(near(maps, r / G / k) && mapfx == -1700 && ds == 1.0f && dbx == 0 && dby == -704 && dcy == -500);
+    CHECK(near(dcx, 1460 + ex) && near(dbtn, dcx) && near(1920.0f / hos_ui_qx - (dbtn + 470.0f), 1920.0f - (1460.0f + 470.0f)));
     CHECK(near(lgx, 1600 + ex) && near(lgy, -900 - ey));
     /* drawn: the hearts' place on the screen, in canvas units of the 16:9 size, at the same distance from the top left corner
        as at 16:9 (the screen's half sizes: 1920 * r / (k * G) across, 1080 / k up) */
@@ -206,6 +219,10 @@ int main(void) {
             at(shapes[s]);
             CHECK((ix + 80.0f) * hos_ui_qx <= 1920.5f && (-iy + 80.0f) * hos_ui_qy <= 1080.5f);
             if (shapes[s] > G) CHECK(ix == 1650 && ix + 80.0f <= 1920.0f);   /* (wider: in the middle 16:9, never beside it) */
+            /* (the text box's choices no further past the screen's right edge than at 16:9, the game's own 10 units; on a
+               wider screen beside the box, where the game puts them) */
+            CHECK(dbtn + 470.0f - 1920.0f / hos_ui_qx <= 10.05f && dbx == 0);
+            if (shapes[s] > G) CHECK(dcx == 1460 && dbtn == 1460);
         }
         at(4.0f / 3.0f);
     }
@@ -218,6 +235,7 @@ int main(void) {
 
     at(0.0f);   /* back to 16:9: the game's own */
     CHECK(hx == -1500 && hy == 880 && mx == 1500 && menux == -1700 && mrs == 1.0f && mrx == 100);
+    CHECK(dcx == 1460 && dbtn == 1460 && dbx == 0);
     drawn_size(fpane, &fw, &fh);
     CHECK(fw == 3840.0f && fh == 2160.0f);
     printf("PASS: the HUD keeps its 16:9 size at each shape, at the screen's edges; the menus keep 16:9\n");

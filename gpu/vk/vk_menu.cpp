@@ -39,6 +39,7 @@
 #include "vk_texture.h"   // (the FPS counter's Dev level: texture_count, texture_bytes, texture_stats)
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
+#include "vk_imgui.h"   // (the renderer's side of the overlay: begin, fonts, logo, record)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
@@ -312,7 +313,7 @@ const char* dlss_preset_env() {
     return ur::preset_env(e) ? e : nullptr;
 }
 const char* tx_dlss_model(int v) {
-    static const char* const t[] = {"Transformer (K)", "Transformer 2 (M)", "Transformer 2 (L)", "NVIDIA default"};
+    static const char* const t[] = {"Transformer (K)", "Transformer 2 (M)", "Transformer 2 (L)", "NVIDIA default", "CNN (E)", "CNN (F)"};
     if (const char* e = dlss_preset_env()) {
         static char b[48];
         const unsigned p = ur::dlss_preset(v, e);
@@ -331,6 +332,8 @@ const char* hn_dlss_model(int v, int variant) {
         "NVIDIA's second-generation transformer, its pick for Performance: sharper, at a little more GPU time.",
         "The second-generation transformer as NVIDIA tuned it for Ultra Performance, the smallest Render resolutions.",
         "Lets DLSS's runtime pick for each mode: what it picks can change with a runtime update.",
+        "NVIDIA's lightweight CNN model: uses ~59 MB VRAM and runs faster on constrained RTX GPUs.",
+        "NVIDIA's lightweight CNN model tuned for DLAA and Ultra Performance (~59 MB VRAM).",
     };
     static const char* const unused = "Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.";
     static const char* const env = "Set for this run by RX_VK_DLSS_PRESET.";
@@ -748,11 +751,11 @@ const char* hn_resolution(int v, int variant) {
     return "A steady size: lower is faster, and softer.";
 }
 /// (longshot) Whether the Frame generation by row offers DLSS FG: where DLSS-G can run in this process as far as is known
-/// (vk_dlss.cpp dlss_fg_unavailable). Where it cannot, the row has Built-in FG alone (row_fixed) and its line says why
+/// (vk_dlss.cpp dlss_fg_unavailable). Where it cannot, the row has FSR 3.1 FG (0, the default, and 2 the same) and Built-in
+/// FG, and its line at FSR 3.1 FG says why not DLSS FG
 bool framegen_by_dlss_offered() { return dlss_fg_unavailable() == FG_SKIP_NONE; }
-/// Frame generation by with nothing to choose: DLSS FG cannot run (Built-in FG alone), or RX_VK_DLSS_FG=1 chooses DLSS FG
-/// for the run (vk_dlss.cpp dlss_fg_forced)
-bool framegen_by_fixed() { return !framegen_by_dlss_offered() || dlss_fg_forced(); }
+/// Frame generation by with nothing to choose: RX_VK_DLSS_FG=1 chooses DLSS FG for the run (vk_dlss.cpp dlss_fg_forced)
+bool framegen_by_fixed() { return dlss_fg_forced(); }
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool row_fixed(const int* value) {
     return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
@@ -760,6 +763,7 @@ bool row_fixed(const int* value) {
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr)) ||
            (value == &opts.framegen_by && framegen_by_fixed()) ||   // (its line says why)
            (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8")) ||   // (set for the run: vk_texture.cpp reads it first)
+           (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI")) ||   // (host/hos_wide_ui.c's, first)
            (value == &opts.intel_compiles && getenv("RX_VK_NO_INTEL_SERIAL"));
 }
 const char* tx_output_res(int v) {
@@ -1101,12 +1105,13 @@ const char* framegen_maker_name() {
     default: return nullptr;
     }
 }
-/// Frame generation by: the choice, DLSS FG (0) or Built-in FG (1); Built-in FG whatever is saved where DLSS FG cannot run,
-/// DLSS FG with RX_VK_DLSS_FG=1.
+/// Frame generation by: the choice, DLSS FG (0), Built-in FG (1) or FSR 3.1 FG (2); where DLSS FG cannot run, 0 is FSR 3.1
+/// FG (AMD FSR 3.1's frame interpolation, vk_fsr3fi.cpp asked); DLSS FG with RX_VK_DLSS_FG=1.
 /// Who makes the frames now (the game's own menus give DLSS-G nothing to make them from) is the row's line and the FPS
 /// counter's (framegen_maker_name), not the choice's name
 const char* tx_framegen_by(int v) {
-    return framegen_by_dlss_offered() && (v == 0 || dlss_fg_forced()) ? "DLSS FG" : "Built-in FG";
+    if (framegen_by_dlss_offered() && (v == 0 || dlss_fg_forced())) return "DLSS FG";
+    return v == 1 ? "Built-in FG" : "FSR 3.1 FG";
 }
 /// Why DLSS-G does not make the frames now (vk_dlss.h FgSkip, and the Auto multiplier's FG_SKIP_COUNT), the row's line after
 /// "Not DLSS FG now: ". most: its runtime's most made frames, for FG_SKIP_TOO_MANY
@@ -1142,6 +1147,7 @@ const char* hn_framegen_by(int v, int variant) {
     static const char* const t[] = {
         "NVIDIA DLSS Frame Generation (RTX 40 and newer), made from the Upscaler's depth and motion.",
         "The renderer's own: made from the finished picture alone.",
+        "AMD FSR 3.1 frame interpolation, made from the scene's depth and motion: any GPU.",
     };
     static const char* const paused = "DLSS FG paused: the game's own menus, movies and loading screens draw no 3D to make "
                                       "frames from, so only the game's own frames show.";
@@ -1166,7 +1172,7 @@ const char* hn_framegen_by(int v, int variant) {
     bool off = false;      // (DLSS FG cannot run: not offered)
     bool forced = false;   // (RX_VK_DLSS_FG=1 chooses)
     if (variant >= 0) {
-        if (variant == 0) return t[v == 0 ? 0 : 1];
+        if (variant == 0) return t[std::clamp(v, 0, 2)];
         if (variant < nows) why = variant;
         else if (variant == nows) return paused;
         else if (variant > forced_at && variant - forced_at <= kCannot) {
@@ -1177,12 +1183,14 @@ const char* hn_framegen_by(int v, int variant) {
         } else {
             return nullptr;
         }
-    } else if ((why = dlss_fg_unavailable()) != FG_SKIP_NONE) {
+    } else if (v == 1 && !dlss_fg_forced()) {
+        return t[1];   // (Built-in FG, chosen)
+    } else if ((why = dlss_fg_unavailable()) != FG_SKIP_NONE) {   // (FSR 3.1 FG makes them: why not DLSS FG)
         off = true, dlss = (int)dlss_why();
     } else if (dlss_fg_forced()) {
         forced = true;
     } else {
-        if (v != 0) return t[1];
+        if (v != 0) return t[v == 2 ? 2 : 1];
         const FgMaker m = opts.framegen >= 1 ? framegen_maker() : FgMaker::None;
         if (m == FgMaker::DlssPaused) return paused;
         if (m != FgMaker::BuiltIn && m != FgMaker::Fsr3) return t[0];
@@ -1195,7 +1203,7 @@ const char* hn_framegen_by(int v, int variant) {
     }
     const char* text = off && why == FG_SKIP_DEVICE && dlss_why_text(dlss) ? dlss_why_text(dlss)
                                                                           : framegen_skip_text(why, most);
-    if (!text) return t[v == 0 && !off ? 0 : 1];
+    if (!text) return t[off || v == 2 ? 2 : v == 1 ? 1 : 0];
     snprintf(out, sizeof b[0], off ? "DLSS FG cannot run: %s" : "Not DLSS FG now: %s", text);
     return out;
 }
@@ -1304,6 +1312,16 @@ const char* tx_wide_menus(int v) {
 MENU_HINTS(hn_wide_menus, 0, "The menus stretched over the whole screen, as before.",
            "The menus in the middle 16:9; beside them, what the game draws there, out of focus.",
            "The menus in the middle 16:9; black beside them.")
+/// (the HUD layout row, HOS_OPT_HUD_LAYOUT: host/hos_wide_ui.c places the HUD by it at each present, #1133)
+const char* tx_hud_layout(int v) { return v ? "Middle 16:9" : "Screen's edges"; }
+const char* hn_hud_layout(int v, int variant) {
+    static const char* const t[] = {"The hearts, the buttons and the minimap at the screen's own edges and corners.",
+                                    "The HUD where it is at 16:9, in the middle (fitted to the width on a narrower screen)."};
+    static const char* const held = "Set by HOS_WIDE_UI (longshot_env.txt or the environment): remove that line to choose here.";
+    const char* env = getenv("HOS_WIDE_UI");
+    if (variant < 0) return env && *env ? held : t[v ? 1 : 0];
+    return variant == 0 ? t[v ? 1 : 0] : variant == 1 && env && *env ? held : nullptr;
+}
 /// (the ASTC as RGBA8 row's line while RX_VK_ASTC_RGBA8 holds it: the old readme's way, still in some longshot_env.txt files)
 const char* hn_astc_rgba8(int, int variant) {
     return variant <= 0 && getenv("RX_VK_ASTC_RGBA8") ? "Set by RX_VK_ASTC_RGBA8 (longshot_env.txt or the environment): remove that line to choose here."
@@ -1313,7 +1331,8 @@ const char* tx_intel_compiles(int v) { return v == 1 ? "Side by side" : v == 2 ?
 /// (the Intel shader compiles row's line: RX_VK_NO_INTEL_SERIAL holds it, as RX_VK_ASTC_RGBA8 the ASTC row)
 const char* hn_intel_compiles(int v, int variant) {
     if (variant <= 0 && getenv("RX_VK_NO_INTEL_SERIAL"))
-        return "Set by RX_VK_NO_INTEL_SERIAL (longshot_env.txt or the environment): remove that line to choose here.";
+        return "Set by RX_VK_NO_INTEL_SERIAL: the launcher's build settings (Intel shader compiles), longshot_env.txt or the "
+               "environment. Change it there to choose here.";
     static const char* const t[] = {"Side by side on the Arc B-series (driver 101.9154 or newer), where it was measured; one at "
                                     "a time on other Intel graphics.",
                                     "Shaders are built faster on a CPU with many cores, but Intel's driver can crash the game "
@@ -1467,10 +1486,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
-    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 1, 1, tx_framegen_by,
+    {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 2, 1, tx_framegen_by,
      "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs a temporal Upscaler (DLSS, DLAA or FSR) for "
      "the scene's depth and motion. Changes at once.", hn_framegen_by, false, true},
-    {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "Game frame rate cap", &opts.fps_cap, -1, 6, 1, tx_fps_cap,
      "Limits frames rendered by the game. Generated frames are additional. Changes at once. "
      "Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's "
@@ -1499,6 +1517,9 @@ Row rows[] = {
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
      "With the Aspect ratio at the monitor's shape: the pause, item and map menus, and what shows beside them. Loading "
      "screens and pre-rendered movies, which draw no world either, get the same sides. Changes at once.", hn_wide_menus, false, true},
+    {TAB_GRAPHICS, "HUD layout", &opts.hud_layout, 0, 1, 1, tx_hud_layout,
+     "On a screen that is not 16:9: where the hearts, buttons and minimap sit. Ultrawide menus places the menus; this, the "
+     "HUD in play. At 16:9 both are the same. Changes at once.", hn_hud_layout, false, true},
     {TAB_GRAPHICS, "HDR", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
@@ -1529,11 +1550,6 @@ Row rows[] = {
     {TAB_GRAPHICS, "GPU and memory", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
-    // (longshot, threaded_rendering.h: the render thread and the recorder thread together, one row. Auto, On, Off as V-Sync's,
-    // so its text is tx_vsync's. Read once, at the start: menu_threaded_rendering)
-    {TAB_GRAPHICS, "Threaded rendering", &opts.threaded_rendering, 0, 2, 1, tx_vsync,
-     "Draws the picture on threads of its own, beside the game's, on a processor with threads to spare. Applies after a "
-     "restart.", hn_threaded, true, true},
     // (no Mesh shaders row: changing it translated every shader again at the next start, for nothing a player gains. A launch
     // switch now, RX_VK_MESH_SHADERS: gpu/vk/mesh_mode.h)
 
@@ -1724,6 +1740,13 @@ Row rows[] = {
      "Helps remove first-load stutter for everyone: saves the pipelines your play built (shader hashes and draw state, no game "
      "data) with a filled-in report as a zip in Downloads, copies the report and opens the \"Submit your pipelines\" issue. "
      "Attach the zip there and paste the report. Nothing is uploaded for you."},
+    // (longshot) for testing, not a player's choice: when each made frame is shown (vk_framegen.cpp)
+    {TAB_DEBUG, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
+    // (longshot, threaded_rendering.h: the render thread and the recorder thread together, one row. Auto, On, Off as V-Sync's,
+    // so its text is tx_vsync's. Read once, at the start: menu_threaded_rendering)
+    {TAB_DEBUG, "Threaded rendering", &opts.threaded_rendering, 0, 2, 1, tx_vsync,
+     "Draws the picture on threads of its own, beside the game's, on a processor with threads to spare. Applies after a "
+     "restart.", hn_threaded, true, true},
     {TAB_DEBUG, "Descriptor reuse", &opts.descriptor_reuse, 0, 1, 1, tx_onoff,
      "A draw keeps its descriptors while the texture slots it samples are unchanged, so streaming elsewhere in the game no longer "
      "rebuilds every set each frame. Changes at once.", nullptr, false, true},
@@ -2043,7 +2066,9 @@ bool row_shown(int i) {
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
            ((v != &opts.hdr_white && v != &opts.hdr_peak && v != &opts.hdr_contrast) || opts.hdr != 0) &&
-           (v != &opts.hdr_tonemap || opts.hdr == 2);
+           (v != &opts.hdr_tonemap || opts.hdr == 2) &&
+           // (longshot) who makes the frames only with Frame generation on; the CRT raster only with a CRT filter
+           (v != &opts.framegen_by || opts.framegen != 0) && (v != &opts.crt_lines || opts.crt_filter != 0);
 }
 int tab_row_count(int t) {
     int c = 0;
@@ -2864,6 +2889,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
     }
+    // (longshot) Frame generation by where DLSS FG cannot run: FSR 3.1 FG (0; a 2 is the same) and Built-in FG (1)
+    if (r.value == &opts.framegen_by && !framegen_by_dlss_offered()) v = (v % 2 + 2) % 2;
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 2) v = dir > 0 ? 0 : 2;
@@ -3161,9 +3188,13 @@ bool fps_vram_over = false;                    // (the VRAM line in red: past wh
 /// The FPS counter's target frame time, ms: the Game frame rate cap row's (HOS_FPS_MAX over it, as host/nn_vi.c, which follows
 /// the row in play), or the display's refresh with V-Sync On and no frame generation when that is slower; 0 for none (Uncapped
 /// without V-Sync)
-double fps_target_ms() {
+/// The frame rate cap in effect: HOS_FPS_MAX's over the Game frame rate cap row's
+int fps_cap_now() {
     static const int env_max = getenv("HOS_FPS_MAX") ? std::max(1, atoi(getenv("HOS_FPS_MAX"))) : 0;
-    const int cap = fps_stats::cap_rate(opts.fps_cap, env_max);
+    return fps_stats::cap_rate(opts.fps_cap, env_max);
+}
+double fps_target_ms() {
+    const int cap = fps_cap_now();
     const bool fifo = menu_vsync() == 1 && opts.framegen == 0;
     return fps_stats::target_ms_for(cap, fifo, fifo ? (display_refresh_mhz() + 500) / 1000 : 0);
 }
@@ -5360,6 +5391,8 @@ void menu_set_gpu_count(int count) {
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
+double menu_target_ms() { return fps_target_ms(); }   // (the performance summary's: perf_report.cpp)
+int menu_fps_cap() { return fps_cap_now(); }          // (likewise: its fps_cap label)
 bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
 // host's own HOS_OOT_PROTECT_HEARTS)

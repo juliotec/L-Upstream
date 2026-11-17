@@ -47,7 +47,7 @@ int pcache = 2;
 std::string pcache_path;
 std::atomic<int64_t> pcache_built_since_save{32};
 std::atomic<std::size_t> pcache_saved_size{0};
-bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init; never set here)
+bool pcache_no_save = false;   // (the file not read, RX_VK_PCACHE_LOAD=0 or pcache_load.h: pcache_init; the no-save case)
 // The size the driver gives for the cache's data; a case grows it for pipelines taken in between saves.
 std::atomic<std::size_t> cache_size{64};
 enum Fault { NONE, VECTOR_ALLOC, VECTOR_LENGTH, TMP_ALLOC, QUERY_FAIL, EMPTY, COPY_FAIL, COPY_INCOMPLETE, COPY_SHORT, COPY_OVERSIZE, SHORT_WRITE, BLOCK_COPY, REPLACE_FAIL };
@@ -350,6 +350,20 @@ int run(const std::string& name) {
         CHECK(wait_until(play_saves, 3));
         pipeline_cache_save(true);
         CHECK(copies == 2 && writes == 2 && replacements == 2 && pcache_saved_size == 96 + (64u << 20));
+        CHECK(save_errors == 0 && start_errors == 0);
+    } else if (name == "no-save") {
+        // The file not read (issue 388): the cache's own part is never fetched nor written, but the play part still runs at
+        // each save, the ordinary one included, to let play's generations go (tests/test_pipeline_play_cache.py no-save-periodic)
+        pcache_no_save = true;
+        pcache_built_since_save = 31;
+        pipeline_cache_save(false);
+        Sleep(20);
+        CHECK(play_saves == 0);  // Under the threshold: nothing.
+        pcache_built_since_save = 32;
+        pipeline_cache_save(false);
+        CHECK(wait_until(play_saves, 1));
+        pipeline_cache_save(true);  // After the worker.
+        CHECK(play_saves == 2 && queries == 0 && copies == 0 && writes == 0 && replacements == 0 && old_file());
         CHECK(save_errors == 0 && start_errors == 0);
     } else {
         CHECK(false);

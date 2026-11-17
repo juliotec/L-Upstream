@@ -188,6 +188,8 @@ void vkUpdateDescriptorSets(VkDevice, uint32_t n, const VkWriteDescriptorSet* wr
 void vkCmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t, const VkDescriptorSet*, uint32_t, const uint32_t*) {
     descriptor_binds++;
 }
+bool ub_snapshot_wanted() { return false; }   // (no uniform snapshot: bind_descriptors pushes only the writes that changed)
+int ub_snap_dedup_mode() { return 1; }
 /* DESCRIPTORS */
 std::array<Pushed, 2>& pushed() { static std::array<Pushed, 2> state; return state; }
 

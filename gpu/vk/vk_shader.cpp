@@ -1084,6 +1084,7 @@ std::atomic<int64_t> st_translated, st_failed, st_translate_ns;
 // were counted nowhere
 constexpr int64_t kFailNamed = 30;
 std::atomic<int64_t> st_left_out, st_not_translated, st_mesh_not_translated, st_stage_failed;
+std::atomic<int64_t> st_translate_wait_ns;   // (the translations a draw waited for, program_pick: the performance summary's hitches)
 
 } // namespace
 
@@ -2111,7 +2112,9 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     variants.push_back(std::move(p));
     static const bool sync = env_on("RX_VK_SYNC_SHADERS");
     if (compute || sync) {   // (compute: dispatches are never left out, so they are translated where they are)
+        const auto t0 = std::chrono::steady_clock::now();
         translate_into(*raw, s, stage_code[0], stage_code[1], compute ? stage_code[5] : nullptr, color_types);
+        st_translate_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
         return raw->failed ? nullptr : raw;
     }
     struct Job {
@@ -2620,6 +2623,9 @@ void shader_fail_lines() {
 }
 double shader_translate_ms() {
     return st_translate_ns.load() / 1e6;
+}
+double shader_translate_wait_ms() {
+    return st_translate_wait_ns.load() / 1e6;
 }
 
 void program_released(const nvn_prog* p) {

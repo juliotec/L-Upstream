@@ -4,26 +4,19 @@ If the game runs slowly, stutters or hitches, a normal bug report often isn't en
 page shows how to have the game measure itself while it is slow. You only add a few lines to a text file: you don't need
 to build anything again or install any tools.
 
-## 1. Turn the measurements on
+## 1. Turn on the profiling mode
 
 In the game folder (the folder with `image.bin` in it: `Games\Longshot` in your user folder on Windows, `~/Games/Longshot`
-on Linux, unless you chose another one), create a text file named **`longshot_env.txt`** that contains these lines:
+on Linux, unless you chose another one), create a text file named **`longshot_env.txt`** that contains this line:
 
 ```
-HOS_FPS_LOG=1
-HOS_THREAD_TIMES=5
-RX_VK_PASS_TIMING=1
-RX_VK_SLOW_LOG=50
+HOS_PROFILE=1
 ```
 
-| Line | What it adds to the log |
-|---|---|
-| `HOS_FPS_LOG=1` | The frame rate cap, VRR and the game's speed |
-| `HOS_THREAD_TIMES=5` | Every 5 seconds, which parts of the game keep the CPU busy |
-| `RX_VK_PASS_TIMING=1` | How long the graphics card spends on each part of a frame |
-| `RX_VK_SLOW_LOG=50` | Details for every frame that takes more than 50 ms: what each stutter was spent on |
-
-Without any of these lines, the log already records the frame rate and the spread of frame times every 5 seconds.
+While it's on, the game records what each part of it is doing all the time, how long each frame takes and what each
+stutter was spent on, into a new folder in the game folder's `logs` folder, named after the time you started the game
+(for example `logs/profile-20261116-190312`). Each start makes a new folder. It makes the game a little slower while it
+is on, and the folder grows by roughly 10 to 30 MB a minute.
 
 On Windows, check that the file isn't really called `longshot_env.txt.txt`: in File Explorer, turn on **View → Show →
 File name extensions**.
@@ -43,17 +36,20 @@ File name extensions**.
 Send the team, on [Discord](https://discord.gg/magicbean) or with a [report](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new):
 
 - the **bug report folder** from step 3, and `longshot_log.txt` from the game folder's `logs` folder;
+- the **profile folder** from that run (the newest `profile-...` folder in `logs`), zipped: it shrinks a lot. Say about
+  how many minutes into your play the worst slowdowns or stutters were;
 - **where** you were in the game, and **what you did** there;
 - your **settings**: the quality preset, render resolution, upscaler, frame generation and V-Sync (or a screenshot of
   the menu);
 - your **graphics card and driver version**.
 
-Send nothing else from the game folder: no game files, keys or saves.
+Send nothing else from the game folder: no game files, keys or saves. The profile folder holds only times, the names of the
+game's threads, addresses in its code and your game settings, nothing of yours.
 
 ## 4. Turn it off again
 
 Delete `longshot_env.txt`, or the lines you added to it. Measuring costs a little speed, so don't leave it on while you
-play normally.
+play normally. Delete the `profile-...` folders in `logs` once they are sent: the game doesn't delete them itself.
 
 If you already had a `longshot_env.txt` before step 1 (with a workaround from [common problems](common-issues.md), for
 example), add the lines to it rather than replacing it, and remove only those lines afterwards.

@@ -25,7 +25,7 @@ def source_contracts():
     assert 'if (open_now.load()) refresh_outputs();' in tick, 'Refresh on explicit menu opening'
     assert 'r.value != &output_pick' in menu and 'audio_output_device_id=%s' in menu
     assert 'output_forced()' in menu and 'audio_output_device_name' in menu
-    assert '#define MKWVK_API_VERSION 25' in api
+    assert int(re.search(r'#define MKWVK_API_VERSION (\d+)', api).group(1)) >= 26
     assert api.index('int (*take_text)') < api.index('int (*audio_output_count)')
     backend = (ROOT / 'host/rx_backend.c').read_text(encoding='utf-8')
     check_host_callbacks(api, backend)
@@ -58,9 +58,11 @@ def check_host_callbacks(api, backend):
     expected = {'take_text': 'host_take_text', 'options_path': 'hos_options_file',
                 'audio_output_count': 'hos_audio_output_count', 'audio_output_info': 'hos_audio_output_info',
                 'audio_output_select': 'hos_audio_output_select', 'audio_output_state': 'hos_audio_output_state',
-                'mic_test': 'hos_mic_test'}
+                'mic_test': 'hos_mic_test', 'perf_info': 'hos_perf_info',
+                'main_thread_times': 'host_main_thread_times'}
     assert len(fields) == len(table), 'Host interface/initializer lengths differ'
-    assert fields[-len(expected):] == list(expected), 'Mic test must follow playback, take_text and options_path'
+    assert fields[-len(expected):] == list(expected), \
+        'Performance info must follow the mic test, playback, take_text and options_path (version 27 appends main_thread_times)'
     for field, value in expected.items():
         assert table[fields.index(field)] == value, 'Wrong host callback slot: ' + field
 
@@ -71,13 +73,17 @@ PARSER = r'''
 #include <stddef.h>
 #include "audio_output_devices.h"
 #include "gpu/vk/vk_api.h"
-_Static_assert(MKWVK_API_VERSION == 25, "microphone test needs a new ABI version");
+_Static_assert(MKWVK_API_VERSION >= 26, "performance info needs a new ABI version");
 _Static_assert(offsetof(MkwVkHost, options_path) == offsetof(MkwVkHost, take_text) + sizeof(((MkwVkHost *)0)->take_text),
                "keep the version-23 settings path after text input");
 _Static_assert(offsetof(MkwVkHost, audio_output_count) == offsetof(MkwVkHost, options_path) + sizeof(((MkwVkHost *)0)->options_path),
                "append playback after the existing settings path");
 _Static_assert(offsetof(MkwVkHost, mic_test) == offsetof(MkwVkHost, audio_output_state) + sizeof(((MkwVkHost *)0)->audio_output_state),
                "append microphone test after playback without shifting earlier callbacks");
+_Static_assert(offsetof(MkwVkHost, perf_info) == offsetof(MkwVkHost, mic_test) + sizeof(((MkwVkHost *)0)->mic_test),
+               "append performance info after the microphone test without shifting earlier callbacks");
+_Static_assert(offsetof(MkwVkHost, main_thread_times) == offsetof(MkwVkHost, perf_info) + sizeof(((MkwVkHost *)0)->perf_info),
+               "append the main thread's times after performance info without shifting earlier callbacks");
 int main(void) {
     char id[HOS_OUTPUT_ID_CAP] = "old";
     assert(audio_output_copy_id(id, sizeof id, "opaque=id") && !strcmp(id, "opaque=id"));

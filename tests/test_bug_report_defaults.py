@@ -119,8 +119,8 @@ int ultrawide_read = 1;
 ''' + definition(menu, "void outputs_sync") + r'''
 static bool pending_restart;
 bool restart_changed(const Row& r) { return pending_restart && r.value == &opts.output_res; }
-bool dlss_fg_here = true; // Frame generation by offers DLSS FG (vk_dlss.cpp dlss_fg_unavailable): else Built-in FG alone
-bool framegen_by_fixed() { return !dlss_fg_here; }
+bool dlss_fg_forced_here = false; // RX_VK_DLSS_FG=1 fixes Frame generation by at DLSS FG (vk_dlss.cpp dlss_fg_forced)
+bool framegen_by_fixed() { return dlss_fg_forced_here; }
 ''' + policy + "\n" + known + "\n" + formatter + r'''
 int failures;
 const char* case_name;
@@ -153,8 +153,8 @@ int main(int argc, char** argv) {
     } else if (which == "framegen-by") {
         opts.framegen_by = 1;
         known = {"''' + names["framegen_by"] + r''': 1 (default: 0)"}; // Built-in FG, the default DLSS FG
-    } else if (which == "framegen-by-no-dlss") {
-        dlss_fg_here = false; opts.framegen_by = 1; // Built-in FG alone here: nothing the player chose, whatever is saved
+    } else if (which == "framegen-by-forced") {
+        dlss_fg_forced_here = true; opts.framegen_by = 1; // RX_VK_DLSS_FG=1: nothing the player chose, whatever is saved
         at_default = {"''' + names["framegen_by"] + r''': "};
     } else if (which == "lang-saved") {
         i18n::lang_saved = 3; opts.game_lang = 3;
@@ -253,7 +253,7 @@ def main():
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
     cases = ("aspect-default", "reordered-shapes", "aspect-changed", "aspect-changed-wide", "output-context", "render-context",
-             "upscaler-context", "auto-profile", "custom-never-auto", "custom-after-auto", "framegen-by", "framegen-by-no-dlss",
+             "upscaler-context", "auto-profile", "custom-never-auto", "custom-after-auto", "framegen-by", "framegen-by-forced",
              "lang-saved", "lang-changed", "stable-sentinels", "model-env", "model-fixed", "model-small-card")
     failed = []
     with tempfile.TemporaryDirectory(prefix="report-defaults-") as tmp:

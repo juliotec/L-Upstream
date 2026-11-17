@@ -12,7 +12,7 @@
 #include <cstring>
 
 #include "imgui.h"
-#include "vk_imgui.h"
+#include "vk_ui_fonts.h"
 #include "vk_menu_i18n.h"   // (every text below is looked up in the menu's language first: i18n::tr)
 
 namespace mkwvk::ui {

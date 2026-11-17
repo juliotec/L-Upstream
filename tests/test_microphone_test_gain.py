@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ def main():
     backend = (ROOT/'host/rx_backend.c').read_text(encoding='utf-8')
     menu = (ROOT/'gpu/vk/vk_menu.cpp').read_text(encoding='utf-8')
     header = (ROOT/'gpu/vk/vk_menu.h').read_text(encoding='utf-8')
-    assert '#define MKWVK_API_VERSION 25' in api
+    assert int(re.search(r'#define MKWVK_API_VERSION (\d+)', api).group(1)) >= 25   # (25: the microphone test; later versions append)
     assert api.index('int (*take_text)') < api.index('int (*audio_output_state)') < api.index('int (*mic_test)')
     initializer = block(backend, 'static const MkwVkHost vk_host =')
     assert initializer.index('host_take_text,') < initializer.index('hos_audio_output_state,') < initializer.index('hos_mic_test,')

@@ -54,7 +54,7 @@ what does not yet. Open problems are collected in tracking issues, linked below.
 | Stutter when entering new areas | ⚠️ Still happens the first time you visit a place. The next visits are smooth |
 | Performance | ⚠️ Depends on the PC: some reach a steady 60 fps, others stay below it, more so in Hyrule Field |
 | Hyrule Field, Castle Town, Kakariko and the dungeons | ⚠️ Players got there, with open bugs: lighting and shadows ([#1004](https://github.com/NotRexed/Hookshot/issues/1004)), crashes and freezes ([#2507](https://github.com/NotRexed/Hookshot/issues/2507)) |
-| Ultrawide and 4:3 | ✅ Works. The Aspect ratio row's default, Monitor's shape, widens the 3D to the screen and keeps the HUD and movies in the middle 16:9 ([#2119](https://github.com/NotRexed/Hookshot/pull/2119)) |
+| Ultrawide and 4:3 | ✅ Works. The Aspect ratio row's default, Monitor's shape, widens the 3D to the screen ([#2119](https://github.com/NotRexed/Hookshot/pull/2119)); the HUD keeps its 16:9 size with its corners at the screen's edges, or in the middle 16:9 with the HUD layout row; movies stay in the middle 16:9 |
 | NVIDIA cards | ✅ Works. The most tested |
 | AMD cards | ⚠️ Tested on several Radeon cards. Compatibility and performance vary by card, driver and operating system. Longshot automatically uses rendering workarounds on affected Windows cards and AMD GPUs on Linux (see [technical details](docs/development.md#switches-for-testing-and-debugging)). Crashes and severe slowdowns remain reported on some configurations ([RX 6600](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/933), [Radeon 860M](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/1040)). |
 | Intel cards | ❓ Few reports, many of them black screens or crashes ([#999](https://github.com/NotRexed/Hookshot/issues/999)). On Windows, Intel's shader compiler is entered by one thread, and a shader it faults on is left out instead of closing the game, on later starts too ([#252](https://git.magicbean.dev/MagicBeanDev/Longshot/pulls/252)). Made for an Intel UHD laptop with 4 threads and 16 GB that crashed in `igvk64.dll` (see [Intel laptops](#intel-laptops)): not yet tested on an Intel GPU |
@@ -186,6 +186,8 @@ and later versions reuse the ones that didn't change; the launcher downloads the
 `udmabuf` device. Without access to it, it falls back to host-pointer imports, which can be much slower on AMD (RADV),
 and warns about it on stderr and in `longshot_log.txt`. On NVIDIA's own driver you can ignore that warning: NVIDIA refuses
 these imports, and host-pointer imports are not slow there (the check runs at start, before the game knows its GPU).
+Inside a container that shows `/dev/udmabuf` but hides `/sys/module` (Flatpak Steam, for one), the game can't read
+udmabuf's size limit; it takes the module's default, 64 MB, and says so in the log (`its default, 64 MB, assumed`).
 
 Check with `ls -l /dev/udmabuf` and `id`. If the device is missing, load the module first (`sudo modprobe udmabuf`).
 Then give the game's user access, in one of these ways:
@@ -332,8 +334,11 @@ line with the video memory in use against what the driver allows, and DLSS's det
 | **Other** | |
 | The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set. |
 
-After a crash, at the start or in play, a window says what happened; its **Report** button copies a report (no saves or
-game files, your home folder and user name taken out) and opens the issue form, for you to paste it into. Still stuck?
+After a crash, at the start or in play, a window says what happened. **Report manually** copies a report (no saves or
+game files, your home folder and user name taken out) and opens the issue form, for you to paste it into. In a build the
+Longshot Launcher made, **Report automatically** shows the crash report it would send (the version, your PC, the
+settings, the crash and the log before it), and posts it to [#81](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/81)
+only when you press it ([crash-report-window.md](docs/crash-report-window.md)). Still stuck?
 [Report it](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) with the version, where you were in
 the game, your graphics card, `longshot_log.txt` and a screenshot or video, and never game files. **Gameplay → Bug
 report** in the [in-game menu](#in-game-menu) gathers all of it in one press.
@@ -352,6 +357,8 @@ report** in the [in-game menu](#in-game-menu) gathers all of it in one press.
 4. If the GPU time stays high, run once more with `RX_VK_PASS_TIMING=1` in `longshot_env.txt`: every 600 presents it
    reports which GPU passes take the time. That timing adds work itself, so keep the first log for the FPS comparison,
    and remove the switch afterwards. The [development guide](docs/development.md#time-and-profiles) has more switches.
+5. To find out why, add `HOS_PROFILE=1` to `longshot_env.txt`: the game records where its time goes and what each stutter
+   was into a folder in `logs` ([report slow performance](docs/performance-report.md#1-turn-on-the-profiling-mode)).
 
 #### Intel laptops
 
@@ -438,8 +445,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Render resolution | Auto (the game's own dynamic resolution), 100%, 75%, 67%, 50% (each with its size). With DLSS or FSR 4: Auto, Native (DLAA or FSR 4 Native AA: the 3D at full size), 92%, 83%, 75%, Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%). With Intel XeSS the same stops, named by the XeSS mode each runs under: Native (XeSS Native AA), Ultra Quality Plus (92%, 83%), 75%, Ultra Quality (67%), Balanced (58%, 50%), Ultra Performance (33%). With FSR 3.1: Auto, 100% (its native AA), then the same as DLSS from 92%. With Off: Auto, 100%, 75%, 67%, 50%, 33% | Auto; a quality preset sets it |
 | | Sharpness | 0 to 100%, in steps of 10 | 0%; a quality preset sets it |
 | | Frame generation | Off, Auto, 2x to 8x | Off |
-| | Frame generation by | DLSS FG (NVIDIA DLSS Frame Generation: RTX 40 and newer, with a temporal Upscaler), Built-in FG. DLSS FG is offered only where it runs; elsewhere the row has Built-in FG alone and its line says why (the log has NVIDIA's answer). At DLSS FG, the game's own menus, movies and loading screens show only the game's own frames (they have no Upscaler picture to make frames from): the row's line and the FPS counter say DLSS FG paused. With an Upscaler that is not temporal, the built-in one makes the frames and the line says why. `RX_VK_DLSS_FG=1` fixes the row at DLSS FG for a run. Changes at once | DLSS FG where it runs, else Built-in FG (an options file's Auto from before is this default) |
-| | Frame pacing | Off, On | Off; a quality preset turns it on |
+| | Frame generation by | Shown while Frame generation is on. DLSS FG (NVIDIA DLSS Frame Generation: RTX 40 and newer, with a temporal Upscaler), FSR 3.1 FG (AMD FSR 3.1's frame interpolation, from the scene's depth and motion: any GPU), Built-in FG. DLSS FG is offered only where it runs; elsewhere the row has FSR 3.1 FG and Built-in FG, and its line at FSR 3.1 FG says why not DLSS FG (the log has NVIDIA's answer). At DLSS FG, FSR 3.1 makes the frames DLSS FG does not (Frame generation's Auto). At DLSS FG, the game's own menus, movies and loading screens show only the game's own frames (they have no Upscaler picture to make frames from): the row's line and the FPS counter say DLSS FG paused. With an Upscaler that is not temporal, the built-in one makes the frames and the line says why. `RX_VK_DLSS_FG=1` fixes the row at DLSS FG for a run. Changes at once | DLSS FG where it runs, else FSR 3.1 FG (an options file's Auto from before is this default) |
 | | Game frame rate cap | 30, 60 (the console's), 90, 120, 144, 165, 240, Uncapped (changes at once) | 60 |
 | | NVIDIA Reflex | Off, On, On + Boost (shown only on NVIDIA GPUs with `VK_NV_low_latency2`) | Off |
 | | AMD Anti-Lag 2 | Off, On (shown only on AMD GPUs with `VK_AMD_anti_lag`) | Off |
@@ -447,8 +453,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | V-Sync | Auto, On, Off | Auto |
 | | Window scaling filter | Off, Catmull-Rom, Lanczos (shows "Not needed (window = output)" while the window is the Output resolution's size) | Off; a quality preset sets it |
 | | CRT filter | Off, Lottes aperture grille, Lottes consumer TV, Hyllian Fast, zfast CRT (changes at once; Native HDR bypasses it) | Off |
-| | CRT lines | 240, 480, 720 virtual lines (changes at once; capped at half the destination height) | 240 |
+| | CRT lines | 240, 480, 720 virtual lines (shown with a CRT filter on; changes at once; capped at half the destination height) | 240 |
 | | Ultrawide menus | Full width; Centred, blurred sides; Centred, black bars (with the Aspect ratio at the monitor's shape) | Centred, blurred sides |
+| | HUD layout | Screen's edges; Middle 16:9 (on a screen that is not 16:9; `HOS_WIDE_UI`, when set, decides) | Screen's edges |
 | | HDR | Off, Expanded, Native (the game's) | Off |
 | | HDR paper white | 80 to 400 nits, in steps of 10 (while HDR is on) | 200 nits |
 | | HDR peak brightness | 400 to 4000 nits, in steps of 100 (while HDR is on) | 1000 nits |
@@ -457,7 +464,6 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Anisotropic filtering | Game's, 2x, 4x, 8x, 16x | 16x |
 | | Shadow resolution | Auto (for the card's memory), Game's (1600), High (2200), Highest (3072): the sun's shadow maps, applies at once | Auto |
 | | GPU device | Auto, or each graphics card by name (after a restart) | Auto |
-| | Threaded rendering | Auto, On, Off (after a restart). Auto is On with 12 or more processor threads for the game | Auto |
 | Audio | Volume | 0 to 100%, in steps of 5 | 100% |
 | | Mute in background | Off, On | Off |
 | | Output device | Default or a named Windows playback device; applies live | Default |
@@ -503,6 +509,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Autosave: | On or Off, available with Debug tools off. Enabling Debug tools switches Autosave to Off. Off skips supported autosaves, including the verified map transitions. You can still save manually. | On |
 | | Player: Damage taken | Half, Normal, Double, Quadruple (live, while Debug tools is on; Half rounds damage up to a quarter heart; Heart protection wins) | Normal |
 | | Developer: Save my pipeline list | Saves a zip of the pipelines your play built into Downloads ([below](#send-your-pipeline-list)) | |
+| | Developer: Frame pacing | Off, On | Off; a quality preset turns it on |
+| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 12 or more processor threads for the game | Auto |
 | | Developer: Descriptor reuse | Off, On (changes at once) | On |
 | | Developer: Sampler cache | Off, On (changes at once) | Off |
 | | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
@@ -537,13 +545,16 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   is not there (an eGPU unplugged) is Auto until it is back. `longshot_log.txt` lists every card as `vk: device <n>`;
   `RX_VK_DEVICE=<n>` chooses one for a single run and wins over the menu.
 - **Frame generation** makes extra frames between the game's own. It adds a little input delay, and fast motion can
-  show artifacts. The renderer's own interpolation makes the frames; at 2x, AMD FSR 3.1's frame interpolation can make
-  it instead with `RX_VK_FSR_FG=1` (below: it moves the HUD with the scene, so it is not the default). **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
+  show artifacts. **Frame generation by** chooses who makes them: **DLSS FG**, NVIDIA DLSS Frame Generation where it
+  runs (RTX 40 and newer, at 2x to 8x; AMD FSR 3.1 makes the frames it does not, such as Frame generation's Auto), and the
+  default there; **FSR 3.1 FG**, AMD FSR 3.1's frame interpolation (any GPU it runs on, at every multiplier and at Auto,
+  from the scene's depth and motion; below), the default everywhere else; **Built-in FG**, the renderer's own. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
   the frames that frame generation shows, so it has no effect while Frame generation is Off.
 - **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
-  misbehave (Gohma running into the wall, the intro's narration running ahead: #1742). 60 is the safe choice.
+  misbehave (the intro's narration running ahead: #1742). 60 is the safe choice.
+  Gohma's ceiling-positioning fault is fixed, tested in complete fights at about 98-99 FPS and at 60.
   Scarecrow's Song keeps the timing of its eight-note recording and playback above 60. Saved songs are not retimed;
   re-record a song after updating if its recorded rhythm was lost.
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
@@ -562,7 +573,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   a preset sets keep their fixed defaults on Custom while Auto (this PC) has never chosen for the options file; with a
   preset, or once Auto has chosen, they depend on this PC.
   Fixed defaults, including GPU Auto, the system-default microphone and Frame generation by's DLSS FG, still report actual
-  changes (Frame generation by where DLSS FG cannot run has Built-in FG alone: no change); the Aspect ratio's default is
+  changes (Frame generation by where DLSS FG cannot run: FSR 3.1 FG); the Aspect ratio's default is
   the monitor's shape, and the Game language's `language.txt`'s.
   Your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name `<user>` in the logs' paths. A switch's
   value is written only when it is a number, a size or on/off, and never for a name with `TOKEN`, `KEY`, `ROOM`,
@@ -593,7 +604,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   follow it: moved to another monitor, or the desktop's resolution changed while playing, the menu adds that screen's
   sizes. On Linux the screen's size comes from SDL (the primary display). A portrait screen has no shape the game can
   draw, so the row shows Monitor's shape as a value of its own there. Docked only. A shape other than 16:9 widens the cameras (21:9, 32:9) or narrows the
-  picture (16:10, 4:3, 5:4) and keeps the HUD and movies in the middle 16:9. At 16:9 on a 5120x1440 (32:9) monitor, the
+  picture (16:10, 4:3, 5:4); the HUD keeps its 16:9 size with its corners at the screen's edges (**HUD layout**: or in
+  the middle 16:9, as before), and movies stay in the middle 16:9. At 16:9 on a 5120x1440 (32:9) monitor, the
   game's 16:9 picture is stretched across the 32:9 output, sharp but wide. Options saved by an older version at 16:9,
   the default then, move to Monitor's shape on a screen narrower than 16:9 (16:10 such as the Steam Deck's, or 4:3),
   where 16:9 only adds bars above and below; an ultrawide keeps its 16:9. The output's rows below show the sizes for the
@@ -726,7 +738,9 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Linux outputs are ambiguous and are not offered; use Default and the system mixer to route those.
 - **Speaker layout** is the speakers the game mixes its sound for. Auto is 5.1 when the selected/default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
-  down). Mono averages the stereo channels into both ears, for one-sided hearing or one earbud. Mono/Stereo
+  down). Auto counts the speakers Windows names, not the channels: an audio interface whose outputs are not set up as
+  surround speakers (a Focusrite Scarlett's 8 outputs, for one) is stereo, so voices and the ocarina do not go to an
+  output with nothing connected. Mono averages the stereo channels into both ears, for one-sided hearing or one earbud. Mono/Stereo
   changes apply live while output is stereo; changing the channel layout (from or to 5.1) needs a restart.
   Auto never applies the mono average. Saved `audio_output` values remain 0 Auto, 1 Stereo, 2 5.1; Mono is 3.
   For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses the channel layout over the menu (6 leaves Mono inactive).
@@ -756,6 +770,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Linux's Noto CJK where a game font lacks one.
 - **Discord status** shows "Playing Longshot" and the time played in your Discord status. It is on by default and does
   nothing unless a Discord client is running on this PC; with the row Off nothing is sent to it.
+- **Send performance statistics** (a tick on the launcher's page, off by default): the game counts how its frames,
+  hitches and movies went on each map, and the launcher sends the counts to the team at its next start, with the GPU,
+  driver, CPU, OS and renderer but no paths, user name or ID. It costs a few nanoseconds a frame; unticking it deletes
+  what hasn't been sent. What is in a summary: [performance statistics](docs/performance-statistics.md).
 - **Controller in background:** On keeps the controller working while another window has the focus. The keyboard and
   mouse still need the game's window.
 - **Mouse camera:** Native turns the camera with the mouse one to one, as in a PC game. As the stick uses the mouse in
@@ -1013,8 +1031,10 @@ cd ~/Games/Longshot
 
 **AMD FSR 3.1** in the Graphics tab's **Upscaler** row (`dlss=3` in `longshot_options.ini`; `RX_VK_FSR=1` for one run,
 `RX_VK_FSR=0` never) upscales in place of the game's own network, and with **Frame generation** at 2x its frame
-interpolation can make the frame in between with `RX_VK_FSR_FG=1` (opt-in: the game draws its HUD into the same picture
-and FSR 3.1 has no HUD-less colour to keep it still, so the HUD smears; by default the renderer's own makes it). Both are AMD's FidelityFX
+interpolation makes the frames between the game's at every Frame generation setting, Auto and 2x to 8x, wherever NVIDIA DLSS
+Frame Generation does not (Frame generation by at FSR 3.1 FG, or at DLSS FG; `RX_VK_FSR_FG=0` never, `=1` over the row). The game draws its HUD
+into the same picture and has no HUD-less colour, so AMD's own passes would move the HUD with the scene: here a pixel the
+same in both frames while the scene behind it moves is kept where it is (`RX_VK_FSR_FG_HUD=0`: AMD's as they were). Both are AMD's FidelityFX
 SDK 1.1.4 shaders (`third_party/fidelityfx-sdk`, MIT), compiled into the renderer: no AMD runtime or DLL is needed, and
 the row offers FSR 3.1 on any Vulkan 1.3 GPU with push descriptors, extended storage image formats and storage writes
 without a format (`vk: fsr3: ... can run on this GPU` in the log). It upscales on the same inputs as DLSS and FSR 4: the
@@ -1259,8 +1279,9 @@ a time**, the safe choice on a CPU with 4 cores or fewer; **Side by side**, fast
 Intel's driver can crash the game while building them; or **Auto**, the default: side by side on the Arc B-series with
 driver 101.9154 or newer (on a B580 a new area's first visit froze the picture for four to seven minutes one at a time,
 and not at all side by side, with no fault in ten areas), one at a time on every other Intel GPU. It applies after a
-restart. `RX_VK_NO_INTEL_SERIAL=1` is Side by side for a run and `=0` One at a time, whatever the row says. NVIDIA, AMD, and Intel on other systems are
-unchanged.
+restart. `RX_VK_NO_INTEL_SERIAL=1` is Side by side for a run and `=0` One at a time, whatever the row says; the Longshot
+Launcher's build settings set `=1` for the build's shader preparation and the game when their **Intel shader compiles**
+is on Side by side. NVIDIA, AMD, and Intel on other systems are unchanged.
 
 `RX_VK_SKIP_CODE=<prefix,...>` leaves out the draws of every program with a stage whose native code key starts with one
 of the prefixes (the keys the log prints after "its code:"). On a Steam Deck, `RX_VK_SKIP_CODE=2c56dc1006942f74`

@@ -10,8 +10,8 @@
 
    - hos_wide_ui_parent: the parent f_8154cab0 multiplies by (0 for none), on the thread that is making the transform
    - hos_wide_ui_placed: the transform just stored. A layout's root pane is noted (its kind, by its layout's name), and
-     so is every pane of the HUD's trees and of the loading fade's (its parent, and its place on the canvas as the game made
-     it, without the moves): a pane made from one noted in such a tree. A menu's other panes are not (the plan never looks
+     so is every pane of the HUD's trees, the loading fade's and the held layouts' (its parent, and its place on the canvas
+     as the game made it, without the moves): a pane made from one noted in such a tree. A menu's other panes are not (the plan never looks
      at them). If the plan moves a pane, its translation is moved, and its children follow, since theirs are made from it.
      A menu's root is made smaller here on a narrower screen
    - hos_wide_ui_size: a pane's size as drawn (f_8154ac30): a pane the plan widens is drawn the screen's width
@@ -24,7 +24,8 @@
    an edge or sit far out, move to that side; a container across the centre is looked into; what is off the canvas or
    wider than it (a scrolling strip) is left alone. Up and down the same, when the HUD is drawn smaller (visit_y).
 
-   HOS_WIDE_UI=0 keeps the HUD in the middle 16:9 as before (on a narrower screen fitted to its width, as the menus);
+   The Insert menu's HUD layout row (HOS_OPT_HUD_LAYOUT, 71) at Middle 16:9 keeps the HUD in the middle 16:9 as before (on
+   a narrower screen fitted to its width, as the menus); HOS_WIDE_UI=0 or 1, when set, stands over the row;
    HOS_WIDE_UI_LOG=<n> logs the first n changes of the plan, each root layout, and the plan's time. */
 #include "hos.h"
 #include <math.h>
@@ -163,16 +164,21 @@ static Node *node_take(uint64_t key) {
 /* ---- names: the layouts and panes the ultrawide UI romfs mod's rules.py and menu.py treat by hand ---- */
 
 enum { LK_PLAIN, LK_WORLD, LK_WHOLE, LK_HELD };   /* (a layout placed by code from the world; on a screen kept whole; held) */
-enum { RULE_NONE, RULE_KEEP, RULE_KEEP_LOOK, RULE_WIDEN, RULE_LEFT, RULE_RIGHT, RULE_SLIDE, RULE_KEEP_ORIGIN };
-       /* (RULE_SLIDE: a pane the game slides in from beside its parent, planned where it comes to rest) */
+enum { RULE_NONE, RULE_KEEP, RULE_KEEP_LOOK, RULE_WIDEN, RULE_LEFT, RULE_RIGHT, RULE_SLIDE, RULE_KEEP_ORIGIN, RULE_HELD_RIGHT };
+       /* (RULE_SLIDE: a pane the game slides in from beside its parent, planned where it comes to rest. RULE_HELD_RIGHT: a
+          held layout's group at its canvas's right edge, moved in to the screen's right side where the HUD's canvas is
+          wider than the screen (ui_ex < 0: 16:10 and narrower), so it keeps 16:9's distance from it; on a wider screen held
+          beside its box with the rest) */
 
 static const char *const WORLD_LAYOUTS[] = {"PlayerStatus3D_00", "Pointer_00", "BalloonMessage_00"};
 /* (layouts of screens nx2/oot_wide.py keeps whole (KEEP_VTABLES): their canvas already spans the screen, so nothing in
    them moves or widens. The item wheel's background picture widened to 5160 units mapped its capture over 3840 / 5160
    of the screen, black at the sides) */
 static const char *const WHOLE_LAYOUTS[] = {"ShortCutBG_00", "EventFade_00"};
-/* (held where the game puts them, at the HUD's size: never moved, never made smaller. The text box's choices, which sit over
-   Talk_00's box: fitted as a menu's on a narrower screen they came out at another scale than the box) */
+/* (held where the game puts them, at the HUD's size: never made smaller, and moved only by name (RULE_HELD_RIGHT). The text
+   box and its choices: fitted as a menu's on a narrower screen the choices came out at another scale than the box. The
+   choices' column (N_BtnNum_00) reaches the 16:9 canvas's right edge: left there on a 16:10 screen, where the canvas at
+   the HUD's size is wider than the screen, the boxes' right ends and their longer texts were off it (Longshot #1050)) */
 static const char *const HELD_LAYOUTS[] = {"MessageDialog_00"};
 /* (the HUD's root layouts: the hearts, magic, rupees and buttons; the place's name; the minimap (the pause menu's map page is
    the same layout: drawn as a menu's while it shows, as_menu); the text box and its button guide ("Hide", "Conversation
@@ -200,6 +206,8 @@ static const PaneRule RULES[] = {
     {"Location_00", "P_DecoFrameRT_00", RULE_WIDEN}, {"Location_00", "P_DecoFrameRTSh_00", RULE_WIDEN},
     {"Location_00", "P_DecoFrameLB_00", RULE_WIDEN}, {"Location_00", "P_DecoFrameLBSh_00", RULE_WIDEN},
     {"Location_00", "P_DecoFrameRB_00", RULE_WIDEN}, {"Location_00", "P_DecoFrameRBSh_00", RULE_WIDEN},
+    /* (the text box's choices: their column, at the canvas's right edge) */
+    {"MessageDialog_00", "N_BtnNum_00", RULE_HELD_RIGHT},
 };
 
 /* A guest string is s (64 characters at most) */
@@ -500,6 +508,10 @@ static void plan(void) {
             for (int a = parent_of[i], d = 0; a >= 0 && d < 64 && !moved; a = parent_of[a], d++) moved = plan_new[a] != 0.0f;
             if (!moved) push(i, n->rule == RULE_LEFT ? -1 : 1);
         }
+        /* (a held layout's group at the canvas's right edge: in to the screen's side only where that is inside the canvas) */
+        if (ui_ex < 0.0f)
+            FOR_USED(i)
+                if (nodes[i].key && nodes[i].layout && nodes[i].lkind == LK_HELD && nodes[i].rule == RULE_HELD_RIGHT) push(i, 1);
         /* (the loading fade: its pane across the whole canvas, drawn over the whole picture. Kept whole (Full width), the
            game's projection already stretches it over the picture: left as it is) */
         FOR_USED(i) {
@@ -532,7 +544,7 @@ static void plan(void) {
      smaller, by the picture's ratio over HUD_FULL, and what sits at the top or bottom moves out to the screen's top or bottom.
    - The menus (every layout whose root is not the HUD's) keep their 16:9 shape as before on a wider screen (the Ultrawide
      menus row: in the middle, or stretched); on a narrower one they fit its width, in the middle, never stretched.
-     HOS_WIDE_UI=0 turns the HUD's moves off.
+     The HUD layout row at Middle 16:9, or HOS_WIDE_UI=0 over it, turns the HUD's moves off.
 
    HOS_HUD_MAX_RATIO=<ratio> (0: the screen's edges at any width) and HOS_HUD_FULL_RATIO=<ratio> stand over the two limits. */
 static const float GAME = 16.0f / 9.0f, HUD_MAX = 12.0f / 5.0f, HUD_FULL = 1.5f, SURROUND = 48.0f / 9.0f;
@@ -564,7 +576,10 @@ void hos_wide_ui_tick(void) {
         for (int i = 0; i < 8; i++) last[i] = NAN;
     }
     const float r = hos_wide_ratio;
-    const int hud = !(env && *env && atoi(env) == 0);
+    /* (the HUD's moves: HOS_WIDE_UI when set, else the Insert menu's HUD layout, read at each present so a change shows at
+       once: 0 Screen's edges, 1 Middle 16:9, HOS_OPT_HUD_LAYOUT, #1133) */
+    int rx_option(int id, int otherwise);
+    const int hud = env && *env ? atoi(env) != 0 : rx_option(71, 0) == 0;
     float qx = 0.0f, qy = 0.0f, fit = 1.0f, ex = 0.0f, ey = 0.0f;
     if (r > GAME * 1.001f) {   /* (wider: the middle 16:9 at the height's scale, as before) */
         qx = GAME / r, qy = 1.0f;
@@ -649,7 +664,8 @@ void hos_wide_ui_placed(Ctx *c, uint64_t pane) {
     const uint32_t oy = ((flags >> 11) & 0x7f) / 3 % 3;   /* (0 top, 1 centre, 2 bottom) */
     const uint64_t layout = recomp_load64(c, pane + PANE_LAYOUT);
     if (n->layout != layout) classify(n, pane, layout);
-    n->tree = (uint8_t)(n->lkind == LK_PLAIN && (parent || n->hud || n->fade));
+    /* (a held layout's panes too, for its groups moved by name; the plan walks none of them) */
+    n->tree = (uint8_t)((n->lkind == LK_PLAIN && (parent || n->hud || n->fade)) || n->lkind == LK_HELD);
     n->parent = parent, n->layout = layout, n->type = (flags >> 22) & 0xf, n->ox = x, n->from = pn ? pn->ox : NAN;
     n->x0 = x - (ox == 1 ? w * 0.5f : ox == 2 ? w : 0.0f), n->x1 = n->x0 + w;
     n->oy = y, n->y1 = y + (oy == 1 ? h * 0.5f : oy == 2 ? h : 0.0f), n->y0 = n->y1 - h;

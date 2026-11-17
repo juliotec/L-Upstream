@@ -34,7 +34,9 @@
 #endif
 
 #include "dlss_checks.h"
+#include "perf_report.h"
 #include "upscaler_rows.h"
+#include "vk_fps.h"
 #include "vk_internal.h"
 #include "vk_menu.h"
 #include "vk_paths.h"
@@ -122,18 +124,8 @@ void NVSDK_CONV ngx_log(const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_
 
 namespace fs = std::filesystem;
 #ifdef _WIN32
-/// The game folder (game_module_path's rule: bin\longshot.exe beside image.bin is the folder above bin), from
-/// GetModuleFileNameW: a folder with characters outside the ANSI code page is still the right one
-fs::path game_dir() {
-    std::wstring exe(32768, L'\0');
-    const DWORD n = GetModuleFileNameW(nullptr, exe.data(), (DWORD)exe.size());
-    if (!n || n >= exe.size()) return {};
-    exe.resize(n);
-    fs::path dir = fs::path(exe).parent_path();
-    if (!_wcsicmp(dir.filename().c_str(), L"bin") && GetFileAttributesW((dir.parent_path() / L"image.bin").c_str()) != INVALID_FILE_ATTRIBUTES)
-        dir = dir.parent_path();
-    return dir;
-}
+/// The game folder (vk_paths.h: from GetModuleFileNameW, so any folder name works)
+fs::path game_dir() { return game_dir_path(); }
 /// An environment variable as a path (_wgetenv: not through the ANSI code page); empty when unset
 fs::path env_path(const wchar_t* name) {
     const wchar_t* e = _wgetenv(name);
@@ -150,11 +142,7 @@ std::string shown(const fs::path& p) {
 /// A path for NGX, which takes wide strings: Windows' own
 std::wstring wide(const fs::path& p) { return p.native(); }
 #else
-fs::path game_dir() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    return fs::path(std::string(exe, n)).parent_path();
-}
+fs::path game_dir() { return game_dir_path(); }
 fs::path env_path(const char* name) {
     const char* e = getenv(name);
     return e && *e ? fs::path(e) : fs::path();
@@ -446,6 +434,7 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     s.feature_aa = mode == NVSDK_NGX_PerfQuality_Value_DLAA;
     s.features_made++;
     logf("vk: NVIDIA DLSS: feature create size %ux%u (recommended), input resources %ux%u", create_w, create_h, max_w, max_h);
+    if (s.features_made > 1) perf_event(perf_report::kDlssRecreated);   // (made again in play: a stall)
     logf("vk: NVIDIA DLSS: feature %llu made (%s; frame %llu, %.1f ms of CPU): %ux%u (%ux%u to %ux%u) -> %ux%u, mode %d, "
          "preset %c%s%s", (unsigned long long)s.features_made, why, (unsigned long long)texture_frame_no(), made_ms, rw, rh,
          min_w, min_h, max_w, max_h, ow, oh, (int)mode, upscaler_rows::preset_letter(preset),

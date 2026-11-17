@@ -31,6 +31,7 @@ import insn
 import fastfp   # (longshot) fast float regions (A64_FASTFP): its emit_function, under lift_fixes' and poll's wrappers
 import dead_flags   # (longshot) the kit's dead_flags, answered at once for a function that writes no flag
 import walk   # (longshot) the kit's walk, with one shared entry per plain op's word
+import discover   # (longshot) the discovery's walks in new processes where there is no fork
 import lift_fixes
 import suyu_rt_fixes
 import chunks
@@ -181,7 +182,7 @@ def main():
         oot_shadow.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
         import oot_jitter   # (the temporal upscalers' camera jitter, DLSS's and FSR 3.1's: none unless one runs, host/rx_backend.c)
         oot_jitter.install(L, img)
-    L.discover(max_insns=a.max_func)
+    discover.discover(L, img_dir, chunks.file_jobs(), max_insns=a.max_func)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
     last[0] = time.time()
 

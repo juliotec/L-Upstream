@@ -7,6 +7,7 @@ Run with: python -I tests/test_make_game_cache.py
 """
 import contextlib
 import errno
+from functools import partial
 import importlib.util
 import io
 import os
@@ -156,6 +157,9 @@ class NupCacheHarness(unittest.TestCase):
             # (the hot list, link order, PGO profile and chunk boundaries come from <checkout>/work: an empty one here. The lift's
             # key hashes nx2/ relative to the checkout, which relpath refuses across drives (Windows CI): not what is checked here)
             stack.enter_context(mock.patch.object(make_game, "ROOT", str(self.root / "checkout")))
+            # vk_profile_for's default root was bound at import; use this authored checkout too.
+            stack.enter_context(mock.patch.object(make_game, "vk_profile_for",
+                                                  partial(make_game.vk_profile_for, root=make_game.ROOT)))
             stack.enter_context(mock.patch.object(make_game, "lift_key", return_value="test key"))
             stack.enter_context(mock.patch.object(make_game, "run", side_effect=run))
             output = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))

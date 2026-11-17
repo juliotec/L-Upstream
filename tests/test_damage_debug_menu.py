@@ -125,7 +125,7 @@ int main() {
         const int n = debug_rows(order, &dev, &heading);
         assert(heading >= 0);
         assert(dev == (env || enabled ? (int)std::size(expected) : kDebugGeneralRows));
-        assert(n == dev + 5); // Only the existing Developer rows follow.
+        assert(n == dev + 7); // Only the existing Developer rows follow (Frame pacing and Threaded rendering among them).
         for (int i = 0; i < dev; ++i) {
             const Row& row = rows[tab_row_to_global(TAB_DEBUG, order[i])];
             assert(!std::strcmp(row.name, expected[i]));

@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* (longshot) The window right after a crash, at start or in play: "Longshot closed unexpectedly", when, why where it is known,
-   and Report, Open the log folder, Close. Report puts a redacted plain-text report on the clipboard, writes it next to the
-   crash records (bug-reports/pending/report-<UTC>.txt) and opens the issue form for game problems in the browser; the game
-   itself sends nothing. What decides is host/hos_crash_dialog.h.
+   and Report automatically, Report manually, Open the log folder, Close. Report automatically shows the report it would post
+   to Longshot-api's /telemetry/crash and posts it with the system's curl only when the player presses Send. Report manually
+   puts a redacted plain-text report on the clipboard, writes it next to the crash records
+   (bug-reports/pending/report-<UTC>.txt) and opens the issue form for game problems in the browser. Nothing is sent without
+   Send. What decides is host/hos_crash_dialog.h.
 
    It is shown by a helper the game starts early (hos_crash_watch_start, after the crash record is set up and before the
    guest, the renderer, the sound and the input): the same executable, `longshot --crash-watch <pid> <run id> <game folder>
@@ -13,8 +15,9 @@
    (`--crash-show`). Not for --prepare-shaders, HOS_HEADLESS, HOS_PGO, HOS_CRASH_WATCH=0 or under gamescope
    (hos_crash_watch_wanted).
 
-   The window is SDL's message box (SDL3 or SDL2, loaded here: the helper loads nothing else of the game's), Windows'
-   MessageBoxW without SDL; the clipboard and the browser are Windows' own there; on Linux the clipboard is wl-copy, xclip or
+   The window is the crash window drawn as the Insert menu is (gpu/vk/vk_crash_window.cpp: Dear ImGui through SDL's software
+   renderer, SDL3 or SDL2, loaded here: the helper loads nothing else of the game's and never Vulkan). Without it, SDL's
+   message box, and Windows' MessageBoxW without SDL; the clipboard and the browser are Windows' own there; on Linux the clipboard is wl-copy, xclip or
    xsel's (SDL's X11 one the last resort) and the browser SDL's or xdg-open.
    HOS_CRASH_TEST=start (just after the crash handlers are set up) or =<seconds> (that long after) crashes the game on
    purpose, from the environment only (not longshot_env.txt), to see the window. */
@@ -25,6 +28,7 @@
 #include "hos_crash_dialog.h"
 #include "hos_crash_record.h"
 #include "options_path.h"
+#include "../gpu/vk/crash_window_api.h"
 #include "../gpu/vk/compat/longshot_env.h"
 #include <errno.h>
 #include <stdarg.h>
@@ -115,6 +119,26 @@ static int write_text(const char *path, const char *text, size_t n) {
     if (!f) return 0;
     const int ok = fwrite(text, 1, n, f) == n;
     return fclose(f) == 0 && ok;
+}
+static void make_dir(const char *path) {   /* (one level: its parent is there) */
+#ifdef _WIN32
+    wchar_t *w = wide_of(path);
+    if (w) CreateDirectoryW(w, NULL);
+    free(w);
+#else
+    mkdir(path, 0755);
+#endif
+}
+static int file_exists(const char *path) {
+#ifdef _WIN32
+    wchar_t *w = wide_of(path);
+    const DWORD a = w ? GetFileAttributesW(w) : INVALID_FILE_ATTRIBUTES;
+    free(w);
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
 }
 static int remove_utf8(const char *path) {
 #ifdef _WIN32
@@ -344,10 +368,19 @@ static int ledger_add(const char *dir, const char *name, int all) {
     free(old), free(out.s);
     return ok;
 }
-typedef struct Newest { const char *shown; int64_t now; char name[128]; } Newest;
+typedef struct Newest { const char *shown, *pending; int64_t now; char name[128]; } Newest;
 static void newest_unshown(const char *name, void *user) {
     Newest *n = (Newest *)user;
-    if (hos_crash_show_at_start(name, n->shown, n->now) && (!n->name[0] || strcmp(name, n->name) > 0))
+    int oom = 0;
+    char path[PATH_MAX_UTF8];
+    if (hos_crash_record_name(name, NULL) == 2 && join(path, sizeof path, n->pending, name)) {   /* (unclean: out of memory?) */
+        char *text = read_text(path, 64 << 10, NULL);
+        HosCrashRecord r;
+        hos_crash_record_parse(text ? text : "", &r);
+        oom = r.oom;
+        free(text);
+    }
+    if (hos_crash_show_at_start(name, n->shown, n->now, oom) && (!n->name[0] || strcmp(name, n->name) > 0))
         snprintf(n->name, sizeof n->name, "%s", name);
 }
 
@@ -457,6 +490,10 @@ typedef struct Report {
     const RunLog *log;
     const Who *who;
     char system[400], gpu[400], version[160];
+    /* (Report automatically's card: the version without its source, whether it is a release build, the settings' count and the
+       changed ones as key=value lines) */
+    char bare_version[128], changed_list[1200];
+    int release, settings, changed;
 } Report;
 static int cmp_text(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 /* The game's switches and what loads code into it, NAME=VALUE, a value only as hos_crash_value_shown allows (the menu's
@@ -523,6 +560,44 @@ static void put_options(Buf *b, const char *options, const char *dir) {
     }
     free(text);
 }
+/* The settings as Report automatically counts them (put_settings): longshot_options.ini's, or the defaults
+   when there is none yet; changed when longshot_defaults.ini has the key with another value. The changed ones go to list as
+   key=value lines, as many as fit */
+static void count_settings(Report *in) {
+    enum { MAX = 512 };
+    static char keys[MAX][64], values[MAX][32];
+    char path[PATH_MAX_UTF8], key[64], value[32];
+    int nd = 0;
+    char *defaults = join(path, sizeof path, in->dir, "longshot_defaults.ini") ? read_text(path, 256 << 10, NULL) : NULL;
+    for (char *line = defaults; line && *line && nd < MAX;) {
+        if (hos_crash_setting(line, keys[nd], sizeof keys[nd], values[nd], sizeof values[nd])) nd++;
+        line = strchr(line, '\n');
+        if (line) line++;
+    }
+    /* (the run's file, as put_options reads it: in the user folder since host/options_path.c; not given, the game folder's) */
+    char *current = in->options ? read_text(in->options, 256 << 10, NULL)
+                    : join(path, sizeof path, in->dir, "longshot_options.ini") ? read_text(path, 256 << 10, NULL) : NULL;
+    if (!current) in->settings = nd;
+    size_t used = 0;
+    for (char *line = current; line && *line;) {
+        if (hos_crash_setting(line, key, sizeof key, value, sizeof value)) {
+            in->settings++;
+            for (int i = 0; i < nd; i++)
+                if (!strcmp(keys[i], key)) {
+                    if (strcmp(values[i], value)) {
+                        in->changed++;
+                        const int n = snprintf(in->changed_list + used, sizeof in->changed_list - used, "%s=%s\n", key, value);
+                        if (n > 0 && used + (size_t)n < sizeof in->changed_list) used += (size_t)n;
+                        else in->changed_list[used] = 0;
+                    }
+                    break;
+                }
+        }
+        line = strchr(line, '\n');
+        if (line) line++;
+    }
+    free(defaults), free(current);
+}
 typedef struct Recent { int64_t now; int count; } Recent;
 static void count_recent(const char *name, void *user) {
     Recent *r = (Recent *)user;
@@ -537,7 +612,7 @@ static char *report_text(const Report *in, size_t *len) {
              "this into the issue form, and attach the game folder's logs/longshot_log.txt if you can.\n\n", now);
     put(&b, "### What happened\n\n");
     char message[1024];
-    hos_crash_message(message, sizeof message, in->verdict, in->stage, in->cause);
+    hos_crash_message(message, sizeof message, in->verdict, in->stage, in->cause, 0);
     message[strcspn(message, "\n")] = 0;
     putf(&b, "%s\nWhat went wrong: %s\n", message, hos_crash_cause_text(in->cause));
     HosCrashRecord r;
@@ -547,6 +622,19 @@ static char *report_text(const Report *in, size_t *len) {
     Recent recent = {(int64_t)time(NULL), 0};
     if (pending_of(in->dir, pending, sizeof pending)) each_name(pending, count_recent, &recent);
     putf(&b, "Crash and unclean-end records in the last day: %d.\n\n", recent.count);
+    /* (the same fields as Report automatically's card, worded as it words them) */
+    const HosCrashLog *f = &in->log->facts;
+    put(&b, "### Summary (what Report automatically sends, too)\n\n");
+    putf(&b, "Version: %s\n", in->bare_version[0] ? in->bare_version : "not known");
+    putf(&b, "Release build: %s\n", in->release ? "Yes" : "No (a local or modified build)");
+    putf(&b, "Operating system: %s\n", f->os[0] ? f->os : "not known");
+    putf(&b, "Renderer: %s\n", f->renderer[0] ? f->renderer : "not known");
+    putf(&b, "Graphics card: %s\n", in->gpu);
+    putf(&b, "CPU and RAM: %s\n", f->cpu[0] ? f->cpu : "not known");
+    putf(&b, "Map: %s\n", f->place[0] ? f->place : in->log->found ? HOS_CRASH_TITLE_AND_INTRO : "not known");
+    putf(&b, "Settings: %d, %d changed from the defaults\n", in->settings, in->changed);
+    putf(&b, "Crash: %s\n", f->crash[0] ? f->crash : in->record ? "unknown" : "none (no crash record: an unclean end)");
+    putf(&b, "Log: %s\n\n", in->log->found ? "its end, below" : "not found");
     putf(&b, "### Longshot version\n\n%s\nChannel (from the version): %s\n\n", in->version, channel_of(in->version));
     putf(&b, "### Graphics card and driver version\n\n%s\n", in->gpu);
     if (in->log->facts.devices[0]) putf(&b, "Devices the log lists: %s\n", in->log->facts.devices);
@@ -589,6 +677,7 @@ static char *report_text(const Report *in, size_t *len) {
 /* ---- SDL's message box, clipboard and links (loaded here, not through host/hos_sdl.c: the helper starts nothing else) ---- */
 static struct {
     int version;   /* 3, 2 or 0 */
+    void *lib;     /* (the library: the crash window takes its functions from it, gpu/vk/vk_crash_window.cpp) */
     void *ShowMessageBox, *SetClipboardText, *OpenURL, *InitSubSystem, *PumpEvents;
 } sdl;
 static void *sdl_lib(const char *name) {
@@ -642,7 +731,7 @@ static int sdl_load(void) {
         sdl.OpenURL = sdl_fn(lib, "SDL_OpenURL");   /* (SDL 2.0.14 on) */
         sdl.InitSubSystem = sdl_fn(lib, "SDL_InitSubSystem");
         sdl.PumpEvents = sdl_fn(lib, "SDL_PumpEvents");
-        if (sdl.ShowMessageBox && sdl.InitSubSystem) sdl.version = k ? 2 : 3;
+        if (sdl.ShowMessageBox && sdl.InitSubSystem) sdl.version = k ? 2 : 3, sdl.lib = lib;
     }
     return sdl.version;
 }
@@ -665,30 +754,81 @@ static int sdl_box(const char *title, const char *text, const char *const *butto
     if (sdl.version == 3) return ((_Bool (*)(const SdlBox *, int *))sdl.ShowMessageBox)(&box, &hit) ? hit : -2;
     return ((int (*)(const SdlBox *, int *))sdl.ShowMessageBox)(&box, &hit) == 0 ? hit : -2;
 }
-static int ui_box(const char *title, const char *text, const char *const *buttons, int n) {
+/* ---- the crash window: the pages drawn as the Insert menu is (gpu/vk/vk_crash_window.cpp, in longshot_vk beside this
+   executable), through SDL's renderer; SDL's message box when that module or a window can't be had ---- */
+static struct { int tried; mkwvk_crash_page_fn page; mkwvk_crash_close_fn close; int open; } window;
+static void *sdl_sym(const char *name) { return sdl_fn(sdl.lib, name); }
+static int window_load(void) {   /* (1 when the module has the window: whether a window opens is the first page's to find) */
 #ifdef HOS_CRASH_DIALOG_TEST
+    return 0;
+#endif
+    if (!window.tried) {
+        window.tried = 1;
+#ifdef _WIN32
+        void *m = sdl_load() ? sdl_lib("longshot_vk.dll") : NULL;
+#else
+        void *m = sdl_load() ? sdl_lib("longshot_vk.so") : NULL;
+#endif
+        window.page = m ? (mkwvk_crash_page_fn)sdl_fn(m, "mkwvk_crash_page") : NULL;
+        window.close = m ? (mkwvk_crash_close_fn)sdl_fn(m, "mkwvk_crash_close") : NULL;
+    }
+    return window.page != NULL;
+}
+static int window_page(const char *title, const char *text, const char *block, const char *const *buttons, int n) {
+    if (!window_load()) return -2;
+    /* (the banner's heading: the title without "Longshot: ", its first letter a capital) */
+    char heading[160];
+    snprintf(heading, sizeof heading, "%s", !strncmp(title, "Longshot: ", 10) ? title + 10 : title);
+    if (heading[0] >= 'a' && heading[0] <= 'z') heading[0] = (char)(heading[0] - 'a' + 'A');
+    const MkwCrashSdl with = {sdl.version, sdl_sym};
+    const MkwCrashPage page = {title, heading, text, block, buttons, n};
+    const int hit = window.page(&with, &page);
+    if (hit != -2) window.open = 1;
+    else window.page = NULL;   /* (no window: the message boxes from now on) */
+    return hit;
+}
+static void window_close(void) {
+    if (window.open && window.close) window.close();
+    window.open = 0;
+}
+/* A page: the button pressed, by its index (the first is the Enter key's, the last Escape's), -1 when the window was closed
+   otherwise, -2 when nothing could be shown. block: text shown as it is below the page's (in a box of its own in the window;
+   after the text in a message box) */
+static int ui_page(const char *title, const char *text, const char *block, const char *const *buttons, int n) {
+#ifdef HOS_CRASH_DIALOG_TEST
+    if (block) {
+        Buf t = {0};
+        put(&t, text), put(&t, "\n\n"), put(&t, block);
+        const int hit = hos_crash_test_box(title, t.s ? t.s : "", buttons, n);
+        free(t.s);
+        return hit;
+    }
     return hos_crash_test_box(title, text, buttons, n);
 #endif
-    if (sdl_load()) {
-        const int hit = sdl_box(title, text, buttons, n);
-        if (hit != -2) return hit;
-    }
-#ifdef _WIN32
-    /* (no SDL: Windows' own box, its Yes/No/Cancel standing for the buttons, said in its text) */
+    const int hit = window_page(title, text, block, buttons, n);
+    if (hit != -2) return hit;
     Buf t = {0};
-    put(&t, text);
-    put(&t, "\n\n");
-    static const char *const keys[] = {"Yes", "No", "Cancel"};
-    for (int i = 0; i < n && i < 3; i++) putf(&t, "%s%s: %s", i ? ", " : "", n == 1 ? "OK" : keys[i], buttons[i]);
-    wchar_t *wt = t.s ? wide_of(t.s) : NULL, *wc = wide_of(title);
-    const UINT kind = n >= 3 ? MB_YESNOCANCEL : n == 2 ? MB_YESNO : MB_OK;
-    const int r = wt && wc ? MessageBoxW(NULL, wt, wc, kind | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) : 0;
-    free(t.s), free(wt), free(wc);
-    return r == IDYES || r == IDOK ? 0 : r == IDNO ? 1 : r == IDCANCEL ? 2 : r ? -1 : -2;
-#else
-    return -2;   /* (no SDL, no window: the game itself would have had none) */
+    if (block) put(&t, text), put(&t, "\n\n"), put(&t, block), text = t.s ? t.s : text;
+    int r = -2;
+    if (sdl_load()) r = sdl_box(title, text, buttons, n);
+#ifdef _WIN32
+    if (r == -2) {   /* (no SDL: Windows' own box, its Yes/No/Cancel standing for the buttons, said in its text) */
+        Buf w = {0};
+        put(&w, text);
+        put(&w, "\n\n");
+        static const char *const keys[] = {"Yes", "No", "Cancel"};
+        for (int i = 0; i < n && i < 3; i++) putf(&w, "%s%s: %s", i ? ", " : "", n == 1 ? "OK" : keys[i], buttons[i]);
+        wchar_t *wt = w.s ? wide_of(w.s) : NULL, *wc = wide_of(title);
+        const UINT kind = n >= 3 ? MB_YESNOCANCEL : n == 2 ? MB_YESNO : MB_OK;
+        const int k = wt && wc ? MessageBoxW(NULL, wt, wc, kind | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) : 0;
+        free(w.s), free(wt), free(wc);
+        r = k == IDYES || k == IDOK ? 0 : k == IDNO ? 1 : k == IDCANCEL ? 2 : k ? -1 : -2;
+    }
 #endif
+    free(t.s);
+    return r;   /* (no SDL, no window, not Windows: -2, the game itself would have had none) */
 }
+static int ui_box(const char *title, const char *text, const char *const *buttons, int n) { return ui_page(title, text, NULL, buttons, n); }
 
 #ifdef _WIN32
 /* The report onto the clipboard: 0 not, 1 there for good (the system's or a tool's), 2 only while this helper runs */
@@ -839,9 +979,10 @@ static void *box_thread(void *p) {
 #endif
 /* A box while the clipboard is given (Linux: the box on a thread of its own, SDL's events pumped here meanwhile, on the thread
    that started SDL's video, so a paste in the browser gets the text) */
-static int box_serving(const char *title, const char *text, const char *const *buttons, int n) {
+static int page_serving(const char *title, const char *text, const char *block, const char *const *buttons, int n) {
 #ifndef _WIN32
-    if (video_on && sdl.PumpEvents) {
+    /* (the crash window's own loop takes SDL's events, so the clipboard is served while it shows a page) */
+    if (video_on && sdl.PumpEvents && !window_load()) {
         BoxJob j = {title, text, buttons, n, -1, 0};
         pthread_t t;
         if (!pthread_create(&t, NULL, box_thread, &j)) {
@@ -851,7 +992,10 @@ static int box_serving(const char *title, const char *text, const char *const *b
         }
     }
 #endif
-    return ui_box(title, text, buttons, n);
+    return ui_page(title, text, block, buttons, n);
+}
+static int box_serving(const char *title, const char *text, const char *const *buttons, int n) {
+    return page_serving(title, text, NULL, buttons, n);
 }
 
 /* ---- the window, and Report ---- */
@@ -860,6 +1004,9 @@ typedef struct Shown {
     const char *dir, *record, *record_name, *options;
     RunLog *log;
     Who who;
+    /* (where Report automatically sends to: longshot_version.txt's crash_reports= and crash_issue=, hos_crash_stamp_address;
+       both "" when it has not both) */
+    char reports[512], issue[512];
 } Shown;
 static void log_folder(const Shown *s, char *out, size_t cap) {
     snprintf(out, cap, "%s", s->log->path[0] ? s->log->path : "");
@@ -894,7 +1041,15 @@ static void prune_reports(const char *pending) {
         if (join(path, sizeof path, pending, r.names[i])) remove_utf8(path);
     }
 }
-static void report(const Shown *s) {
+/* Report's report: its text, saved beside the crash records (bug-reports/pending/report-<UTC>.txt; local is that path as the
+   system writes paths, "" when it could not be saved), and the issue form filled in for it. 0 when there is no text */
+typedef struct Made {
+    char *text;
+    size_t n;
+    char local[PATH_MAX_UTF8];
+    char url[HOS_CRASH_LINK_MAX + 1];
+} Made;
+static void report_facts(const Shown *s, Report *out) {
     Report in;
     memset(&in, 0, sizeof in);
     in.verdict = s->verdict, in.stage = s->stage, in.cause = s->cause;
@@ -906,56 +1061,418 @@ static void report(const Shown *s) {
     char record_version[160] = "";
     if (s->record) hos_crash_record_value(s->record, "version", record_version, sizeof record_version);
     snprintf(in.version, sizeof in.version, "%s", f->version[0] ? f->version : record_version[0] ? record_version : "not known");
-    size_t n = 0;
-    char *text = report_text(&in, &n);
-    if (!text) return;
-    /* (beside the crash records: bug-reports/pending/report-<UTC>.txt) */
+    char source[64], stamp_source[64] = "";
+    hos_crash_version_split(f->version[0] ? f->version : record_version, in.bare_version, sizeof in.bare_version, source, sizeof source);
+    {
+        char path[PATH_MAX_UTF8];
+        char *stamp = join(path, sizeof path, s->dir, "longshot_version.txt") ? read_text(path, 16 << 10, NULL) : NULL;
+        const char *at = stamp ? strstr(stamp, "source=") : NULL;
+        if (at && (at == stamp || at[-1] == '\n')) hos_crash_take(stamp_source, sizeof stamp_source, at + 7);
+        stamp_source[strcspn(stamp_source, " \t")] = 0;
+        free(stamp);
+    }
+    in.release = hos_crash_release(in.bare_version, source, stamp_source);
+    count_settings(&in);
+    *out = in;
+}
+static int make_report(const Shown *s, Made *out) {
+    memset(out, 0, sizeof *out);
+    static Report in;
+    report_facts(s, &in);
+    const HosCrashLog *f = &s->log->facts;
+    out->text = report_text(&in, &out->n);
+    if (!out->text) return 0;
     char pending[PATH_MAX_UTF8], path[PATH_MAX_UTF8], leaf[64], stamp[17];
     utc_now(stamp);
     snprintf(leaf, sizeof leaf, "report-%s.txt", stamp);
-    const int saved = pending_of(s->dir, pending, sizeof pending) && join(path, sizeof path, pending, leaf) && write_text(path, text, n);
+    const int saved = pending_of(s->dir, pending, sizeof pending) && join(path, sizeof path, pending, leaf) &&
+                      write_text(path, out->text, out->n);
     if (saved) prune_reports(pending);
-    const int copied = clipboard(text);
-    char headline[160], title[200], what[400], url[HOS_CRASH_LINK_MAX + 1];
+    char headline[160], title[200], what[400];
     hos_crash_headline(headline, sizeof headline, hos_crash_title(s->verdict), s->stage);
     snprintf(title, sizeof title, "Game: %s", headline);
     snprintf(what, sizeof what, "%s. %s (The report from the crash window is pasted below.)", headline,
              hos_crash_cause_text(s->cause));
-    hos_crash_issue_url(url, sizeof url, title, in.version, f->gpu[0] ? in.gpu : "", in.system, what);
-    const int opened = open_thing(url);
-    char local[PATH_MAX_UTF8];   /* (the saved report, as the system writes paths: what the box names and Open the report opens) */
+    /* (the system as the card says it: the CPU and RAM, then the operating system, from the log's report: lines, else the
+       helper's own reading) */
+    char system[420];
+    if (f->cpu[0] && f->os[0]) snprintf(system, sizeof system, "%s; %s", f->cpu, f->os);
+    else snprintf(system, sizeof system, "%s", in.system);
+    /* (the form's Channel: a release build's from its version, anything else built from source) */
+    const char *track = !in.release ? "Built from source" : !strncmp(in.bare_version, "nightly-", 8) ? "Nightly"
+                      : strstr(in.bare_version, "-rc.") ? "Release candidate" : "Release";
+    char where[200];
+    snprintf(where, sizeof where, "%s", f->place[0] ? f->place : s->log->found ? HOS_CRASH_TITLE_AND_INTRO : "");
+    hos_crash_issue_url(out->url, sizeof out->url, title, in.version, f->gpu[0] ? in.gpu : "", system, what, track, where,
+                        in.changed_list);
     {   /* (one separator between names: the game folder ends with one; a share's leading two kept) */
         const char *from = saved ? path : "";
         size_t o = 0;
-        for (size_t i = 0; from[i] && o + 1 < sizeof local; i++) {
+        for (size_t i = 0; from[i] && o + 1 < sizeof out->local; i++) {
             const int sep = from[i] == '/' || from[i] == '\\';
-            if (sep && i > 1 && o && (local[o - 1] == '/' || local[o - 1] == '\\')) continue;
+            if (sep && i > 1 && o && (out->local[o - 1] == '/' || out->local[o - 1] == '\\')) continue;
 #ifdef _WIN32
-            local[o++] = sep ? '\\' : from[i];
+            out->local[o++] = sep ? '\\' : from[i];
 #else
-            local[o++] = from[i];
+            out->local[o++] = from[i];
 #endif
         }
-        local[o] = 0;
+        out->local[o] = 0;
     }
+    return 1;
+}
+static void report(const Shown *s) {
+    Made *made = (Made *)malloc(sizeof *made);
+    if (!made || !make_report(s, made)) {
+        free(made);
+        return;
+    }
+    const int copied = clipboard(made->text), opened = open_thing(made->url), saved = made->local[0] != 0;
     char *m = (char *)malloc(PATH_MAX_UTF8 + 1024);
-    if (m) hos_crash_ready_text(m, PATH_MAX_UTF8 + 1024, copied, opened, saved ? local : NULL, HOS_CRASH_ISSUES);
+    if (m) hos_crash_ready_text(m, PATH_MAX_UTF8 + 1024, copied, opened, saved ? made->local : NULL, HOS_CRASH_ISSUES);
     const char *const buttons[] = {"Open the report", "Done"};
     for (int shown = 0;; shown++) {
         const int hit = box_serving("Longshot: report ready", m ? m : "", saved ? buttons : buttons + 1, saved ? 2 : 1);
         /* (no box could be shown at all: the saved report opened instead, so the player has it in front of them) */
-        if (hit == -2 && !shown && saved) open_thing(local);
+        if (hit == -2 && !shown && saved) open_thing(made->local);
         if (!saved || hit != 0) break;
-        open_thing(local);
+        open_thing(made->local);
     }
-    free(m), free(text);
+    free(m), free(made->text), free(made);
+}
+/* ---- Report automatically: the report as Longshot-api's /telemetry/crash takes it, built here from the run's log, shown in
+   full, and posted with the system's curl only when the player presses Send (docs/crash-report-window.md) ---- */
+static int spawn_exe(const char *exe_path, const char *const *args, int n, int wait_ms, int *code);
+/* (bug-reports/pending/sending-<record><ext>: the report, curl's answer and its headers, removed once the window is done) */
+static int sending_path(const Shown *s, const char *ext, char *out, size_t cap) {
+    char pending[PATH_MAX_UTF8], leaf[192];
+    snprintf(leaf, sizeof leaf, "sending-%s%s", s->record_name, ext);
+    return pending_of(s->dir, pending, sizeof pending) && join(out, cap, pending, leaf);
+}
+/* (bug-reports/sent/<record>: the answer to a report sent, so Send is not offered for it again) */
+static int sent_path(const Shown *s, char *out, size_t cap, int make) {
+    char root[PATH_MAX_UTF8], sent[PATH_MAX_UTF8];
+    if (!join(root, sizeof root, s->dir, "bug-reports") || !join(sent, sizeof sent, root, "sent")) return 0;
+    if (make) make_dir(sent);
+    return join(out, cap, sent, s->record_name);
+}
+static int sent_already(const Shown *s) {
+    char path[PATH_MAX_UTF8];
+    char *t = sent_path(s, path, sizeof path, 0) ? read_text(path, 4096, NULL) : NULL;
+    free(t);
+    return t != NULL;
+}
+static void find_addresses(Shown *s) {
+    char path[PATH_MAX_UTF8];
+    char *stamp = join(path, sizeof path, s->dir, "longshot_version.txt") ? read_text(path, 16 << 10, NULL) : NULL;
+    if (!stamp || !hos_crash_stamp_address(stamp, "crash_reports", s->reports, sizeof s->reports) ||
+        !hos_crash_stamp_address(stamp, "crash_issue", s->issue, sizeof s->issue))
+        s->reports[0] = s->issue[0] = 0;
+    free(stamp);
+}
+/* A line of the report, cleaned (hos_crash_clean), as a JSON string after sep */
+static void put_field(Buf *b, const char *sep, const char *key, const char *value, size_t limit, const Shown *s,
+                      const char *const *devices, int ndevices) {
+    const size_t cap = strlen(value) * 3 + 64;
+    char *c = (char *)malloc(cap), *j = (char *)malloc(cap * 2 + 8);
+    if (c && j) {
+        snprintf(c, cap, "%s", value);
+        hos_crash_clean(c, cap, limit, s->who.home, s->who.user, s->who.windows, devices, ndevices);
+        hos_crash_json(j, cap * 2 + 8, c);
+        if (key) putf(b, "%s\"%s\": %s", sep, key, j);
+        else putf(b, "%s%s", sep, j);
+    }
+    free(c), free(j);
+}
+typedef struct Setting { char key[64], value[32]; int changed; } Setting;
+static int cmp_setting(const void *a, const void *b) {
+    const Setting *x = (const Setting *)a, *y = (const Setting *)b;
+    return x->changed != y->changed ? y->changed - x->changed : strcmp(x->key, y->key);
+}
+/* Every setting, key=value lines, the changed ones first (the defaults when the run had no file yet), as many as fit 4000
+   characters; *devices: the microphone's name in it, to leave out of every line */
+static void put_settings(Buf *b, const Shown *s, char *mic, size_t mic_cap) {
+    enum { MAX = 512 };
+    static Setting rows[MAX], defaults[MAX];
+    char path[PATH_MAX_UTF8];
+    int nd = 0, n = 0;
+    mic[0] = 0;
+    char *dtext = join(path, sizeof path, s->dir, "longshot_defaults.ini") ? read_text(path, 256 << 10, NULL) : NULL;
+    for (char *line = dtext; line && *line && nd < MAX; line = strchr(line, '\n'), line = line ? line + 1 : NULL)
+        if (hos_crash_setting(line, defaults[nd].key, sizeof defaults[nd].key, defaults[nd].value, sizeof defaults[nd].value)) nd++;
+    char *ctext = s->options ? read_text(s->options, 256 << 10, NULL)
+                  : join(path, sizeof path, s->dir, "longshot_options.ini") ? read_text(path, 256 << 10, NULL) : NULL;
+    for (char *line = ctext; line && *line && n < MAX; line = strchr(line, '\n'), line = line ? line + 1 : NULL) {
+        if (!strncmp(line, "microphone_device=", 18)) hos_crash_take(mic, mic_cap, line + 18), mic[strcspn(mic, "\r\n")] = 0;
+        if (!hos_crash_setting(line, rows[n].key, sizeof rows[n].key, rows[n].value, sizeof rows[n].value)) continue;
+        rows[n].changed = 0;
+        for (int i = 0; i < nd; i++)
+            if (!strcmp(defaults[i].key, rows[n].key)) rows[n].changed = strcmp(defaults[i].value, rows[n].value) != 0;
+        n++;
+    }
+    if (!ctext) memcpy(rows, defaults, sizeof rows[0] * (size_t)nd), n = nd;
+    qsort(rows, (size_t)n, sizeof rows[0], cmp_setting);
+    Buf o = {0};
+    put(&o, "");
+    for (int i = 0; i < n && o.n + strlen(rows[i].key) + strlen(rows[i].value) + 2 <= HOS_CRASH_MAX_OPTIONS; i++)
+        putf(&o, "%s%s=%s", i ? "\n" : "", rows[i].key, rows[i].value);
+    char *j = (char *)malloc(o.n * 2 + 8);
+    if (j) hos_crash_json(j, o.n * 2 + 8, o.s ? o.s : ""), putf(b, ",\n  \"options\": %s", j);
+    free(j), free(o.s), free(dtext), free(ctext);
+}
+/* The run's log again, from its file, for the crash's lines as they are (the ring of read_log is cut to fit the menu's
+   report): the 150 lines before the crash's first and its own (at most 80). 0 when the log has no crash */
+typedef struct Lines { char **at; int n, cap; } Lines;
+static void lines_add(Lines *l, const char *line) {
+    if (l->n == l->cap) {
+        char **more = (char **)realloc(l->at, sizeof *more * (size_t)(l->cap ? l->cap * 2 : 256));
+        if (!more) return;
+        l->at = more, l->cap = l->cap ? l->cap * 2 : 256;
+    }
+    l->at[l->n] = strdup(line);
+    if (l->at[l->n]) l->n++;
+}
+static void lines_free(Lines *l) {
+    for (int i = 0; i < l->n; i++) free(l->at[i]);
+    free(l->at);
+    memset(l, 0, sizeof *l);
+}
+static int crash_lines(const Shown *s, Lines *tail, Lines *crash) {
+    FILE *f = s->log->path[0] ? open_utf8(s->log->path, "rb") : NULL;
+    if (!f) return 0;
+    char line[4096], one[4096];
+    Lines ring = {0};
+    int found = 0;
+    for (uint64_t taken = 0; taken < (256ull << 20) && fgets(line, sizeof line, f);) {
+        taken += strlen(line);
+        line[strcspn(line, "\r\n")] = 0;
+        if (!found && hos_crash_starts(line)) found = 1;
+        if (!found) {   /* (the lines before it: the last 150, a ring) */
+            if (ring.n < HOS_CRASH_TAIL_LINES) lines_add(&ring, line);
+            else {
+                free(ring.at[0]);
+                memmove(ring.at, ring.at + 1, sizeof *ring.at * (HOS_CRASH_TAIL_LINES - 1));
+                ring.at[HOS_CRASH_TAIL_LINES - 1] = strdup(line);
+                if (!ring.at[HOS_CRASH_TAIL_LINES - 1]) ring.n--;
+            }
+        } else if (crash->n < HOS_CRASH_CRASH_LINES && hos_crash_report_line(one, sizeof one, line)) {
+            lines_add(crash, one);
+        }
+    }
+    fclose(f);
+    *tail = ring;
+    return found;
+}
+/* The report: its JSON (the payload) and what the page shows of it; 0 with *why when there is none to send */
+static int build_report(const Shown *s, Buf *json, Buf *shown, const char **why) {
+    Lines tail = {0}, crash = {0};
+    if (!crash_lines(s, &tail, &crash) || !crash.n) {
+        *why = s->log->path[0] ? "The log of the run that crashed has no crash in it, so there is no report to send."
+                               : "The log of the run that crashed is gone (four runs since), so there is no report to send.";
+        lines_free(&tail), lines_free(&crash);
+        return 0;
+    }
+    static Report in;
+    report_facts(s, &in);
+    const HosCrashLog *f = &s->log->facts;
+    char mic[128], version[64];
+    Buf settings = {0};
+    put(&settings, "");
+    put_settings(&settings, s, mic, sizeof mic);
+    const char *devices[1] = {mic};
+    const int nd = mic[0] ? 1 : 0;
+    hos_crash_report_version(version, sizeof version, in.bare_version);
+    char os[sizeof in.system];
+    snprintf(os, sizeof os, "%s", f->os[0] ? f->os : in.system);
+    const char *place = f->place[0] ? f->place : HOS_CRASH_TITLE_AND_INTRO;
+    putf(json, "{\n  \"version\": \"%s\",\n  \"release\": %s", version, in.release ? "true" : "false");
+    put_field(json, ",\n  ", "os", os, HOS_CRASH_MAX_OS, s, devices, nd);
+    put_field(json, ",\n  ", "renderer", f->renderer, HOS_CRASH_MAX_RENDERER, s, devices, nd);
+    put_field(json, ",\n  ", "gpu", f->gpu, HOS_CRASH_MAX_GPU, s, devices, nd);
+    put_field(json, ",\n  ", "cpu", f->cpu, HOS_CRASH_MAX_CPU, s, devices, nd);
+    put_field(json, ",\n  ", "map", place, HOS_CRASH_MAX_MAP, s, devices, nd);
+    put(json, ",\n  \"crash\": [");
+    for (int i = 0; i < crash.n; i++) put_field(json, i ? ",\n    " : "\n    ", NULL, crash.at[i], HOS_CRASH_LINE_LIMIT, s, devices, nd);
+    put(json, "\n  ],\n  \"log_tail\": [");
+    for (int i = 0; i < tail.n; i++) put_field(json, i ? ",\n    " : "\n    ", NULL, tail.at[i], HOS_CRASH_LINE_LIMIT, s, devices, nd);
+    put(json, tail.n ? "\n  ]" : "]");
+    put(json, settings.s);
+    put(json, "\n}\n");
+    /* (the page: the card's rows, the crash's first lines, what else goes; the whole of it is the file Show all of it opens) */
+    putf(shown, "Version: %s\nRelease build: %s\nOperating system: %s\nRenderer: %s\nGraphics card: %s\nCPU and RAM: %s\nMap: %s\n"
+                "Settings: %d (%d changed from the defaults)\n\nThe crash:\n",
+         version, in.release ? "Yes" : "No (a local or modified build)", os, f->renderer[0] ? f->renderer : "not known",
+         f->gpu[0] ? f->gpu : "not known", f->cpu[0] ? f->cpu : "not known", place, in.settings, in.changed);
+    for (int i = 0; i < crash.n && i < 12; i++) {
+        char line[HOS_CRASH_LINE_LIMIT * 4 + 8];
+        snprintf(line, sizeof line, "%s", crash.at[i]);
+        hos_crash_clean(line, sizeof line, HOS_CRASH_LINE_LIMIT, s->who.home, s->who.user, s->who.windows, devices, nd);
+        putf(shown, "%s\n", line);
+    }
+    if (crash.n > 12) putf(shown, "(and %d more lines of it)\n", crash.n - 12);
+    putf(shown, "\nand the %d log lines before it, and every setting (Show all of it).", tail.n);
+    free(settings.s), lines_free(&tail), lines_free(&crash);
+    return 1;
+}
+/* The system's curl (Windows 10 and 11 have one in System32): its path, 0 without one */
+static int find_curl(char *out, size_t cap) {
+#ifdef HOS_CRASH_DIALOG_TEST
+    const char *stand_in = getenv("CRASH_TEST_CURL");   /* (tests/test_crash_dialog.py's: the server's answers, no network) */
+    return stand_in && snprintf(out, cap, "%s", stand_in) > 0;
+#endif
+#ifdef _WIN32
+    wchar_t dir[MAX_PATH];
+    const UINT n = GetSystemDirectoryW(dir, MAX_PATH);
+    char *d = n && n < MAX_PATH ? utf8_of(dir) : NULL;
+    const int ok = d && join(out, cap, d, "curl.exe");
+    free(d);
+    if (ok) for (char *p = out; *p; p++) if (*p == '/') *p = '\\';
+    return ok && file_exists(out);
+#else
+    static const char *const places[] = {"/usr/bin/curl", "/bin/curl", "/usr/local/bin/curl", "/run/host/usr/bin/curl"};
+    for (size_t i = 0; i < sizeof places / sizeof places[0]; i++)
+        if (file_exists(places[i]) && access(places[i], X_OK) == 0) return snprintf(out, cap, "%s", places[i]) > 0;
+    return 0;
+#endif
+}
+/* Posts the payload file: the HTTP status (0 when there was no answer) and the answer's body in *body (malloc'd) */
+static int post_report(const Shown *s, const char *payload, char **body) {
+    char curl[PATH_MAX_UTF8], headers[PATH_MAX_UTF8], answer[PATH_MAX_UTF8], data[PATH_MAX_UTF8 + 1];
+    *body = NULL;
+    if (!find_curl(curl, sizeof curl) || !sending_path(s, ".headers.txt", headers, sizeof headers) ||
+        !sending_path(s, ".answer.txt", answer, sizeof answer))
+        return 0;
+    remove_utf8(headers), remove_utf8(answer);
+    snprintf(data, sizeof data, "@%s", payload);
+    /* (no redirect followed: the report goes to the address in the stamp and nowhere else; at most 30 s. --disable first, so
+       no .curlrc / _curlrc of the player's adds a redirect, a proxy, --insecure or an --output of its own) */
+    const char *const args[] = {"--disable", "--silent", "--show-error", "--max-time", "25", "--connect-timeout", "10", "--proto", "=https",
+                                "--header", "Content-Type: application/json", "--user-agent", "longshot-crash-report",
+                                "--data-binary", data, "--dump-header", headers, "--output", answer, s->reports};
+    const int ran = spawn_exe(curl, args, (int)(sizeof args / sizeof args[0]), 30000, NULL);
+    char *head = ran == 1 ? read_text(headers, 16 << 10, NULL) : NULL;
+    const int status = head ? hos_crash_http_status(head) : 0;
+    *body = ran == 1 ? read_text(answer, 16 << 10, NULL) : NULL;
+    free(head), remove_utf8(headers), remove_utf8(answer);
+    return status;
+}
+/* (bug-reports/sent/<record>.json, <record> without its .txt: a copy of the report sent on its own, as it went) */
+static int sent_copy_path(const Shown *s, char *out, size_t cap) {
+    char answer[PATH_MAX_UTF8];
+    if (!sent_path(s, answer, sizeof answer, 1)) return 0;
+    const size_t n = strlen(answer);
+    if (n > 4 && !strcmp(answer + n - 4, ".txt")) answer[n - 4] = 0;
+    const int k = snprintf(out, cap, "%s.json", answer);
+    return k > 0 && (size_t)k < cap;
+}
+/* (a line at the end of the run's log, the helper's own: the game has ended, so the log is no longer written by it. Nothing
+   when the run's log was not found) */
+static void note_in_log(const Shown *s, const char *line) {
+    FILE *f = s->log->path[0] ? open_utf8(s->log->path, "ab") : NULL;
+    if (!f) return;
+    fprintf(f, "%s\n", line);
+    fclose(f);
+}
+/* (a report sent: its answer kept in bug-reports/sent/<record>, so it is not offered or sent again) */
+static void keep_answer(const Shown *s, int status, const char *link) {
+    char path[PATH_MAX_UTF8], kept[HOS_CRASH_LINK_MAX + 64];
+    const int n = snprintf(kept, sizeof kept, "status: %d\nlink: %s\n", status, link);
+    if (sent_path(s, path, sizeof path, 1) && n > 0) write_text(path, kept, (size_t)n);
+}
+/* Report automatically with no window, as the player chose in the launcher (hos_crash_auto_send): the same report, posted
+   the same way. 1 when it was sent; 0 when it could not be made or sent, and the window shows it as it would have */
+static int send_quietly(const Shown *s) {
+    char ini[PATH_MAX_UTF8], payload[PATH_MAX_UTF8];
+    char *choice = join(ini, sizeof ini, s->dir, "longshot_crash.ini") ? read_text(ini, 4096, NULL) : NULL;
+    const int wanted = choice && hos_crash_auto_send(choice);
+    free(choice);
+    if (!wanted) return 0;
+    Buf json = {0}, shown = {0};
+    const char *why = NULL;
+    int sent = 0;
+    if (sending_path(s, ".json", payload, sizeof payload) && build_report(s, &json, &shown, &why) &&
+        write_text(payload, json.s, json.n)) {
+        char *body = NULL, result[700], link[HOS_CRASH_LINK_MAX + 1];
+        int again = 0;
+        const int status = post_report(s, payload, &body);
+        sent = hos_crash_answer(result, sizeof result, status, body, s->issue, link, sizeof link, &again);
+        free(body);
+        /* (what went, kept beside its answer, and the answer in the run's log: with no window, the player can still see both) */
+        char copy[PATH_MAX_UTF8], line[sizeof result + sizeof link + 64];
+        if (sent) {
+            keep_answer(s, status, link);
+            if (sent_copy_path(s, copy, sizeof copy)) write_text(copy, json.s, json.n);
+        }
+        snprintf(line, sizeof line, "[hos crash] sent on its own (longshot_crash.ini): %s", sent ? link : result);
+        for (char *p = line; *p; p++)
+            if (*p == '\n' || *p == '\r') *p = ' ';
+        note_in_log(s, line);
+        remove_utf8(payload);
+    }
+    free(json.s), free(shown.s);
+    return sent;
+}
+/* 1 when it was sent (Send is not offered again), 0 otherwise */
+static int send_report(const Shown *s) {
+    char payload[PATH_MAX_UTF8];
+    const char *const close[] = {"Close"};
+    Buf json = {0}, shown = {0};
+    const char *why = NULL;
+    if (!sending_path(s, ".json", payload, sizeof payload) || !build_report(s, &json, &shown, &why) ||
+        !write_text(payload, json.s, json.n)) {
+        char m[600];
+        snprintf(m, sizeof m, "The report could not be made, so nothing was sent.\n\n%s",
+                 why ? why : "It could not be saved in bug-reports.");
+        box_serving("Longshot: send to the team", m, close, 1);
+        free(json.s), free(shown.s);
+        return 0;
+    }
+    const char *const ask[] = {"Send", "Show all of it", "Cancel"};
+    int sent = 0;
+    for (;;) {
+        const int hit = page_serving("Longshot: send to the team",
+                                     "This is what goes to the Longshot team, and nothing else. Show all of it opens the report as it "
+                                     "is sent, every line of it.",
+                                     shown.s ? shown.s : "", ask, 3);
+        if (hit == 1) {
+            open_thing(payload);
+            continue;
+        }
+        if (hit != 0) break;
+        char *body = NULL, result[700], link[HOS_CRASH_LINK_MAX + 1];
+        int again = 0;
+        const int status = post_report(s, payload, &body);
+        sent = hos_crash_answer(result, sizeof result, status, body, s->issue, link, sizeof link, &again);
+        free(body);
+        if (sent) {
+            keep_answer(s, status, link);
+            const char *const done[] = {"Open it", "Done"};
+            if (box_serving("Longshot: sent", result, link[0] ? done : done + 1, link[0] ? 2 : 1) == 0 && link[0])
+                open_thing(link);
+            break;
+        }
+        const char *const retry[] = {"Try again", "Close"};
+        if (box_serving("Longshot: not sent", result, again ? retry : retry + 1, again ? 2 : 1) != 0 || !again) break;
+    }
+    free(json.s), free(shown.s), remove_utf8(payload);
+    return sent;
 }
 static void show(Shown *s) {
     char message[1400];
-    hos_crash_message(message, sizeof message, s->verdict, s->stage, s->cause);
-    const char *const buttons[] = {"Report", "Open the log folder", "Close"};
+    find_addresses(s);
+    /* (the player's choice in the launcher: sent on its own, no window; one that can't be sent is shown as always) */
+    if (hos_crash_send_offered(s->record_name, s->reports[0] != 0, s->record_name && sent_already(s)) && send_quietly(s)) return;
     for (;;) {
-        const int hit = ui_box(hos_crash_title(s->verdict), message, buttons, 3);
+        /* (Report automatically first when it can be: a crash record, the addresses in the stamp, not sent already) */
+        const int offered = hos_crash_send_offered(s->record_name, s->reports[0] != 0, s->record_name && sent_already(s));
+        hos_crash_message(message, sizeof message, s->verdict, s->stage, s->cause, offered);
+        const char *const with_send[] = {"Report automatically", "Report manually", "Open the log folder", "Close"};
+        const char *const *buttons = offered ? with_send : with_send + 1;
+        const int hit = ui_box(hos_crash_title(s->verdict), message, buttons, offered ? 4 : 3) - offered;
+        if (hit == -1) {
+            send_report(s);
+            continue;   /* (the window again: Report and the log folder are still to be had) */
+        }
         if (hit == 1) {
             char folder[PATH_MAX_UTF8];
             log_folder(s, folder, sizeof folder);
@@ -1014,6 +1531,77 @@ static int wait_game(const HosCrashArgs *a, int *have_exit, unsigned long *code)
     return 1;
 #endif
 }
+#ifndef _WIN32
+/* (Linux) The game's cgroup's oom_kill count (hos_crash_oom_kills), from the memory.events path; -1 when it can't be read */
+static long oom_kills(const char *events) {
+    char *text = events[0] ? read_text(events, 4096, NULL) : NULL;
+    const long n = text ? hos_crash_oom_kills(text) : -1;
+    free(text);
+    return n;
+}
+#ifndef _WIN32
+/* (Linux) The environment for a program of the system's (busctl, curl): the helper's, without the game's library paths and
+   preloads (LD_LIBRARY_PATH, LD_PRELOAD: the game's own folders, an overlay's), so it loads its own libraries. Malloc'd
+   (the strings are environ's), NULL when there is no memory */
+static char **system_env(void) {
+    size_t n = 0, k = 0;
+    while (environ && environ[n]) n++;
+    char **env = (char **)malloc((n + 1) * sizeof *env);
+    if (!env) return NULL;
+    for (size_t i = 0; i < n; i++)
+        if (strncmp(environ[i], "LD_LIBRARY_PATH=", 16) && strncmp(environ[i], "LD_PRELOAD=", 11)) env[k++] = environ[i];
+    env[k] = NULL;
+    return env;
+}
+#endif
+/* (Linux) This helper out of the game's systemd scope, into a scope of its own (longshot-crash-<pid>.scope, through the
+   user manager's StartTransientUnit, as busctl asks it): the OOM killer ends the game, then systemd stops the scope the
+   game was in (DefaultOOMPolicy=stop) and everything in it, which must not be this helper. Where it can't (no systemd, or
+   in a Flatpak, which keeps the sandbox's processes in its scope), it stays; an out-of-memory end is then shown at the
+   next start (hos_crash_show_at_start). At most 2 s, its output nowhere, without the game's library paths */
+static void own_scope(void) {
+    char unit[64], pid[24];
+    snprintf(pid, sizeof pid, "%ld", (long)getpid());
+    snprintf(unit, sizeof unit, "longshot-crash-%s.scope", pid);
+    char *const argv[] = {"busctl", "--user", "--quiet", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                          "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))", unit, "fail", "2",
+                          "PIDs", "au", "1", pid, "CollectMode", "s", "inactive-or-failed", "0", NULL};
+    char **env = system_env();
+    if (!env) return;
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    pid_t child;
+    const int ok = posix_spawnp(&child, "busctl", &fa, NULL, argv, env) == 0;
+    posix_spawn_file_actions_destroy(&fa);
+    free(env);
+    if (!ok) return;
+    for (int waited = 0;; waited += 20) {
+        int status;
+        const pid_t got = waitpid(child, &status, WNOHANG);
+        if (got == child || (got < 0 && errno != EINTR)) return;
+        if (waited >= 2000) {
+            kill(child, SIGKILL);
+            waitpid(child, &status, 0);
+            return;
+        }
+        sleep_ms(20);
+    }
+}
+#endif
+/* An unclean end the OOM killer made: "oom_kill: yes" added to its record (pending/name), and to *text */
+static void mark_oom(const char *dir, const char *name, char **text) {
+    char pending[PATH_MAX_UTF8], path[PATH_MAX_UTF8];
+    const size_t n = *text ? strlen(*text) : 0;
+    char *more = (char *)malloc(n + 32);
+    if (!more) return;
+    snprintf(more, n + 32, "%s%soom_kill: yes\n", *text ? *text : "", n && (*text)[n - 1] != '\n' ? "\n" : "");
+    if (pending_of(dir, pending, sizeof pending) && join(path, sizeof path, pending, name)) write_text(path, more, strlen(more));
+    free(*text);
+    *text = more;
+}
 static int helper(const HosCrashArgs *a) {
     Shown s;
     memset(&s, 0, sizeof s);
@@ -1026,8 +1614,33 @@ static int helper(const HosCrashArgs *a) {
     char *record = NULL;
     int have_exit = 0;
     unsigned long code = 0;
+#ifndef _WIN32
+    long oom_before = -1;
+    char events[PATH_MAX_UTF8] = "";
+    /* (SIGTERM held back until the run's record is written: systemd stops the game's scope at once after an OOM kill, this
+       helper with it where it could not leave it, and the record must say out of memory first; let through after it) */
+    sigset_t term;
+    sigemptyset(&term);
+    sigaddset(&term, SIGTERM);
+    if (a->mode == 1) sigprocmask(SIG_BLOCK, &term, NULL);
+    if (a->mode == 1) {   /* (the game's cgroup and its OOM count first, then out of the game's scope) */
+        char cgroup_path[64];
+        snprintf(cgroup_path, sizeof cgroup_path, "/proc/%llu/cgroup", (unsigned long long)a->pid);
+        char *cg = read_text(cgroup_path, 16 << 10, NULL);
+        if (!cg || !hos_crash_cgroup_events(cg, events, sizeof events)) events[0] = 0;
+        free(cg);
+        oom_before = oom_kills(events);
+        own_scope();
+    }
+#endif
+    int oom = 0;
     if (a->mode == 1) {
         if (!wait_game(a, &have_exit, &code)) return 0;
+#ifndef _WIN32
+        /* (at once: systemd stops the game's scope a moment after the kill, and its cgroup goes with it) */
+        const long oom_after = oom_kills(events);
+        oom = oom_before >= 0 && oom_after > oom_before;
+#endif
         /* (its marker becomes an unclean record once the process is gone; Windows lets go of the marker's lock a moment
            after the process ends, so a while) */
         for (int i = 0; i < 30; i++) {
@@ -1039,6 +1652,10 @@ static int helper(const HosCrashArgs *a) {
         }
         snprintf(run_id, sizeof run_id, "%s", a->run_id);
         record = run_record(a->dir, run_id, name, sizeof name);
+        if (oom && record && hos_crash_record_name(name, NULL) == 2) mark_oom(a->dir, name, &record);
+#ifndef _WIN32
+        sigprocmask(SIG_UNBLOCK, &term, NULL);
+#endif
     } else {
         char pending[PATH_MAX_UTF8], path[PATH_MAX_UTF8];
         if (pending_of(a->dir, pending, sizeof pending) && join(path, sizeof path, pending, a->record))
@@ -1051,7 +1668,7 @@ static int helper(const HosCrashArgs *a) {
     hos_crash_record_parse(record ? record : "", &r);
     if (find_run_log(log, a->log, run_id)) read_log(log, &s.who);
     s.verdict = hos_crash_verdict(&r, &log->facts, have_exit, code, 0);
-    if (a->mode == 2 && r.kind != 1) s.verdict = HOS_CRASH_QUIET;
+    if (a->mode == 2 && r.kind != 1 && !r.oom) s.verdict = HOS_CRASH_QUIET;
 #ifdef _WIN32
     /* (a logoff or a shutdown ended the game: no window, which would hold the shutdown up; nor listed as shown, so a crash
        record of the run is still shown at the next start) */
@@ -1069,8 +1686,12 @@ static int helper(const HosCrashArgs *a) {
         s.stage = log->found ? hos_crash_stage(&log->facts) : HOS_STAGE_UNKNOWN;
         s.cause = hos_crash_cause(s.verdict, &r, &log->facts, have_exit, code);
         s.record = record, s.record_name = name[0] ? name : NULL;
-        if (name[0]) ledger_add(a->dir, name, 0);   /* (before the window: a start meanwhile does not show it again) */
+        /* (before the window: a start meanwhile does not show it again. Out of memory: after it, so a helper that systemd
+           stopped with the game's scope (in a Flatpak) leaves it to the next start) */
+        if (name[0] && !r.oom) ledger_add(a->dir, name, 0);
         show(&s);
+        window_close();
+        if (name[0] && r.oom) ledger_add(a->dir, name, 0);
     } else if (name[0]) {
         ledger_add(a->dir, name, 0);   /* (an end that says nothing: never shown at a start either) */
     }
@@ -1122,24 +1743,29 @@ int hos_crash_helper_main(int argc, char **argv) {
 }
 
 /* ---- the game's side ---- */
-/* Starts this executable with args; waits for it to end when asked. 0 when it could not be started */
-static int spawn(const char *const *args, int n, int wait) {
+/* Starts a program (exe NULL: this executable) with args, and waits for it to end when wait_ms is not 0 (-1: as long as it
+   takes). 0 when it could not be started, 1 when it ended (*code its exit code, when code is given), 2 when it still ran
+   after wait_ms (it is left to finish) */
+static int spawn_exe(const char *exe_path, const char *const *args, int n, int wait_ms, int *code) {
 #ifdef _WIN32
-    wchar_t exe[MAX_PATH * 4];
-    const DWORD len = GetModuleFileNameW(NULL, exe, MAX_PATH * 4);
-    if (!len || len >= MAX_PATH * 4) return 0;
-    char *exe8 = utf8_of(exe);
+    wchar_t self[MAX_PATH * 4];
+    wchar_t *exe = exe_path ? wide_of(exe_path) : NULL;
+    if (!exe_path) {
+        const DWORD len = GetModuleFileNameW(NULL, self, MAX_PATH * 4);
+        if (!len || len >= MAX_PATH * 4) return 0;
+    }
+    char *exe8 = exe_path ? (exe ? utf8_of(exe) : NULL) : utf8_of(self);
     Buf line = {0};
     char quoted[PATH_MAX_UTF8 * 2 + 8];
-    if (!exe8 || !hos_crash_quote_arg(quoted, sizeof quoted, exe8)) return free(exe8), 0;
+    if (!exe8 || !hos_crash_quote_arg(quoted, sizeof quoted, exe8)) return free(exe8), free(exe), 0;
     put(&line, quoted);
     for (int i = 0; i < n; i++) {
-        if (!hos_crash_quote_arg(quoted, sizeof quoted, args[i])) return free(exe8), free(line.s), 0;
+        if (!hos_crash_quote_arg(quoted, sizeof quoted, args[i])) return free(exe8), free(exe), free(line.s), 0;
         put(&line, " "), put(&line, quoted);
     }
     wchar_t *cmd = line.s ? wide_of(line.s) : NULL;
     free(exe8), free(line.s);
-    if (!cmd) return 0;
+    if (!cmd) return free(exe), 0;
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof si);
@@ -1147,34 +1773,54 @@ static int spawn(const char *const *args, int n, int wait) {
     /* (no console (a console build's), no handle of the game's (its log stays the game's to move), and out of the launcher's
        job where it allows that, so the window outlives a job closed with the game) */
     const DWORD flags = CREATE_NO_WINDOW;
-    int ok = CreateProcessW(exe, cmd, NULL, NULL, FALSE, flags | CREATE_BREAKAWAY_FROM_JOB, NULL, NULL, &si, &pi) ||
-             CreateProcessW(exe, cmd, NULL, NULL, FALSE, flags, NULL, NULL, &si, &pi);
-    free(cmd);
+    const wchar_t *program = exe ? exe : self;
+    int ok = CreateProcessW(program, cmd, NULL, NULL, FALSE, flags | CREATE_BREAKAWAY_FROM_JOB, NULL, NULL, &si, &pi) ||
+             CreateProcessW(program, cmd, NULL, NULL, FALSE, flags, NULL, NULL, &si, &pi);
+    free(cmd), free(exe);
     if (!ok) return 0;
     AllowSetForegroundWindow(pi.dwProcessId);   /* (its window may come to the front once the game is gone) */
-    if (wait) WaitForSingleObject(pi.hProcess, INFINITE);
+    int r = 1;
+    if (wait_ms) {
+        if (WaitForSingleObject(pi.hProcess, wait_ms < 0 ? INFINITE : (DWORD)wait_ms) == WAIT_TIMEOUT) r = 2;
+        DWORD c = 0;
+        if (r == 1 && code && GetExitCodeProcess(pi.hProcess, &c)) *code = (int)c;
+    }
     CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
-    return 1;
+    return r;
 #else
-    char *argv[8] = {(char *)"longshot"};
-    for (int i = 0; i < n && i < 6; i++) argv[i + 1] = (char *)args[i];
-    argv[n + 1 < 8 ? n + 1 : 7] = NULL;
+    char *argv[24] = {(char *)(exe_path ? exe_path : "longshot")};
+    for (int i = 0; i < n && i < 22; i++) argv[i + 1] = (char *)args[i];
+    argv[n + 1 < 24 ? n + 1 : 23] = NULL;
     /* (its output to nowhere: not the game's log, and not a launcher's pipe, which it would keep open after the game) */
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
     posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    /* (a program of the system's, curl, without the game's library paths: system_env; this executable with them) */
+    char **env = exe_path ? system_env() : NULL;
+    if (exe_path && !env) return posix_spawn_file_actions_destroy(&fa), 0;
     pid_t pid;
-    const int ok = posix_spawn(&pid, "/proc/self/exe", &fa, NULL, argv, environ) == 0;
+    const int ok = posix_spawn(&pid, exe_path ? exe_path : "/proc/self/exe", &fa, NULL, argv, env ? env : environ) == 0;
     posix_spawn_file_actions_destroy(&fa);
-    if (ok && wait) {
+    free(env);
+    if (!ok) return 0;
+    for (int waited = 0; wait_ms; waited += 50) {
         int status;
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        const pid_t got = waitpid(pid, &status, wait_ms < 0 ? 0 : WNOHANG);
+        if (got < 0 && errno == EINTR) continue;
+        if (got == pid) {
+            if (code) *code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+            return 1;
+        }
+        if (got < 0) return 1;
+        if (waited >= wait_ms) return 2;
+        sleep_ms(50);
     }
-    return ok;
+    return 1;
 #endif
 }
+static int spawn(const char *const *args, int n, int wait) { return spawn_exe(NULL, args, n, wait ? -1 : 0, NULL) != 0; }
 /* At the start, once the crash record is set up, before anything heavy: a crash record of an earlier run nobody showed is
    shown first (the game waits for that window), then the helper for this run starts */
 void hos_crash_watch_start(int argc, char **argv) {
@@ -1194,7 +1840,7 @@ void hos_crash_watch_start(int argc, char **argv) {
         if (!shown) {
             ledger_add(dir, NULL, 1);   /* (the first start with this window: what was pending before is not news) */
         } else {
-            Newest pick = {shown, (int64_t)time(NULL), ""};
+            Newest pick = {shown, pending, (int64_t)time(NULL), ""};
             each_name(pending, newest_unshown, &pick);
             if (pick.name[0] && ledger_add(dir, pick.name, 0)) {
                 hos_log("crash window: %s was not shown after its run: shown now", pick.name);

@@ -4,7 +4,7 @@ sampling the game's memory and the system's, and write what it saw. For a report
 and the swap fills" (or for a change that should move it): one command, and numbers that two PCs, or two builds, can
 compare.
 
-    python -I scripts/memtour.py GAME_DIR --save SAVE_FOLDER [--slot NN] [--out DIR]
+    python -I scripts/memtour.py GAME_DIR (--save SAVE_FOLDER [--slot NN] | --repo-save NAME) [--out DIR]
         [--dests 13,1,2,3,0,7,9,11 | all] [--dwell 40] [--laps 1] [--settle 20] [--interval 2]
         [--env NAME=VALUE ...] [--exe FILE] [--wrapper '["admission", "command"]']
 
@@ -172,6 +172,12 @@ class Tour:
                 r = self.request("teleport", to=d, timeout=15)
             except self.ctl.Failed as e:
                 self.mark("teleport_error", f"{d} {e}")
+                if "event is playing" in str(e):
+                    # a text box (the owl, a first visit's words) waits for A, not for time
+                    try:
+                        self.request("press", buttons="A", frames=8, timeout=30)
+                    except self.ctl.Failed as pe:
+                        self.mark("input_error", pe)
                 self.sleep(3)
                 continue
             if r.get("sent"):
@@ -253,7 +259,9 @@ def summarize(rows, marks, header=""):
 def parse(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("game_dir")
-    ap.add_argument("--save", required=True, help="a save folder: a copy is the run's save, the source is only read")
+    where = ap.add_mutually_exclusive_group(required=True)
+    where.add_argument("--save", help="a save folder: a copy is the run's save, the source is only read")
+    where.add_argument("--repo-save", help="a repository save (assets/saves/NAME, longshot_ctl.py saves --repo) instead")
     ap.add_argument("--slot")
     ap.add_argument("--out", help="a new or empty folder (default work/memtour-<time>)")
     ap.add_argument("--dests", default=DEFAULT_DESTS, help="teleport indices, comma separated, or all")
@@ -294,7 +302,7 @@ def main(argv=None):
     code = 0
     try:
         session = ctl.start_session(a.game_dir, run=str(out / "run"), exe=a.exe, save=a.save, slot=a.slot,
-                                    profile="test", env=env, timeout=a.launch_timeout,
+                                    repo_save=a.repo_save, profile="test", env=env, timeout=a.launch_timeout,
                                     wrapper=json.loads(a.wrapper) if a.wrapper else None)
         info = session.info()
         mark("started", f'pid {info["pid"]}')
@@ -321,7 +329,7 @@ def main(argv=None):
         mark.close()
         if bridge:
             bridge.close()
-    header = f"# Memory tour of {a.game_dir}\n\nsave {a.save}, dests {a.dests}, dwell {a.dwell} s, laps {a.laps}, " \
+    header = f"# Memory tour of {a.game_dir}\n\nsave {a.save or 'repo ' + a.repo_save}, dests {a.dests}, dwell {a.dwell} s, laps {a.laps}, " \
              f"settle {a.settle} s, env {env or '-'}, {time.strftime('%Y-%m-%d %H:%M')}"
     if (out / "mem.csv").is_file():
         text = summarize(read_rows(out / "mem.csv"), mark.rows, header)

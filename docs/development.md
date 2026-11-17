@@ -58,7 +58,8 @@ Run everything with `python -I` from this folder.
 | `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/longshot.exe` + `longshot_vk.dll` |
 | `powershell -File scripts/run-vk.ps1 [-Window] [-Seconds 120] [-Name x]` | a muted test run on Vulkan, with screenshots in `work/runs/<name>/shots` |
 | `python -I scripts/memtour.py <game folder> --save <save folder> [--dests 13,1,2 \| all] [--dwell 40]` | a memory tour (Linux): the game folder started headless through the control bridge, the save loaded, a teleport through areas with a walk in each, and the game's resident + swapped memory, `MemAvailable` and swap sampled every 2 s: `mem.csv`, `marks.csv` and `summary.md` (peaks and each area's numbers) in a new folder. For "the game outgrows my RAM" reports, and for A/B runs of a change that should move it ([control.md](control.md)) |
-| `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE` set), named from the linker maps |
+| `python -I scripts/profile_report.py <profile folder>` | the [profiling mode](#the-profiling-mode)'s folder (`HOS_PROFILE=1`) read into `report.md` (frame times, what limits the frame, the hottest code by thread, each stutter's causes), `trace.json.gz` for Perfetto (each thread's stack over time, frames, waits, counters) and `speedscope.json` (flame graphs) |
+| `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE_EVERY=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE_EVERY` set), named from the linker maps |
 | `python -I scripts/coverage/cover.py run <game folder> [--gen <lifted C folder>]` | which lifted functions a play session runs, and when each first ran (Windows; a DLL loaded into the built game marks each `f_` function once; Ctrl+Alt+M marks the title screen, being in play and later moments): `report` (their share of the lifted C and its compile cost, how many had run by each mark, a hot list's cover) and `compare` (one session's functions as a list, another session played against it) read the run folder on any OS. Results go to `%LOCALAPPDATA%\LongshotCover`: offsets, names and times, nothing from the game |
 | `python -I scripts/tested_configurations.py [--output work/tested-configurations.md]` | Read the [tested configurations](tested-configurations.md), combining new run files with the frozen table; UTF-8 stdout by default, or a local Markdown file that is not committed |
 
@@ -270,11 +271,13 @@ runs the native network; this is a test override, not a requirement for GPUs alr
 
 
 
-For **FSR 3.1 frame generation**, use Frame generation **2x** and `RX_VK_FSR_FG=1`. Native HDR PsychoV35
+**FSR 3.1 frame generation** makes the frames at any Frame generation setting (Auto, 2x to 8x) where DLSS FG does not, with
+Frame generation by at **FSR 3.1 FG**, or at **DLSS FG** (`RX_VK_FSR_FG=0` never, `=1` over the row; `RX_VK_FSR_FG_HUD=0` lets
+AMD's passes move the HUD with the scene, as they did, for an A/B). Native HDR PsychoV35
 automatically enables the compatible independent RGBA16F depth/motion input path unless `RX_VK_PSYCHOV35_DLSS=0`.
 This does not enable the legacy FSR
-upscaler. To isolate FSR generation on NVIDIA hardware, select Frame generation by **Built-in FG** or use
-`RX_VK_DLSS_FG=0`; confirm actual `fsr3fi` made-frame counts, not only the menu selection. FSR generation remains off by default.
+upscaler. To isolate FSR generation on NVIDIA hardware, select Frame generation by **FSR 3.1 FG** or use
+`RX_VK_DLSS_FG=0`; confirm actual `fsr3fi` made-frame counts, not only the menu selection.
 The captured present's actual PQ/sRGB encoding and HDR peak are given to both AMD interpolation and optical flow;
 format, tone mapper, encoding and luminance changes reset the corresponding histories. See
 [FSR frame generation](temporal-history.md#native-hdr-and-fsr-31-frame-generation) for limits and validation.
@@ -283,7 +286,7 @@ format, tone mapper, encoding and luminance changes reset the corresponding hist
 
 | Switch | What it does |
 |---|---|
-| `HOS_HEADLESS` (set) | No window: the renderer draws offscreen, for screenshots and frame dumps. The menu's Save my pipeline list then opens nothing (no browser, folder or clipboard) |
+| `HOS_HEADLESS` (set) | No window: the renderer draws offscreen, for screenshots and frame dumps. The menu's Save my pipeline list then opens nothing (no browser, folder or clipboard), and out of memory shows no notice (the log line only) |
 | `HOS_WINDOW_SIZE=<w>x<h>` | The window's size in pixels (1280x720 by default, wider for an ultrawide picture) |
 | `HOS_WINDOW_NOACTIVATE` (set) | The window opens behind the others and does not take the focus (Windows) |
 | `HOS_FULLSCREEN=1` | Starts in fullscreen; the Insert menu's Fullscreen row is then left alone |
@@ -294,13 +297,14 @@ format, tone mapper, encoding and luminance changes reset the corresponding hist
 | `HOS_OUTPUT_RES=<width>x<height>`, `HOS_HANDHELD=1`, `HOS_ASPECT=<ratio>` | Over the options file: the output resolution (a size, as `output_res`), the handheld profile, a picture wider than 16:9 (2.3889 for 3440x1440) |
 | `HOS_DISPLAY_MODES=<w>x<h>,<w>x<h>,...` | The screen's display modes for this run, in place of Windows' (`gpu/vk/display_modes.h`): the Insert menu's Aspect ratio and Output resolution rows offer these sizes and the common sizes of their shapes (`display_modes.h` `common_sizes`), for checking a screen you do not have |
 | `HOS_WIDE_MAX_PX=<pixels>` | The most pixels a picture wider or narrower than 16:9 takes (`host/hos_wide_size.h`): 5120x2160's by default; 8294400 is 3840x2160's, the cap before |
-| `HOS_WIDE_UI=0` | The HUD on a screen that is not 16:9 as before (`host/hos_wide_ui.c`): in the middle 16:9 of a wider screen, fitted to a narrower one's width, instead of at the screen's edges. `HOS_WIDE_UI_LOG=<n>` logs the plan's first n changes (each pane with its layout and move), each root layout (the HUD's, a menu's, over the whole picture, or held at the HUD's size) and the plan's time |
+| `HOS_WIDE_UI=0` | The HUD on a screen that is not 16:9 as before (`host/hos_wide_ui.c`): in the middle 16:9 of a wider screen, fitted to a narrower one's width, instead of at the screen's edges. Set, it stands over the Graphics tab's HUD layout row (`hud_layout`), which chooses the same for a player; `HOS_WIDE_UI=1`, the edges. `HOS_WIDE_UI_LOG=<n>` logs the plan's first n changes (each pane with its layout and move), each root layout (the HUD's, a menu's, over the whole picture, or held at the HUD's size) and the plan's time |
 | `HOS_HUD_MAX_RATIO=<ratio>`, `HOS_HUD_FULL_RATIO=<ratio>` | The HUD's limits (`host/hos_wide_ui.c`): its sides reach a screen's edges up to 12:5 (2.4; `0`: at any width), and it keeps its 16:9 size down to 3:2 (1.5), smaller below |
 | `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
 | `HOS_MOUSE_INVERT_Y=1`, `HOS_MOUSE_INVERT_X=1` | The captured mouse's up and down, or its left and right, swapped for this run, with either Mouse camera (`host/nn_hid.c`, `host/mouse_native.c`). Each adds to its Insert menu row, Invert mouse vertical or Invert mouse horizontal: a row that is on stays on |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
+| `HOS_TEST_ALLOC_REFUSE=<text>` | A test, off when unset: every host allocation through `hos_xmalloc` / `hos_xcalloc` / `hos_xrealloc` (`host/mkw_glue.c`) whose label contains the text is refused, as at Windows' commit limit, to see what a player sees there: 5 s of tries, the out-of-memory line and notice, then the game stops. `recording handle set` fails at the first recording, before the title; `recording copy` in play |
 | `HOS_CV_SIGNAL_ALWAYS` (set) | SignalConditionVariable takes its lock and wakes even when no thread waits, as before it returned at once for no waiter (`host/nn_os_sync.c`); a control for a hang or a movie stutter |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |
@@ -400,8 +404,13 @@ even the dedicated worker can fail or stall after heap/loader corruption.
 
 Right after the game crashes, at start or in play, a window says so: **Longshot closed unexpectedly** (or **Longshot
 couldn't start**), when (during the start, while it prepared the shaders, while playing; nothing when the run's log
-isn't found), what went wrong where that is known, and **Report**, **Open the log folder**, **Close** (`host/hos_crash_dialog.c`; what decides is
-`host/hos_crash_dialog.h`).
+isn't found), what went wrong where that is known, and **Report manually**, **Open the log folder**, **Close**
+(`host/hos_crash_dialog.c`; what decides is `host/hos_crash_dialog.h`). The window is drawn as the Insert menu is
+(`gpu/vk/vk_crash_window.cpp`, through SDL's renderer, never Vulkan), SDL's message box when it can't be. For a crash
+**Report automatically** comes first: it shows the crash report it would send, and the game sends it with the system's
+curl only when Send is pressed ([crash-report-window.md](crash-report-window.md)). `make_game.py` writes its addresses,
+`crash_reports=` and `crash_issue=`, into `longshot_version.txt` from `nx2/addresses.ini` in a build from packaged tools
+(the launcher's); without them, as in a build from a checkout, the window has Report manually alone.
 
 It is shown by a helper the game starts early in `game_main`, once the crash record and its run id are set up and before
 the guest, the renderer, the sound and the input: the same executable, `longshot --crash-watch <pid> <run id> <game
@@ -426,7 +435,7 @@ The cause is the first that holds: the game's files, Vulkan, the window (before 
 Windows out of memory, `0xC0000017`, or an unclean end after the start's low-memory warning), the graphics driver
 (`device lost`, a Vulkan fatal, a crash in the driver's own module), ended from outside; else "an unexpected error".
 
-**Report** builds a plain-text report: what happened, the version and its channel, the GPU and driver (from the log's
+**Report manually** builds a plain-text report: what happened, the version and its channel, the GPU and driver (from the log's
 `vk:` lines), CPU, RAM and system, what the game was built for, the log's first DLSS and FSR 4 lines,
 `longshot_options.ini`'s settings and the switches set (a value only when it is a number, a size or on/off, never for a
 name with TOKEN, KEY, ROOM, SECRET, PASS, SERVER or USER; not the controls' bindings), the crash and unclean records of
@@ -491,11 +500,84 @@ case-sensitive, and an unknown one is ignored.
 
 ### Time and profiles
 
+#### The profiling mode
+
+`HOS_PROFILE=1` (in the environment or `longshot_env.txt`; it is the line [Report slow
+performance](performance-report.md#1-turn-on-the-profiling-mode) gives players) turns on every profiling tool below for
+one run, and records them into a folder of its own, `logs/profile-<date>-<time>/` in the game folder
+(`host/profiling.c`). It's for finding where the time goes and what each stutter was, all in one run:
+
+| File | What it holds |
+|---|---|
+| `all.txt` | Every game and renderer thread's stack every 2 ms for the whole run (`HOS_SAMPLE_ALL`; delete `all.txt.go` to pause it, make it again to go on), packed: each distinct stack once, about a tenth of the plain format's size (`HOS_SAMPLE_PACKED`; `scripts/samples.py` reads both, and so do `crit.py`, `hotlist.py`, `vkprof.py`, `chain.py` and `cpu_report.py`) |
+| `frames.csv` | The frame trace (`RX_VK_FRAME_TRACE`, below): each frame's waits, the Breakdown's parts and the main thread's CPU, blocked and virtual-core time, and `at_ns`, the present on the host's clock |
+| `presents.csv` | The game's presents (`HOS_PRESENT_TRACE`) |
+| `cpu.csv` | Every second: the process's CPU time and memory, and the system's available memory |
+| `events.txt` | Each wait of `HOS_VCORE_LOG_MS` (50) or more for a virtual core, with its time and cause (the log keeps the first 200 without a time) |
+| `process.json`, `longshot_options.ini` | The run's switches, and its settings as it started |
+
+And in the log: every 5 s the busiest threads (`HOS_PROFILE_EVERY`) and each thread's CPU (`HOS_THREAD_TIMES`), the
+frame limiter (`HOS_FPS_LOG`), the GPU time of each pass every 600 presents (`RX_VK_PASS_TIMING=1`) and the replay's
+times for each frame over 50 ms (`RX_VK_SLOW_LOG=50`). A switch already set keeps its value (`RX_VK_PASS_TIMING=0`
+leaves the pass timing out, `HOS_PROFILE_EVERY=10` makes the log's lines 10 s apart). All the files' times are the
+host's clock (`hos_now_ns`), so samples, frames, presents and events line up. The log's
+`env: HOS_PROFILE=1: a profile of this run in ...` line names the folder.
+
+Read it with:
+
+```sh
+python -I scripts/profile_report.py <game folder>/logs/profile-<date>-<time> [--from-s 60] [--to-s 300]
+```
+
+It writes `report.md` into the folder:
+- **At a glance:** the frame rate and frame times, what limits the frame (the Breakdown's largest part), the hottest code
+  on the main and Presentation threads in ms a frame, what the stutters are spent on and what runs far more in them than
+  in steady frames, the long virtual-core waits inside stutters, and the memory over the run. Start here.
+- **Over time:** fps, the worst frames, stutters, cores and memory for each part of the run, for a slowdown that builds up.
+- **Frame parts:** each frame trace column, for every frame, the steady ones and the stutters.
+- **Threads:** each thread's CPU and its running share.
+- **CPU:** each thread's hottest functions, by the leaf and by the innermost frame of Longshot's code, the main and
+  Presentation threads' inclusive time, and where the main thread waits (overall and in stutters).
+- **Stutters:** the slowest frames one by one: their trace columns, what each thread ran in them, where the main thread
+  waited, and the virtual-core waits in them.
+- **GPU:** the log's last pass timing block.
+
+It also writes the profile for a profiler's own viewer (`scripts/profile_trace.py`, which makes them alone too; both
+viewers read the file in the browser, nothing is uploaded):
+
+- **`trace.json.gz` in [Perfetto](https://ui.perfetto.dev)** ("Open trace file"): the run as a timeline. Each thread's
+  stack over time as a flame chart (a stack that stays the same from one 2 ms sample to the next is one slice, a blocked
+  thread's under "(waiting)"), a Frames track with every frame and its trace columns (stutters named `STUTTER`), the
+  long virtual-core waits, and counters for frame time, CPU cores and memory. Select a stutter's span to see what every
+  thread ran in it; select a span of a thread for the functions in it. `--no-waiting` leaves blocked samples out.
+- **`speedscope.json` in [speedscope](https://www.speedscope.app)**: a flame graph a thread ("Left Heavy"), and every
+  function's self and total time ("Sandwich"), with one profile of every thread's running samples together. Its stacks
+  are added up, so its "Time Order" is not the run's: Perfetto has that.
+
+A long run makes a big trace (several MB a minute, compressed): `--from-s`/`--to-s` keep the part that matters.
+
+The frames are named from the same build's symbols: by default the game folder the profile is in (on Linux its
+`longshot` and `longshot_vk.so`), else `--maps <folder>` (on Windows a folder with that build's `longshot.map` and
+`longshot_vk.map`). The report names lifted functions by their guest address, so keep it on this PC. For the publishable
+view (lifted code as one row), `scripts/cpu_report.py <folder> --maps <maps>` reads the same folder (Windows captures; the
+report writes the `load.json` it needs). `--from-s` leaves out the loading and the first shader preparation, which the
+run starts with.
+
+The mode costs frame rate: the sampler stops or signals each thread every 2 ms, and the pass timing makes the GPU finish
+each pass before the next (its GPU numbers are shares, not an unprofiled frame's time). Use it to find what to optimize,
+then measure the change without it ([measure skill](../.claude/skills/measure/SKILL.md)). Off by default. An older
+`HOS_PROFILE=<seconds>` (the busiest threads' log alone, before the mode) turns the whole mode on now, with its seconds
+for the log's lines.
+
+#### The switches
+
 | Switch | What it does |
 |---|---|
-| `HOS_PROFILE=<seconds>` | Every interval, the busiest threads in the log; it also starts the samplers below |
-| `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<file>` | One thread's stacks, sampled every millisecond (needs `HOS_PROFILE`); `python -I scripts/prof.py <file>` reads them |
-| `HOS_SAMPLE_ALL=<file>` | Every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py`, `scripts/vkprof.py`, `scripts/hotlist.py` and `scripts/cpu_report.py` (the [CPU profile](cpu-profile.md): CPU time by category, thread and function, and what limits the frame) read it (on Linux with `RX_MAPS=<game folder>`: they name frames from its `longshot` and `longshot_vk.so`) |
+| `HOS_PROFILE=1` | [The profiling mode](#the-profiling-mode): all of the switches below that profile, for one run, into `logs/profile-<date>-<time>/`. Off by default |
+| `HOS_PROFILE_EVERY=<seconds>` | Every interval, the busiest threads in the log (5 with `HOS_PROFILE=1`); `HOS_SAMPLE` needs it |
+| `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<file>` | One thread's stacks, sampled every millisecond (needs `HOS_PROFILE_EVERY`, or `HOS_PROFILE=1`); `python -I scripts/prof.py <file>` reads them |
+| `HOS_SAMPLE_ALL=<file>`, `HOS_SAMPLE_PACKED=1` | Every game and renderer thread every 2 ms while `<file>.go` exists; packed, each distinct stack written once (`scripts/samples.py`); `scripts/crit.py`, `scripts/vkprof.py`, `scripts/hotlist.py` and `scripts/cpu_report.py` (the [CPU profile](cpu-profile.md): CPU time by category, thread and function, and what limits the frame) read it (on Linux with `RX_MAPS=<game folder>`: they name frames from its `longshot` and `longshot_vk.so`) |
+| `HOS_SLOW_FRAMES=<path>`, `HOS_SLOW_FRAME_MS=<ms>`, `HOS_SLOW_FRAMES_EVERY_MS=<ms>`, `HOS_SLOW_FRAMES_MAX=<n>` | The slow-frame recorder (`host/slow_frames.c`): every game and renderer thread sampled every 4 ms for the whole run into a ring in memory, and when a present comes 50 ms or more after the one before, that frame's samples and the 250 ms before it written to `<path>-<n>.txt` in `HOS_SAMPLE_ALL`'s format (`scripts/hotlist.py`, `scripts/crit.py`, `scripts/cpu_report.py` read it); at most 40 files a run, a second apart, each named in the log. It costs frame rate; not with `HOS_SAMPLE_ALL`. A path, so from the environment only, not `longshot_env.txt`. Not with `HOS_PROFILE=1`, whose samples cover the whole run |
 | `HOS_CHAIN=<file>` | While `<file>.go` exists, every wait of a game thread that blocks, every signal that can end one, every sleep and every present, with the time, the thread, the object and the caller; written to `<file>` when `<file>.go` goes away (about 2 million records at most). `python -I scripts/chain.py <file> [<HOS_SAMPLE_ALL file>]` walks each frame back from its present (the thread that ran, the wait that stopped it, the thread whose signal ended it) and prints the frame's critical path by thread: running, wake-ups, sleeps, and, with a sample file of the same run, the functions on it |
 | `HOS_HLE_STATS=1` | About every 5 s, calls of each HLE function and host call (`hle:` lines, most called first), with measured monotonic clock boundaries. `scripts/cpu_report.py --calls` joins complete blocks to native frames in that clock span; per-call occupancy estimates require the same run's timestamped stacks. Off by default; take performance numbers from a run without counting |
 | `HOS_THREAD_TIMES=<seconds>` | Every interval, the threads that used over 5% of a core |
@@ -503,7 +585,9 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents, and the game clock's speed (1.000: real time); a CSV line per game present with host-clock times before queue flushing, around the renderer call, after virtual-core reacquisition, and at the return counter. These are CPU wall times, not GPU completion or scanout; async rendering measures the enqueue call. Unset/empty trace adds no clock reads |
 | `HOS_FPS_MAX=30` or `HOS_FPS_MAX=<61-1000>` | A frame rate cap for one run, over the Game frame rate cap row (1000 is Uncapped's) |
 | `HOS_MOVIE_PACE=0` | Leave the pacing at the Game frame rate cap row while a movie plays, instead of raising a 60 FPS cap to 240 for the movie's pictures (issue #73); an explicit 30 FPS cap remains 30 |
+| `RX_VK_PERF_INTERVAL=<60-840>` | Seconds of play between two performance summaries, with Send performance statistics on (default 300; at most 840, a minute under the relay's 900 s a summary): [performance statistics](performance-statistics.md#switches) |
 | `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms. Also works with `HOS_HEADLESS`: CPU intervals after submitting the offscreen copy, without swapchain/display waits. Not `RX_VK_FRAMELOG` (no underscore: pictures, above) |
+| `RX_VK_FRAME_TRACE=1` | `logs/longshot_frames.csv` (with `HOS_PROFILE=1`, `frames.csv` in the profile folder): a line a present with what the frame did (waits for pipelines, translation, uploads, the memory sync, the GPU behind, the read-backs' and the capture's waits), then the frame as the FPS counter's Breakdown splits it (`game_ms`, `render_ms`, `gpu_wait_ms`, `pace_ms`, `wait_render_ms`, `wait_gpu_ms`, `wait_main_ms`; measured whatever the counter shows) and the game's main thread's own time in the frame: on the CPU (`main_cpu_ms`), blocked in waits and sleeps (`main_blocked_ms`) and waiting for a virtual core (`main_vcore_ms`); the frame less those three is its time running but off the CPU; then `at_ns`, the present on the host's clock |
 | `RX_VK_PRESENTS_AHEAD=<1-8>` | How many presents the game may hand over ahead of the render thread (`RX_VK_ASYNC=1`; 1 by default). Not `RX_VK_PRESENT_AHEAD` |
 | `RX_VK_PRESENT_AHEAD=0` | Frame generation's copies into the window submitted each at its own time, as before #1702 (default on: a set's copies go to the GPU together). Not `RX_VK_PRESENTS_AHEAD` |
 | `RX_VK_PASS_TIMING=1` or `2` | GPU time per pass (2: per program too), logged every 600 presents |
@@ -572,14 +656,15 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_DESC_POOL_DIV=<1..32>` | A recording's descriptor pool at an n-th of its size (8192 sets, up to 32768 descriptors a type; `make_pool` in `gpu/vk/vk_draw.cpp`), for the memory the driver keeps for it. A pool that runs out is followed by another, made and destroyed with the recording: the log's "recording streams" line counts those, which says how small is too small for a scene |
 | `RX_VK_IMPORT_CHUNK_MB=<MB>` | The size game memory is imported for the GPU by, and so a pool's VRAM mirror's least size (default 4 where the pools have VRAM mirrors, discrete cards; 16 without them, and before). Larger: fewer imports, more of each mirror outside the game's pools |
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `longshot_programs.bin` and the pipeline notes |
-| `RX_VK_PCACHE_LOAD=0` | Starts with an empty in-memory pipeline cache; neither the base cache nor rolling play-cache files are loaded or saved. Required pipelines are still made, and the driver can still use its own disk cache: this is not a driver-cold test. Old temporary-file cleanup still runs. Unset or `1`: load and save as usual |
+| `RX_VK_PCACHE_LOAD=0` or `1` | The pipeline cache's file (`cache/longshot_vk_pipelines.bin`, 1.2 GB after a preparation) not read nor saved, its play files neither merged nor written (`0`), or read as before (`1`), whatever the rule below says, in a `--prepare-shaders` run too. It is read whole at every start and the driver keeps its copy in the game's private memory for the session; NVIDIA's own shader cache holds the same pipelines. Not read nor saved, play's pipelines are still let go at each save, with nothing written. The file and its play files are kept for a start that reads them, unless another translator made them: those still go at the start, as when it is read (`RX_VK_PCACHE_STAMP=0` keeps them). Without the switch it is not read on Linux with NVIDIA's own driver (not NVK), 20 GB of RAM or less and programs loaded at their create calls, where NVIDIA's own shader cache is on and its folder holds 512 MB or more: `__GL_SHADER_DISK_CACHE_PATH`'s `GLCache`, else `~/.cache/nvidia/GLCache` (`$XDG_CACHE_HOME/nvidia/GLCache`; the earlier drivers' `.nv/GLCache` where it is there); Mesa's and other drivers' caches don't count (`gpu/vk/pcache_load.h`, issue 388: about 0.7-0.8 GB less of the game in RAM and swap on a 16 GB PC). Read everywhere else: NVIDIA's cache off (`__GL_SHADER_DISK_CACHE=0`), under 512 MB or not readable, more RAM, programs loaded before the title, Windows, AMD, Intel, and a `--prepare-shaders` run. The log's `vk: pipeline cache file read` or `not read` line says which and why |
 | `RX_VK_HALF_RATE_SHADING=1` | Linux: keeps `RADV_FORCE_VRS_CONFIG_FILE`, which the game otherwise drops before Vulkan loads when it names a file that exists (`host/hos_main.c` `driver_env_choose`; the game's log says which). The Steam Deck's Game Mode sets it for Steam's Half Rate Shading. With the file there, RADV gives every graphics pipeline another key, so a start in Game Mode finds none of what the preparation built, in the driver's cache or in ours. Measured on a Steam Deck OLED (RADV, Mesa 26.2.0-devel): its 32,438 noted pipelines compiled at about 20 a second (25-30 minutes) instead of loading in 22 s. The file's content doesn't matter (empty or `1x1` alike); a name with no file there changes nothing, and neither does Mesa's cache folder. With `1`, Half Rate Shading works for Longshot, and the starts in Game Mode compile their own pipelines; the effect is small anyway, since RADV leaves a fragment program that reads its position at full rate, and nearly all of ours do. Unset or `0`: dropped. `RADV_FORCE_VRS`, a rate set by hand, is never touched |
 | `RX_VK_PCACHE_STAMP=0` | Keeps `longshot_vk_pipelines.bin` and its play files whatever translator made them. By default they are dropped at a start when `longshot_vk_pipelines.stamp` says another translator made them (as the program cache starts over), since their pipelines can no longer be hit |
 | `RX_VK_PRECOMPILE_SAVE_S=<s>` | A start whose noted pipelines took this long to build (default 30; `0`: never) writes `longshot_vk_pipelines.bin` before the title, with the start-up screen saying so, when the cache grew. Pipelines that slow were compiled, not found: a new driver, or an environment that gives the driver's keys other values. In play the file is written only once it has grown 64 MB (`RX_VK_PLAY_SAVE_START_MB`), and on RADV a start that compiled all 32,438 noted pipelines again grew it by 4.3 MB, because their code was already in it. The log's `vk: precompile: its pipelines took N s` line says what the save did (written and its size, nothing new, or why not) and how long it took. This applies on every platform: after a driver update on Windows too, the write happens before the title |
 | `RX_VK_PCACHE_FETCH_LOCK=0` or `1` | A pipeline cache's data fetched (`vkGetPipelineCacheData`, the saves) only while no pipeline is being built with a cache, and a build waiting for a fetch: Intel's Windows driver crashes in `igvk64.dll` when the two overlap. The lock is held around `vkGetPipelineCacheData` alone, never across a file's write nor a wait for the builds. The background save waits up to 2 s for a moment with no build, else is put off to the next one (after 3 in a row the next one queues, up to 10 s); the forced saves wait; the window's close waits up to 10 s for the builds under way, then leaves the play file unwritten rather than hang (and up to 10 s more for each of its two fetches). With it off every wait is as before: the close waits for the builds. Default 1 with Intel's Windows driver, 0 elsewhere |
 | `RX_VK_FETCH_BOUNDS=0` or `1`, `RX_VK_NAN_BITS=0` or `1`, `RX_VK_GATHER_OFFSET=0` or `1` | The translation's vendor and driver workarounds (`gpu/vk/vk_vendor.h`) off or on for one run, whatever the GPU; the log's `vk: vendor fixes` line says which are on. By default: out-of-bounds texel fetches answered with 0 on every GPU but NVIDIA's; NaN tests on a value's bits on AMD's older Windows shader compiler (RX 5000 and RX 6000); gathers nudged by 1/512 of a texel on AMD's and Intel's drivers. They change the shaders' translation (one preparation of the shaders) |
-| `RX_VK_NATIVE_FADD=0` or `1` | The shaders' float adds to storage buffers: 1 the GPU's own atomic where it has `VK_EXT_shader_atomic_float`'s `shaderBufferFloat32AtomicAdd`, 0 a compare-exchange loop on every GPU, the extension not enabled. By default the GPU's own on NVIDIA's driver, on Intel's Windows driver from 101.9175 with the Meteor Lake and Arrow Lake iGPUs (PCI device 0x7Dxx), and from 101.9154 with the Arc B-series cards (Battlemage, 0xE2xx; the loop lost the device on entering Kokiri Forest on a B580): what it was tried on in the game. Changing it, or the first start after an update that changes it, empties the whole program cache and `mkw_vk_pipelines.bin` (the translator's stamp holds it): everything is translated and prepared again, one long start on an iGPU. Elsewhere (AMD, Mesa's Intel driver, Intel's other GPUs and older drivers on Windows) the loop until runs there show the native add works (the log's `vk: float atomic add on storage buffers:` line says which, and why). The loop gives up after 1024 attempts, and an add that gives up is lost |
+| `RX_VK_NATIVE_FADD=0` or `1` | The shaders' float adds to storage buffers: 1 the GPU's own atomic where it has `VK_EXT_shader_atomic_float`'s `shaderBufferFloat32AtomicAdd`, 0 a compare-exchange loop on every GPU, the extension not enabled. By default the GPU's own on NVIDIA's driver, on Intel's Windows driver from 101.9175 with the Meteor Lake and Arrow Lake iGPUs (PCI device 0x7Dxx), from 101.9154 with the Arc B-series cards (Battlemage, 0xE2xx; the loop lost the device on entering Kokiri Forest on a B580), and from 101.9150 with the Panther Lake iGPUs (0xB0xx; on an Arc B390 the loop lost adds of the game's exposure and a milky white haze covered the picture, Longshot issue 618): what it was tried on in the game. Changing it, or the first start after an update that changes it, empties the whole program cache and `mkw_vk_pipelines.bin` (the translator's stamp holds it): everything is translated and prepared again, one long start on an iGPU. Elsewhere (AMD, Mesa's Intel driver, Intel's other GPUs and older drivers on Windows) the loop until runs there show the native add works (the log's `vk: float atomic add on storage buffers:` line says which, and why). The loop gives up after 1024 attempts, and an add that gives up is lost |
 | `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
+| `RX_VK_UB_SNAP_DEDUP=0`, `RX_VK_UB_READ_BATCH=0` | Only with the uniform snapshot on (`RX_VK_UB_SNAPSHOT`, on by default on Intel GPUs; with it off, both are off and a uniform range that can't be bound in place is read and copied at its binding, as before): every binding gets a copy of its own, each read from game memory with `pools_mu` taken for it alone, as before. By default a draw that binds the range (address and size) an earlier draw of the same recording copied, with the same captures in view, is given that copy, and a draw's own copies are read together once its descriptors are built, the lock taken once. In Castle Town's market on an Arc B580 the snapshot made ~10,400 copies a frame of ~4,200 distinct ranges: with both at 0 the descriptors took 6.1 ms of a frame instead of 2.6, and the market ran at 54.9 fps instead of 59.5. `=2` (a check): every copy made and read as before all the same, compared with the shared copy or the batched read, and the differences counted in the log (`RX_VK_UB_READ_BATCH=2` reads the stream's memory back: a few frames a second) |
 | `RX_VK_SPLIT_UBFLUSH=0` or `1` | A submission cut into parts (`RX_VK_CHUNK`): 1 each part writes the uniform updates recorded so far into game memory at its end, as before; 0 only the last part writes them all, as an unsplit submission does. Default 0 on Intel without VRAM mirrors, the iGPUs (white blocks and flashes in Kokiri Forest otherwise, https://github.com/NotRexed/Hookshot/issues/999), 1 elsewhere, Arc discrete included (mirrors on), where it was not measured |
 | `RX_VK_SPLIT_BEFORE_DRAW=0` or `1` | A submission cut into parts (`RX_VK_CHUNK`): 1 a part ends only right before a plain draw (one with a vertex stage), so no cut leaves a part beginning with a mesh draw or a dispatch; 0 it ends after its 120th draw or dispatch, whatever follows, as before. Default 1 on Intel: on an Arc B580 (Windows, driver 32.0.101.9154) a command buffer that begins with mesh draws drew the plain draws after them as exploded triangles (white shards in Kokiri Forest while moving, ~2% of the frames); 0 elsewhere, where it was not measured |
 | `RX_VK_UB_SNAPSHOT=0` or `1` | 1: each uniform buffer is copied into the stream as submitted, instead of bound where the game keeps it and rewrites it for the next frame before the GPU reads it. Default 1 on Intel, the iGPUs and the discrete Arc cards (with mirrors on, an Arc B580 lost the Kokiri Forest floor to the sky and showed white glowing blocks otherwise: there the delta push left some of a draw's uniform buffer writes out as unchanged, and the snapshot's copies are new at every draw), 0 elsewhere. A range the GPU writes earlier in the same submission (a copy, a fill, a storage write), in any of its parts, or in an earlier submission still on the GPU, is bound in place all the same: the copy would not have the GPU's bytes. The log's `uniform buffer ... copied into the stream` line counts both. With it on, `RX_VK_PARALLEL` records each command buffer on the replay thread (logged once): a segment, recorded while those before it still are, could not know their GPU writes |
@@ -596,7 +681,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_AUTO_TUNE=0` | Auto (this PC) keeps its Render resolution instead of measuring the GPU in play and stepping it: down while frames are missed with the GPU over 90% busy, up while the cap holds with it under half busy (`auto_settings.h` `tune`) |
 | `RX_VK_GPU_CLOCK=0`, `1`, `peak` or `standard` | The GPU's clock (Linux, AMD; `gpu/vk/gpu_clock.h`). By default, on the Steam Deck's APU (LCD or OLED, by its name) the renderer holds amdgpu's peak power state while the game runs, when the GPU's power level is `auto` (a level chosen by hand or by SteamOS is left alone): 1300 MHz there, where its automatic clocks held 1040 in play and dropped to 200 between reads (Deck OLED: Kokiri Forest at handheld settings +46%, Hyrule Field at native +19%; Deck LCD +8% to +20%; the APU the same where it was at its 15 W limit, about 4 W more where it was not, so a shorter battery life there). Elsewhere, unset, the clocks are the driver's and nothing is read. `RX_VK_GPU_CLOCK=0` (or `off`, empty): the driver's own clocks on the Deck too. `RX_VK_GPU_CLOCK=1`: the Deck's rule, on another integrated GPU with Steam's `SteamDeck=1` too. That is the peak state's fixed clock, below the 1600 MHz the GPU reaches with a clock set by hand (the GPU clock slider in SteamOS's performance settings), which did as well or better; amdgpu's stable power states, all a program may ask for without root, have none higher. `peak` or `standard` asks for that state on any AMD GPU, whatever its level. The driver puts the level back when the game ends or is killed, and a write to `power_dpm_force_performance_level` goes over it |
 | `RX_VK_COMPACT=0`, `RX_VK_COMPACT_PCT=<50..90>`, `RX_VK_COMPACT_MB=<MB>` | VRAM compaction (on by default; `=0` turns it off): the textures that are not render targets in a pool of their own, moved out of sparsely used blocks a few a present so that the blocks go back to the driver, and the texture budget holding the driver's count at that share of what it allows (85) by letting go of the render targets drawn over since and of textures unused for ten seconds, with a reserve five points under it (80) where those unused for thirty seconds go (what the budget's size, the 90% rule and the driver's limit ask for on their own still goes from textures unused for a second, as with it off); the free space that starts a run (512; 192 while the count is over 90%) |
-| `RX_VK_TARGET_POOL_MB=<MB>`, `RX_VK_DEAD_EVERY=<presents>`, `RX_VK_DEAD_MIN_UNUSED=<presents>` | The render target pool: the most its idle images may hold (by default a twelfth of what the driver allows, 256 to 768 MB: `gpu/vk/target_pool.h`; `0`: no pool), how often the dead transient targets are looked for (every present by default) and how long one must have gone unused (1 present). `RX_VK_TARGET_POOL_MB=256 RX_VK_DEAD_EVERY=10 RX_VK_DEAD_MIN_UNUSED=3` is the earlier behaviour, in which the game's per-frame targets were made and destroyed about twice a frame |
+| `RX_VK_TARGET_POOL_MB=<MB>`, `RX_VK_DEAD_EVERY=<presents>`, `RX_VK_DEAD_MIN_UNUSED=<presents>`, `RX_VK_POOL_IDLE=<presents>` | The render target pool: the most its idle images may hold (by default a twelfth of what the driver allows, 256 to 768 MB: `gpu/vk/target_pool.h`; `0`: no pool), how often the dead transient targets are looked for (every present by default: the eviction's pass at every tenth present, and a sweep of its own on the presents between, `gpu/vk/dead_targets.h`), how long one must have gone unused (1 present), and how long an image waits in the pool for the next target of its shape (8 presents). `RX_VK_DEAD_EVERY=10 RX_VK_POOL_IDLE=120` is the behaviour up to this sweep: `RX_VK_DEAD_EVERY=1` was the default but took effect only at every tenth present. `RX_VK_TARGET_POOL_MB=256 RX_VK_DEAD_EVERY=10 RX_VK_DEAD_MIN_UNUSED=3 RX_VK_POOL_IDLE=120` is the behaviour before the pool's bound grew, in which the game's per-frame targets were made and destroyed about twice a frame |
 | `RX_VK_EVICT_EXCESS=0` | The 90% rule and the driver's limit cut the texture cache to 7/8 of their budget again, as before; by default they let go of their excess and 64 MB more (`vram_compact::rule_target`), so a cache a few MB over the line does not lose an eighth of its textures |
 | `RX_VK_COMMIT_RESERVE_MB=<MB>` | The commit or memory-plus-swap headroom the texture cache leaves free (default 2560, `0` turns the rule off). On Windows (`GlobalMemoryStatusEx`'s `ullAvailPageFile`, and what the page files can still grow by: `RX_VK_COMMIT_GROWTH`), every VRAM block counts against the process's commit, so below that much headroom the shortfall comes off the textures' budget and eviction and compaction give blocks back (`vk: commit limit near:` at most every 600 frames); at the limit itself, `hos_commit` and the first-touch handler wait up to 5 s for commit (error 1455) before giving up. On Linux (`MemAvailable + SwapFree` in `/proc/meminfo` when swap is enabled, `gpu/vk/linux_pressure.h`), combines with `RX_VK_AVAIL_RESERVE_MB` below |
 | `RX_VK_COMMIT_GROWTH=0` | Windows only: the commit rule's headroom is what is left under the commit limit as it is now, as before. Unset, what the page files can still grow by counts as room too (each file up to its maximum, from `NtQuerySystemInformation`'s `SystemPageFileInformationEx`, and no further than its drive has free): a page file Windows manages grows as the commit nears the limit, so the limit of the moment is not where a commit fails. The log says `vk: commit: ... the page files can grow by ... MB more` at most every 3600 frames while that growth is what keeps the rule off or eases it |
@@ -613,6 +698,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_NO_DRAWN_WRITEBACK=1` | Small mip-chained textures the GPU drew are not written into guest memory a few frames later (where that memory is still zero, or still their own last write-back), as before: the game's ground garbles after some minutes in one area (its copies of drawn terrain tiles are all zero) |
 | `RX_VK_NO_DRAWN_PAGE_MAP=1` | A texture in a virtual pool that the GPU writes before anything uploads it has no page map noted at that write, as before: once the game has finalized it, its next check takes all of its storage for remapped and uploads it whole from guest memory over what the GPU drew (the game's HUD button labels go blank after a zone change) |
 | `RX_VK_ASTC_CPU=1` or `0` | ASTC textures decoded on the CPU (as RGBA8), or by the GPU's decoder (and big ones re-encoded as BC3). Unset: on the CPU on Windows with the graphics built into AMD's Ryzen 7000 and 9000 desktop CPUs (2 CUs; not the APUs' larger iGPUs), where the GPU's decode of Kokiri Forest's terrain arrays ran so long in one submission that Windows reset the GPU; by the GPU elsewhere |
+| `RX_VK_ASTC_REUSE=0` | Every new ASTC texture decoded, as before. By default a new one whose blocks (hashed at the upload) and image match one the game finalized takes that one's image by a GPU copy, and the finalized one goes at the next present: the game makes an area's textures again at other addresses when it is visited again, and each visit decoded 0.8-1.2 GB again and kept the earlier copies (issue 1069). The log's `vk: decoded ASTC used again` line counts them |
 | `RX_VK_SKIP_COMPRESSED_OVER_RT=1` | A compressed (ASTC, BC, ETC2/EAC) texture made over storage render targets used is not uploaded, as before: bosses and new enemies all blue the first time |
 | `RX_VK_ZERO_UPLOAD=0`, `RX_VK_ZERO_HOLES=0` | A texture of 32 MB or more whose storage is all zero is cleared on the GPU instead of unswizzled on the CPU (`upload_all_zero`, `gpu/vk/vk_texture.cpp`); `RX_VK_ZERO_UPLOAD=0`: unswizzled, as before. On Linux the check reads only the pages of the guest window's memfd that hold data (`gpu/vk/guest_holes.h`): a hole is zero, and reading one made the kernel give it a page (the Hyrule Field shadow map's 288 MB, never written, became guest memory at each load). `RX_VK_ZERO_HOLES=0` (or `off`, `false`, `no`): the whole storage read, as before |
 | `RX_VK_NO_WRITEBACK` (set) | GPU writes to mirrored pools are not copied back to guest memory (an experiment, for A/B) |
@@ -641,7 +727,9 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 | `HOS_VCORE_STARVE_US=<microseconds>` | A game thread that has waited this long for a virtual core (default 1000000, 1 s; 0: never) goes before every other waiter at the next release of a core it may use, and asks the holder to give the core up at its next checkpoint whatever the holder's priority, so a wait that better threads keep winning ends in a grant, not in the escape after 2 s (`HOS_VCORE_ESCAPE_US`, `HOS_VCORE_ESCAPE_EQ_US`). The `vcores:` line every 5 s counts these grants (`starved grants`) |
+| `HOS_VCORE_LOG_MS=<ms>` | A game thread's wait for a virtual core this long (default 50; 0: none) is logged with its cause: the thread whose release ended it (its priority, how long it had held the core, how long after it was asked to give it up it did), or how it ended otherwise, and the holders of the cores it may use as it ends. The first 200 a run; the 5 s `vcores:` line counts them all |
 | `HOS_NATIVE_ZSTD=1/2`, `HOS_NATIVE_ZSTD_FRAMES` (set) | The game's zstd decodes on the host's libzstd 1.5.7 (`host/hos_zstd.c`), both off by default: `HOS_NATIVE_ZSTD` the stream decode (ParallelDecompThread; 1 gives the virtual core up while it decodes, 2 keeps it), `HOS_NATIVE_ZSTD_FRAMES` the resource loaders' whole-buffer decode (the ARes_Loading threads). The log names each switch that is on, and each kind of decode that still runs lifted, once |
+| `HOS_SHADOW_BUCKET=<step>` | The storage a character's shadow map reserves (`host/shadow_slot.h`). OoT sizes each near character's square depth map anew every frame (384 from far, up to 1920 near) and makes a frame's render targets one after another in a first-fit heap, so a map a few pixels larger moved every target after it to a new address: 15-16 textures made a frame in Castle Town's market with the camera turning. Such a map is answered the storage size and alignment of the next multiple of the step up (384 by default: 768, 1152, 1536, 1920), so the targets after it stay where they are until it crosses a step; the texture keeps its own size. `0`: every texture its own storage, as before |
 
 ### Building
 
@@ -1230,7 +1318,7 @@ under Audio with its existing settings keys and behavior unchanged.
 The host reads the startup output preference from `hos_options_file()`, the same settings path the menu receives through
 `MkwVkHost.options_path`: `HOS_OPTIONS_FILE`, then `--user`, otherwise beside the game. A missing or unchosen file means
 Default, without independently falling back to another settings file. API version 24 appends the playback callbacks after
-version 22's `take_text` and version 23's `options_path`; build the host and renderer together. `tests/test_audio_output_devices.py`
+version 22's `take_text` and version 23's `options_path`, version 25 the microphone test's `mic_test`, version 26 the performance summary's `perf_info` and version 27 the frame trace's `main_thread_times` after it; build the host and renderer together. `tests/test_audio_output_devices.py`
 checks their positional wiring and layout, and `tests/test_audio_output_preferences.py` compiles the actual settings-path
 and preference modules together against synthetic settings files, without enumerating or opening a device.
 
@@ -1277,6 +1365,7 @@ and clock inputs; actual Windows/Linux capture and menu rendering still require 
 | `compile_shaders` | No menu row: the Builder's, `make_game.py --compile-shaders`'s and the launcher's Compile shaders, read by a preparation (`vk_draw.cpp` `compile_all`). 0 Most (the default), 1 All (the predicted pipelines too). A file with only this line still makes the game's first start a first start |
 | `crt_filter` | 0 Off (default), 1 Lottes aperture grille, 2 Lottes consumer TV, 3 Hyllian Fast, 4 zfast CRT |
 | `crt_lines` | 0 240 virtual lines (default), 1 480, 2 720; capped at half the destination height, at least one line |
+| `hud_layout` | The HUD layout row, on a screen that is not 16:9: 0 the HUD's corners at the screen's edges (default), 1 the HUD in the middle 16:9 (fitted to the width on a narrower screen). Read at each present (`host/hos_wide_ui.c`, option 71): a change shows at once. `HOS_WIDE_UI`, when set, stands over it |
 | `sharpness`, `rumble_strength`, `motion_sensitivity_x`, `motion_sensitivity_y`, `walk_speed` | percent |
 | `mouse_sensitivity` | hundredths: 100 is 1.00 |
 | `field_of_view` | 50 to 150 percent of the current vertical gameplay FOV; 100 is the original. Applies immediately, before projection and culling. The resulting vertical angle stays within 5 to 140 degrees |
@@ -1304,6 +1393,14 @@ Hold-to-toggle uses ID 54 and latches the final Switch-button word. Walk reads i
 only the movement-key stick, so it never receives a latched Switch button as another toggle input. `toggle_walk` is
 not accepted; choose `walk_mode` instead. Walk's Toggle selection survives Insert, focus loss and Switch-button latch
 resets; a key held across Insert/focus return must be released before it can switch walking again.
+
+`longshot_perf.ini`, beside it, is the launcher's Send performance statistics tick: `send=1` is on, no file is off (the
+default), and `keep_sent=0` when the launcher's Keep a copy of what was sent is off. The game reads it at its first frame
+(`gpu/vk/perf_report.cpp`) and writes its summaries into `perf_pending/`; see
+[performance statistics](performance-statistics.md). `python -I nx2/perf_report.py <game folder>` prints what the
+launcher would send. The sender's switches (`LONGSHOT_PERF_MAX_SENDS`, `LONGSHOT_PERF_TIMEOUT`, `LONGSHOT_PERF_BACKOFF`,
+`LONGSHOT_PERF_KEEP_SENT`, `LONGSHOT_PERF_URL`) are read from the launcher's environment, not `longshot_env.txt`:
+[performance statistics, Switches](performance-statistics.md#switches).
 
 `HOS_CONTROL=<socket path>` turns on the control bridge: a local socket a tool or coding agent drives the running game
 through (inputs timed in frames, screenshots, waits, the Insert menu's settings, quit), with `scripts/longshot_ctl.py`

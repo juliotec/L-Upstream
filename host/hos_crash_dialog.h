@@ -8,9 +8,11 @@
    unclean-end record (the game ended without its crash handler: killed, out of memory), the quit the player asked for, and
    the run's log. From those it decides whether to say anything (hos_crash_verdict), when it happened (hos_crash_stage) and
    why, where that is known (hos_crash_cause). A start that finds a crash record nobody showed (no helper could run) asks a
-   helper to show it: `longshot --crash-show <record> <game folder> <log> <options>`. Nothing is sent anywhere: Report copies a
-   redacted text and opens the issue form, and only when the player clicks it. */
+   helper to show it: `longshot --crash-show <record> <game folder> <log> <options>`. Nothing is sent unless the player asks: Report
+   manually copies a redacted text and opens the issue form; Report automatically shows the report it would post to Longshot-api,
+   and posts it (with the system's curl) only when the player presses Send. */
 #pragma once
+#include <ctype.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -159,12 +161,116 @@ typedef struct HosCrashLog {
     int map, preparing, prepared;   /* the stage: a map line (host/hos_main.c, a save loaded), the shaders' preparation */
     int files, vulkan, window, reserve, memory, low_memory, device_lost;
     char version[128], gpu[160], driver[160], devices[240], dlss[240], fsr4[240];
+    /* (what Report automatically's card says too, from the same lines as build_report (hos_crash_dialog.c): the report: lines, the
+       place (the last map, else the shaders' preparation or the title and intro) and the crash in one line) */
+    char os[200], cpu[200], renderer[120], place[120], crash[200];
 } HosCrashLog;
 static inline void hos_crash_take(char *dst, size_t cap, const char *from) {
     size_t n = 0;
     while (from[n] && from[n] != '\n' && from[n] != '\r' && n + 1 < cap) n++;
     memcpy(dst, from, n);
     dst[n] = 0;
+}
+/* (the names of the time before the first map: the crash report's and the performance summary's) */
+#define HOS_CRASH_TITLE_AND_INTRO "Title and intro"
+#define HOS_CRASH_PREPARING_SHADERS "Preparing shaders"
+/* The crash in one line, as the crash report's summary says it: "0xc0000005 (write) at longshot+0x1a5b9928" from
+   "CRASH: exception 0xc0000005 (write 0x10, guest 0x...) at /path/to/longshot+0x1a5b9928" (the module without its folder);
+   "" when the line is not one */
+static inline void hos_crash_summary(char *out, size_t cap, const char *line) {
+    out[0] = 0;
+    const char *code = strstr(line, "CRASH: exception 0x");
+    if (!code || !cap) return;
+    code += 17;
+    size_t nc = 2;
+    while (isxdigit((unsigned char)code[nc])) nc++;
+    const char *how = code + nc;
+    if (strncmp(how, " (read ", 7) && strncmp(how, " (write ", 8)) return;
+    const char *kind = how[2] == 'r' ? "read" : "write";
+    const char *close = strchr(how, ')');
+    if (!close || strncmp(close, ") at ", 5)) return;
+    const char *place = close + 5;
+    size_t np = 0;
+    while (place[np] && !isspace((unsigned char)place[np])) np++;
+    const char *plus = NULL;
+    for (size_t i = 0; i + 2 < np; i++)
+        if (place[i] == '+' && place[i + 1] == '0' && place[i + 2] == 'x') plus = place + i;
+    const char *name = place;
+    for (const char *p = place; plus && p < plus; p++)
+        if (*p == '/' || *p == '\\') name = p + 1;
+    snprintf(out, cap, "%.*s (%s) at %.*s", (int)nc, code, kind, (int)(place + np - name), name);
+}
+/* The log's first line's version, "v3.0.0 (source 47395392)": the version alone into version, its source fingerprint into source
+   ("" for none) */
+static inline void hos_crash_version_split(const char *line, char *version, size_t vcap, char *source, size_t scap) {
+    const char *at = strstr(line, " (source ");
+    const size_t n = at ? (size_t)(at - line) : strlen(line);
+    snprintf(version, vcap, "%.*s", (int)n, line);
+    source[0] = 0;
+    if (at) {
+        const char *s = at + 9;
+        size_t k = 0;
+        while (isxdigit((unsigned char)s[k])) k++;
+        if (s[k] == ')') snprintf(source, scap, "%.*s", (int)k, s);
+    }
+}
+static inline int hos_crash_digits(const char **p) {
+    const char *s = *p;
+    while (**p >= '0' && **p <= '9') (*p)++;
+    return *p > s;
+}
+/* A release's version (the crash report's release flag): v1.2.3, v1.2.3-rc.4, nightly-<count>-<8 hex> */
+static inline int hos_crash_release_version(const char *v) {
+    const char *p = v;
+    if (!strncmp(p, "nightly-", 8)) {
+        p += 8;
+        if (!hos_crash_digits(&p) || *p++ != '-') return 0;
+        for (int i = 0; i < 8; i++, p++)
+            if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) return 0;
+        return !*p;
+    }
+    if (*p == 'v') p++;
+    for (int part = 0; part < 3; part++) {
+        if (!hos_crash_digits(&p)) return 0;
+        if (part < 2 && *p++ != '.') return 0;
+    }
+    if (!strncmp(p, "-rc.", 4)) {
+        p += 4;
+        if (!hos_crash_digits(&p)) return 0;
+    }
+    return !*p;
+}
+/* Release build, as Report automatically's card says it: a release's version, built from the release's own sources (the log's
+   source fingerprint is the one longshot_version.txt's source= names) */
+static inline int hos_crash_release(const char *version, const char *source, const char *stamp_source) {
+    return hos_crash_release_version(version) && source[0] && !strcmp(source, stamp_source);
+}
+/* A setting the reports hold (Report automatically's options and the manual report's): key=value, the value a number, a size (1920x1080)
+   or a pair (16,9), never the bindings, the microphone's name or the hardware hashes. 1 with its key and value */
+static inline int hos_crash_setting(const char *line, char *key, size_t kcap, char *value, size_t vcap) {
+    while (*line == ' ' || *line == '\t') line++;
+    const char *eq = strchr(line, '=');
+    if (!eq || eq == line) return 0;
+    for (const char *p = line; p < eq; p++)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
+    const size_t kn = (size_t)(eq - line);
+    size_t vn = strcspn(eq + 1, "\r\n");
+    while (vn && (eq[vn] == ' ' || eq[vn] == '\t')) vn--;
+    const char *v = eq + 1, *p = v;
+    if (*p == '-') p++;
+    int ok = hos_crash_digits(&p);
+    if (ok && p == v + vn) ok = 1;
+    else if (ok && *v != '-' && (*p == 'x' || *p == ',')) p++, ok = hos_crash_digits(&p) && p == v + vn;
+    else ok = 0;
+    if (!ok) return 0;
+    static const char *const left_out[] = {"microphone_device", "auto_for", "auto_tuned"};
+    if (!strncmp(line, "key_", 4) || !strncmp(line, "pad_", 4)) return 0;
+    for (size_t i = 0; i < sizeof left_out / sizeof left_out[0]; i++)
+        if (kn == strlen(left_out[i]) && !strncmp(line, left_out[i], kn)) return 0;
+    if (kn + 1 > kcap || vn + 1 > vcap) return 0;
+    memcpy(key, line, kn), key[kn] = 0;
+    memcpy(value, v, vn), value[vn] = 0;
+    return 1;
 }
 /* A line of the log (without its home folder: hos_crash_redact_line first, for what is kept of it) */
 static inline void hos_crash_log_line(HosCrashLog *f, const char *line) {
@@ -210,6 +316,18 @@ static inline void hos_crash_log_line(HosCrashLog *f, const char *line) {
             strncat(f->devices, name + 2, (size_t)(end - name - 2));
         }
     }
+    if ((at = strstr(line, "] report: os "))) hos_crash_take(f->os, sizeof f->os, at + 13);
+    if ((at = strstr(line, "] report: cpu "))) hos_crash_take(f->cpu, sizeof f->cpu, at + 14);
+    if ((at = strstr(line, "] report: renderer "))) hos_crash_take(f->renderer, sizeof f->renderer, at + 19);
+    if (!f->crash[0] && (at = strstr(line, "CRASH: exception 0x"))) hos_crash_summary(f->crash, sizeof f->crash, at);
+    if ((at = strstr(line, "] map: "))) hos_crash_take(f->place, sizeof f->place, at + 7);
+    else if (strstr(line, "] vk: start-up: the shaders took ") || strstr(line, "] vk: preparation: done") ||
+             strstr(line, "] vk: shader preparation stopped "))
+        snprintf(f->place, sizeof f->place, "%s", HOS_CRASH_TITLE_AND_INTRO);
+    else if ((strstr(line, "] vk: start-up: ") || strstr(line, "] vk: preparation: ") || strstr(line, "] vk: preparing program ") ||
+              strstr(line, "] vk: shader preparation ")) &&
+             (!f->place[0] || !strcmp(f->place, HOS_CRASH_TITLE_AND_INTRO)))
+        snprintf(f->place, sizeof f->place, "%s", HOS_CRASH_PREPARING_SHADERS);
     if (!f->dlss[0] && (at = strstr(line, "] vk: NVIDIA DLSS: "))) hos_crash_take(f->dlss, sizeof f->dlss, at + 6);
     if (!f->fsr4[0] && (at = strstr(line, "] vk: AMD FSR 4: "))) hos_crash_take(f->fsr4, sizeof f->fsr4, at + 6);
 }
@@ -230,6 +348,7 @@ typedef struct HosCrashRecord {
     int quit;                 /* (unclean) the player had asked to quit: "quit_asked: yes" */
     uint32_t code;            /* exception: 0x... */
     int signal_number;
+    int oom;                  /* (unclean) the out-of-memory killer took the game: "oom_kill: yes" (the helper adds it) */
     char reason[40], module[160], run_id[33], when[17], uptime[24];
 } HosCrashRecord;
 static inline int hos_crash_record_value(const char *text, const char *key, char *out, size_t cap) {
@@ -257,6 +376,28 @@ static inline void hos_crash_record_parse(const char *text, HosCrashRecord *r) {
     if (hos_crash_record_value(text, "exception", v, sizeof v)) r->code = (uint32_t)strtoul(v, NULL, 16);
     if (hos_crash_record_value(text, "signal", v, sizeof v)) r->signal_number = atoi(v);
     r->quit = hos_crash_record_value(text, "quit_asked", v, sizeof v) && !strcmp(v, "yes");
+    r->oom = hos_crash_record_value(text, "oom_kill", v, sizeof v) && !strcmp(v, "yes");
+}
+/* (Linux) Out of memory. The kernel's OOM killer ends the game with SIGKILL: no handler runs, so the end is unclean, and
+   systemd then stops the game's whole scope (DefaultOOMPolicy=stop), the helper with it unless it left that scope. The
+   helper reads the game's cgroup's memory.events (its oom_kill: the processes any OOM killer took there) when the game
+   starts and when it ends, and writes "oom_kill: yes" in the unclean record when it grew */
+/* The memory.events file of the cgroup in /proc/<pid>/cgroup's text (cgroup v2: "0::<path>"): 0 when it has none */
+static inline int hos_crash_cgroup_events(const char *cgroup, char *out, size_t cap) {
+    for (const char *p = cgroup; p && *p; p = strchr(p, '\n'), p = p ? p + 1 : NULL) {
+        if (strncmp(p, "0::/", 4)) continue;
+        size_t n = 0;
+        while (p[3 + n] && p[3 + n] != '\n' && p[3 + n] != '\r') n++;
+        const int k = snprintf(out, cap, "/sys/fs/cgroup%.*s%smemory.events", (int)n, p + 3, n > 1 ? "/" : "");
+        return k > 0 && (size_t)k < cap;
+    }
+    return 0;
+}
+/* memory.events' oom_kill count; -1 when the text has none */
+static inline long hos_crash_oom_kills(const char *events) {
+    for (const char *p = events; p && *p; p = strchr(p, '\n'), p = p ? p + 1 : NULL)
+        if (!strncmp(p, "oom_kill ", 9)) return strtol(p + 9, NULL, 10);
+    return -1;
 }
 /* A crash in the graphics driver's own code: the record's module (a file name, never a path) */
 static inline int hos_crash_driver_module(const char *module) {
@@ -301,7 +442,7 @@ static inline int hos_crash_cause(int verdict, const HosCrashRecord *r, const Ho
     if (f->files && !f->map) return HOS_CAUSE_FILES;
     if (f->vulkan && !f->map) return HOS_CAUSE_VULKAN;
     if (f->window && !f->map) return HOS_CAUSE_WINDOW;
-    if (f->reserve || f->memory || r->code == 0xC0000017u || (have_exit && exit_code == 0xC0000017ul)) return HOS_CAUSE_MEMORY;
+    if (f->reserve || f->memory || r->oom || r->code == 0xC0000017u || (have_exit && exit_code == 0xC0000017ul)) return HOS_CAUSE_MEMORY;
     if (!strcmp(r->reason, "device lost") || !strcmp(r->reason, "Vulkan fatal") || f->device_lost ||
         (r->kind == 1 && hos_crash_driver_module(r->module)))
         return HOS_CAUSE_GPU_DRIVER;
@@ -339,17 +480,20 @@ static inline const char *hos_crash_cause_text(int cause) {
     default: return "An unexpected error.";
     }
 }
-/* The window's text: what happened and when, why, and what Report does */
-static inline size_t hos_crash_message(char *out, size_t cap, int verdict, int stage, int cause) {
+/* The window's text: what happened and when, why, and what Report manually (and Report automatically, when send) does */
+static inline size_t hos_crash_message(char *out, size_t cap, int verdict, int stage, int cause, int send) {
     char headline[160];
     hos_crash_headline(headline, sizeof headline, verdict == HOS_CRASH_SHOW_START ? "Longshot stopped" : "Longshot closed unexpectedly",
                        stage);
     const int n = snprintf(out, cap,
-                           "%s.\n\nWhat went wrong: %s\n\n"
-                           "Report copies a report to your clipboard (the error, your PC's hardware and the end of the log, "
+                           "%s.\n\nWhat went wrong: %s\n\n%s"
+                           "Report manually copies a report to your clipboard (the error, your PC's hardware and the end of the log, "
                            "with your home folder and user name taken out) and opens Longshot's issue form in your browser, "
-                           "for you to paste it into. Longshot itself sends nothing.",
-                           headline, hos_crash_cause_text(cause));
+                           "for you to paste it into. %s",
+                           headline, hos_crash_cause_text(cause),
+                           send ? "Report automatically shows you what would go to the Longshot team, and sends it only when you "
+                                  "press Send.\n\n" : "",
+                           send ? "Report manually itself sends nothing." : "Longshot itself sends nothing.");
     return n < 0 ? 0 : (size_t)n < cap ? (size_t)n : cap ? cap - 1 : 0;
 }
 
@@ -457,9 +601,13 @@ static inline size_t hos_crash_url_part(char *out, size_t cap, const char *s) {
    HOS_CRASH_LINK_MAX (the menu's kLinkMax: what the sign-in page's redirect keeps): the version first, then the GPU, the
    system, the title and what happened. Never the report itself: the player pastes that */
 static inline size_t hos_crash_issue_url(char *out, size_t cap, const char *title, const char *version, const char *gpu,
-                                         const char *system, const char *what) {
-    const char *keys[] = {"&field:version=", "&field:gpu=", "&field:system=", "&title=", "&field:what="};
-    const char *values[] = {version, gpu, system, title, what};
+                                         const char *system, const char *what, const char *track, const char *where,
+                                         const char *settings) {
+    /* (in the order the form asks; Changes from the defaults last, as the longest and the first left out. What kind of problem
+       is always a crash here) */
+    const char *keys[] = {"&field:version=", "&field:track=", "&field:kind=", "&field:gpu=", "&field:system=", "&title=",
+                          "&field:where=", "&field:what=", "&field:settings="};
+    const char *values[] = {version, track, "Crash, freeze or black screen", gpu, system, title, where, what, settings};
     const size_t max = cap < HOS_CRASH_LINK_MAX + 1 ? cap : HOS_CRASH_LINK_MAX + 1;
     size_t n = strlen(HOS_CRASH_ISSUE_FORM);
     if (n + 1 > max) return 0;
@@ -538,11 +686,399 @@ static inline int64_t hos_crash_epoch(const char when[17]) {
     return days * 86400 + v[3] * 3600 + v[4] * 60 + v[5];
 }
 /* Whether a start shows a record no helper showed (its helper could not run, or was ended with the game): a crash record,
-   not an unclean end (a game a launcher or a logout stopped leaves one of those, and is no crash), a day old at most, and
-   not listed as shown */
-static inline int hos_crash_show_at_start(const char *name, const char *shown, int64_t now) {
+   or an unclean end the out-of-memory killer made (oom: its "oom_kill: yes"; systemd stops the game's scope after it, the
+   helper with it when it could not leave it, in a Flatpak); not another unclean end (a game a launcher or a logout stopped
+   leaves one of those, and is no crash). A day old at most, and not listed as shown */
+static inline int hos_crash_show_at_start(const char *name, const char *shown, int64_t now, int oom) {
     char when[17];
-    if (hos_crash_record_name(name, when) != 1 || hos_crash_listed(shown, name)) return 0;
+    const int kind = hos_crash_record_name(name, when);
+    if (!(kind == 1 || (kind == 2 && oom)) || hos_crash_listed(shown, name)) return 0;
     const int64_t t = hos_crash_epoch(when);
     return t <= now + 300 && now - t <= 86400;
+}
+
+/* ---- Report automatically: the report built and sent here (docs/crash-report-window.md) ---- */
+/* Where it goes: crash_reports= (Longshot-api's POST /telemetry/crash) and crash_issue= (the issue the reports are posted on,
+   the only place the Sent page's link may go) in the folder's longshot_version.txt, which nx2/make_game.py writes from
+   nx2/addresses.ini. A key's value, "" when the stamp has none; 0 then, or when it is not an https:// address on one line */
+static inline int hos_crash_stamp_address(const char *stamp, const char *key, char *out, size_t cap) {
+    const size_t kn = strlen(key);
+    if (cap) out[0] = 0;
+    for (const char *p = stamp; p && *p; p = strchr(p, '\n'), p = p ? p + 1 : NULL) {
+        if (strncmp(p, key, kn) || p[kn] != '=') continue;
+        const char *v = p + kn + 1;
+        size_t n = 0;
+        while (v[n] && v[n] != '\n' && v[n] != '\r') n++;
+        if (n < 9 || strncmp(v, "https://", 8) || n + 1 > cap || memchr(v, ' ', n)) return 0;
+        memcpy(out, v, n), out[n] = 0;
+        return 1;
+    }
+    return 0;
+}
+/* Whether the window offers Report automatically: a crash record (an unclean end has no crash to report), an address to send it
+   to, and its report not sent already (its answer in bug-reports/sent/) */
+static inline int hos_crash_send_offered(const char *record_name, int have_address, int sent_already) {
+    return record_name && hos_crash_record_name(record_name, NULL) == 1 && have_address && !sent_already;
+}
+/* Whether the player chose to send crash reports without the window: the launcher's "Send crash reports automatically", a line
+   send=1 in the game folder's longshot_crash.ini (blanks around it allowed, as the launcher reads it). Any other line, or no
+   file: the window asks. A report that can't be sent then shows the window after all */
+static inline int hos_crash_auto_send(const char *ini) {
+    for (const char *p = ini; p && *p; p = strchr(p, '\n'), p = p ? p + 1 : NULL) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "send=1", 6)) continue;
+        const char *q = p + 6;
+        while (*q == ' ' || *q == '\t' || *q == '\r') q++;
+        if (!*q || *q == '\n') return 1;
+    }
+    return 0;
+}
+
+/* The report, as the relay (Longshot-api's telemetry/crash/report.go) takes it: {version, release, os, renderer, gpu, cpu, map,
+   crash, log_tail, options}. The crash lines are the run's log's CRASH: lines from its exception on, without the rows of the
+   game's memory, each module named without its folder: the relay's signature reads them, so they must stay as they are */
+enum { HOS_CRASH_LINE_LIMIT = 300, HOS_CRASH_CRASH_LINES = 80, HOS_CRASH_TAIL_LINES = 150 };
+enum { HOS_CRASH_MAX_VERSION = 40, HOS_CRASH_MAX_OS = 200, HOS_CRASH_MAX_RENDERER = 120, HOS_CRASH_MAX_GPU = 200,
+       HOS_CRASH_MAX_CPU = 200, HOS_CRASH_MAX_MAP = 120, HOS_CRASH_MAX_OPTIONS = 4000 };
+/* A crash's first line: "CRASH: exception 0x<hex> " anywhere in it */
+static inline int hos_crash_starts(const char *line) {
+    for (const char *at = line; (at = strstr(at, "CRASH: exception 0x")); at++) {
+        const char *p = at + 19;
+        if (!isxdigit((unsigned char)*p)) continue;
+        while (isxdigit((unsigned char)*p)) p++;
+        if (*p == ' ') return 1;
+    }
+    return 0;
+}
+/* (a row of the game's memory: the registers, "CRASH:   x0 ...", and what they point to, "CRASH: [x19+0x10] ...") */
+static inline int hos_crash_memory_row(const char *crash) {
+    for (const char *at = crash; (at = strstr(at, "CRASH:")); at++) {
+        const char *p = at + 6;
+        if (*p == ' ' && p[1] == '[' && p[2] == 'x' && isdigit((unsigned char)p[3])) {
+            p += 3;
+            while (isdigit((unsigned char)*p)) p++;
+            if (*p == '+') return 1;
+        }
+        if (*p != ' ') continue;
+        while (*p == ' ') p++;
+        if (*p == 'x' && isdigit((unsigned char)p[1])) return 1;
+    }
+    return 0;
+}
+/* A log line's crash part, "CRASH: ..." at its start or after the log's "] ", as the report holds it: modules without their
+   folder ("at /usr/lib/libc.so.6+0x10" is "at libc.so.6+0x10") and, on the crash's first line, the module of the place in the
+   relay's characters ("at ?+0x10" is "at unknown+0x10"). 0 for a line with none, or a row of the game's memory */
+static inline int hos_crash_report_line(char *out, size_t cap, const char *line) {
+    const char *c = !strncmp(line, "CRASH: ", 7) ? line : strstr(line, "] CRASH: ");
+    if (!c || !cap) return 0;
+    if (c != line) c += 2;
+    if (hos_crash_memory_row(c)) return 0;
+    size_t o = 0;
+    const int first = hos_crash_starts(c);
+    int module_done = 0;
+#define HOS_CRASH_PUT(ch) (o + 1 < cap ? (void)(out[o++] = (ch)) : (void)0)
+    for (const char *p = c; *p && *p != '\n' && *p != '\r';) {
+        if (p >= c + 4 && !strncmp(p - 4, " at ", 4)) {
+            /* (p is a place: its token up to a space; the folders off it when a module+0x follows the last separator) */
+            const char *end = p;
+            while (*end && *end != ' ' && *end != '\t' && *end != '\n' && *end != '\r') end++;
+            const char *name = p;
+            for (const char *q = p; q < end; q++)
+                if (*q == '/' || *q == '\\') name = q + 1;
+            if (name != p) {
+                const char *plus = name + 1;
+                while (plus + 2 < end && strncmp(plus, "+0x", 3)) plus++;
+                if (!(name < end && plus + 2 < end && !strncmp(plus, "+0x", 3))) name = p;
+            }
+            if (first && !module_done) {
+                /* (the place's module: [^\s+]* before +0x<hex>, then a space or the end) */
+                const char *plus = name;
+                while (plus < end && *plus != '+') plus++;
+                const char *hex = plus + 3;
+                int ok = plus + 3 <= end && !strncmp(plus, "+0x", 3) && hex < end && isxdigit((unsigned char)*hex);
+                while (ok && hex < end && isxdigit((unsigned char)*hex)) hex++;
+                if (ok && hex == end) {
+                    module_done = 1;
+                    size_t kept = 0;
+                    for (const char *q = name; q < plus && kept < 64; q++)
+                        if (isalnum((unsigned char)*q) || *q == '_' || *q == '.' || *q == '-') HOS_CRASH_PUT(*q), kept++;
+                    if (!kept)
+                        for (const char *u = "unknown"; *u; u++) HOS_CRASH_PUT(*u);
+                    name = plus;
+                }
+            }
+            for (const char *q = name; q < end; q++) HOS_CRASH_PUT(*q);
+            p = end;
+            continue;
+        }
+        HOS_CRASH_PUT(*p);
+        p++;
+    }
+#undef HOS_CRASH_PUT
+    out[o] = 0;
+    return 1;
+}
+/* s[at, at + n) as with, in place in s's cap bytes: what no longer fits is cut off the end (never a UTF-8 character in two),
+   and with itself is left out when it does not fit. Where the text goes on after with (its end, or at when it was left out) */
+static inline size_t hos_crash_splice(char *s, size_t cap, size_t at, size_t n, const char *with) {
+    const size_t len = strlen(s), wn = strlen(with);
+    if (!cap || at > len) return len;
+    if (n > len - at) n = len - at;
+    if (at + wn + 1 > cap) {
+        s[at] = 0;
+        return at;
+    }
+    size_t tail = len - at - n;
+    const size_t room = cap - 1 - at - wn;
+    if (tail > room) {
+        tail = room;
+        while (tail && ((unsigned char)s[at + n + tail] & 0xC0) == 0x80) tail--;
+    }
+    memmove(s + at + wn, s + at + n, tail);
+    s[at + wn + tail] = 0;
+    memcpy(s + at, with, wn);
+    return at + wn;
+}
+/* (whether s[at] is inside a <device> already written there) */
+static inline int hos_crash_in_device(const char *s, size_t at) {
+    for (size_t back = 0; back < 8 && back <= at; back++)
+        if (!strncmp(s + at - back, "<device>", 8)) return 1;
+    return 0;
+}
+/* (the names a player gives their devices, as the log says them: host/nn_audio.c's output, host/nn_audio_in.c's microphone;
+   s has cap bytes) */
+static inline void hos_crash_devices_out(char *s, size_t cap) {
+    static const char *const heads[] = {"audio: output on ", "audio in: "};
+    for (int k = 0; k < 2; k++) {
+        char *at = strstr(s, heads[k]);
+        if (!at) continue;
+        char *name = at + strlen(heads[k]), *end = NULL;
+        if (k == 0) {   /* ("audio: output on <name> (3 devices)") */
+            for (char *q = strstr(name, " ("); q; q = strstr(q + 1, " (")) {
+                const char *d = q + 2;
+                if (!isdigit((unsigned char)*d)) continue;
+                while (isdigit((unsigned char)*d)) d++;
+                if (!strncmp(d, " device", 7)) { end = q; break; }
+            }
+        } else {   /* ("audio in: <name> open (48000 Hz", "<name> is back", "<name>: <why>, tried again from time to time") */
+            char *open = strstr(name, " open ("), *back = strstr(name, " is back"), *again = strstr(name, ", tried again from time to time");
+            if (open) end = open;
+            else if (back && !back[8]) end = back;
+            else if (again) {
+                end = strstr(name, ": ");
+                if (end && end > again) end = NULL;
+            }
+        }
+        if (!end || end == name) continue;
+        hos_crash_splice(s, cap, (size_t)(name - s), (size_t)(end - name), "<device>");
+    }
+}
+static inline int hos_crash_word_char(unsigned char c) { return isalnum(c); }
+static inline int hos_crash_ncase(const char *a, const char *b, size_t n) {   /* (strncasecmp, which not every C library has) */
+    for (size_t i = 0; i < n; i++)
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return 1;
+    return 0;
+}
+/* Every place a home folder is by its shape, after the user's own (hos_crash_redact_line): /home/<name>, /var/home/<name> and
+   /Users/<name> as ~, C:\Users\<name> as %USERPROFILE%, and a drive's \home\<name> (Wine and Proton's Z:\home\<name>) as ~;
+   and the user's name, 3 letters or more, as a word of its own anywhere ("Alice's PC"), in any case unless it is one of the
+   words the report's own lines use (a Steam Deck's deck). In place */
+static inline void hos_crash_homes_out(char *s, size_t cap, const char *user) {
+    static const char *const common[] = {"deck", "steam", "arch", "linux", "ubuntu", "fedora", "debian", "mint", "manjaro",
+                                         "bazzite", "nobara", "cachyos", "windows", "wine", "vulkan", "intel", "amd", "nvidia",
+                                         "radeon", "game", "games", "gamer", "user", "admin", "player"};
+    char *out = (char *)malloc(cap);
+    if (!out || !cap) { free(out); return; }
+    const size_t un = user ? strlen(user) : 0;
+    int any_case = un >= 3;
+    for (size_t i = 0; any_case && i < sizeof common / sizeof common[0]; i++) {
+        if (strlen(common[i]) != un) continue;
+        size_t j = 0;
+        while (j < un && tolower((unsigned char)user[j]) == common[i][j]) j++;
+        if (j == un) any_case = 0;
+    }
+    size_t o = 0, n = strlen(s);
+#define HOS_CRASH_PUTS(t) do { for (const char *t_ = (t); *t_ && o + 1 < cap; t_++) out[o++] = *t_; } while (0)
+    for (size_t i = 0; i < n;) {
+        const int before = i == 0 || !hos_crash_word_char((unsigned char)s[i - 1]);
+        /* (a drive: a letter on its own, its colon, separators) */
+        if (before && i + 2 < n && isalpha((unsigned char)s[i]) && s[i + 1] == ':' && hos_crash_sep(s[i + 2])) {
+            size_t j = i + 2;
+            while (j < n && hos_crash_sep(s[j])) j++;
+            static const char *const tops[] = {"var", "home", "users"};
+            size_t k = j;
+            int home = 0, users = 0;
+            if (k + 3 < n && !hos_crash_ncase(s + k, tops[0], 3) && hos_crash_sep(s[k + 3])) {
+                k += 3;
+                while (k < n && hos_crash_sep(s[k])) k++;
+            }
+            if (k + 4 < n && !hos_crash_ncase(s + k, tops[1], 4) && hos_crash_sep(s[k + 4])) home = 1, k += 4;
+            else if (k == j && k + 5 < n && !hos_crash_ncase(s + k, tops[2], 5) && hos_crash_sep(s[k + 5])) users = 1, k += 5;
+            if (home || users) {
+                while (k < n && hos_crash_sep(s[k])) k++;
+                size_t e = k;
+                while (e < n && !hos_crash_sep(s[e]) && !isspace((unsigned char)s[e])) e++;
+                if (e > k) {
+                    HOS_CRASH_PUTS(home ? "~" : "%USERPROFILE%");
+                    i = e;
+                    continue;
+                }
+            }
+        }
+        static const char *const unix_homes[] = {"/var/home/", "/home/", "/Users/"};
+        int taken = 0;
+        for (int h = 0; h < 3 && !taken; h++) {
+            const size_t hn = strlen(unix_homes[h]);
+            if (i + hn < n && !strncmp(s + i, unix_homes[h], hn) && !hos_crash_sep(s[i + hn]) && !isspace((unsigned char)s[i + hn])) {
+                size_t e = i + hn;
+                while (e < n && s[e] != '/' && !isspace((unsigned char)s[e])) e++;
+                HOS_CRASH_PUTS("~");
+                i = e, taken = 1;
+            }
+        }
+        if (taken) continue;
+        if (un >= 3 && before && i + un <= n && (any_case ? !hos_crash_ncase(s + i, user, un) : !strncmp(s + i, user, un)) &&
+            (i + un == n || !hos_crash_word_char((unsigned char)s[i + un]))) {
+            HOS_CRASH_PUTS("<user>");
+            i += un;
+            continue;
+        }
+        if (o + 1 < cap) out[o++] = s[i];
+        i++;
+    }
+#undef HOS_CRASH_PUTS
+    out[o] = 0;
+    memcpy(s, out, o + 1);
+    free(out);
+}
+/* A field or line as the report holds it, in place (s has cap bytes; text that grows past them is cut off the end): no
+   control characters, the device names out, the home folder and user out (the menu's rules, then by shape), the spaces
+   around it off, at most limit characters (UTF-8's: a character is never cut in two) */
+static inline void hos_crash_clean(char *s, size_t cap, size_t limit, const char *home, const char *user, int windows,
+                                   const char *const *devices, int ndevices) {
+    if (!cap) return;
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        if (!(*p < 0x20 && *p != '\t' && *p != '\n') && *p != 0x7f) s[o++] = (char)*p;
+    s[o] = 0;
+    hos_crash_devices_out(s, cap);
+    /* (each name found from after the last one written: a name inside <device> itself, "dev" or "vice", is never found again) */
+    for (int d = 0; d < ndevices; d++) {
+        const size_t dn = strlen(devices[d]);
+        if (dn < 3) continue;
+        for (size_t from = 0; from < strlen(s);) {
+            const char *at = strstr(s + from, devices[d]);
+            if (!at) break;
+            const size_t i = (size_t)(at - s);
+            from = hos_crash_in_device(s, i) ? i + 1 : hos_crash_splice(s, cap, i, dn, "<device>");
+        }
+    }
+    char *r = (char *)malloc(cap);
+    if (r) {
+        hos_crash_redact_line(r, cap, s, strlen(s), home, user, windows);
+        memcpy(s, r, strlen(r) + 1);
+        free(r);
+    }
+    hos_crash_homes_out(s, cap, user);
+    size_t start = 0, n = strlen(s);
+    while (start < n && isspace((unsigned char)s[start])) start++;
+    while (n > start && isspace((unsigned char)s[n - 1])) n--;
+    memmove(s, s + start, n - start);
+    n -= start;
+    s[n] = 0;
+    size_t chars = 0, i = 0;
+    for (; i < n; i++)
+        if (((unsigned char)s[i] & 0xC0) != 0x80 && chars++ == limit) break;
+    s[i] = 0;
+}
+/* s as a JSON string, quotes included; its length (cut to cap, and then not valid: the caller makes room) */
+static inline size_t hos_crash_json(char *out, size_t cap, const char *s) {
+    size_t o = 0;
+    if (!cap) return 0;
+#define HOS_CRASH_JPUT(ch) (o + 1 < cap ? (void)(out[o++] = (ch)) : (void)0)
+    HOS_CRASH_JPUT('"');
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == '"' || *p == '\\') HOS_CRASH_JPUT('\\'), HOS_CRASH_JPUT((char)*p);
+        else if (*p == '\n') HOS_CRASH_JPUT('\\'), HOS_CRASH_JPUT('n');
+        else if (*p == '\t') HOS_CRASH_JPUT('\\'), HOS_CRASH_JPUT('t');
+        else if (*p < 0x20 || *p == 0x7f) {
+            char u[8];
+            snprintf(u, sizeof u, "\\u%04x", *p);
+            for (const char *q = u; *q; q++) HOS_CRASH_JPUT(*q);
+        } else HOS_CRASH_JPUT((char)*p);
+    }
+    HOS_CRASH_JPUT('"');
+#undef HOS_CRASH_JPUT
+    out[o] = 0;
+    return o;
+}
+/* The version as the relay takes it: what is not [0-9A-Za-z.+_-] as _, at most 40; "unknown" for none */
+static inline void hos_crash_report_version(char *out, size_t cap, const char *version) {
+    size_t o = 0;
+    for (const char *p = version; *p && o + 1 < cap && o < HOS_CRASH_MAX_VERSION; p++)
+        out[o++] = isalnum((unsigned char)*p) || *p == '.' || *p == '+' || *p == '_' || *p == '-' ? *p : '_';
+    out[o] = 0;
+    if (!o) snprintf(out, cap, "unknown");
+}
+
+/* The answer to the send, from the HTTP status (0: no answer: curl could not reach the server, or did not run) and the relay's
+   JSON ({"comment": link} or {"error": why}), as the Sent page or the Not sent page says it: 1 sent (*link: the report's own
+   comment on the crash issue when the answer names one there, else the issue itself), 0 not (*again: whether trying again
+   could help: the server unreachable or busy, not a refusal) */
+static inline int hos_crash_json_field(const char *json, const char *key, char *out, size_t cap) {
+    char want[64];
+    snprintf(want, sizeof want, "\"%s\"", key);
+    const char *at = json ? strstr(json, want) : NULL;
+    if (cap) out[0] = 0;
+    if (!at) return 0;
+    at += strlen(want);
+    while (*at == ' ' || *at == ':') at++;
+    if (*at++ != '"') return 0;
+    size_t o = 0;
+    for (; *at && *at != '"' && o + 1 < cap; at++) {
+        if (*at == '\\' && at[1]) at++;
+        out[o++] = *at;
+    }
+    out[o] = 0;
+    return *at == '"';
+}
+static inline int hos_crash_answer(char *out, size_t cap, int status, const char *body, const char *issue, char *link,
+                                   size_t link_cap, int *again) {
+    char said[300], comment[300];
+    *again = 0;
+    if (link_cap) link[0] = 0;
+    if (status >= 200 && status < 300) {
+        hos_crash_json_field(body, "comment", comment, sizeof comment);
+        const size_t in = issue ? strlen(issue) : 0;
+        int own = in && !strncmp(comment, issue, in) && !strncmp(comment + in, "#issuecomment-", 14) && comment[in + 14];
+        for (const char *d = comment + in + 14; own && *d; d++) own = isdigit((unsigned char)*d);
+        snprintf(link, link_cap, "%s", own ? comment : issue ? issue : "");
+        snprintf(out, cap, "Sent. Thank you: the team sees it%s.%s", link[0] ? " on the crash reports' issue" : "",
+                 link[0] ? " Open it to follow the crash there." : "");
+        return 1;
+    }
+    if (status == 429) {
+        *again = 1;
+        snprintf(out, cap, "Not sent: the crash server is busy. Nothing was sent: try again in a minute.");
+    } else if (status >= 400 && status < 500) {
+        hos_crash_json_field(body, "error", said, sizeof said);
+        snprintf(out, cap, "Not sent: the crash server refused the report (%d%s%s).", status, said[0] ? ": " : "", said);
+    } else if (status) {
+        *again = 1;
+        snprintf(out, cap, "Not sent: the crash server answered %d. Nothing was sent: try again later.", status);
+    } else {
+        *again = 1;
+        snprintf(out, cap, "Not sent: couldn't reach the crash server (no internet, or curl is missing). Nothing was sent.");
+    }
+    return 0;
+}
+/* The status of the last answer in curl's --dump-header file (a redirect's answers come first): 0 without one */
+static inline int hos_crash_http_status(const char *headers) {
+    int status = 0;
+    for (const char *p = headers; p && *p; p = strchr(p, '\n'), p = p ? p + 1 : NULL)
+        if (!strncmp(p, "HTTP/", 5)) {
+            const char *sp = strchr(p, ' ');
+            if (sp && isdigit((unsigned char)sp[1])) status = atoi(sp + 1);
+        }
+    return status;
 }

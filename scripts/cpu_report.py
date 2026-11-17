@@ -26,6 +26,7 @@ import argparse, bisect, collections, csv, glob, json, math, os, re, statistics,
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cpu_categories as cats  # noqa: E402
+import samples  # noqa: E402
 
 BASES = {".exe": 0x140000000, ".dll": 0x180000000}
 MAP_LINE = re.compile(r"^\s*[0-9a-f]{4}:[0-9a-f]+\s+(\S+)\s+([0-9a-f]{16})\s+(?:f\s+)?(?:i\s+)?(\S*)", re.I)
@@ -236,60 +237,59 @@ def analyse(path, names, fps=None, window=None, cands=()):
     instants = set()
     c = collections.defaultdict(collections.Counter)
     fcache = {}
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            head, _, frames = line.rstrip("\n").partition("|")
-            parts = head.split(" ", 1)
-            if len(parts) != 2 or not frames:
-                continue
-            try:
-                ms = float(parts[0])
-            except ValueError:
-                continue
-            if window and not (window[0] <= ms / 1000.0 <= window[1]):
-                continue
-            thread = re.sub(r"\d+$", "N", parts[1]) if parts[1].startswith(("ModuleSystemWorker", "BaseProcExecutor", "NavMeshCAStepDepWorker")) else parts[1]
-            if not names.game_detail:   # (an unnamed thread is logged by its guest entry address: not published)
-                thread = re.sub(r"^Thread_[0-9a-fA-F]+$", "unnamed thread", thread)
-            instants.add(ms)
-            named = [names.of(fr) for fr in frames.split(";") if fr]
-            if not named:
-                continue
-            leaf = named[0]
-            c["thread_all"][thread] += 1
-            if names.blocked(leaf):
-                c["blocked_in"][(thread, wait_key(named))] += 1
-                continue
-            c["thread_cpu"][thread] += 1
-            selfcat = guest_subsystem(leaf[0]) or leaf[3]
-            owner = next((n for n in named if is_ours(n[3])), leaf)
-            ownercat = guest_subsystem(owner[0]) or owner[3]
-            c["self_cat"][selfcat] += 1
-            c["owner_cat"][ownercat] += 1
-            c["self_fn"][(leaf[0], selfcat)] += 1
-            c["owner_fn"][(owner[0], ownercat)] += 1
-            c["thread_owner"][(thread, ownercat.split("/")[0])] += 1
-            trust = guest_trust(owner[0])
-            if trust:
-                c["game_trust"][trust] += 1
-            seen = set()
+    for line in samples.lines(path):   # (plain or packed)
+        head, _, frames = line.rstrip("\n").partition("|")
+        parts = head.split(" ", 1)
+        if len(parts) != 2 or not frames:
+            continue
+        try:
+            ms = float(parts[0])
+        except ValueError:
+            continue
+        if window and not (window[0] <= ms / 1000.0 <= window[1]):
+            continue
+        thread = re.sub(r"\d+$", "N", parts[1]) if parts[1].startswith(("ModuleSystemWorker", "BaseProcExecutor", "NavMeshCAStepDepWorker")) else parts[1]
+        if not names.game_detail:   # (an unnamed thread is logged by its guest entry address: not published)
+            thread = re.sub(r"^Thread_[0-9a-fA-F]+$", "unnamed thread", thread)
+        instants.add(ms)
+        named = [names.of(fr) for fr in frames.split(";") if fr]
+        if not named:
+            continue
+        leaf = named[0]
+        c["thread_all"][thread] += 1
+        if names.blocked(leaf):
+            c["blocked_in"][(thread, wait_key(named))] += 1
+            continue
+        c["thread_cpu"][thread] += 1
+        selfcat = guest_subsystem(leaf[0]) or leaf[3]
+        owner = next((n for n in named if is_ours(n[3])), leaf)
+        ownercat = guest_subsystem(owner[0]) or owner[3]
+        c["self_cat"][selfcat] += 1
+        c["owner_cat"][ownercat] += 1
+        c["self_fn"][(leaf[0], selfcat)] += 1
+        c["owner_fn"][(owner[0], ownercat)] += 1
+        c["thread_owner"][(thread, ownercat.split("/")[0])] += 1
+        trust = guest_trust(owner[0])
+        if trust:
+            c["game_trust"][trust] += 1
+        seen = set()
+        for n in named:
+            if n[0] not in seen:
+                seen.add(n[0])
+                c["incl_fn"][(n[0], guest_subsystem(n[0]) or n[3])] += 1
+        if cands:
+            hit = set()
             for n in named:
-                if n[0] not in seen:
-                    seen.add(n[0])
-                    c["incl_fn"][(n[0], guest_subsystem(n[0]) or n[3])] += 1
-            if cands:
-                hit = set()
-                for n in named:
-                    ids = fcache.get(n[0])
-                    if ids is None:
-                        ids = fcache[n[0]] = frozenset(cid for cid, rx in cands if rx.search(n[0]))
-                    hit |= ids
-                for cid in hit:
-                    c["cand"][cid] += 1
-                    if thread in ("sead::MainThread", "Presentation_Thread"):
-                        c["cand_path"][cid] += 1
-            if ownercat == "unclassified":
-                c["unclassified"][(owner[2], owner[1], owner[0])] += 1
+                ids = fcache.get(n[0])
+                if ids is None:
+                    ids = fcache[n[0]] = frozenset(cid for cid, rx in cands if rx.search(n[0]))
+                hit |= ids
+            for cid in hit:
+                c["cand"][cid] += 1
+                if thread in ("sead::MainThread", "Presentation_Thread"):
+                    c["cand_path"][cid] += 1
+        if ownercat == "unclassified":
+            c["unclassified"][(owner[2], owner[1], owner[0])] += 1
     return c, len(instants)
 
 

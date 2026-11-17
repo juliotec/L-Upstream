@@ -53,9 +53,12 @@ bool dlss_fg_holds() { return holds; }
 uint64_t antilag_frame() { return 0; }   // (vk_antilag.cpp: AMD Anti-Lag 2 not on here)
 int fsr_calls = 0, fsr_result = 1;
 bool last_native_pq = false;
-int fsr3fi_frame(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence, bool native_pq) {
+int fsr3fi_frames(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence, bool native_pq, const float* t,
+                  const int* slot, int count) {
     CHECK(w == allocated_w && h == allocated_h && sequence > 0);
-    last_native_pq = native_pq; ++fsr_calls; return fsr_result;
+    // (at 2x, with a frame before: the one made frame, the midpoint, into the set's first)
+    CHECK(count == 0 || (count == 1 && t[0] == 0.5f && slot[0] == 0));
+    last_native_pq = native_pq; ++fsr_calls; return fsr_result ? count : 0;
 }
 VkImageBlit last_blit{};
 int32_t copy_pc[4]{};

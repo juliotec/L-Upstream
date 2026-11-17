@@ -344,16 +344,29 @@ std::string cpu_name() {
     return cpu;
 }
 
-std::string system_text() {
+std::string cpu_text() {
     std::string cpu = cpu_name();
     if (cpu.empty()) cpu = "an unknown CPU";
     if (const unsigned n = std::thread::hardware_concurrency()) cpu += " (" + std::to_string(n) + " threads)";
     uint64_t ram = 0;
-    std::string os;
 #ifdef _WIN32
     MEMORYSTATUSEX m{};
     m.dwLength = sizeof m;
     if (GlobalMemoryStatusEx(&m)) ram = m.ullTotalPhys;
+#else
+    {
+        const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+        if (pages > 0 && page > 0) ram = (uint64_t)pages * (uint64_t)page;
+    }
+#endif
+    char gb[32] = "";
+    if (ram) snprintf(gb, sizeof gb, ", %llu GB", (unsigned long long)((ram + (1ull << 29)) >> 30));
+    return cpu + gb;
+}
+
+std::string os_text() {
+    std::string os;
+#ifdef _WIN32
     {   // (RtlGetVersion: GetVersionEx answers as the program's manifest allows)
         typedef LONG(WINAPI * GetVersionFn)(OSVERSIONINFOW*);
         typedef const char*(__cdecl * WineFn)(void);
@@ -372,10 +385,6 @@ std::string system_text() {
         if (const WineFn wine = nt ? (WineFn)(void*)GetProcAddress(nt, "wine_get_version") : nullptr) os += ", Wine " + std::string(wine());
     }
 #else
-    {
-        const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
-        if (pages > 0 && page > 0) ram = (uint64_t)pages * (uint64_t)page;
-    }
     for (const char* file : {"/etc/os-release", "/usr/lib/os-release"}) {
         FILE* f = fopen(file, "r");
         if (!f) continue;
@@ -399,10 +408,10 @@ std::string system_text() {
     }
     if (getenv("APPIMAGE")) os += ", the AppImage";
 #endif
-    char gb[32] = "";
-    if (ram) snprintf(gb, sizeof gb, "%llu GB", (unsigned long long)((ram + (1ull << 29)) >> 30));
-    return cpu + ", " + (ram ? std::string(gb) + ", " : std::string()) + os;
+    return os;
 }
+
+std::string system_text() { return cpu_text() + ", " + os_text(); }
 
 void fill_here(Inputs& in) {
     in.system = system_text();

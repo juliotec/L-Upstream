@@ -71,9 +71,9 @@ class Sampling(unittest.TestCase):
 class Bridge:
     """A fake control bridge: replies by command, writes the requests down, and moves a clock the tour reads"""
 
-    def __init__(self, clock, loaded_after=2, refuse=0):
+    def __init__(self, clock, loaded_after=2, refuse=0, event=0):
         self.requests, self.clock, self.presses = [], clock, 0
-        self.loaded_after, self.refuse = loaded_after, refuse
+        self.loaded_after, self.refuse, self.event = loaded_after, refuse, event
 
     def request(self, cmd, **args):
         self.requests.append((cmd, args))
@@ -88,6 +88,9 @@ class Bridge:
         if cmd == "teleport" and args.get("to") is None:
             return {"ok": True, "destinations": [{"index": 0}, {"index": 5}]}
         if cmd == "teleport":
+            if self.event:
+                return {"ok": False, "error": "refused",
+                        "message": "the game refused the teleport: an event is playing (a cutscene, a map change's)"}
             if self.refuse:
                 self.refuse -= 1
                 return {"ok": True, "sent": False, "refused": "busy"}
@@ -136,6 +139,25 @@ class Touring(unittest.TestCase):
         t.run([7], dwell=0, laps=1, settle=0)
         self.assertEqual(sum(e == "teleport_not_sent" for e, _ in marks), 2)
         self.assertEqual(sum(e == "teleport" for e, _ in marks), 1)
+
+    def test_an_event_refusal_presses_a_until_the_text_box_closes(self):
+        class Text(Bridge):
+            def request(self, cmd, **args):
+                if cmd == "press" and self.event:
+                    self.event -= 1
+                return super().request(cmd, **args)
+        clock, marks = Clock(), []
+        b = Text(clock, loaded_after=0, event=2)
+        t = mt.Tour(ctl, b, lambda e, d="": marks.append((e, str(d))), clock, sleep=lambda s: None)
+        t.run([7], dwell=0, laps=1, settle=0)
+        self.assertEqual(sum(e == "teleport_error" for e, _ in marks), 2)
+        self.assertEqual(b.presses, 2)
+        self.assertEqual([d for e, d in marks if e == "teleport"], ["0:7:Map7"])
+
+    def test_a_busy_refusal_presses_nothing(self):
+        t, b, marks = self.tour(loaded_after=0, refuse=2)
+        t.run([7], dwell=0, laps=1, settle=0)
+        self.assertEqual(b.presses, 0)
 
     def test_a_teleport_that_is_always_refused_is_marked_failed_and_skipped(self):
         t, b, marks = self.tour(loaded_after=0, refuse=99)

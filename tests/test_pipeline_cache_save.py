@@ -124,6 +124,11 @@ class PipelineCacheSaveTests(unittest.TestCase):
         self.check_case('between')
         self.check_case('between-busy')
 
+    def test_file_not_read_still_lets_play_go(self):
+        # The file not read (issue 388, pcache_load.h): nothing of the cache's own fetched or written, at the ordinary save
+        # or a forced one, while the play part still runs at each, past the same threshold.
+        self.check_case('no-save')
+
     def check_case(self, case):
         result = self.run_case(case)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

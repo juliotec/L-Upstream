@@ -26,6 +26,11 @@ bool temporal_env_chosen();
 bool temporal_scene_format(VkFormat format);
 bool temporal_colour_pair(VkFormat input, VkFormat output);
 bool temporal_wanted();       // (temporal_mode() != GAME)
+/// (longshot) No engine (temporal_mode() is GAME: the game's own upscaler or the Upscaler's Off) and AMD FSR 3.1's frame
+/// interpolation asked for (vk_fsr3fi.h frames_wanted): the chain still takes the scene's camera and skinned draws, and makes
+/// the motion at the gameplay upscale's dispatch for that interpolation (actor motion in it), leaving the picture to the
+/// network. Its inputs are then as good as with an engine drawing
+bool temporal_fg_inputs();
 /// The Upscaler row's Off (upscaler_rows.h OFF) with no engine running over it for this run (temporal_mode() is GAME): no
 /// upscaler at all. temporal_upscale then leaves the game's network out too and stretches its input to its output with a plain
 /// linear filter

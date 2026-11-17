@@ -42,6 +42,7 @@ def build(cc, tmp):
     end = source.index("#endif", source.index("static const char *saves_dir(const char *beside) {"))
     program = r'''#include <windows.h>
 #include <stdarg.h>
+#include "hos_atomic_file.h"
 #define SEP '/'
 #define SEP_S "/"
 static void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
@@ -50,7 +51,7 @@ int main(int argc, char **argv) { if (argc != 2) return 2; printf("uses %s\n", s
 '''
     src, exe = tmp / "mover.c", tmp / "mover"
     src.write_text(program, encoding="utf-8")
-    subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-w", "-I", str(ROOT / "host" / "posix"), str(src),
+    subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-w", "-I", str(ROOT / "host" / "posix"), "-I", str(ROOT / "host"), str(src),
                     str(ROOT / "host" / "posix" / "win32_posix.c"), "-o", str(exe), "-lpthread", "-ldl"], check=True)
     return exe
 

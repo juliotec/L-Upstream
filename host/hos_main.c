@@ -26,6 +26,7 @@
 #define LONGSHOT_VERSION "unknown"
 #endif
 const char *hos_version(void) { return LONGSHOT_VERSION; }   /* (discord_rpc.c's status) */
+
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -42,6 +43,7 @@ const char *hos_version(void) { return LONGSHOT_VERSION; }   /* (discord_rpc.c's
 #include <unistd.h>
 #include <sys/syscall.h>
 #endif
+#include "hos_atomic_file.h"   /* (the files the saves' move copies, saves-moved.txt and the stand-ins' clean-up: whole or not at all) */
 /* (linux) the separator of the paths the executable's folder is joined with */
 #ifdef _WIN32
 #define SEP 92
@@ -50,6 +52,19 @@ const char *hos_version(void) { return LONGSHOT_VERSION; }   /* (discord_rpc.c's
 #define SEP '/'
 #define SEP_S "/"
 #endif
+
+/* (longshot) the map Link is in and his age, as the last map: line, for the performance summary (gpu/vk/perf_report.cpp
+   through MkwVkHost perf_info): "" while no save is loaded (before one, and back at the title) */
+static SRWLOCK map_lock = SRWLOCK_INIT;
+static char map_now[100];
+void hos_movie_stats(int64_t out[5]);   /* nn_video.c */
+const char *hos_perf_info(char *map, int cap, int64_t movie[5]) {
+    AcquireSRWLockShared(&map_lock);
+    snprintf(map, (size_t)cap, "%s", map_now);
+    ReleaseSRWLockShared(&map_lock);
+    hos_movie_stats(movie);
+    return LONGSHOT_VERSION;
+}
 
 #ifdef A64_MEM_ZERO
 /* web: guest address = wasm address; the guest window is wasm memory below the host's data (-sGLOBAL_BASE) */
@@ -157,7 +172,6 @@ static int reserve_guest(void) {
            needed. HOS_GUEST_MEMFD=1: the memfd all the same) */
         const char *e = getenv("HOS_GUEST_MEMFD");
         int usable = 0;
-        unsigned long long limit_mb = 0;
         {
             const int u = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
             if (u < 0 && (errno == EACCES || errno == EPERM)) {
@@ -175,16 +189,19 @@ static int reserve_guest(void) {
             if (startup_stderr >= 0) close(startup_stderr), startup_stderr = -1;
             if (u >= 0) {
                 close(u);
+                /* (issue 1135) usable whatever size_limit_mb says: the renderer reads the limit itself and takes udmabuf's
+                   default, 64 MB, when it can't (gpu/vk/vk_memory.cpp import_dma_buf), and a limit too small only makes more
+                   dma-bufs. A Flatpak's or Steam's container shows /dev/udmabuf but not /sys/module */
                 FILE *f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r");
-                if (f) {
-                    if (fscanf(f, "%llu", &limit_mb) != 1) limit_mb = 0;
+                if (f)
                     fclose(f);
-                }
-                usable = limit_mb > 0;
+                else
+                    hos_log("mem: udmabuf's size_limit_mb cannot be read (in a container?): its default, 64 MB, assumed");
+                usable = 1;
             }
             if (!usable && !e)
-                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): %s",
-                        u < 0 ? "/dev/udmabuf cannot be opened" : "udmabuf's size_limit_mb cannot be read");
+                hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): "
+                        "/dev/udmabuf cannot be opened");
         }
         if (e ? atoi(e) != 0 : usable) {
             const int fd = (int)syscall(SYS_memfd_create, "longshot-guest", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
@@ -310,14 +327,7 @@ static int has_link(const char *p) {
 static int copy_tree(const char *from, const char *to) {
     if (is_link(from)) return copy_link(from, to);
     if (!is_dir(from)) {
-        FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
-        int ok = in && out;
-        char buf[1 << 16];
-        for (size_t n; ok && (n = fread(buf, 1, sizeof buf, in)) > 0;) ok = fwrite(buf, 1, n, out) == n;
-        ok = ok && in && !ferror(in);
-        if (in) fclose(in);
-        if (out && fclose(out)) ok = 0;
-        return ok;
+        return hos_atomic_copy_file(from, to);   /* (each file whole under its name, or not there) */
     }
     if (!CreateDirectoryA(to, NULL) && !is_dir(to)) return 0;
     char pattern[MAX_PATH];
@@ -426,16 +436,31 @@ static const char *saves_dir(const char *beside) {
         char note[MAX_PATH];
         const char *sep = strrchr(beside, SEP);
         snprintf(note, sizeof note, "%.*s" SEP_S "saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
-        FILE *f = fopen(note, "w");
-        if (f) {
-            fprintf(f, "Longshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
-            fclose(f);
-        }
+        char text[MAX_PATH + 160];
+        const int n = snprintf(text, sizeof text, "Longshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
+        if (n > 0 && (size_t)n < sizeof text) hos_atomic_write(note, text, (size_t)n);
         hos_log("saves: moved from %s to %s", beside, dir);
     }
     return dir;
 }
 #endif
+
+/* (longshot) What a write of a setting that a kill cut left (host/hos_atomic_file.h), at the start, before the game reads any
+   setting: a "<name>.hosnew" beside the setting. language.txt is the game folder's; mouse_sens.txt is the user folder's; the
+   settings file is where options_path.c chose it (the user folder's with --user, HOS_OPTIONS_FILE's, else the game folder's):
+   the options' one-time copy into the user folder leaves its stand-in there. */
+static void recover_writes(void) {
+    char path[MAX_PATH];
+    const DWORD len = hos_game_path_a(path, MAX_PATH);
+    char *slash = len ? strrchr(path, SEP) : NULL;
+    if (slash) {
+        snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "language.txt");
+        hos_atomic_remove_stale(path);
+    }
+    if (hos_options_file()[0]) hos_atomic_remove_stale(hos_options_file());
+    snprintf(path, sizeof path, "%s" SEP_S "mouse_sens.txt", hos_user_dir);
+    hos_atomic_remove_stale(path);
+}
 
 /* longshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
@@ -469,7 +494,7 @@ static int env_line_allowed(const char *name, const char *value) {
        the file select) */
     static const char *const by_name[] = {
         "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
-        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_CHAIN", "HOS_WATCH", "HOS_CRASH_TEST", "LONGSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
+        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_SLOW_FRAMES", "HOS_CHAIN", "HOS_WATCH", "HOS_CRASH_TEST", "LONGSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
         "RX_WGSL_OVERRIDE"};
@@ -547,6 +572,7 @@ static void removed_switch_notes(void) {
         {"RX_VK_OOT_FOG", NULL},
         {"RX_VK_OOT_VISUAL", NULL},
         {"HOS_FIX_RES", NULL},
+        {"HOS_RECORD_STUTTERS", "HOS_PROFILE=1 (the profiling mode: docs/development.md#the-profiling-mode)"},
         {"HOS_SCENE_NATIVE", NULL},
         {"TOTK_MINIMAL_LAYOUT", NULL},
     };
@@ -708,15 +734,26 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
         int child = 1;
         rx_option_set(OOT_CHEAT_AGE_ID, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
     }
+    static char logged[100];
+    if (!loaded && logged[0]) {   /* back to the title or the file select: the summary's time there is not the last map's */
+        logged[0] = 0;
+        AcquireSRWLockExclusive(&map_lock);
+        map_now[0] = 0;
+        ReleaseSRWLockExclusive(&map_lock);
+    }
     if (loaded) {   /* the map Link is in and his age, logged when either changes: where a log's problem happened, the "Where in
                        the game" of the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp reads the last of these lines) */
-        static char logged[100];
         char map[80], line[100];
         int child = 1;
         if (oot_gamedata_string(c, 0x1d6189dau, map, sizeof map) && map[0]) {   /* Sequence_CurrentBanc */
             snprintf(line, sizeof line, "%s (%s)", map,
                      oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? "child" : "adult") : "age not known");
-            if (strcmp(line, logged)) hos_log("map: %s", line), snprintf(logged, sizeof logged, "%s", line);
+            if (strcmp(line, logged)) {
+                hos_log("map: %s", line), snprintf(logged, sizeof logged, "%s", line);
+                AcquireSRWLockExclusive(&map_lock);   /* (the performance summary's map: hos_perf_info) */
+                snprintf(map_now, sizeof map_now, "%s", line);
+                ReleaseSRWLockExclusive(&map_lock);
+            }
         }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
@@ -1848,6 +1885,7 @@ static int game_main(int argc, char **argv) {
         hos_relaunch_keep_env();
     }
     load_longshot_env();
+    hos_profiling_env();   /* (HOS_PROFILE=1, host/profiling.c: after the file, which may set it) */
 #endif
     /* (the settings file, in the user folder: chosen before the crash window's helper, the Discord status and the renderer read
        it, and after longshot_env.txt, which may set HOS_OPTIONS_FILE; Linux's main chose it already: host/options_path.c) */
@@ -1998,6 +2036,7 @@ static int game_main(int argc, char **argv) {
         hos_hle_stats_start();
     }
     if (!hos_user_dir) hos_user_dir = "user";
+    recover_writes();   /* (what a write of a setting that a kill cut left: before anything reads the settings) */
     CreateDirectoryA(hos_user_dir, NULL);
     hos_options_carry();   /* (a game folder's settings from before into the user folder, once: host/options_path.c) */
     if (!reserve_guest()) {
@@ -2103,7 +2142,7 @@ static int game_main(int argc, char **argv) {
     Ctx *c = hos_boot_main_thread(hos_main_stack_size);
     uint64_t sp = c->x[31];
     void hos_prof_start(void);
-    hos_prof_start();   /* HOS_PROFILE=<seconds> */
+    hos_prof_start();   /* HOS_PROFILE_EVERY=<seconds>, the samplers, HOS_PROFILE=1 */
     void hos_chain_start(void);
     hos_chain_start();  /* HOS_CHAIN=<path> */
 #ifdef _WIN32
@@ -2232,6 +2271,7 @@ int main(int argc, char **argv) {
     void hos_display_loop(void);
     hos_game_layout();   /* (the game folder's cache/ and logs/, before anything writes there, --prepare-shaders too: host/game_layout.c) */
     load_longshot_env();
+    hos_profiling_env();   /* (HOS_PROFILE=1, host/profiling.c: after the file, which may set it) */
     hos_options_choose(argc, argv);   /* (before the Discord status reads it, below: host/options_path.c) */
     driver_cache_room();
     driver_cache_folder();

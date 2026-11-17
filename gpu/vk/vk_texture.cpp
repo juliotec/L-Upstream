@@ -54,6 +54,7 @@
 #include "host_shaders/bc7_encoder_comp_spv.h"
 #include "bc_levels.h"
 #include "astc_bc_policy.h"
+#include "astc_reuse.h"
 #include "drawn_writeback.h"
 #include "vram_compact.h"
 #include "commit_room.h"
@@ -64,6 +65,7 @@
 #include "guest_holes.h"
 #include "target_overlap.h"
 #include "target_pool.h"
+#include "dead_targets.h"
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "longshot_env.h"
@@ -294,7 +296,7 @@ struct Pooled {
 std::mutex pool_mu;
 std::unordered_map<uint64_t, std::vector<Pooled>> target_pool;   // by pool_key_of
 uint64_t pool_bytes, pool_n, st_pool_reused, st_pool_made, st_pool_destroyed;
-bool pool_pressed;   // (VRAM near what the driver allows: texture_frame's budget)
+uint8_t pool_pressure = 0;   // 0: normal, 1: pressed (>90%, halve pool), 2: critical (>97%, flush pool)
 bool compact_on() {   // (longshot: the textures in a pool of their own, compacted: compact_step. On unless RX_VK_COMPACT=0)
     static const bool v = vram_compact::enabled(getenv("RX_VK_COMPACT"));
     return v;
@@ -414,14 +416,18 @@ void pool_put(Dead& d) {
 /// (texture_frame, each present) the pool over its bound, or all of it while VRAM is short, and what waits in it unused for 120
 /// presents: destroyed, at most 16 a present (64 while VRAM is short). Returns how many
 size_t pool_trim() {
+    // (longshot) RX_VK_POOL_IDLE=<presents>, 8 (120 before): target_pool.h
+    static const uint64_t idle =
+        getenv("RX_VK_POOL_IDLE") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_POOL_IDLE"))) : target_pool::kIdlePresents;
     std::lock_guard lk(pool_mu);
-    const uint64_t cap = pool_pressed ? 0 : pool_cap();
-    const size_t most = pool_pressed ? 64 : 16;
+    const uint64_t full_cap = pool_cap();
+    const uint64_t cap = (pool_pressure >= 2) ? 0 : (pool_pressure == 1) ? (full_cap / 2) : full_cap;
+    const size_t most = (pool_pressure > 0) ? 64 : 16;
     size_t n = 0;
     for (auto it = target_pool.begin(); it != target_pool.end() && n < most;) {
         auto& v = it->second;
         for (size_t i = 0; i < v.size() && n < most;) {   // (the oldest of a shape first: the front)
-            if (pool_bytes <= cap && frame_no - v[i].since <= 120) {
+            if (pool_bytes <= cap && !target_pool::idle_out(frame_no, v[i].since, idle)) {
                 ++i;
                 continue;
             }
@@ -501,7 +507,7 @@ struct Arena {
     std::chrono::steady_clock::time_point used_at;   // (when it last staged something)
 };
 std::vector<Arena> arenas;
-constexpr uint64_t kArena = 64ull << 20;
+constexpr uint64_t kArena = 16ull << 20;   // (#637: 16 MB arenas)
 // (every arena staging() made, and the time making them took: the memory line's "made so far")
 std::atomic<uint64_t> st_arena_makes{0};
 std::atomic<int64_t> st_arena_make_ns{0};
@@ -1581,6 +1587,88 @@ bool upload(Texture& tex, const Ranges* dirty) {
     }
     return ok;
 }
+// ---- (longshot) decoded ASTC used again (astc_reuse.h): a new texture whose blocks and image are those of one the game
+// finalized takes that one's image by a GPU copy, and the old one goes at the next texture_frame. RX_VK_ASTC_REUSE=0: every
+// new texture decoded, as before ----
+bool reuse_on() {
+    static const bool v = !getenv("RX_VK_ASTC_REUSE") || atoi(getenv("RX_VK_ASTC_REUSE")) != 0;
+    return v;
+}
+std::mutex reuse_mu;
+astc_reuse::Freed<Texture> freed;   // (reuse_mu)
+std::vector<Texture*> reuse_gone;   // (reuse_mu: the images that served one, for texture_frame)
+std::atomic<int64_t> st_reused{0}, st_reused_bytes{0}, st_reuse_retired{0}, st_reuse_hash_ns{0}, st_reuse_hash_bytes{0};
+astc_reuse::Shape reuse_shape(const Texture& t) {
+    return {(uint32_t)t.format, t.width, t.height, t.depth, t.levels, t.layers, t.skip, (uint32_t)t.nvn_format, t.key_layout,
+            t.bc, t.bc_resized};
+}
+/// (used again by its own address, or going: no longer one to copy from)
+void reuse_drop(Texture& t) {
+    if (!t.freed_listed && !t.reuse_retire) return;
+    std::lock_guard lk(reuse_mu);
+    if (t.freed_listed) freed.unlist(t.blocks_hash, &t), t.freed_listed = false;
+    t.reuse_retire = false;
+}
+/// The game finalized `t`: its decoded ASTC from memory, of the same shape, listed to serve the same blocks made again elsewhere
+void reuse_released(const nvn_tex* t) {
+    if (!reuse_on()) return;
+    auto [a, b] = by_gpu.equal_range(t->gpu);
+    for (auto it = a; it != b; ++it) {
+        Texture* x = it->second;
+        if (!x->astc || !x->blocks_hash || !x->uploaded || x->gpu_written || x->freed_listed || x->reuse_retire) continue;
+        if (x->d.format != t->d.format || x->d.width != t->d.width || x->d.height != t->d.height ||
+            x->d.depth != t->d.depth || x->d.levels != t->d.levels || x->d.target != t->d.target)
+            continue;
+        std::lock_guard lk(reuse_mu);
+        freed.list(x->blocks_hash, x);
+        x->freed_listed = true;
+    }
+}
+/// A new decoded ASTC texture's blocks hashed (its first upload, whole), and the image of a finalized one with the same blocks
+/// and shape copied into it: true when it was. One uploaded again keeps no hash, and is not listed when finalized
+bool reuse_upload(Texture& tex, uint64_t total) {
+    const auto t0 = std::chrono::steady_clock::now();
+    static thread_local std::vector<uint8_t> scratch;
+    astc_reuse::Hasher h;
+    for (uint64_t at = 0; at < total; at += 64ull << 20) {
+        const uint64_t n = std::min<uint64_t>(64ull << 20, total - at);
+        h.add(guest_bytes(tex.gpu + at, n, scratch), n);
+    }
+    tex.blocks_hash = h.h | 1;
+    st_reuse_hash_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+    st_reuse_hash_bytes += (int64_t)total;
+    if (tex.sparse || tex.type != VK_IMAGE_TYPE_2D || !tex.image) return false;
+    Texture* from;
+    {
+        std::lock_guard lk(reuse_mu);
+        if (!freed.size()) return false;
+        from = freed.find(tex.blocks_hash, reuse_shape(tex), [](const Texture* t) { return reuse_shape(*t); });
+        if (!from || from == &tex || !from->image || !from->uploaded || from->gpu_written) return false;
+        freed.unlist(from->blocks_hash, from);
+        from->freed_listed = false, from->reuse_retire = true;
+        reuse_gone.push_back(from);
+    }
+    VkCommandBuffer cmd = upload_cmd();
+    full_barrier(cmd);
+    std::vector<VkImageCopy> regions(tex.levels);
+    for (uint32_t l = 0; l < tex.levels; l++) {
+        VkImageCopy& r = regions[l];
+        r.srcSubresource = r.dstSubresource = {tex.aspect, l, 0, tex.layers};
+        r.extent = {std::max(1u, tex.width >> l), std::max(1u, tex.height >> l), 1};
+    }
+    vkCmdCopyImage(cmd, from->image, VK_IMAGE_LAYOUT_GENERAL, tex.image, VK_IMAGE_LAYOUT_GENERAL, tex.levels, regions.data());
+    full_barrier(cmd);
+    from->last_value = std::max(from->last_value, rec_value);   // (its image goes once this submission is done with it)
+    const int64_t n = ++st_reused;
+    st_reused_bytes += (int64_t)tex.bytes;
+    if (n <= 8 || n % 500 == 0)
+        logf("vk: ASTC texture #%u %#llx %ux%u x%u levels %u: the image of #%u %#llx (the same blocks, finalized by the game) "
+             "copied, not decoded again (%lld so far, %lld MB)", tex.id, (unsigned long long)tex.gpu, tex.width, tex.height,
+             tex.layers, tex.levels, from->id, (unsigned long long)from->gpu, (long long)n,
+             (long long)(st_reused_bytes.load() >> 20));
+    return true;
+}
+
 /// (longshot) A big texture whose whole storage is zero: the image cleared to zero on the GPU, not unswizzled on the CPU. All-zero
 /// bits are 0 in every format this path takes (not ASTC or BC, not one widened on the way), so the clear is what the unswizzle
 /// would have made. The game's shadow map (12288 x 12288 D16, 288 MB, its storage fresh and zero) took 73 ms of the replay
@@ -1718,6 +1806,10 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                  (unsigned long long)(total >> 10), !tex.uploaded ? "new" : dirty ? "written" : "whole",
                  (unsigned long long)tex.first_seen);
         }
+    }
+    if (tex.astc) {
+        tex.blocks_hash = 0;
+        if (!dirty && !tex.uploaded && reuse_on() && reuse_upload(tex, total)) return up_route = UP_ASTC, true;
     }
     if (tex.astc && (up_route = UP_ASTC, upload_astc_gpu(tex, total, dirty))) return true;
     up_route = UP_CPU;
@@ -2088,6 +2180,7 @@ void destroy_later(Texture& tex) {
 void vw_forget(const Texture& t);   // (below: a destroyed texture leaves the list of GPU-written ones)
 void forget_gpu(Texture* tex) {
     vw_forget(*tex);
+    reuse_drop(*tex);
     auto [a, b] = by_gpu.equal_range(tex->gpu);
     for (auto it = a; it != b; ++it)
         if (it->second == tex) {
@@ -2250,7 +2343,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     {   // (decoded ASTC as BC3: 2D, at most the scratch's size; from blocks of 6 x 6 texels up (2.25 bits a texel or
         // less: BC3's 8 keep what they have) from 2 MB as RGBA8 (RX_VK_ASTC_BC_MB), the finer ones (UI, characters)
         // only from 64 MB)
-        static const uint64_t low = (uint64_t)(getenv("RX_VK_ASTC_BC_MB") ? atoi(getenv("RX_VK_ASTC_BC_MB")) : 2) << 20;
+        static const uint64_t low = (uint64_t)(getenv("RX_VK_ASTC_BC_MB") ? atoi(getenv("RX_VK_ASTC_BC_MB")) : 1) << 20;
         // (issue 519: on a card the driver gives under 6 GB, the finer ones too. An RTX 3050 Laptop (4 GB, 3.3 allowed)
         // held 1.75 GB of decoded ASTC in Goron City, drawn every frame: 5.6 GB used of 3.3, paged, 4 fps. As BC3, a
         // quarter. Now 8 GB cards and integrated GPUs too: astc_bc_policy.h. RX_VK_ASTC_BC_ALL=1 or 0 says so on any card)
@@ -2721,7 +2814,13 @@ namespace {
 /// budget (40: only an area load's burst; at 8 the ground's streamed textures waited a frame in ordinary play and the ground
 /// flickered, Discord 2026-11-09), 0: no deferral, as before
 bool upload_defer(const Texture& tex) {
-    static const int64_t budget_ns = (int64_t)(getenv("RX_VK_UPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_UPLOAD_BUDGET_MS")) : 40.0) * 1000000;
+    // Terrain materials (layer arrays > 1 or very large surfaces) must always upload synchronously
+    // to prevent ground flickering. Only defer smaller single-layer NPC/character/prop textures.
+    const bool is_terrain = (tex.layers > 1) || (tex.width > 1024 && tex.height > 1024);
+    if (is_terrain) return false;
+
+    // Limit NPC/prop ASTC upload stalls to 12 ms per frame to protect 60 fps frame pacing (16.6 ms target)
+    static const int64_t budget_ns = (int64_t)(getenv("RX_VK_UPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_UPLOAD_BUDGET_MS")) : 12.0) * 1000000;
     if (!budget_ns || !upload_defer_ok || tex.uploaded || !tex.astc || tex.gpu_written) return false;
     if (frame_upload_ns.load(std::memory_order_relaxed) < budget_ns) return false;
     st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
@@ -2731,6 +2830,7 @@ bool upload_defer(const Texture& tex) {
 Texture* texture_touch(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;
     tex->last_value = rec_value;
+    if (tex->freed_listed || tex->reuse_retire) reuse_drop(*tex);
     if (!for_sampling) return tex;
     if (upload_defer(*tex)) return nullptr;
     // contents: from guest memory unless the GPU wrote the image (then it is the content, unless the texture was
@@ -3879,6 +3979,7 @@ void texture_written(Texture* tex, const char* why) {
 
 
 bool texture_touch_quick(Texture* tex, bool for_sampling) {
+    if (tex->freed_listed || tex->reuse_retire) return false;   // (texture_touch takes it out of the reuse list)
     tex->last_frame = frame_no;   // (the same values whichever thread stores them)
     tex->last_value = rec_value;
     if (!for_sampling) return true;
@@ -4365,7 +4466,16 @@ void compact_step(uint64_t completed) {
     if (!image_compact_active()) {
         if (frame_no < compact.next_check) return;
         compact.next_check = frame_no + 120;
-        static const uint64_t min_free = (uint64_t)(getenv("RX_VK_COMPACT_MB") ? std::max(1, atoi(getenv("RX_VK_COMPACT_MB"))) : 512) << 20;
+        static const char* compact_env = getenv("RX_VK_COMPACT_MB");
+        uint64_t min_free = 512ull << 20;
+        if (compact_env) {
+            min_free = (uint64_t)std::max(1, atoi(compact_env)) << 20;
+        }
+        else {
+            uint64_t used_vram = 0, allowed_vram = 0;
+            if (vram_usage(&used_vram, &allowed_vram))
+                min_free = vram_compact::default_min_free(allowed_vram);
+        }
         uint64_t block_bytes = 0, free_bytes = 0, kept = 0;   // (kept: the blocks made at the start, which no run gives back)
         if (!textures_pool_usage(&block_bytes, &free_bytes, &kept) ||
             vram_compact::returnable(block_bytes, free_bytes, kept) < vram_compact::run_from(min_free, compact.pressed))
@@ -4497,6 +4607,98 @@ uint64_t linux_pressure_shortfall(uint64_t* seq) {
     return linux_shortfall_bytes.load(std::memory_order_acquire);
 }
 
+// (longshot) The dead transient targets' switches (texture_frame's eviction reads them too). RX_VK_DEAD_TARGETS=0: none let go
+// before the sweep of every 600 presents; RX_VK_DEAD_EVERY=<presents>: how often they are looked for; RX_VK_DEAD_MIN_UNUSED
+bool dead_targets_on() {
+    static const bool on = !getenv("RX_VK_DEAD_TARGETS") || atoi(getenv("RX_VK_DEAD_TARGETS")) != 0;
+    return on;
+}
+uint64_t dead_every_presents() {
+    static const uint64_t n = getenv("RX_VK_DEAD_EVERY") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_EVERY"))) : 1;
+    return n;
+}
+uint64_t dead_min_unused_presents() {
+    static const uint64_t n = getenv("RX_VK_DEAD_MIN_UNUSED") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_MIN_UNUSED"))) : 1;
+    return n;
+}
+uint64_t st_dead_swept, st_dead_swept_bytes;   // (let go by dead_targets_sweep so far)
+/// (longshot) Between the eviction's passes (dead_targets.h): the render targets another target was drawn over from another start
+/// since their last use (target_overlap.h), unused for RX_VK_DEAD_MIN_UNUSED presents and done with by the GPU, let go as that
+/// pass lets them go: nothing written back (their storage is another target's now), their images to the target pool
+void dead_targets_sweep(uint64_t completed) {
+    const uint64_t need = dead_min_unused_presents();
+    std::vector<const Texture*> by_start;
+    uint64_t longest = 0;
+    for (auto& kv : textures) {
+        const Texture* t = kv.second.get();
+        if (!t->gpu_written || !t->first_render_frame || !t->guest_size) continue;
+        by_start.push_back(t), longest = std::max(longest, t->guest_size);
+    }
+    if (by_start.empty()) return;
+    std::sort(by_start.begin(), by_start.end(), [](const Texture* a, const Texture* b) { return a->gpu < b->gpu; });
+    std::unordered_set<Texture*> gone;
+    for (auto& kv : textures) {
+        Texture* tex = kv.second.get();
+        if (!tex->gpu_written || !tex->first_render_frame || !tex->guest_size ||
+            !dead_targets::candidate(frame_no, tex->last_frame, need, tex->last_value, completed,
+                                     tex->levels == 1 && tex->layers == 1 && tex->depth <= 1))
+            continue;
+        const uint64_t lo = tex->gpu, hi = tex->gpu + tex->guest_size;
+        auto it = std::lower_bound(by_start.begin(), by_start.end(), lo > longest ? lo - longest : 0,
+                                   [](const Texture* t, uint64_t g) { return t->gpu < g; });
+        for (; it != by_start.end() && (*it)->gpu < hi; ++it)
+            if (*it != tex && target_overlap::shifted_over(lo, hi, tex->last_frame, (*it)->gpu, (*it)->gpu + (*it)->guest_size,
+                                                           (*it)->last_written)) {
+                gone.insert(tex);
+                break;
+            }
+    }
+    if (gone.empty()) return;
+    for (Texture* tex : gone) {   // (each one's end as the eviction's)
+        st_dead_swept++, st_dead_swept_bytes += tex->bytes;
+        watch_tex(tex, "evicted");
+        if (remade_log_on()) {
+            std::lock_guard lk(evicted_mu);
+            if (evicted_at.size() > 20000) evicted_at.clear();   // (a bound: only the recent ones matter)
+            evicted_at[evicted_key(tex->gpu, tex->width, tex->height, tex->nvn_format)] = {frame_no, tex->gpu_written};
+            remade.erase(tex);
+        }
+        destroy_later(*tex);
+        forget_gpu(tex);
+    }
+    for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {
+        if (gone.erase(it->second.get())) it = textures.erase(it);
+        else ++it;
+    }
+}
+
+/// (longshot) the images that served a new texture's blocks (astc_reuse.h): gone, unless their own texture was used since
+void reuse_retire_frame() {
+    std::vector<Texture*> went;
+    {
+        std::lock_guard lk(reuse_mu);
+        went.swap(reuse_gone);
+    }
+    std::unordered_set<const Texture*> gone;
+    for (Texture* t : went) {
+        if (!t->reuse_retire) continue;
+        t->reuse_retire = false;
+        watch_tex(t, "its image served a new texture: retired");
+        if (!t->gpu_written && t->uploaded && !remade_skip_old()) {   // (made again here, it is uploaded from memory: evict's)
+            std::lock_guard lk(from_memory_mu);
+            if (evicted_from_memory.size() > 50000) evicted_from_memory.clear();
+            evicted_from_memory[evicted_key(t->gpu, t->width, t->height, t->nvn_format)] = t->guest_size;
+        }
+        destroy_later(*t);
+        forget_gpu(t);
+        gone.insert(t);
+    }
+    st_reuse_retired += (int64_t)gone.size();
+    for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {
+        if (gone.erase(it->second.get())) it = textures.erase(it);
+        else ++it;
+    }
+}
 void texture_frame(uint64_t completed) {
     const TraceTimer timed{st_texture_frame_ns};   // (longshot: the frame trace's tex_frame_ms)
     upload_frame_report();
@@ -4513,6 +4715,7 @@ void texture_frame(uint64_t completed) {
     completed_value = completed;
     frame_no++;
     drawn_writeback_frame();
+    reuse_retire_frame();
     {   // (staging arenas the GPU is done with, beyond 256 MB of them, and any over 64 MB: freed. A scene change stages
         // hundreds of MB to over a GB (the course maps, the terrain's ASTC arrays), and that host memory was kept)
         // (longshot: 64 on a card of 6 GB or less. On one with resizable BAR the arenas are VRAM: VMA puts a host-visible buffer the GPU
@@ -4521,7 +4724,7 @@ void texture_frame(uint64_t completed) {
         static const uint64_t keep = []() -> uint64_t {
             if (const char* e = getenv("RX_VK_STAGING_KEEP_MB")) return (uint64_t)atoi(e) << 20;
             uint64_t used = 0, allowed = 0;
-            return (vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 64ull : 256ull) << 20;
+            return (vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 128ull : 256ull) << 20;
         }();
         uint64_t kept = 0;
         for (auto it = arenas.begin(); it != arenas.end();) {
@@ -4530,6 +4733,7 @@ void texture_frame(uint64_t completed) {
             // next to nothing, and the 64 MB it kept are VRAM behind the BAR. A load makes one again. RX_VK_STAGING_IDLE_S=<n>:
             // that long, 0: kept)
             static const int64_t idle_s = getenv("RX_VK_STAGING_IDLE_S") ? atoll(getenv("RX_VK_STAGING_IDLE_S")) : 30;
+            // (#637) always keep at least 2 warm arenas against stale eviction, against 70-108 ms vkAllocateMemory stalls
             const int64_t wait_s = linux_pressed && idle_s > 5 ? 5 : idle_s;
             const bool stale = wait_s && std::chrono::steady_clock::now() - it->used_at > std::chrono::seconds(wait_s);
             // (and up to 256 MB of the ones staged into in the last 2 s stay whatever `keep` is. An arena is free for reuse once
@@ -4539,9 +4743,9 @@ void texture_frame(uint64_t completed) {
             // (not while VRAM is near what the driver allows, pool_pressed as the frame before left it: on a card of 6.5 GB or
             // less the arenas are VRAM behind the BAR, and the 192 MB more would come off what the load's textures need)
             static const int64_t burst_s = getenv("RX_VK_STAGING_BURST_S") ? atoll(getenv("RX_VK_STAGING_BURST_S")) : 2;
-            const bool recent = burst_s && !pool_pressed && std::chrono::steady_clock::now() - it->used_at < std::chrono::seconds(burst_s);
+            const bool recent = burst_s && !pool_pressure && std::chrono::steady_clock::now() - it->used_at < std::chrono::seconds(burst_s);
             const uint64_t allowed = recent ? std::max<uint64_t>(keep, 256ull << 20) : keep;
-            if (idle && (it->size > kArena || kept + it->size > allowed || stale || linux_entered_pressure)) {
+            if (idle && (it->size > kArena || kept + it->size > allowed || (stale && kept + it->size > kArena * 2) || linux_entered_pressure)) {
                 destroy_buffer(it->buffer, it->allocation);
                 it = arenas.erase(it);
                 continue;
@@ -4637,7 +4841,12 @@ void texture_frame(uint64_t completed) {
     // may have (other programs use the GPU too). The least recently used go first, down to 7/8 of it; nothing the
     // last 8 presents used, nothing recorded work may still read.
     static uint64_t own = 0;
-    if (frame_no % 10) return;
+    if (!dead_targets::pass_due(frame_no)) {
+        // (longshot) the dead transient targets on the presents between the passes (dead_targets.h)
+        static const bool evicting = !env_on("RX_VK_NO_EVICT");
+        if (dead_targets::sweep_due(frame_no, dead_every_presents(), evicting && dead_targets_on())) dead_targets_sweep(completed);
+        return;
+    }
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
     // (longshot) RX_VK_VRAM_MB=<MB> for a test, else the one rule by what the driver allows at the first look: texture_budget.h.
@@ -4743,12 +4952,24 @@ void texture_frame(uint64_t completed) {
         kept_only = vram_compact::kept_only(pool_blocks, pool_kept);
     }
     const uint64_t pressure = by_blocks ? used : used - std::min(used, reclaim);
-    pool_pressed = known && pressure > allowed / 10 * 9;   // (the target pool given back meanwhile)
+    static uint64_t dynamic_floor = 0;
+    static uint64_t floor_frame = 0;
+    if (known) {
+        if (!dynamic_floor || frame_no - floor_frame >= 30) {
+            floor_frame = frame_no;
+            dynamic_floor = vram_compact::update_dynamic_floor(dynamic_floor, total_bytes, used, pressure, allowed);
+        }
+    }
+    const uint64_t active_floor = known ? dynamic_floor : 0;
+    pool_pressure = !known ? 0 : (used > allowed / 100 * 97) ? 2 : (pressure > allowed / 10 * 9) ? 1 : 0;   // (target pool: halve at >90%, flush at >97%)
     compact.pressed = known && vram_compact::pressed(used, allowed);   // (longshot, RX_VK_COMPACT: by the driver's own count)
     const uint64_t size_budget = budget;   // (the budget as a size, before the rules that take an excess off it: rule_target)
     if (known && pressure > allowed / 10 * 9) {
         const uint64_t over = pressure - allowed / 10 * 9;
-        budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
+        const uint64_t damped_over = (allowed < vram_compact::GLOBAL_MIN_GRAPHICS_REQ) ? (over / 4) : over;
+        uint64_t cut = total_bytes > damped_over ? total_bytes - damped_over : 0;
+        if (active_floor && cut < active_floor) cut = active_floor;
+        budget = std::min(budget, cut);
     }
     // (longshot, RX_VK_COMPACT: what the budget's size and the 90% rule ask on their own, before the hold's lines; the 97%
     // rule's joins it below. The hold's pass lets a texture unused for the eviction's own time go for that part, as a pass
@@ -4759,8 +4980,8 @@ void texture_frame(uint64_t completed) {
     // to 13-20 ms with the shadows in place, the driver itself short. At 85 a five-minute walk across Hyrule Field at DLAA
     // 2560 x 1440 had 11-12 frames over 33 ms against 34-49 uncompacted, and a 1% low of 37 fps against 26-29
     if (compact_on() && known && !by_blocks) {
-        static const uint64_t pct = getenv("RX_VK_COMPACT_PCT") ? (uint64_t)std::clamp(atoi(getenv("RX_VK_COMPACT_PCT")), 50, 90) : 85;
-        const uint64_t held = vram_compact::held_budget(budget, total_bytes, used, reclaim, allowed, pct);
+        static const uint64_t pct = getenv("RX_VK_COMPACT_PCT") ? (uint64_t)std::clamp(atoi(getenv("RX_VK_COMPACT_PCT")), 50, 90) : 80;
+        const uint64_t held = vram_compact::held_budget(budget, total_bytes, used, reclaim, allowed, pct, active_floor);
         // (and what goes is the excess alone. Over its budget the cache is cut to 7/8 of it, below: right for a budget that
         // is a size, but this one is "what the textures hold less the excess", crossed again whenever anything else grows.
         // A recorder started beside the game took 0.8 GB of the allowance as play came back from 14 s in the menu: the line
@@ -4770,7 +4991,7 @@ void texture_frame(uint64_t completed) {
         hold_to = evict_to;
         // (and a reserve under that line, for the textures long unused: vram_compact.h. The pass below takes the others only
         // for the hold's own line)
-        const uint64_t reserve = vram_compact::held_budget(budget, total_bytes, used, reclaim, allowed, vram_compact::reserve_pct(pct));
+        const uint64_t reserve = vram_compact::held_budget(budget, total_bytes, used, reclaim, allowed, vram_compact::reserve_pct(pct), active_floor);
         if (reserve < budget) budget = evict_to = reserve;
     }
     // (longshot) not while VMA's blocks hold an eighth of the allowance free: new images take that space, the driver's count does
@@ -4792,8 +5013,11 @@ void texture_frame(uint64_t completed) {
     // RX_VK_SQUEEZE_ALWAYS=1 squeezes there too)
     if (known && !by_blocks && !(kept_only && !squeeze_always) && used > count_line && !room_in_blocks) {
         const uint64_t over = used - count_line;
-        budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
-        rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
+        const uint64_t floor = vram_compact::texture_min_floor(allowed);
+        uint64_t cut = total_bytes > over ? total_bytes - over : 0;
+        if (floor && cut < floor) cut = floor;
+        budget = std::min(budget, cut);
+        rule_budget = std::min(rule_budget, cut);
     }
     // (longshot) and pipelines the driver refused for want of memory since the last look: what vram_compact::short_excess asks,
     // whatever the count said
@@ -4873,7 +5097,7 @@ void texture_frame(uint64_t completed) {
                     if (igpu) {
                         budget = std::min(budget, held);
                         rule_budget = std::min(rule_budget, held);
-                        pool_pressed = true;
+                        pool_pressure = 2;   // (the hold on an iGPU: the pool given back, as before)
                         compact.pressed = true;
                         if (compact.next_check > frame_no + vram_compact::rest(true))
                             compact.next_check = frame_no + vram_compact::rest(true);
@@ -4918,7 +5142,7 @@ void texture_frame(uint64_t completed) {
             logf("vk: render target images: %llu reused from the pool, %llu made new, %llu destroyed from it; it holds %llu "
                  "(%llu MB)%s", (unsigned long long)st_pool_reused, (unsigned long long)st_pool_made,
                  (unsigned long long)st_pool_destroyed, (unsigned long long)pool_n, (unsigned long long)(pool_bytes >> 20),
-                 pool_cap() ? (pool_pressed ? ", VRAM short: given back" : "") : " (RX_VK_TARGET_POOL_MB=0)");
+                 pool_cap() ? (pool_pressure >= 2 ? ", VRAM critical: given back" : pool_pressure == 1 ? ", VRAM short: halved" : "") : " (RX_VK_TARGET_POOL_MB=0)");
         }
         logf("vk: VRAM: %llu MB used of %llu MB allowed (%llu MB of it free in the blocks); textures %llu MB (budget %llu "
              "MB), %zu textures%s", (unsigned long long)(used >> 20), (unsigned long long)(allowed >> 20),
@@ -4964,6 +5188,11 @@ void texture_frame(uint64_t completed) {
              "used in the last 8 presents %llu MB", (unsigned long long)(astc_b >> 20), (unsigned long long)(rt_b >> 20),
              baked_n, (unsigned long long)(baked_b >> 10), (unsigned long long)(other_b >> 20),
              (unsigned long long)(recent_b >> 20));
+        if (reuse_on())
+            logf("vk: decoded ASTC used again: %lld textures (%lld MB) copied from ones the game finalized, not decoded; %lld of "
+                 "those retired, %zu listed; %lld MB of blocks hashed in %lld ms", (long long)st_reused.load(),
+                 (long long)(st_reused_bytes.load() >> 20), (long long)st_reuse_retired.load(), freed.size(),
+                 (long long)(st_reuse_hash_bytes.load() >> 20), (long long)(st_reuse_hash_ns.load() / 1000000));
         for (size_t i = 0; i < big.size() && i < 8; i++)
             logf("vk:   %llu MB: %#llx %ux%ux%u x%u levels %u NVN %#x%s%s, last used %llu presents ago",
                  (unsigned long long)(big[i]->bytes >> 20), (unsigned long long)big[i]->gpu, big[i]->width, big[i]->height,
@@ -5001,13 +5230,13 @@ void texture_frame(uint64_t completed) {
     // frame, so turning the camera made new ones each frame ~1.2 MB from the last, each a new image. Left for the 600-present
     // sweep or the budget, ~200 dead ones (1.2 GB) filled an 8 GB card's VRAM in Hyrule Field, the driver paged it out and the
     // GPU's frame went from 15 to 35 ms. RX_VK_DEAD_TARGETS=0: as before
-    static const bool dead_targets = !getenv("RX_VK_DEAD_TARGETS") || atoi(getenv("RX_VK_DEAD_TARGETS")) != 0;
+    static const bool dead_targets = dead_targets_on();
     // (longshot) every present (RX_VK_DEAD_EVERY; 10 before, 60 before that): the target pool gets the dead ones as the game makes
     // new ones. Every 10 presents a burst of ten frames' dead targets came back at once, went over the pool's bound and were
     // destroyed, and the next frames made new ones (target_pool.h). The choice is cheap: 1930 textures ordered in 0.3 ms, 251
-    // chosen in 0.2 (RTX 5070, Ryzen 7 9800X3D)
-    static const uint64_t dead_every =
-        getenv("RX_VK_DEAD_EVERY") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_EVERY"))) : 1;
+    // chosen in 0.2 (RTX 5070, Ryzen 7 9800X3D). This pass itself runs at every tenth present only (dead_targets.h): on the
+    // presents between, dead_targets_sweep above lets them go
+    static const uint64_t dead_every = dead_every_presents();
     if (no_evict || (sweep && frame_no % (dead_targets ? dead_every : 600))) return;
     std::vector<std::pair<uint64_t, Texture*>> order;
     order.reserve(textures.size());
@@ -5062,8 +5291,7 @@ void texture_frame(uint64_t completed) {
     // time), VRAM at the driver's limit; the GPU's own use is checked below (last_value). RX_VK_DEAD_MIN_UNUSED=<frames>, 1 (3
     // before: with the GPU's own wait on top, a dead target came back to the pool four or five frames late, and the game had made
     // a new one of its shape every frame meanwhile; 80 % of the images made new had last frame's one of their shape alive and unused)
-    static const uint64_t dead_min_unused =
-        getenv("RX_VK_DEAD_MIN_UNUSED") ? (uint64_t)std::max(1, atoi(getenv("RX_VK_DEAD_MIN_UNUSED"))) : 1;
+    static const uint64_t dead_min_unused = dead_min_unused_presents();
     // (longshot) a small texture the GPU drew in one frame that the game has finalized, with nothing drawn over its storage
     // since: the game may make a texture over that storage again and sample it without drawing it. OoT's terrain does that with its
     // tiles' 260 x 260 RG8 normal maps: drawn when a chunk comes in, finalized when it goes out of range, made again and sampled as
@@ -5073,7 +5301,7 @@ void texture_frame(uint64_t completed) {
     // evicted as before), the least recently used beyond that going as before. (Not written back into the memory instead: the game
     // may have put other things there since, and a write-back over scene data once crashed it)
     static const uint64_t keep_finalized_max =
-        (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 512) << 20;
+        (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 128) << 20;
     const auto keep_finalized = [&](const Texture* tex) {
         if (!keep_finalized_max || !tex->gpu_written || !tex->released || !tex->first_written ||
             tex->first_written != tex->last_written || tex->bytes > (4ull << 20))
@@ -5281,8 +5509,9 @@ void texture_frame(uint64_t completed) {
     }
     if (n_dead && frame_no >= dead_logged_at + 600) {   // (the dead transient targets let go so far, every 600 presents)
         dead_logged_at = frame_no;
-        logf("vk: render targets drawn over from another start, let go: %llu so far (%llu MB)", (unsigned long long)n_dead,
-             (unsigned long long)(b_dead >> 20));
+        logf("vk: render targets drawn over from another start, let go: %llu so far (%llu MB), %llu of them (%llu MB) between the "
+             "passes", (unsigned long long)(n_dead + st_dead_swept), (unsigned long long)((b_dead + st_dead_swept_bytes) >> 20),
+             (unsigned long long)st_dead_swept, (unsigned long long)(st_dead_swept_bytes >> 20));
     }
     const size_t n = order.size() - textures.size();
     if (n) {
@@ -5335,6 +5564,7 @@ void texture_released(const nvn_tex* t) {
                      it->second->id, (unsigned long long)it->second->gpu, it->second->width, it->second->height,
                      it->second->layers, it->second->nvn_format, (unsigned long long)(it->second->bytes >> 20));
         }
+    reuse_released(t);
 }
 
 uint64_t texture_made() {

@@ -213,7 +213,7 @@ state on an external SSD, see [portable Builder setup](docs/windows-portable-bui
 | `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
 | `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/longshot.exe` and `longshot_vk.dll`. |
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build and take screenshots in `work/runs/<name>/shots`. |
-| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
+| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE_EVERY`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 
 Use a separate `--work` folder (or `OOT_WORK`) to keep more than one dump. The lifted C and every build stay local.
 Not measuring speed? [A faster build for development](docs/development.md#a-faster-build-for-development) compiles the

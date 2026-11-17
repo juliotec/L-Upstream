@@ -19,6 +19,7 @@
    own procs (program builders, native images, sparse tile layouts, recording modes). The SDK's exports reach the
    same functions as the proc table (nvn2_dispatch, from gen/nvn2_exports.c). */
 #include "hos.h"
+#include "shadow_slot.h"   /* (the storage a character's shadow map reserves) */
 #include "../gpu/render/rx_nvn.h"
 #include "../gpu/vk/vk_api.h"   /* (HOS_OPT_RENDER_THREAD: the present poll, nvnEventGetValue) */
 #include <stdio.h>
@@ -618,17 +619,38 @@ static int no_builder(Ctx *c, const char *what) {
     if (told++ < 4) hos_log("nvn: %s of no texture builder (lr %#llx): 0", what, (unsigned long long)c->x[30]);
     return 1;
 }
+/* (longshot) a character's shadow map reserves the storage of the next step of sides up (shadow_slot.h), so the render targets
+   the game makes after it keep their addresses while its side changes from frame to frame. HOS_SHADOW_BUCKET=<step>: the step
+   (384); 0: every texture its own size, as before. The layout of the side it reserves, or 0 when it reserves its own */
+static int shadow_slot_layout(const nvn_texdesc *d, nvn_texlayout *out) {
+    static int step = -1;
+    if (step < 0) {
+        const char *e = getenv("HOS_SHADOW_BUCKET");
+        step = e ? atoi(e) : HOS_SHADOW_SLOT_STEP;
+        if (step < 0) step = 0;
+    }
+    const uint32_t side = hos_shadow_slot_side(d->target == NVN_TEXTURE_TARGET_2D, d->format, d->levels, d->depth, d->width,
+                                               d->height, (uint32_t)step);
+    if (!side || side == d->width) return 0;
+    nvn_texdesc slot = *d;
+    slot.width = slot.height = side;
+    nvn_tex_layout(&slot, out);
+    return 1;
+}
 NV(nvnTextureBuilderGetStorageSize) {
     if (no_builder(c, "storage size")) { RET(0); return; }
-    nvn_texlayout L;
+    nvn_texlayout L, slot;
     nvn_tex_layout(&CTB(P(0))->d, &L);
     if (!L.bpb) hos_log("nvn: texture format %#x unknown: storage size 0", CTB(P(0))->d.format);
+    if (L.bpb && shadow_slot_layout(&CTB(P(0))->d, &slot) && slot.size > L.size) L.size = slot.size;
     RET(L.size);
 }
 NV(nvnTextureBuilderGetStorageAlignment) {
     if (no_builder(c, "storage alignment")) { RET(512); return; }
-    nvn_texlayout L;
+    nvn_texlayout L, slot;
     nvn_tex_layout(&CTB(P(0))->d, &L);
+    /* (the slot's alignment where it is the larger: one alignment for every side within a step, and the texture's own still met) */
+    if (L.bpb && shadow_slot_layout(&CTB(P(0))->d, &slot) && slot.align > L.align) L.align = slot.align;
     RET(L.align);
 }
 NV(nvnTextureBuilderGetZCullStorageSize) { RET(0); }   /* no ZCull: nothing to store */
@@ -1241,10 +1263,10 @@ static unsigned pool_class(size_t n) {
     return c;
 }
 /* a block of at least n bytes; *cls its class (POOL_MAX + 1: from the heap, n bytes) */
-static void *pool_get(size_t n, unsigned *cls) {
+static void *pool_get(size_t n, unsigned *cls, const char *what) {   /* (never NULL: hos_xmalloc) */
     const unsigned c = pool_off() ? POOL_MAX + 1 : pool_class(n);
     *cls = c;
-    if (c > POOL_MAX) return malloc(n);
+    if (c > POOL_MAX) return hos_xmalloc(n, what);
     AcquireSRWLockExclusive(&pool_lock);
     void *b = pool_head[c];
     if (b) {
@@ -1252,7 +1274,7 @@ static void *pool_get(size_t n, unsigned *cls) {
         pool_bytes[c] -= (uint64_t)1 << c;
     }
     ReleaseSRWLockExclusive(&pool_lock);
-    return b ? b : malloc((size_t)1 << c);
+    return b ? b : hos_xmalloc((size_t)1 << c, what);
 }
 static void pool_put(void *b, unsigned cls) {
     if (!b) return;
@@ -1293,8 +1315,7 @@ static cmd_rec *cmd_adopt(nvn_cmd *o) {
     const uint32_t s = ncmd_free ? cmd_free[--ncmd_free] : cmd_next++;
     if ((s >> CMD_CHUNK_BITS) >= CMD_CHUNKS) die("too many command buffers");
     if (!cmd_chunks[s >> CMD_CHUNK_BITS]) {
-        cmd_rec *k = (cmd_rec *)calloc((size_t)1 << CMD_CHUNK_BITS, sizeof *k);
-        if (!k) die("command buffer table");
+        cmd_rec *k = (cmd_rec *)hos_xcalloc((size_t)1 << CMD_CHUNK_BITS, sizeof *k, "native NVN: command buffer table");
         cmd_chunks[s >> CMD_CHUNK_BITS] = k;
     }
     cmd_rec *r = cmd_slot(s);
@@ -1328,8 +1349,7 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
     memset(r, 0, sizeof *r);
     if (ncmd_free == cap_cmd_free) {
         cap_cmd_free = cap_cmd_free ? cap_cmd_free * 2 : 256;
-        cmd_free = (uint32_t *)realloc(cmd_free, cap_cmd_free * sizeof *cmd_free);
-        if (!cmd_free) die("command buffer table");
+        cmd_free = (uint32_t *)hos_xrealloc(cmd_free, cap_cmd_free * sizeof *cmd_free, "native NVN: command buffer table");
     }
     cmd_free[ncmd_free++] = o->slot;
     ReleaseSRWLockExclusive(&cmd_lock);
@@ -1366,8 +1386,7 @@ static void cmd_reserve_rec(cmd_rec *o, size_t need) {
     if (!cap) cap = 64 << 10;
     while (used + need + OP_RESERVE > cap) cap *= 2;
     unsigned cls;
-    uint8_t *b = (uint8_t *)pool_get(cap, &cls);
-    if (!b) die("recording buffer (%zu bytes)", cap);
+    uint8_t *b = (uint8_t *)pool_get(cap, &cls, "native NVN: recording buffer");
     if (o->seg) {
         memcpy(b, o->seg, used);
         InterlockedAdd64(&seg_bytes, -(LONG64)(o->end - o->seg));
@@ -1436,9 +1455,8 @@ static size_t live_at(uint64_t h, size_t cap) { return (size_t)((h * 0x9E3779B97
 static void live_handle_add(uint64_t h) {   /* (copy_lock held exclusively) */
     if ((nlive + 1) * 2 > live_cap) {
         const size_t cap = live_cap ? live_cap * 2 : 65536;
-        uint64_t *t = (uint64_t *)calloc(cap, sizeof *t);
-        live_table *pub = (live_table *)malloc(sizeof *pub);
-        if (!t || !pub) die("recording handle set");
+        uint64_t *t = (uint64_t *)hos_xcalloc(cap, sizeof *t, "native NVN: recording handle set");
+        live_table *pub = (live_table *)hos_xmalloc(sizeof *pub, "native NVN: recording handle set");
         for (size_t i = 0; i < live_cap; i++) {
             if (!live_handles[i]) continue;
             size_t k = live_at(live_handles[i], cap);
@@ -1511,8 +1529,7 @@ static void free_dead_copies(void) {   /* (copy_lock held) */
 static void dead_copy_add(copy_prefix *p, uint64_t after) {   /* (copy_lock held) */
     if (ndead == cap_dead) {
         cap_dead = cap_dead ? cap_dead * 2 : 1024;
-        dead = (dead_copy *)realloc(dead, cap_dead * sizeof *dead);
-        if (!dead) die("recording copies let go");
+        dead = (dead_copy *)hos_xrealloc(dead, cap_dead * sizeof *dead, "native NVN: recording copies let go");
     }
     dead[ndead].p = p;
     dead[ndead].after = after;
@@ -1629,8 +1646,7 @@ NV(nvnCommandBufferBeginRecording) {
 /* the recording, BEGIN to END, is contiguous in the command buffer's segment: one copy of it */
 static uint8_t *flatten(const uint8_t *p, size_t n) {
     unsigned cls;
-    uint8_t *out = (uint8_t *)pool_get(sizeof(copy_prefix) + n, &cls);
-    if (!out) die("recording copy (%zu bytes)", n);
+    uint8_t *out = (uint8_t *)pool_get(sizeof(copy_prefix) + n, &cls, "native NVN: recording copy");
     memcpy(out + sizeof(copy_prefix), p, n);
     copy_prefix *pre = (copy_prefix *)out;
     pre->cls = cls;
@@ -2191,8 +2207,7 @@ static int pin_same(const nvn_tex *a, const nvn_tex *b) {
 }
 static void pins_grow(void) {
     const size_t n = pin_slots ? pin_slots * 2 : (1u << 16);
-    nvn_tex **t = (nvn_tex **)calloc(n, sizeof *t);
-    if (!t) die("texture copies table (%zu slots)", n);
+    nvn_tex **t = (nvn_tex **)hos_xcalloc(n, sizeof *t, "native NVN: texture copies table");
     for (size_t i = 0; i < pin_slots; i++)
         if (pins[i]) {
             size_t s = (size_t)(pin_hash(pins[i]) >> 20) & (n - 1);

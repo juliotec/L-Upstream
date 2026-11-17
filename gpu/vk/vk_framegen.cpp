@@ -883,19 +883,28 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
     return fg.recorded->frame[0].image;
 }
 
-/// (longshot) The made frame of a 2x set by AMD FSR 3.1's frame interpolation (vk_fsr3fi.h), from this frame's colour and
-/// the scene's depth and motion (vk_fsr3_inputs.h): 1 when it made it into set.frame[0], 0 when it did not (no inputs this
-/// present, a reset, anything not made), which leaves the set to the interpolation below. sequence: framegen_record's count
-/// of its presents (one it did not hand over, a gap among them, makes the next one a reset: vk_fsr3fi.h Inputs::sequence)
-int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, uint64_t sequence, bool native_pq) {
-    // (every 600 presents asked: how many FSR made, and how many it left to the interpolation below and why)
-    static uint64_t asked = 0, made = 0, no_inputs = 0;
-    if (++asked % 600 == 0)
-        logf("vk: fsr3fi: %llu of the last 600 made frames by FSR 3.1, %llu without its inputs (the renderer's own made them)",
-             (unsigned long long)made, (unsigned long long)no_inputs),
-            made = no_inputs = 0;
+/// (longshot) A set's made frames by AMD FSR 3.1's frame interpolation (vk_fsr3fi.h), from this frame's colour and the
+/// scene's depth and motion (vk_fsr3_inputs.h): made frame i at t[i] between the frame before (0) and this one (1), into
+/// set.frame[slot[i]]. Returns count when it made them all, 0 when it did not (no inputs this present, a reset, anything not
+/// made), which leaves the set to the interpolation below. Called every present while FSR is asked (count 0 too: a set with
+/// nothing to make, or nothing to blend from), so its history is the frame before whatever the set asks for next.
+/// sequence: framegen_record's count of its presents (one it did not hand over, a gap among them, makes the next one a
+/// reset: vk_fsr3fi.h Inputs::sequence)
+int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, uint64_t sequence, bool native_pq,
+                  const float* t, const int* slot, int count) {
+    // (every 600 presents asked: how many sets FSR made, and how many it left to the interpolation below and why)
+    static uint64_t asked = 0, made = 0, no_inputs = 0, taken_before = 0, age[2] = {};
+    if (++asked % 600 == 0) {
+        const uint64_t taken = fsr3_inputs::motions_taken();
+        logf("vk: fsr3fi: of the last 600 presents %llu made by FSR 3.1, %llu without its inputs (the renderer's own made "
+             "them); %llu frames with the chain's motion (the skinned draws' own); inputs this frame's %llu, the frame before's "
+             "%llu", (unsigned long long)made, (unsigned long long)no_inputs, (unsigned long long)(taken - taken_before),
+             (unsigned long long)age[0], (unsigned long long)age[1]);
+        made = no_inputs = 0, taken_before = taken, age[0] = age[1] = 0;
+    }
     fsr3_inputs::Frame f;
     if (!fsr3_inputs::take(f)) return no_inputs++, 0;
+    age[texture_frame_no() - f.frame ? 1 : 0]++;   // (how old the inputs are: take gives this frame's or the one before's)
     fsr3fi::Inputs in;
     in.color = fg.frames[cur].view;
     in.color_image = fg.frames[cur].image;
@@ -910,18 +919,23 @@ int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
     in.frame_time_ms = f.frame_ms;
     in.reset = f.reset;
     in.sequence = sequence;
-    if (!fsr3fi::generate(cmd, in) || !fsr3fi::made_image()) return 0;
+    if (count <= 0) return (void)fsr3fi::generate(cmd, in, t, 0), 0;   // (its history alone)
+    if ((int)fsr3fi::generate(cmd, in, t, (uint32_t)count) != count) return 0;
     const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
                         {uw, uh, 1}};
-    vkCmdCopyImage(cmd, fsr3fi::made_image(), VK_IMAGE_LAYOUT_GENERAL, set.frame[0].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
-    made++;
-    static bool told = false;
-    if (!told) {
-        told = true;
-        logf("vk: fsr3fi: AMD FSR 3.1 makes the frame between each two of the game's (%ux%u, its depth and motion %ux%u)", uw,
-             uh, f.width, f.height);
+    for (int i = 0; i < count; i++) {
+        const VkImage image = fsr3fi::made_image((uint32_t)i);
+        if (!image) return 0;
+        vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, set.frame[slot[i]].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     }
-    return 1;
+    made++;
+    static int told = 0;
+    if (told < count) {   // (once, and again for a set of more made frames than before)
+        told = count;
+        logf("vk: fsr3fi: AMD FSR 3.1 makes %d frame(s) between each two of the game's (%ux%u, its depth and motion %ux%u)",
+             count, uw, uh, f.width, f.height);
+    }
+    return count;
 }
 
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4], bool native_pq) {
@@ -973,6 +987,17 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
         } else {   // (nothing to blend from: the game's frame, and the timeline starts at it)
             n = 1, t[0] = 1.0f, at[0] = now, fg.slot_next = now + period;
         }
+        // (longshot) AMD FSR 3.1's frame interpolation where it is asked (vk_fsr3fi.h): each made frame at its refresh's
+        // place, from the scene's depth and motion. Given every present, with none to make too, so the next set has its
+        // history; a set it does not make goes to the renderer's own below. DLSS-G is not asked: it makes a fixed 2x to 8x
+        float made_t[kMaxMult];
+        int made_slot[kMaxMult], made_n = 0;
+        for (int k = 0; k < n; k++)
+            if (t[k] <= 0.999f) made_t[made_n] = t[k], made_slot[made_n++] = k;
+        const int fsr_n = blend ? made_n : 0;
+        const bool fsr = fsr3fi::frames_wanted() &&
+                         fsr3fi_frames(cmd, *set, cur, uw, uh, sequence, native_pq, made_t, made_slot, fsr_n) == fsr_n &&
+                         fsr_n > 0;
         bool flow = false;
         for (int k = 0; k < n; k++) {
             set->game[k] = t[k] > 0.999f;
@@ -984,6 +1009,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
                                VK_IMAGE_LAYOUT_GENERAL, 1, &c);
                 continue;
             }
+            if (fsr) continue;   // (made above, into this slot)
             if (!flow) {
                 flow = true;
                 pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
@@ -996,7 +1022,7 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
         }
         set->shown = n;
         set->made = n > 0 && !set->game[n - 1] ? n : std::max(0, n - 1);   // (for framegen_made_image: any made)
-        note_maker(flow ? FgMaker::BuiltIn : FgMaker::None);   // (Auto: the renderer's own, DLSS-G is not asked)
+        note_maker(fsr ? FgMaker::Fsr3 : flow ? FgMaker::BuiltIn : FgMaker::None);   // (Auto: DLSS-G is not asked)
         full_barrier(cmd);
         fg.have_prev = true;
         fg.cur = prev;
@@ -1018,11 +1044,17 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     // loading screens draw no 3D: dlss_fg_holds): the game's frame alone, neither FSR 3.1's frames nor the built-in one's
     const bool held = set->made == 0 && blend && m > 1 && dlss_fg_holds();
     if (held) maker = FgMaker::DlssPaused;
-    // (longshot) At 2x, AMD FSR 3.1's frame interpolation where it runs; it makes the midpoint only, so 3x and more (and Auto,
-    // above) stay with the interpolation below, as does any present it does not take
-    if (!held && set->made == 0 && blend && m == 2 && fsr3fi::frames_wanted())
-        set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence, native_pq);
-    if (maker == FgMaker::None && set->made) maker = FgMaker::Fsr3;
+    // (longshot) Where DLSS-G did not make them, AMD FSR 3.1's frame interpolation where it is asked (vk_fsr3fi.h): the set's
+    // made frames at k/m, 1/2 at 2x, 1/3 and 2/3 at 3x. Given every present it is asked, with none to make too (nothing to
+    // blend from), so the next set has its history; any it does not make stays with the interpolation below
+    if (!held && set->made == 0 && m > 1 && fsr3fi::frames_wanted()) {
+        float made_t[kMaxMult];
+        int made_slot[kMaxMult];
+        for (int k = 1; k < m; k++) made_t[k - 1] = (float)k / (float)m, made_slot[k - 1] = k - 1;
+        const int fsr_n = blend ? m - 1 : 0;
+        if (fsr3fi_frames(cmd, *set, cur, uw, uh, sequence, native_pq, made_t, made_slot, fsr_n) == fsr_n && fsr_n > 0)
+            set->made = fsr_n, maker = FgMaker::Fsr3;
+    }
     if (!held && set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);

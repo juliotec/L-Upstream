@@ -199,6 +199,9 @@ void shader_stats(int64_t* translated, int64_t* failed);
 /// (longshot) After the preparation's "N failed": a line for each "not translated" line's programs, all of them (those lines stop at 30)
 void shader_fail_lines();
 double shader_translate_ms();
+/// (longshot) The time draws waited for a translation (program_pick's, in place; shader_translate_ms: every translation's,
+/// the jobs' behind the game included)
+double shader_translate_wait_ms();
 void program_released(const nvn_prog* p);
 /// (longshot) A guest program as the game makes it (nvnProgramSetShaders), before any draw (vk_programs.cpp): its stages' code keys
 /// as Program::codes has them (vertex or mesh, fragment, task, the header-only stage; a compute program's stage in codes[0]),

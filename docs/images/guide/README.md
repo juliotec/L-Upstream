@@ -10,7 +10,7 @@ links to those public files.
 `manifest.json` records each image's dimensions, SHA-256, capture conditions, application release and reviewed UI
 source hashes. All six launcher images are UI-only captures built from Launcher nightly-52-b1d9f7a9 source
 `b1d9f7a9b19fa99b91ec3e8cd24455d4703d6d25`; they replace the earlier official-AppImage and rc.3 fixture captures.
-The Graphics image is recaptured from rebased microphone-test topic `5307877d06e189466c23fb1eb2a252dcfbb0c0d7` on main `d76feb2d`.
+The Graphics image is recaptured from the FSR 3.1 frame generation topic (#1103) `a06f7e2e380537b1095b8d40c025d2d2535edf89` on main `0cab3548`.
 The [microphone-test source review](source-review-microphone-test-gain.md) records the current capture and comparison.
 Its review revision is a SHA-256 of the sorted file/hash pairs in `reviewed_source.files`, so it remains verifiable
 after squash merging without depending on a temporary topic commit. Earlier captures and reviews remain in repository history.

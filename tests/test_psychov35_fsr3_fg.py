@@ -39,7 +39,7 @@ def main():
  fg=1;tone=true;assert(colour_pair(97,97)==enabled);assert(colour_pair(122,122));
  assert(!colour_pair(97,122) && !colour_pair(122,97) && !colour_pair(44,44));
  tone=false;assert(!colour_pair(97,97));tone=true;fg=0;assert(!colour_pair(97,97));
- fg=1;for(int multiplier:{0,1,3,8}){opts.framegen=multiplier;assert(!colour_pair(97,97));}
+ fg=1;for(int multiplier:{0,1,3,8}){opts.framegen=multiplier;assert(colour_pair(97,97)==enabled);}
 '''
     if 'void colour_constants(' in fi:
         color = '\n'.join(block(fi, s)+';' for s in ['struct Constants {', 'struct OfConstants {'])
@@ -131,7 +131,7 @@ int main(int argc,char**){
         subprocess.run([str(exe), 'enabled'], check=True)
         subprocess.run([str(exe)], check=True)
     if 'void colour_constants(' in fi:
-        generate = block(fi, 'bool generate(')
+        generate = block(fi, 'uint32_t generate(')
         assert 'colour_constants(k, of, in.native_pq, max_luminance);' in generate
         assert generate.index('colour_constants(k, of,') < generate.index('// This evaluation owns its constants')
     print('FSR FG: actual camera admission, both SDK colour blocks and encoding/peak/sequence resets pass')

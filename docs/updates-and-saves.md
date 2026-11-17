@@ -29,6 +29,16 @@ The launcher updates itself the same way. What changed in each version is on
 
 The first start after an update prepares the game's shaders again, so it's slower than the next ones.
 
+## If the game stops while it writes a setting
+
+Longshot writes `language.txt` and `mouse_sens.txt` beside themselves and moves each into place only when
+it is whole, so a crash, a kill or a power cut while one is written leaves it as it was or as the new one, never half of
+each. The one-time copy of an older `longshot_options.ini` from the game folder into the user folder, the note
+`saves-moved.txt` and the files the Linux move of the saves copies between drives are written the same way. A stop in
+the middle can leave a file ending in `.hosnew` beside the setting. It is what the game was writing, and the next start
+removes the ones beside `language.txt`, `mouse_sens.txt` and `longshot_options.ini`. Any other `.hosnew` file can be
+deleted by hand.
+
 ## Channels
 
 The launcher builds from one of three channels:

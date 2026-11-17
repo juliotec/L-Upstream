@@ -40,6 +40,7 @@
 #include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
 #include "hos_motion.h"
 #include "hold_toggle.h"
+#include "hos_atomic_file.h"   /* (the sensitivity is written whole or not at all) */
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
@@ -67,8 +68,9 @@ extern const char *hos_user_dir;
 static void mouse_sens_save(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/mouse_sens.txt", hos_user_dir ? hos_user_dir : "user");
-    FILE *f = fopen(path, "w");
-    if (f) { fprintf(f, "%.3f\n", hos_mouse_sens); fclose(f); }
+    char text[32];
+    const int n = snprintf(text, sizeof text, "%.3f\n", hos_mouse_sens);
+    if (n > 0) hos_atomic_write(path, text, (size_t)n);
 }
 
 /* The Insert menu keeps the sensitivity (its Mouse sensitivity row, option 7, in percent), read with each read; - and =
