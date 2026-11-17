@@ -396,11 +396,144 @@ void DefineSoftwareMatrixFunction(EmitContext& ctx) {
 }
 
 
+// (longshot, AMD RDNA 3/4) HMMA_nx2 on 16x16x16 cooperative matrices (mma_layout.h mma_wmma16). Each subgroup has 512
+// words of workgroup memory past the program's own: A (row major), B's K halves 0-7 and 8-15 (column major, the
+// other half's rows zero) and C/D (row major), every 16x16 f16. The lanes write their fragments at the console's
+// positions (PTX m16n8k16) and zeros where B and C have no columns 8-15, the device loads the tiles in its own
+// layout, D = A*B_hi + (A*B_lo + C) is rounded to f16 between the two as HMMA.F16 does, and each lane reads its two
+// words of D back. False when the tiles do not fit the device's shared memory: the program then takes the software
+// multiply.
+bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program) {
+    // (only where every subgroup is full: the cooperative matrix operations and the subgroup barriers then run with all
+    // 32 lanes, as the startup test checked them. Otherwise the software multiply)
+    if (!mma_wmma16_full_subgroups || program.workgroup_size[0] == 0 || program.workgroup_size[0] % 32 != 0) return false;
+    const u32 threads = std::max(1U, program.workgroup_size[0] * program.workgroup_size[1] * program.workgroup_size[2]);
+    const u32 subgroups = (threads + 31) / 32;
+    const bool explicit_layout = ctx.uses_explicit_workgroup_layout && program.shared_memory_size != 0;
+    const u32 offset_bytes = explicit_layout ? (program.shared_memory_size + 15U) & ~15U : 0U;
+    const u32 own_bytes = explicit_layout ? offset_bytes : (program.shared_memory_size + 3U) & ~3U;
+    const u32 words = subgroups * mma_wmma16_tile_words;
+    if (mma_wmma16_shared_limit != 0 && own_bytes + words * 4 + 4 > mma_wmma16_shared_limit) return false;
+
+    const Id u32ty{ctx.U32[1]};
+    const Id word_pointer{ctx.TypePointer(spv::StorageClass::Workgroup, u32ty)};
+    const Id array_type{ctx.TypeArray(u32ty, ctx.Const(words))};
+    Id scratch{};
+    if (explicit_layout) {
+        // (all the Workgroup variables are blocks over the same memory: these words follow the program's. The second
+        // member keeps the structure distinct from the program's own single-member ones, decorated at offset 0)
+        ctx.Decorate(array_type, spv::Decoration::ArrayStride, 4U);
+        const Id block{ctx.TypeStruct(array_type, u32ty)};
+        ctx.MemberDecorate(block, 0U, spv::Decoration::Offset, offset_bytes);
+        ctx.MemberDecorate(block, 1U, spv::Decoration::Offset, offset_bytes + words * 4);
+        ctx.Decorate(block, spv::Decoration::Block);
+        scratch = ctx.AddGlobalVariable(ctx.TypePointer(spv::StorageClass::Workgroup, block),
+                                        spv::StorageClass::Workgroup);
+        ctx.Decorate(scratch, spv::Decoration::Aliased);
+    } else {
+        scratch = ctx.AddGlobalVariable(ctx.TypePointer(spv::StorageClass::Workgroup, array_type),
+                                        spv::StorageClass::Workgroup);
+    }
+    ctx.interfaces.push_back(scratch);
+    ctx.AddCapability(spv::Capability::GroupNonUniform);
+    const Id subgroup_id{ctx.AddGlobalVariable(ctx.TypePointer(spv::StorageClass::Input, u32ty),
+                                               spv::StorageClass::Input)};
+    ctx.Decorate(subgroup_id, spv::Decoration::BuiltIn, spv::BuiltIn::SubgroupId);
+    ctx.interfaces.push_back(subgroup_id);
+
+    const auto imm = [&](u32 v) { return ctx.Const(v); };
+    const auto add = [&](Id a, Id b) { return ctx.OpIAdd(u32ty, a, b); };
+    const auto at = [&](Id index) {
+        return explicit_layout ? ctx.OpAccessChain(word_pointer, scratch, ctx.u32_zero_value, index)
+                               : ctx.OpAccessChain(word_pointer, scratch, index);
+    };
+    const auto store = [&](Id index, Id value) { ctx.OpStore(at(index), value, spv::MemoryAccessMask::NonPrivatePointer); };
+    const auto load = [&](Id index) { return ctx.OpLoad(u32ty, at(index), spv::MemoryAccessMask::NonPrivatePointer); };
+    const Id subgroup_scope{imm(static_cast<u32>(spv::Scope::Subgroup))};
+    const auto barrier = [&] {
+        ctx.OpControlBarrier(subgroup_scope, subgroup_scope,
+                             imm(static_cast<u32>(spv::MemorySemanticsMask::AcquireRelease |
+                                                  spv::MemorySemanticsMask::WorkgroupMemory |
+                                                  spv::MemorySemanticsMask::MakeAvailable |
+                                                  spv::MemorySemanticsMask::MakeVisible)));
+    };
+    const Id f16{ctx.F16[1]};
+    const auto type = [&](spv::CooperativeMatrixUse use) {
+        return ctx.TypeCooperativeMatrixKHR(f16, subgroup_scope, imm(16), imm(16), imm(static_cast<u32>(use)));
+    };
+    const Id a_type{type(spv::CooperativeMatrixUse::MatrixAKHR)};
+    const Id b_type{type(spv::CooperativeMatrixUse::MatrixBKHR)};
+    const Id c_type{type(spv::CooperativeMatrixUse::MatrixAccumulatorKHR)};
+
+    const Id fn_type{ctx.TypeFunction(ctx.U32[2], ctx.U32[4], ctx.U32[2], ctx.U32[2])};
+    const Id fn{ctx.OpFunction(ctx.U32[2], spv::FunctionControlMask::DontInline, fn_type)};
+    ctx.wmma16_function = fn;
+    const Id matrix_a{ctx.OpFunctionParameter(ctx.U32[4])};
+    const Id matrix_b{ctx.OpFunctionParameter(ctx.U32[2])};
+    const Id matrix_c{ctx.OpFunctionParameter(ctx.U32[2])};
+    ctx.AddLabel();
+    const Id lane{ctx.OpBitwiseAnd(u32ty, ctx.OpLoad(u32ty, ctx.subgroup_local_invocation_id), imm(31))};
+    const Id base{ctx.OpIMul(u32ty, ctx.OpLoad(u32ty, subgroup_id), imm(mma_wmma16_tile_words))};
+    const Id g{ctx.OpShiftRightLogical(u32ty, lane, imm(2))};
+    const Id i{ctx.OpBitwiseAnd(u32ty, lane, imm(3))};
+    // the word of row (or column) g (+8) at word i (+4) of a region
+    const auto word = [&](u32 region, u32 plus_rows, u32 plus_words) {
+        return add(add(base, imm(region * 128 + plus_rows * 8 + plus_words)),
+                   add(ctx.OpShiftLeftLogical(u32ty, g, imm(3)), i));
+    };
+    const Id zero{ctx.u32_zero_value};
+    const auto part = [&](Id words, u32 index) { return ctx.OpCompositeExtract(u32ty, words, index); };
+    constexpr u32 region_a = 0, region_b_lo = 1, region_b_hi = 2, region_c = 3;
+    // trailing reads of the last multiply in this subgroup are done before these writes (the barrier at the end)
+    store(word(region_a, 0, 0), part(matrix_a, 0));
+    store(word(region_a, 8, 0), part(matrix_a, 1));
+    store(word(region_a, 0, 4), part(matrix_a, 2));
+    store(word(region_a, 8, 4), part(matrix_a, 3));
+    store(word(region_b_lo, 0, 0), part(matrix_b, 0));
+    store(word(region_b_lo, 0, 4), mma_wmma16_fast ? part(matrix_b, 1) : zero);
+    store(word(region_b_lo, 8, 0), zero);
+    store(word(region_b_lo, 8, 4), zero);
+    if (!mma_wmma16_fast) {
+        store(word(region_b_hi, 0, 0), zero);
+        store(word(region_b_hi, 0, 4), part(matrix_b, 1));
+        store(word(region_b_hi, 8, 0), zero);
+        store(word(region_b_hi, 8, 4), zero);
+    }
+    store(word(region_c, 0, 0), part(matrix_c, 0));
+    store(word(region_c, 8, 0), part(matrix_c, 1));
+    store(word(region_c, 0, 4), zero);
+    store(word(region_c, 8, 4), zero);
+    barrier();
+    const Id row_major{imm(0)}, column_major{imm(1)}, stride{imm(8)};
+    const auto tile = [&](Id matrix_type, u32 region, Id layout) {
+        return ctx.OpCooperativeMatrixLoadKHR(matrix_type, at(add(base, imm(region * 128))), layout, stride,
+                                              spv::MemoryAccessMask::NonPrivatePointer);
+    };
+    const Id a{tile(a_type, region_a, row_major)};
+    Id d{ctx.OpCooperativeMatrixMulAddKHR(c_type, a, tile(b_type, region_b_lo, column_major),
+                                           tile(c_type, region_c, row_major))};
+    if (!mma_wmma16_fast)
+        d = ctx.OpCooperativeMatrixMulAddKHR(c_type, a, tile(b_type, region_b_hi, column_major), d);
+    barrier();
+    ctx.OpCooperativeMatrixStoreKHR(at(add(base, imm(region_c * 128))), d, row_major, stride,
+                                    spv::MemoryAccessMask::NonPrivatePointer);
+    barrier();
+    const Id d0{load(word(region_c, 0, 0))};
+    const Id d1{load(word(region_c, 8, 0))};
+    barrier();
+    ctx.OpReturnValue(ctx.OpCompositeConstruct(ctx.U32[2], d0, d1));
+    ctx.OpFunctionEnd();
+    return true;
+}
+
+
 // (longshot) HMMA_nx2: D(16x8) = A(16x16) * B(16x8) + C on the subgroup's cooperative matrices. Each
 // lane's fragment registers hold its elements in the console's order (two f16 a word); they go to and come
 // from the device's elements in its own order (mma_layout.h, measured by vk_coopmat.cpp).
 Id EmitMatrixMulAddF16(EmitContext& ctx, Id a, Id b, Id c) {
-    if (mma_software) return ctx.OpFunctionCall(ctx.U32[2], ctx.software_matrix_function, a, b, c);
+    if (ctx.wmma16_function.value != 0) return ctx.OpFunctionCall(ctx.U32[2], ctx.wmma16_function, a, b, c);
+    if (ctx.software_matrix_function.value != 0)
+        return ctx.OpFunctionCall(ctx.U32[2], ctx.software_matrix_function, a, b, c);
     const Id f16{ctx.F16[1]};
     const Id scope{ctx.Const(static_cast<u32>(spv::Scope::Subgroup))};
     const auto type = [&](u32 rows, u32 columns, spv::CooperativeMatrixUse use) {
