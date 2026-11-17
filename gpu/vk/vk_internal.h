@@ -83,6 +83,7 @@ struct Device {
     VkPhysicalDeviceVulkan13Features vk13{};
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
     uint32_t subgroup_size = 32, subgroup_max = 32;   // (the lanes a stage not pinned runs at, and the most it can have)
+    uint32_t max_workgroup_subgroups = 0;   // (maxComputeWorkgroupSubgroups: a workgroup held to 32 lanes has at most 32 times this)
     VkDriverId driver_id{};
     bool radv_gcn = false;   // (longshot) RADV on a GCN 1-4 card (GFX6-8: RX 400/500, R9 2xx/3xx/Fury): fallback_size_policy.h
     VendorFixes fixes{};   // (longshot) the vendor and driver workarounds this device needs (vk_vendor.h; vk_main.cpp create_device)
@@ -175,6 +176,17 @@ struct IntelDriverGate {
         }
     }
 };
+
+/// (longshot) Whether a stage of this many invocations runs at 32 lanes (pin_subgroup, profile_pinned, profile_graphics): one
+/// the GPU pins, and for a stage with a workgroup (compute, task, mesh) 32-lane subgroups that cover it, at most
+/// requiredSubgroupSize * maxComputeWorkgroupSubgroups invocations (VUID-VkPipelineShaderStageCreateInfo-pNext-02756), a
+/// limit the spec sets no minimum for. The default, 64: a task or mesh workgroup has 63 threads at most (a 6-bit count), and
+/// the mesh fallback runs the same workgroups as compute shaders
+inline bool pins_32(VkShaderStageFlags stage, uint64_t invocations = 64) {
+    if (!(dev.sg32_stages & stage)) return false;
+    const VkShaderStageFlags workgroup = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT;
+    return !(stage & workgroup) || invocations <= 32ull * dev.max_workgroup_subgroups;
+}
 
 /// (longshot) Where a storage buffer binding starts: the address rounded down to this, the shaders' offsets counted from there
 /// (vk_shader.cpp make_profile / host_info, the translator's ssbo_align_mask; vk_draw.cpp's descriptor writer). At least 16

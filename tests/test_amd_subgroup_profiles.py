@@ -32,6 +32,7 @@ using VkShaderStageFlags = uint32_t;
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+    uint32_t max_workgroup_subgroups = 32;   // (pins_32: 32-lane subgroups cover the 64 invocations profile_pinned assumes)
     struct {
         bool shaderFloat16 = true;   // (k10: f16 lowered where the GPU has none; here it has)
         // (make_profile: storage image and texel buffer arrays indexed nonuniformly where the GPU can)
@@ -127,7 +128,8 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
 }
 '''
     internal = (VK / "vk_internal.h").read_text(encoding="utf-8")
-    fixture = (FIXTURE + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
+    fixture = (FIXTURE + section(internal, "inline bool pins_32(", "/// (longshot) Where a storage buffer binding starts")
+               + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
                + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
                + section(shader, "const Shader::Profile& profile()", "const std::vector<Code>& codes_of(")
                + section(warp, "Id HostThreadId(", "Id GuestLane(")
@@ -156,7 +158,7 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
         env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_WARP64", "RX_VK_FRAG_SHUFFLE_FALLBACK")}
         for device, expected, overrides in cases:
             subprocess.run([str(exe), *map(str, device + expected)], env=env | overrides, check=True, timeout=10)
-    assert "EmitSPIRV(profile_pinned(), rt, t->program, bindings)" in shader
+    assert "EmitSPIRV(profile_pinned(uint64_t(wg[0]) * wg[1] * wg[2]), rt, t->program, bindings)" in shader
     for stage in ("TASK", "MESH"):
         assert f"fallback ? profile_pinned() : profile_graphics(VK_SHADER_STAGE_{stage}_BIT_EXT)" in shader
     for start, end in (("Id ShuffleRelative(", "Id BroadcastLane("), ("Id EmitShuffleIndex(", "Id EmitShuffleUp("),
