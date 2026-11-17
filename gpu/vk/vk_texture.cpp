@@ -1064,14 +1064,25 @@ const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scrat
     return scratch.data();
 }
 
-void widen_rows(uint8_t* dst, const uint8_t* src, size_t texels, int from, int to) {
-    const int comp = from / 3;
+/// The alpha an RGB format widened to RGBA gets: one in the format's own encoding (by component size alone, SNORM8 read
+/// -0.008, UNORM16 0.23 and the integer formats 255, 15360 or 0x3F800000)
+uint32_t widen_alpha(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8_SNORM: return 0x7F;
+    case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R16G16B16_UINT:
+    case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32_SINT: return 1;
+    case VK_FORMAT_R16G16B16_SFLOAT: return 0x3C00;
+    case VK_FORMAT_R16G16B16_UNORM: return 0xFFFF;
+    case VK_FORMAT_R16G16B16_SNORM: return 0x7FFF;
+    case VK_FORMAT_R32G32B32_SFLOAT: return 0x3F800000;
+    default: return 0xFF;
+    }
+}
+void widen_rows(uint8_t* dst, const uint8_t* src, size_t texels, int from, int to, uint32_t alpha) {
+    const int n = to - from;
     for (size_t i = 0; i < texels; i++) {
         std::memcpy(dst + i * to, src + i * from, from);
-        uint8_t* a = dst + i * to + from;
-        if (comp == 1) a[0] = 0xFF;
-        else if (comp == 2) a[0] = 0x00, a[1] = 0x3C;   // (half 1.0; UNORM16 would want 0xFFFF: close enough for alpha)
-        else { const float one = 1.0f; std::memcpy(a, &one, 4); }
+        std::memcpy(dst + i * to + from, &alpha, n);   // (little endian: the low n bytes)
     }
 }
 
@@ -1286,7 +1297,8 @@ bool unswizzle_ready() {
 
 /// The whole texture (every level and layer dirty overlaps) unswizzled on the GPU; false: not a texture for it
 bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
-    if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
+    // (not a sparse image: nothing here binds its blocks, and a store into an unbound one is dropped)
+    if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || tex.sparse || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
         is_bc(tex.format) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
         return false;
     if (total < (8u << 20) || tex.block_w != 1 || tex.block_h != 1) return false;
@@ -1316,6 +1328,7 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, unsw_pipe);
+    descriptors_disturbed();   // (also when a view fails and the CPU path takes over)
     for (uint32_t level = 0; level < tex.levels; level++) {
         const LevelGeo g = level_geo(tex, level);
         bool any = false;
@@ -1352,7 +1365,6 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         st_bytes += (int64_t)g.swizzled * tex.layers;
     }
     full_barrier(cmd);
-    descriptors_disturbed();
     return true;
 }
 
@@ -1783,7 +1795,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
         return up_route = UP_GPU, true;
     const bool linear = nvn_tex_is_linear(&tex.d);
     int widen_from = 0;
-    widened(tex.d.format ? vk_format(tex.nvn_format).format : tex.format, &widen_from);
+    const VkFormat src_vf = tex.d.format ? vk_format(tex.nvn_format).format : tex.format;
+    widened(src_vf, &widen_from);
     if (upload_all_zero(tex, total, dirty, widen_from != 0)) return true;
     const int src_bpb = tex.bpb;
     const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
@@ -1833,7 +1846,12 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                 // (the stencil's bytes after the depth's floats, in the same staging: one byte a texel)
                 const uint64_t s_off = (out_bytes + 15) & ~15ull, s_bytes = d24s8_as_d32 ? out_bytes / 4 : 0;
                 const Staging st = staging(d24s8_as_d32 ? s_off + ((s_bytes + 15) & ~15ull) : (out_bytes + 15) & ~15ull, 16);
-                if (!st.buffer) return false;
+                if (!st.buffer) {
+                    // (the sparse binds queued by the rows before are this image's: bound now, not left in sparse_binds
+                    // for the next flush, which binds them into another texture's image)
+                    texture_resident_flush(&tex);
+                    return false;
+                }
                 if (buffer && st.buffer != buffer && !copies.empty()) {   // (a new arena: copy what the last one holds)
                     texture_resident_flush(&tex);
                     checkpoint_mark(upload_cmd(), tex.gpu, 'u');
@@ -1929,7 +1947,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                                            (u32)tex.block_w, (u32)tex.block_h,
                                                            std::span<uint8_t>(out, (size_t)g.w * px_h * g.d * 4));
                 } else if (widen_from) {
-                    widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb);
+                    widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb, widen_alpha(src_vf));
                 } else if (tex.nvn_format == NVN_FORMAT_DEPTH24 && tex.format == VK_FORMAT_D32_SFLOAT) {
                     // (DEPTH24 kept as D32_SFLOAT, vk_formats.cpp depth24_or_32: the guest's 24-bit unorm depth, the low
                     // 24 bits of each word, as the float the image holds)
