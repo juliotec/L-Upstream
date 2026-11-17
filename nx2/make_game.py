@@ -58,6 +58,7 @@ import disk as _disk
 import object_store as _object_store
 import lift_store as _lift_store
 import game_title
+import log_redact as _log_redact
 # (longshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (LONGSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
@@ -225,9 +226,15 @@ def build_log(path):
         log = open(path, "w", encoding="utf-8", newline="\n")
     except OSError as e:
         fail("Could not open build log %s: %s" % (path, e))
+    # (the file without the player's user name, as the game writes its own log: players attach it to build problems. The
+    # console, which a launcher reads, as it is: nx2/log_redact.py)
+    saved = _log_redact.RedactedLines(log)
     with log:
-        with contextlib.redirect_stdout(LogStream(sys.stdout, log)), contextlib.redirect_stderr(LogStream(sys.stderr, log)):
-            yield
+        try:
+            with contextlib.redirect_stdout(LogStream(sys.stdout, saved)), contextlib.redirect_stderr(LogStream(sys.stderr, saved)):
+                yield
+        finally:
+            saved.close()
 
 
 TIMES_FORMAT = 1
@@ -554,6 +561,7 @@ def keep_heads(out, game, stamp):
 
 
 DAMAGED_NOTE = "longshot_damaged_files.txt"   # (in the game folder: the damaged game files the last unpack replaced)
+SHOWN_DAMAGED = 50   # (damaged files named in the log, the rest only in DAMAGED_NOTE: #1275's 1896 filled the launcher's log)
 
 
 ROMFS_MARKS = (".longshot_romfs_checked", HEADS, DAMAGED_NOTE)   # (what stand_in_damaged_files left in a folder, about its romfs)
@@ -714,21 +722,29 @@ def stand_in_damaged_files(out, romfs):
               "minutes", flush=True)
         done = nup.stand_in_damaged(romfs, file_progress("checked"))
     else:   # (found while the .nup was extracted: no file opened again)
+        if known:   # (said before the stand-ins are looked for, so the log does not end at the extraction's last line)
+            print("%d damaged game file%s found while reading your game files: looking for stand-ins" %
+                  (len(known), "" if len(known) == 1 else "s"), flush=True)
         done = nup.stand_in_damaged(romfs, damaged=[os.path.normpath(os.path.join(romfs, rel)) for rel in known])
     note = os.path.join(out, DAMAGED_NOTE)
     if not done:
         with contextlib.suppress(FileNotFoundError):   # (a whole dump unpacked over a damaged one)
             os.remove(note)
     else:
+        too_many = len(done) > nup.MOST_STAND_INS   # (none was looked for: nup.stand_in_damaged)
         lines = ["Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
-                 "one 23.3 GB). Similar files are used where available, "
-                 "with different textures in those places. Dump the game again for the original files:" %
-                 (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are")]
+                 "one 23.3 GB). %s Dump the game again for the original files:" %
+                 (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are",
+                  "That is too many to replace with similar files (an incomplete dump has a few)." if too_many else
+                  "Similar files are used where available, with different textures in those places.")]
         for path, other in done:
             lines.append("  %s: %s" % (os.path.relpath(path, romfs),
                                        "in its place " + os.path.basename(other) if other else "no replacement found; build cannot continue"))
-        for line in lines:
+        shown = 1 + SHOWN_DAMAGED   # (the first line, then the files: the note keeps them all)
+        for line in lines[:shown]:
             print(line, flush=True)
+        if len(lines) > shown:
+            print("  ... and %d more, listed in %s" % (len(lines) - shown, note), flush=True)
         # (#2237: keep the list even when an unresolved file stops this build, before marking a successful check)
         with open(note, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")

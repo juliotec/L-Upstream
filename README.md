@@ -309,6 +309,11 @@ anywhere else may not be ours.
 the four before it (started from a terminal, the game prints there instead). Every 600 frames it writes a `vk: status:`
 line with the video memory in use against what the driver allows, and DLSS's details while it draws;
 `vk: over the driver's video-memory allowance` says when the game went past it.
+The logs are safe to send as they are: your home folder is written `~` (`%USERPROFILE%` on Windows) and your user name
+`<user>` in their paths; the rest of each path stays, so a helper still sees where things are. The game's own lines are
+written so; what other programs print into the log (the Vulkan loader, SDL) is cleaned once the game has closed, by
+the window that watches for a crash, or else at the next start. The builder's `--log` file is written the same way.
+A game started from a terminal prints there instead, as it is.
 
 | Problem | What to do |
 |---|---|

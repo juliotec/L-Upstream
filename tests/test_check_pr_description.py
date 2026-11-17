@@ -118,7 +118,7 @@ class Samples(unittest.TestCase):
         self.assertIn("## How to reproduce is for a fix: delete it, or fill it in", text)
         self.assertIn("### Flags and settings still holds the template's placeholders", text)
         self.assertIn("## Issues: 'Fixes #' names no issue", text)
-        self.assertEqual(sum(f.startswith("not ticked: ") for f in found), 10)
+        self.assertEqual(sum(f.startswith("not ticked: ") for f in found), 12)
         self.assertIn("How to reproduce still holds", " ".join(check.problems(TEMPLATE, title="fix: x")))
 
     def test_the_fix_sample_passes(self):
@@ -394,6 +394,19 @@ class Testing(unittest.TestCase):
         self.assertEqual(check.problems(empty, title=FIX), ["## Testing's 'Tested:' is empty"])
         self.assertEqual(check.problems(self.must(""), title=FIX),
                          ["## Testing's 'Must be tested:' is empty: write None when Tested covers everything"])
+        # (Not testable by hand: optional; kept, filled in, and never read as a Must be tested item)
+        untestable = GOOD.replace("**Not tested:** the title screen's menu",
+                                  "**Not testable by hand:** a 4K TV: none here; the font test stands in.\n\n"
+                                  "**Not tested:** the title screen's menu")
+        self.assertEqual(check.problems(untestable, title=FIX), [])
+        self.assertIn("4K TV", check.testing_parts(check.sections(untestable)["Testing"])[check.UNTESTABLE])
+        after_must = self.must("None\n\n**Not testable by hand:** a 4K TV: none here.").replace(
+            "**Needs:** Windows, NVIDIA; Steam Deck", "**Needs:** none")
+        self.assertEqual(check.problems(after_must, title=FIX), [], "after Must be tested, not one of its items")
+        self.assertEqual(check.problems(self.must("None\n\n**Not testable by hand:**").replace(
+            "**Needs:** Windows, NVIDIA; Steam Deck", "**Needs:** none"), title=FIX),
+                         ["## Testing's 'Not testable by hand:' is empty: say what can't be run by hand and why, "
+                          "or delete it"])
         headings = section(GOOD, "Testing", "### Tested\nRan it.\n### Not tested\nWindows.\n### Must be tested\nNone")
         self.assertEqual(check.problems(headings.replace("**Needs:** Windows, NVIDIA; Steam Deck", "**Needs:** none"),
                                         title=FIX), [], "the parts as headings")

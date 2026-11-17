@@ -2780,6 +2780,13 @@ uint64_t texture_destroy_generation() {
     return destroy_gen;
 }
 
+bool texture_alive(uint64_t gpu, const Texture* t, VkImage image) {
+    auto [a, b] = by_gpu.equal_range(gpu);
+    for (auto it = a; it != b; ++it)
+        if (it->second == t) return t->image == image;
+    return false;
+}
+
 uint32_t texture_epoch() {
     return epoch;
 }

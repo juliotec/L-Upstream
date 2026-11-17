@@ -44,6 +44,8 @@
 #include "upscaler_rows.h"    // (upscale_lod_bias: which upscalers draw the 3D smaller)
 #include "dlss_actor.h"
 #include "vk_temporal.h"
+#include "vk_framegen.h"   // (framegen_hud_before: a gameplay upscale's picture, for FSR 3.1 frame interpolation's HUD mark)
+#include "vk_fsr3fi.h"     // (frames_wanted)
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
 #include "vk_fsr3_inputs.h"
 #include "reactive_policy.h"
@@ -66,6 +68,7 @@
 #include "fallback_size_policy.h"
 #include "translate_wait.h"
 #include "precompile_save.h"   // (the pipeline cache written before the title after a long precompile)
+#include "bounded_wait.h"   // (the load-at-create start's wait for its builds, bounded by their progress)
 #include "quick_pipe.h"
 
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
@@ -192,13 +195,14 @@ void fine_report(double frames) {
 }
 
 /// 32 lanes, where the stage can be held to it (workgroup_x: a compute stage's width, which full subgroups must divide)
-void pin_subgroup(VkPipelineShaderStageCreateInfo& st, uint32_t workgroup_x = 0) {
+/// (invocations: its whole workgroup, x * y * z, which 32-lane subgroups must cover: pins_32)
+void pin_subgroup(VkPipelineShaderStageCreateInfo& st, uint32_t workgroup_x = 0, uint64_t invocations = 64) {
     static const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size = [] {
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo r{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
         r.requiredSubgroupSize = 32;
         return r;
     }();
-    if (!(dev.sg32_stages & st.stage)) return;
+    if (!pins_32(st.stage, invocations)) return;
     st.pNext = &size;
     if (workgroup_x && !(workgroup_x % 32) && dev.vk13.computeFullSubgroups)
         st.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
@@ -1471,7 +1475,7 @@ VkComputePipelineCreateInfo compute_pipeline_info(const Program& q, bool noopt) 
     ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.stage.module = q.stages[0].module;
     ci.stage.pName = "main";
-    pin_subgroup(ci.stage, q.workgroup[0]);
+    pin_subgroup(ci.stage, q.workgroup[0], uint64_t(q.workgroup[0]) * q.workgroup[1] * q.workgroup[2]);
     ci.layout = q.layout;
     static const bool noopt_on = env_on("RX_VK_NOOPT");
     if (noopt && noopt_on) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
@@ -8412,7 +8416,8 @@ struct DispatchClock {   // (a dispatch over 2 ms: logged, with where its time w
 /// image; left out, the output stays black under the UI drawn over it. Here a rejected compute pass that writes a
 /// storage image larger than the largest colour texture it samples (and does not also write) is replaced by a linear
 /// blit of that texture into the image: the frame at its full size, without the network's detail. (An image the
-/// pass also samples is one of its inputs, never the output.)
+/// pass also samples is one of its inputs, never the output.) The gameplay networks' passes also when the image is the
+/// texture's size: the full-size pass at 100% Render resolution, an anti-aliasing of the 3D at the output's size.
 /// The first replacement of each program is logged.
 /// (shaders/movie_upscale.comp) The upscale in a shader: it reads and writes the two images as the network's own passes do, where a blit came
 /// out black on an RX 9070 XT. False: no way to, the blit is tried
@@ -8495,7 +8500,9 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
 static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
                                       const nvn_tex* out);
 
+thread_local Texture* stub_picture = nullptr;   // (upscale_stub's output, when it is the scene's format: framegen_hud_before)
 bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
+    stub_picture = nullptr;
     nvn_tex out{}, in{};
     uint64_t out_area = 0, in_area = 0, in_h = 0, out_h = 0;
     uint64_t img_gpu[32]{}, tex_gpu[128]{};
@@ -8530,12 +8537,19 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
         const uint64_t a = (uint64_t)t.d.width * t.d.height;
         if (a > in_area) in = t, in_area = a, in_h = s.tex[5][i];
     }
-    if (!in_area || out_area <= in_area) return false;
+    // (an output no larger than the input is no upscale, except for the gameplay networks: at 100% Render resolution the
+    // full-size pass, 9dc98871eb7fc101, reads the 3D at the output's own size and writes the picture. Left out on a GPU
+    // without f16 shaders (vk_shader.cpp: GTX 10, Polaris on RADV) and turned away here, it wrote nothing: the 3D was black
+    // under the HUD at 100%, and only there)
+    if (!in_area || out_area < in_area || (out_area == in_area && !gameplay_network(key))) return false;
     Texture* src = texture_get(&in, true);
     Texture* dst = texture_get(&out, false);
     if (!src || !dst || !src->image || !dst->image || (src->aspect | dst->aspect) != VK_IMAGE_ASPECT_COLOR_BIT || src->bc ||
         dst->bc || src->samples != VK_SAMPLE_COUNT_1_BIT || dst->samples != VK_SAMPLE_COUNT_1_BIT)
         return false;
+    // (the gameplay upscale's picture, for frame generation's HUD mark once this returns: the scene's format into the same,
+    // larger. framegen_hud_before takes only the picture's formats; the movies' RGBA8 is not one)
+    if (src->format == dst->format) stub_picture = dst;
     // (longshot) an upscale network that did not translate here (the Render resolution's fixed shares have one each, and on a
     // GPU without cooperative matrices they are left out): the temporal upscaler is offered it first, as temporal_stand_in
     // offers the networks that did translate, and so is FSR 3.1, as fsr3_stand_in. It takes only the scene into the picture;
@@ -8558,9 +8572,10 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
             logf("vk: movie upscaling uses the linear compute path");
         return true;
     }
-    // Failed upscales can receive RGB9E5 bits in a shared R11 image, including the 75% gameplay TAAU.
-    // Match the observed base-level 2D case only; other fallbacks keep their existing blit.
+    // Failed upscales can receive RGB9E5 bits in a shared R11 image, including the gameplay networks (the 75% TAAU and the
+    // full-size pass). Match the observed base-level 2D case only; other fallbacks keep their existing blit.
     const bool gameplay_taau = key == 0xfd029a317a9a4b94ull;
+    const bool gameplay_full = key == 0x9dc98871eb7fc101ull;
     if (gameplay_taau && scene_tonemap_on() &&
         (src->format == VK_FORMAT_R16G16B16A16_SFLOAT || dst->format == VK_FORMAT_R16G16B16A16_SFLOAT)) {
         if (src->format != VK_FORMAT_R16G16B16A16_SFLOAT || dst->format != VK_FORMAT_R16G16B16A16_SFLOAT ||
@@ -8591,7 +8606,7 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
         }
         return false; // Do not blit perceptually encoded PsychoV35 input into a linear output.
     }
-    if ((!gameplay_network(key) || gameplay_taau) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
+    if (in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
         src->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && dst->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
         (fd.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
         src->type == VK_IMAGE_TYPE_2D && dst->type == VK_IMAGE_TYPE_2D && src->depth == 1 && dst->depth == 1 &&
@@ -8622,11 +8637,17 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
                     if (!logged_gameplay_upscale.exchange(true, std::memory_order_relaxed))
                         logf("vk: gameplay RGB9E5 upscale uses the typed fallback");
                 }
+                if (gameplay_full) {
+                    static std::atomic<bool> logged_full{false};
+                    if (!logged_full.exchange(true, std::memory_order_relaxed))
+                        logf("vk: the full-size network 9dc98871eb7fc101 is drawn by the typed fallback (%ux%u -> %ux%u)",
+                             in.d.width, in.d.height, out.d.width, out.d.height);
+                }
                 return true;
             }
         }
     }
-    if (gameplay_taau && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
+    if ((gameplay_taau || gameplay_full) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
         src->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && dst->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
         static std::atomic<bool> warned_gameplay_upscale{false};
         if (!warned_gameplay_upscale.exchange(true, std::memory_order_relaxed))
@@ -8873,6 +8894,26 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
     vertex_set.on = false, last_ib.on = false;
     return done;
+}
+/// (longshot) The picture a gameplay upscale writes (its output, found as temporal_stand_in finds it), for frame generation's
+/// HUD mark (vk_framegen.h framegen_hud_before: copied once the upscale wrote it, whichever drew it). Null unless AMD FSR
+/// 3.1's frame interpolation is asked for, or for any other dispatch
+static Texture* upscale_picture(const NvnState& s, const Program& p, uint32_t* level) {
+    if (p.stages.empty() || !fsr3fi::frames_wanted()) return nullptr;
+    const Stage& st = p.stages[0];
+    if (!gameplay_network(p.key) && !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 &&
+                                      st.info.image_descriptors.size() == 1))
+        return nullptr;
+    if (st.info.texture_descriptors.empty() || st.info.image_descriptors.empty()) return nullptr;
+    Texture* in = nullptr;
+    const uint32_t in_handle = handle_of(s, st, st.info.texture_descriptors[0], 0);
+    if (in_handle) texture_view_of(in_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, VK_FORMAT_UNDEFINED, &in);
+    const auto& od = st.info.image_descriptors[0];
+    Texture* out = nullptr;
+    const uint32_t out_handle = handle_of(s, st, od, 0);
+    if (out_handle) texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, level);
+    if (!in || !out || !temporal_colour_pair(in->format, out->format) || (out->width >> *level) <= in->width) return nullptr;
+    return out;
 }
 /// (longshot) The same for an upscale network that did not translate on this GPU (upscale_stub found its input, the largest
 /// texture it samples, and its output, the largest image it writes): the Render resolution row's fixed shares (67%
@@ -9317,7 +9358,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         ci.stage.module = p.stages[0].module;
         ci.stage.pName = "main";
-        pin_subgroup(ci.stage, p.workgroup[0]);
+        pin_subgroup(ci.stage, p.workgroup[0], uint64_t(p.workgroup[0]) * p.workgroup[1] * p.workgroup[2]);
         ci.layout = p.layout;
         if (env_on("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         VkPipeline pl = VK_NULL_HANDLE;
@@ -9563,8 +9604,16 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
 /// (longshot, RX_VK_LOAD=create) The start with nothing kept ready by a list: each note is only found, by its place in the file,
 /// and its pipeline is made when the game makes its program (vk_programs.cpp); the compute programs the lists name are only
 /// named. What a start must still do itself is done: the caches and the two lists opened before play, and on a GPU without
-/// mesh shaders the mesh fallback's programs and their compute pipelines, which stay as they were (every one, before the title)
-void precompile_at_create() {
+/// mesh shaders the mesh fallback's programs and their compute pipelines, which stay as they were (every one, before the title).
+/// Those are built in the driver here, behind the start-up screen, with its progress (a fallback program at a time) and the
+/// precompile's bound (bounded_wait.h, RX_VK_PRECOMPILE_STALL_S): nothing finished for that long, the game starts and the
+/// builds still in the driver go on behind it, their programs' draws left out until they are done, as a first draw's are.
+/// Without them every start of rc.7 on an RX 5600 XT and an RX 5700 XT (AMD's Windows driver, the compute fallback, a new
+/// translator: every fallback pipeline compiled again) sat at 0%, "Loading the shader cache", until the window was closed,
+/// and the close lost what was built (Longshot #1373, #1405). The workers' state is on the heap: let go once they are done,
+/// never freed when the game went on without them. A pass that took RX_VK_PRECOMPILE_SAVE_S writes the pipeline cache before
+/// the title, as precompile_run's does (precompile_save.h)
+void precompile_at_create(void (*progress)(size_t done, size_t total)) {
     const auto t0 = std::chrono::steady_clock::now();
     pcache_init();
     std::vector<NoteRef> refs = pipe_notes_refs();
@@ -9581,56 +9630,116 @@ void precompile_at_create() {
         if (!state_file) state_open_locked();
     }
     const ComputePlan plan = computes_plan(getenv("RX_VK_PRECOMPILE_COMPUTES"), !env_on("RX_VK_NO_STATE_LIST"));
+    struct Pass {
+        std::vector<Program*> fallbacks, kept;
+        std::unordered_map<uint64_t, std::vector<NoteRef>> notes_of;   // (copies: the workers may outlive refs)
+        std::string notes_path;
+        std::atomic<size_t> next{0}, next_kept{0}, done{0}, kept_pipes{0}, kept_cold{0};
+        std::atomic<bool> gone{false};   // (the game went on: no new item is taken, the builds under way end on their own)
+    };
+    Pass* const pass = new Pass;
     // (every program read in here, kept from now on: its records are taken as they are read, so the load its create call
     // queues finds none and makes none of its noted pipelines. Those are asked of the caches here, as that load would)
-    std::vector<Program*> fallbacks, kept;
     program_cache_load_some({}, [&](Program& p) {
         ensure_layout(p);
-        kept.push_back(&p);
-        if (p.fallback) fallbacks.push_back(&p);
+        pass->kept.push_back(&p);
+        if (p.fallback) pass->fallbacks.push_back(&p);
     }, false, true);
-    std::unordered_map<uint64_t, std::vector<const NoteRef*>> notes_of;
-    if (!kept.empty())
-        for (const NoteRef& r : refs) notes_of[r.prog].push_back(&r);
-    const std::string notes_path = pipe_notes_path();
-    std::atomic<size_t> next{0}, next_kept{0}, kept_pipes{0}, kept_cold{0};
-    const auto worker = [&] {
+    if (!pass->kept.empty()) {
+        std::unordered_set<uint64_t> graphics;
+        for (const Program* p : pass->kept)
+            if (!p->compute) graphics.insert(p->key);
+        for (const NoteRef& r : refs)
+            if (graphics.count(r.prog)) pass->notes_of[r.prog].push_back(r);
+    }
+    pass->notes_path = pipe_notes_path();
+    const auto taking = [pass] { return !prepare_stopped() && !pass->gone.load(std::memory_order_relaxed); };
+    const auto worker = [pass, taking] {
         ub_thread_off();
-        for (size_t i; (i = next++) < fallbacks.size() && !prepare_stopped();) {
+        for (size_t i; taking() && (i = pass->next++) < pass->fallbacks.size();) {
             int none = 0;
-            if (fallbacks[i]->compute_state.compare_exchange_strong(none, 1)) {
-                fallback_compute_pipelines(*fallbacks[i]);
-                fallbacks[i]->compute_state.store(2, std::memory_order_release);
+            if (pass->fallbacks[i]->compute_state.compare_exchange_strong(none, 1)) {
+                fallback_compute_pipelines(*pass->fallbacks[i]);
+                pass->fallbacks[i]->compute_state.store(2, std::memory_order_release);
             }
+            pass->done++;
         }
         FILE* in = nullptr;
         const std::unique_ptr<PipeNote> note = std::make_unique<PipeNote>();
-        for (size_t i; (i = next_kept++) < kept.size() && !prepare_stopped();) {
-            const Program& p = *kept[i];
-            const auto list = notes_of.find(p.key);
-            if (p.compute || list == notes_of.end()) continue;
-            if (!in) in = fopen(notes_path.c_str(), "rb");
-            for (const NoteRef* r : list->second) {
-                if (r->variant != p.variant || !pipe_note_at(in, r->at, note.get())) continue;
-                bool cold = false;
-                // (from the caches alone, as a load at a create call: what none has is made when it is first drawn)
-                if (const VkPipeline pl = pipeline_from_caches(p, *note, &cold)) kept_pipes += pipeline_keep_ready(r->key, pl);
-                else kept_cold++;
+        for (size_t i; taking() && (i = pass->next_kept++) < pass->kept.size();) {
+            const Program& p = *pass->kept[i];
+            const auto list = pass->notes_of.find(p.key);
+            if (!p.compute && list != pass->notes_of.end()) {
+                if (!in) in = fopen(pass->notes_path.c_str(), "rb");
+                for (const NoteRef& r : list->second) {
+                    if (r.variant != p.variant || !pipe_note_at(in, r.at, note.get())) continue;
+                    bool cold = false;
+                    // (from the caches alone, as a load at a create call: what none has is made when it is first drawn)
+                    if (const VkPipeline pl = pipeline_from_caches(p, *note, &cold)) pass->kept_pipes += pipeline_keep_ready(r.key, pl);
+                    else pass->kept_cold++;
+                }
             }
+            pass->done++;
         }
         if (in) fclose(in);
     };
+    const size_t total = pass->fallbacks.size() + pass->kept.size();
     std::vector<std::thread> threads;
-    for (unsigned i = 0; i < std::min<size_t>(usable_cpus(), kept.size()); i++) threads.emplace_back(worker);
-    for (std::thread& t : threads) t.join();
-    const size_t notes_n = refs.size();
+    for (unsigned i = 0; i < std::min<size_t>(usable_cpus(), pass->kept.size()); i++) threads.emplace_back(worker);
+    static const int stall_s = getenv("RX_VK_PRECOMPILE_STALL_S") ? atoi(getenv("RX_VK_PRECOMPILE_STALL_S")) : 30;
+    const auto built0 = std::chrono::steady_clock::now();
+    auto log_at = built0 + std::chrono::seconds(10);
+    const bounded_wait::End end = threads.empty() ? bounded_wait::End::kDone : bounded_wait::wait(
+        pass->done, total, stall_s, [] { return std::chrono::steady_clock::now(); },
+        [&](size_t done) {
+            if (progress) progress(done, total);
+            const auto now = std::chrono::steady_clock::now();
+            if (now < log_at) return;
+            log_at = now + std::chrono::seconds(10);
+            logf("vk: precompile: load at create: %zu of %zu steps in %.0f s (each mesh fallback program's compute pipelines, then "
+                 "the noted pipelines of each program kept, from the caches)", done, total,
+                 std::chrono::duration<double>(now - built0).count());
+        },
+        [] { return prepare_stopped(); }, [] { Sleep(100); });
+    const bool gone_on = end != bounded_wait::End::kDone;
+    if (gone_on) {
+        pass->gone.store(true);
+        prepare_left_workers_note();   // (stalled or closed: builds may still be in the driver, vk_main.cpp's watchdog and exit)
+        if (end == bounded_wait::End::kStalled) {
+            logf("vk: precompile: load at create: %zu of %zu steps done, nothing finished for %d s: "
+                 "the game starts, the builds still in the driver go on behind it (RX_VK_PRECOMPILE_STALL_S=0: wait for all)",
+                 pass->done.load(), total, stall_s);
+        }
+        for (std::thread& t : threads) t.detach();
+    } else {
+        for (std::thread& t : threads) t.join();
+    }
+    const size_t notes_n = refs.size(), kept_n = pass->kept.size(), kept_pipes = pass->kept_pipes.load(),
+                 kept_cold = pass->kept_cold.load();
+    if (!gone_on) delete pass;
     programs_index(std::move(refs), plan.none ? std::unordered_set<uint64_t>{} : plan.keys);
     logf("vk: precompile: load at create (RX_VK_LOAD=create): %zu noted pipelines found, none built; %zu compute programs "
          "named (%zu in the shipped list, %zu dispatched in play here); %zu mesh fallback programs kept ready, %zu of their "
-         "noted pipelines with them (%zu in no cache); in %.0f ms. No other program is kept ready by a list: each is loaded "
+         "noted pipelines with them (%zu in no cache)%s; in %.0f ms. No other program is kept ready by a list: each is loaded "
          "when the game makes it",
-         notes_n, plan.keys.size(), plan.shipped, plan.learned, kept.size(), kept_pipes.load(), kept_cold.load(),
+         notes_n, plan.keys.size(), plan.shipped, plan.learned, kept_n, kept_pipes, kept_cold,
+         end == bounded_wait::End::kStalled ? ", some still being built" : "",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    // (fallback pipelines that took this long were compiled, not found: written before the title, the start-up screen saying
+    // so, as precompile_run does; a start closed before then kept none of them, and the next one compiled them all again)
+    static const int save_s = precompile_save::after_s(getenv("RX_VK_PRECOMPILE_SAVE_S"));
+    const double build_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - built0).count();
+    if (precompile_save::due(build_s, save_s, end == bounded_wait::End::kStalled, prepare_stopped(),
+                             env_on("LONGSHOT_PREPARE_ONLY"))) {
+        const auto s0 = std::chrono::steady_clock::now();
+        prepare_saving_now.store(true, std::memory_order_relaxed);
+        pipeline_cache_save(true);
+        prepare_saving_now.store(false, std::memory_order_relaxed);
+        logf("vk: precompile: load at create: its pipelines took %.0f s (compiled, not found in the caches): the pipeline cache "
+             "%s, in %.0f ms, before the title (RX_VK_PRECOMPILE_SAVE_S=0: not)", build_s,
+             precompile_save::said(pcache_save_outcome).c_str(),
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
+    }
     predicted_check();
 }
 
@@ -9698,7 +9807,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
         if (precompile_covers_notes() && !env_on("LONGSHOT_PREPARE_ONLY") && notes_lost_by_driver())
             remove(precompile_built_path().c_str());
         if (!precompile_covers_notes()) precompile_warm(progress);
-        if (precompile_covers_notes()) return precompile_at_create();
+        if (precompile_covers_notes()) return precompile_at_create(progress);
         // (the window was closed in it; or this is the preparation's own process, which leaves no marker: its warm filled
         // the driver's cache, the first start of the game warms again and loads at create calls from then on)
         if (prepare_stopped() || env_on("LONGSHOT_PREPARE_ONLY")) return;
@@ -10432,7 +10541,11 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                                   cp->stages[0].info.uses_cooperative_matrix, gameplay_network(cp->key)) ||
                                (force_stub && cp->stages[0].info.uses_cooperative_matrix &&
                                 (force_stub >= 2 || !gameplay_network(cp->key))));
-    if ((!cp || cp->failed || slow_network) && upscale_stub(cmd, s, compute_code_key(s))) return void(st_dispatches++);
+    if ((!cp || cp->failed || slow_network) && upscale_stub(cmd, s, compute_code_key(s))) {
+        // (a gameplay upscale's picture, as the dispatch below copies its own: frame generation's HUD mark)
+        if (stub_picture && fsr3fi::frames_wanted()) framegen_hud_before(cmd, stub_picture, 0);
+        return void(st_dispatches++);
+    }
     if (slow_network) SKIP_HERE();   // (an earlier pass of the network: the stub is its last pass)
     if (!cp || !cp->ready.load(std::memory_order_acquire) || cp->failed) SKIP_HERE();
     {   // (longshot, RX_VK_SKIP_PROG=<key prefix,...>: those programs' dispatches left out, for diagnosis)
@@ -10655,9 +10768,12 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             logf("%s", line);
         }
     }
-    if (fsr3_stand_in(cmd, s, p)) return void(st_dispatches++);
-    if (temporal_stand_in(cmd, s, p)) return void(st_dispatches++);
-    if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);
+    // (a gameplay upscale's picture, copied for frame generation's HUD mark once it is written, whoever writes it)
+    uint32_t picture_level = 0;
+    Texture* const picture = upscale_picture(s, p, &picture_level);
+    if (fsr3_stand_in(cmd, s, p)) return framegen_hud_before(cmd, picture, picture_level), void(st_dispatches++);
+    if (temporal_stand_in(cmd, s, p)) return framegen_hud_before(cmd, picture, picture_level), void(st_dispatches++);
+    if (taau_stand_in(cmd, s, p)) return framegen_hud_before(cmd, picture, picture_level), void(st_dispatches++);
     const VkPipeline pipe = cpipe();
     if (!pipe) SKIP_HERE();
     dump_ssbos(cmd, p, "before");
@@ -10743,6 +10859,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             vkCmdDispatch(cmd, x, y, z);
         }
     }
+    framegen_hud_before(cmd, picture, picture_level);   // (the game's own network drew the gameplay upscale)
     if (dump_on() && dump_ssbo_wanted(p.key)) dump_ssbos(cmd, p, "after");
     if (gprof_on()) {
         char label[96];

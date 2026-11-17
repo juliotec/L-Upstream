@@ -90,7 +90,11 @@ Fixes #42
 - [x] One topic.
 - [x] The title is a Conventional Commit (`type(scope): description`) of the status line's type.
 - [x] Why gives the reason plainly and links the issues that fit (the tracker searched).
+- [x] Tested on my own PC where it runs (in the game, for a change the game runs), as Testing's Tested says; what
+  can't be run by hand is in Testing's Not testable by hand, with why.
 - [x] Measurements has a verdict, or one line saying why there is nothing to measure.
+- [x] Nothing gets worse that I know of: any cost (speed, latency, memory, a setup that worked before) is measured and
+  in Risks.
 - [x] Testing names what was tested, what wasn't, and what must still be tested, where and how.
 - [x] Rebased on current `main`.
 - [x] `python -I -B tests/run_all.py` passes (any failure that also fails on `main` is named).

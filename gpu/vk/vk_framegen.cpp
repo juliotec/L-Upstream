@@ -34,6 +34,7 @@
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/fg_copy_comp_spv.h"
 #include "shaders/fg_flow_comp_spv.h"
+#include "shaders/fg_hud_comp_spv.h"   // (AMD FSR 3.1's interpolation source with the HUD marked: hud_source)
 #include "shaders/fg_luma_comp_spv.h"
 #include "shaders/fg_median_comp_spv.h"
 #include "shaders/fg_scale_comp_spv.h"
@@ -1063,6 +1064,138 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
     return fg.recorded->frame[0].image;
 }
 
+// (longshot) The HUD for AMD FSR 3.1's frame interpolation (#1310, #1420). The game draws its HUD (hearts, minimap, button
+// prompts) into the same picture as the scene, after its gameplay upscale, and has no HUD-less colour. The patched
+// interpolation used to guess the HUD as the pixels the same in both frames while the scene moved: the see-through parts
+// (the minimap, the prompts' backing), the soft edges and anything animated failed the guess and were moved with the
+// scene, a HUD that smeared and shook with every turn of the camera. So the picture is copied just after the upscale wrote
+// it (framegen_hud_before, from vk_draw.cpp's dispatch of the upscale, whoever drew it); at the present what differs from
+// that copy is the HUD, marked in the interpolation source's alpha (shaders/fg_hud.comp), and the interpolation keeps
+// those pixels where they are (vk_fsr3fi.h Inputs::hud_mask). A frame without the copy (no gameplay upscale: a menu, a
+// movie) keeps the old guess.
+namespace {
+struct HudState {
+    std::mutex mu;   // (framegen_hud_before is called from the replay's workers)
+    bool init = false, failed = false;
+    Pipe mask;
+    Img before, after;   // (the picture after the upscale, and as presented: its format and size)
+    Img source;          // (the interpolation source: the frame's crop, RGBA8, the HUD's alpha 0)
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t pw = 0, ph = 0, sw = 0, sh = 0;
+    VkImage picture = VK_NULL_HANDLE;   // (the picture copied: framegen_hud_before's, its image)
+    const Texture* tex = nullptr;       // (and its texture, at gpu: not read unless texture_alive finds it still there)
+    uint64_t gpu = 0;
+    bool fresh = false;                 // (copied since the last present)
+    bool ready = false;                 // (this present's source made: fsr3fi_frames gives it)
+    struct Dead {
+        uint64_t frame, value;
+        Img img;
+    };
+    std::vector<Dead> dead;   // (images replaced, freed once the GPU is past them)
+    bool told = false;
+    uint64_t marked = 0;                // (presents given to FSR 3.1 with the HUD marked: its 600-present line)
+} hud;
+
+void hud_retire(Img& i) {
+    if (i.image) hud.dead.push_back({texture_frame_no(), vk_retirement_value(), i});
+    i = {};
+}
+void hud_free_dead() {
+    const uint64_t now = texture_frame_no(), done = vk_timeline_completed();
+    for (size_t i = 0; i < hud.dead.size();) {
+        if (now - hud.dead[i].frame > 4 && hud.dead[i].value && done >= hud.dead[i].value) {
+            drop_img(hud.dead[i].img);
+            hud.dead[i] = hud.dead.back();
+            hud.dead.pop_back();
+        } else {
+            i++;
+        }
+    }
+}
+bool hud_image(VkCommandBuffer cmd, Img& i, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage) {
+    if (i.image) return true;
+    if (!make_img(i, w, h, f, usage)) return false;
+    to_general(cmd, i.image);
+    return true;
+}
+
+/// This present's interpolation source with the HUD marked (hud.source), from the game's frame cropped into fg.frames[cur]
+/// (at x0, y0 of the presented picture, sw x sh): when the picture was copied after its upscale this frame and is the
+/// presented picture's size. False: the frame as it is, the HUD guessed.
+bool hud_source(VkCommandBuffer cmd, int cur, uint32_t sw, uint32_t sh, int x0, int y0, uint32_t w, uint32_t h) {
+    std::lock_guard lk(hud.mu);
+    hud_free_dead();
+    hud.ready = false;
+    const bool fresh = hud.fresh;
+    hud.fresh = false;
+    if (!fresh || hud.failed || !hud.picture || hud.pw != sw || hud.ph != sh || !fsr3fi::frames_wanted() ||
+        !texture_alive(hud.gpu, hud.tex, hud.picture))   // (the picture destroyed since, or moved: nothing to copy from)
+        return false;
+    if (!hud.init) {
+        hud.init = true;
+        const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        if (!make_pipe(hud.mask, BUILTIN_SPV_ARGS(FG_HUD_COMP_SPV), {S, S, S, I}, 16)) {
+            hud.failed = true;
+            logf("vk: fsr3fi: the HUD mask's pipeline was not made: the HUD guessed");
+            return false;
+        }
+    }
+    if (hud.sw != w || hud.sh != h) hud_retire(hud.source), hud.sw = w, hud.sh = h;
+    const VkImageUsageFlags rw = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (!hud_image(cmd, hud.after, sw, sh, hud.format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+        !hud_image(cmd, hud.source, w, h, VK_FORMAT_R8G8B8A8_UNORM, rw | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+        hud.failed = true;
+        logf("vk: fsr3fi: the HUD mask's images (%ux%u) were not made: the HUD guessed", w, h);
+        return false;
+    }
+    full_barrier(cmd);   // (the picture's last writes and reads, and the last readers of this source)
+    const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                        {sw, sh, 1}};
+    vkCmdCopyImage(cmd, hud.picture, VK_IMAGE_LAYOUT_GENERAL, hud.after.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    full_barrier(cmd);
+    const int32_t pc[4] = {x0, y0, (int32_t)w, (int32_t)h};
+    pass(cmd, hud.mask,
+         {{fg.frames[cur].view, fg.nearest},
+          {hud.before.view, fg.nearest},
+          {hud.after.view, fg.nearest},
+          {hud.source.view, VK_NULL_HANDLE}},
+         w, h, pc, sizeof pc);
+    if (!hud.told) {
+        hud.told = true;
+        logf("vk: fsr3fi: the HUD marked for it: what the game drew over its picture after the upscale (%ux%u, format %d)",
+             sw, sh, (int)hud.format);
+    }
+    hud.marked++;
+    return hud.ready = true;
+}
+} // namespace
+
+void framegen_hud_before(VkCommandBuffer cmd, Texture* picture, uint32_t level) {
+    if (!picture || level || !picture->image || picture->samples != VK_SAMPLE_COUNT_1_BIT || picture->levels != 1 ||
+        picture->layers != 1 || picture->type != VK_IMAGE_TYPE_2D ||
+        (picture->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 && picture->format != VK_FORMAT_R16G16B16A16_SFLOAT) ||
+        !framegen_on() || !fsr3fi::frames_wanted())
+        return;
+    std::lock_guard lk(hud.mu);
+    if (hud.failed) return;
+    if (hud.format != picture->format || hud.pw != picture->width || hud.ph != picture->height) {
+        hud_retire(hud.before), hud_retire(hud.after);
+        hud.format = picture->format, hud.pw = picture->width, hud.ph = picture->height;
+    }
+    if (!hud_image(cmd, hud.before, hud.pw, hud.ph, hud.format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        hud.failed = true;
+        logf("vk: fsr3fi: the HUD mask's copy (%ux%u) was not made: the HUD guessed", hud.pw, hud.ph);
+        return;
+    }
+    full_barrier(cmd);   // (the upscale's writes; and the last present's mask pass, which read this copy)
+    const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
+                        {hud.pw, hud.ph, 1}};
+    vkCmdCopyImage(cmd, picture->image, VK_IMAGE_LAYOUT_GENERAL, hud.before.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    full_barrier(cmd);   // (before the game draws its HUD into the picture)
+    hud.picture = picture->image, hud.tex = picture, hud.gpu = picture->gpu;
+    hud.fresh = true;
+}
+
 /// (longshot) A set's made frames by AMD FSR 3.1's frame interpolation (vk_fsr3fi.h), from this frame's colour and the
 /// scene's depth and motion (vk_fsr3_inputs.h): made frame i at t[i] between the frame before (0) and this one (1), into
 /// set.frame[slot[i]]. Returns count when it made them all, 0 when it did not (no inputs this present, a reset, anything not
@@ -1073,14 +1206,15 @@ VkImage framegen_made_image(uint32_t* w, uint32_t* h) {
 int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh, uint64_t sequence, bool native_pq,
                   const float* t, const int* slot, int count) {
     // (every 600 presents asked: how many sets FSR made, and how many it left to the interpolation below and why)
-    static uint64_t asked = 0, made = 0, no_inputs = 0, taken_before = 0, age[2] = {};
+    static uint64_t asked = 0, made = 0, no_inputs = 0, taken_before = 0, age[2] = {}, marked_before = 0;
     if (++asked % 600 == 0) {
         const uint64_t taken = fsr3_inputs::motions_taken();
         logf("vk: fsr3fi: of the last 600 presents %llu made by FSR 3.1, %llu without its inputs (the renderer's own made "
              "them); %llu frames with the chain's motion (the skinned draws' own); inputs this frame's %llu, the frame before's "
-             "%llu", (unsigned long long)made, (unsigned long long)no_inputs, (unsigned long long)(taken - taken_before),
-             (unsigned long long)age[0], (unsigned long long)age[1]);
-        made = no_inputs = 0, taken_before = taken, age[0] = age[1] = 0;
+             "%llu; %llu with the HUD marked", (unsigned long long)made, (unsigned long long)no_inputs,
+             (unsigned long long)(taken - taken_before), (unsigned long long)age[0], (unsigned long long)age[1],
+             (unsigned long long)(hud.marked - marked_before));
+        made = no_inputs = 0, taken_before = taken, age[0] = age[1] = 0, marked_before = hud.marked;
     }
     fsr3_inputs::Frame f;
     if (!fsr3_inputs::take(f)) return no_inputs++, 0;
@@ -1088,6 +1222,10 @@ int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32
     fsr3fi::Inputs in;
     in.color = fg.frames[cur].view;
     in.color_image = fg.frames[cur].image;
+    if (hud.ready) {   // (the same frame, the HUD marked in its alpha: hud_source)
+        in.color = hud.source.view, in.color_image = hud.source.image;
+        in.hud_mask = true;
+    }
     in.color_format = VK_FORMAT_R8G8B8A8_UNORM;   // (ensure_size, for fg.frames)
     in.native_pq = native_pq;
     in.max_luminance = native_pq ? (float)std::clamp(opts.hdr_peak, 400, 10000) : 1.0f;
@@ -1154,6 +1292,8 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     const int32_t pc[4] = {x0, y0, w, h};
     pass(cmd, fg.copy, {{src, fg.nearest}, {fg.frames[cur].view, VK_NULL_HANDLE}}, uw, uh, pc, sizeof pc);
     pass(cmd, fg.luma, {{fg.frames[cur].view, fg.nearest}, {fg.lumas[cur].view, VK_NULL_HANDLE}}, qw, qh);
+    // (AMD FSR 3.1's source with the HUD marked, when it is asked: read by fsr3fi_frames below)
+    hud_source(cmd, cur, sw, sh, x0, y0, uw, uh);
     set->made = 0;
     set->shown = -1;
     set->by_time = false;   // (a reused set: only a fixed multiplier's below sets it)

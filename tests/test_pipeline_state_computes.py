@@ -590,7 +590,7 @@ static int asks = 0, compiles = 0, destroys = 0, quick_compiles = 0;
 static bool serial = false, quick_row = false;
 static bool serial_builds_on() { return serial; }
 static bool intel_quick_compute() { return quick_row; }
-static void pin_subgroup(decltype(VkComputePipelineCreateInfo::stage)&, unsigned) {}
+static void pin_subgroup(decltype(VkComputePipelineCreateInfo::stage)&, unsigned, unsigned long long) {}
 static VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     CHECK(ci->stage.module == 0x2468 && ci->layout == 0x1357);
     if (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) {

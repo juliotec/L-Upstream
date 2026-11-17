@@ -247,6 +247,9 @@ constexpr uint32_t kMaxMade = kFsr3fiMaxMade;   ///< made frames between two of 
 /// (longshot) cbFI's dispatchFlags bit the patched interpolation reads: the HUD kept where it is (scripts/fsr3_shaders.py
 /// FI_PATCHES, KeepStaticPixels). AMD's own bits are 0 to 2, its debug views, which this backend never sets
 constexpr uint32_t kKeepStatic = 1u << 16;
+/// (longshot) And the bit that says the colour's alpha marks the HUD (Inputs::hud_mask; HudMaskInAlpha in the patched
+/// passes): the HUD known, not guessed
+constexpr uint32_t kHudMask = 1u << 17;
 constexpr uint32_t kOfLevels = 7;       ///< advancedAlgorithmIterations in ffx_opticalflow.cpp
 constexpr uint32_t kOfBlockSize = 8;    ///< opticalFlowBlockSize, likewise
 constexpr uint32_t kPyramidMips = 13;   ///< the mip UAVs the two inpainting pyramid passes declare
@@ -924,7 +927,8 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
     // luma pixels into the UV motion the vector field packs.
     k.optical_flow_scale[0] = 1.0f / (float)uw, k.optical_flow_scale[1] = 1.0f / (float)uh;
     k.optical_flow_block_size = (int32_t)kOfBlockSize;
-    k.dispatch_flags = keep_static_flag();   // (no debug view, no debug bar; the HUD kept where it is)
+    // (no debug view, no debug bar; the HUD kept where it is: marked in the colour's alpha, or else guessed)
+    k.dispatch_flags = keep_static_flag() | (keep_static_flag() && in.hud_mask ? kHudMask : 0u);
     k.max_render_size[0] = rw, k.max_render_size[1] = rh;
     k.optical_flow_half_res_mode = 0;
     k.num_instances = 1;

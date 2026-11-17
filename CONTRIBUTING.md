@@ -367,12 +367,10 @@ python -I ../Tooling/scripts/forge.py pr create fix/arc-walls --title "fix(vk): 
 4. **A change the game runs opens as a pull request only once it has run in the game**, at least once where it
    matters: `forge.py pr create --tested-in-game "where it ran and what you saw"` (the PR's first comment). It refuses
    a branch that touches `gpu/`, `host/`, `nx2/`, `assets/` or `third_party/` without it; `--force` opens it anyway.
-   **A pull request is work in progress until it is measured and ready for review.** On Forgejo that is a title
-   starting with `WIP:` (or `[WIP]`). `pr create` opens it so (`--ready` when the description is complete already);
-   `pr ready <n>` marks it ready once the Measurements have real numbers and every *Everyone* box is ticked, and
-   refuses until then (the same check runs on every pull request: `scripts/check_pr_description.py`). Reviewers
-   don't review a WIP pull request. One that turns out to need more work goes back to WIP (`pr wip <n>`); one without
-   measurements also gets the label `needs measurements`.
+   **A pull request is work in progress until it is [ready for review](#ready-for-review-out-of-wip).** On Forgejo
+   that is a title starting with `WIP:` (or `[WIP]`). `pr create` opens it so (`--ready` when it is ready already);
+   `pr ready <n>` takes the `WIP:` off. Reviewers don't review a WIP pull request. One that turns out to need more
+   work goes back to WIP (`pr wip <n>`); one without measurements also gets the label `needs measurements`.
 5. **Keep the description current.** It is the pull request's summary of record: when the change, the measurements or
    what was tested change, edit it (`pr edit <n> --body-file F`), so that it always describes the PR as it is now.
 6. **Post a comment for each new thing**: new commits after a review, new measurements, a new test run, an answer to
@@ -380,6 +378,36 @@ python -I ../Tooling/scripts/forge.py pr create fix/arc-walls --title "fix(vk): 
    holds the current state, the comments the history: `pr update <n> --body-file F --comment "..."` does both.
 7. When `main` moves, rebase onto it (`git rebase forge/main`, or `jj rebase -d main@forge`) and resolve conflicts in
    your branch; measure again, or say in the comment why the numbers still hold.
+
+### Ready for review: out of WIP
+
+A pull request comes out of WIP (`pr ready <n>`) when all of these hold, and goes back (`pr wip <n>`) as soon as one
+stops holding:
+
+1. **It is done.** The change is whole, on one topic, with nothing more planned for this pull request, and every
+   review point so far is answered.
+2. **You tested it on your own PC.** A change the game runs ran in the game where it matters (the area it changes,
+   your GPU, driver and OS), and Testing's *Tested* says where and what you saw; for a fix, How to reproduce's steps
+   no longer show the bug. A change the game doesn't run ran the way it is used (the script, the page, the checks).
+   Other machines are not needed to leave WIP: they are *Must be tested* items, for the Test Farm or a person.
+   **When the fix's own case can't be run by hand** (hardware you don't have, a race or a crash you can't trigger, a
+   path the game rarely takes), Testing's *Not testable by hand* says so: what can't be run, why, and what stands in
+   for it (a game-free test, a log line, a Test Farm run). The change still runs once in the game where it runs, to
+   show it breaks nothing else.
+3. **The checks pass:** `python -I -B tests/run_all.py`, any failure that also fails on `main` named; a fix has its
+   game-free test, failing on `main`.
+4. **It is measured:** Measurements has its verdict and real numbers against `main` ([what counts](#measurements)), or
+   the one line saying why there is nothing to measure. A cost the change has (speed, latency, memory, a setup that
+   worked before) is measured and stated in Risks, not left for the review to find.
+5. **The description is complete and current:** every section of the template filled in for the head as it is now;
+   each *Must be tested* item with where, the steps, the result to expect and who runs it.
+6. **The checklist is true:** every *Everyone* box ticked; *When it applies* keeps only the boxes that apply, ticked.
+7. **It is on current `main`:** rebased, its conflicts resolved, and measured again or the comment says why the
+   numbers still hold.
+
+`pr ready` checks the description and the checklist (`scripts/check_pr_description.py`, which runs on every pull
+request too) and refuses until they pass; the rest is yours to keep, and the *Everyone* boxes are where you say you
+did. Not needed to leave WIP: runs on other hardware, a Test Farm result, an approval. Those come during review.
 
 A maintainer reviews and squash-merges it. `forge.py pr status <n>`, `pr list --mine` and `pr view <n> --comments`
 follow up from the command line ([Tooling's docs/forge.md](https://git.magicbean.dev/MagicBeanDev/Tooling/src/branch/main/docs/forge.md)).

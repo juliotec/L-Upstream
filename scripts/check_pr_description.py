@@ -15,7 +15,8 @@
   - ### Flags and settings under Measurements: "None", or a summary line and a row per flag with every cell filled in
     (its before and after value, effect, where it helps, the recommendation);
   - Testing: Tested, Not tested and Must be tested, each filled in; Must be tested is "None", or an item per thing,
-    each "<where>: <how>, expecting <the result>", saying who runs it: the Test Farm ("@Beanstalk ...") or by hand;
+    each "<where>: <how>, expecting <the result>", saying who runs it: the Test Farm ("@Beanstalk ...") or by hand.
+    Not testable by hand may be left out; kept, it is filled in;
   - Risks, filled in, with its Compatibility part;
   - Issues may be left out; kept, no bare "Fixes #";
   - the checklist: every box of "Everyone" there and ticked. "When it applies" keeps only the boxes that apply (or is
@@ -69,6 +70,7 @@ FLAGS = "Flags and settings"
 FLAG_COLUMNS = ("Before this PR", "After this PR", "Effect", "Recommendation")
 MEASURE_LINES = ("Hardware", "Scene", "Method", "How to reproduce")
 TESTING_PARTS = ("Tested", "Not tested", "Must be tested")
+UNTESTABLE = "Not testable by hand"   # (Testing's optional part: what the fix's own case can't be run by hand, and why)
 MUST = "Must be tested"
 RISK_PARTS = ("What could break", "Turning it off", "Compatibility")
 EVERYONE, APPLIES = "Everyone", "When it applies"
@@ -181,7 +183,7 @@ def parts(text, names):
 
 
 def testing_parts(text):
-    return parts(text, TESTING_PARTS)
+    return parts(text, TESTING_PARTS + (UNTESTABLE,))
 
 
 def items(text):
@@ -400,6 +402,8 @@ def testing_problems(text):
         elif not found[name].strip():
             out.append("## Testing's '%s:' is empty%s" % (name, ": write None when Tested covers everything"
                                                            if name == MUST else ""))
+    if UNTESTABLE in found and not found[UNTESTABLE].strip():
+        out.append("## Testing's '%s:' is empty: say what can't be run by hand and why, or delete it" % UNTESTABLE)
     must = found.get(MUST, "").strip()
     if must and not NONE.match(must):
         for item in items(must):

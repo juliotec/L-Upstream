@@ -12,11 +12,13 @@ Read this before opening, updating, reviewing or marking a pull request ready.
   and what you saw: `pr create --tested-in-game "RTX 3080, driver 580.95, Linux: Kakariko, no flicker after a load"`
   (it goes up as the first comment). `pr create` refuses a branch that changes the game's files without it. Use
   `--force` only when the person you work for asks you to open it untested; if you can't run the game, ask them.
-- Open the PR as **work in progress**. Keep it WIP until its applicable evidence is complete and every *Everyone* box is
-  ticked. `pr ready` enforces the description check; leave its `--force` option unused. A PR that needs more work goes
-  back with `pr wip <n>`, and a WIP PR is not ready for review.
-- **Mark it ready yourself once it is ready.** When `pr status <n>` passes and the evidence below is complete, run
-  `pr ready <n>` in the same session. Forgejo showing a WIP PR as not mergeable is not, by itself, a reason to rebase.
+- Open the PR as **work in progress**. Keep it WIP until it is
+  [ready for review](../CONTRIBUTING.md#ready-for-review-out-of-wip): done, tested on your own PC (or Testing's *Not
+  testable by hand* says what can't be run and why), the checks passing, measured, the description complete and every
+  *Everyone* box true. `pr ready` enforces the description check; leave its `--force` option unused. A PR that needs
+  more work goes back with `pr wip <n>`, and a WIP PR is not ready for review.
+- **Mark it ready yourself once it is ready.** When `pr status <n>` passes and that list holds, run `pr ready <n>` in
+  the same session. Runs on hardware you don't have are not needed for it: they are *Must be tested* items. Forgejo showing a WIP PR as not mergeable is not, by itself, a reason to rebase.
 - After each push, measurement or test run, use `pr update` to edit the description and post a short comment saying
   what changed and why. The description states the PR as it is now; the comments hold its history.
 
@@ -35,8 +37,9 @@ including their measurement, switch and tested-configuration requirements. The e
 
 - **A change the game doesn't run** (docs, tests only, a script or the checks) is measured by its applicable game-free
   checks; an unrelated game run is not a readiness requirement.
-- **A change the game runs** needs the in-game evidence those canonical sections require before it becomes ready. If you
-  could not run it, say so and keep the PR WIP until the Test Farm or a person has covered what is missing. The
+- **A change the game runs** needs the in-game evidence those canonical sections require before it becomes ready, from
+  your own run on this PC. If you could not run it at all, say so and keep the PR WIP until you or the person you work
+  for has. If only the fix's own case can't be run by hand, run the rest and say so in *Not testable by hand*. The
   [measure skill](../.claude/skills/measure/SKILL.md) has the steps for numbers against `main`.
 
 When the PR needs hardware you do not have, ask the Test Farm on it (`@Beanstalk <what to test, in words>`; a BigBean

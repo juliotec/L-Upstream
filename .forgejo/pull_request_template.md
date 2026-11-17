@@ -3,9 +3,10 @@
 <!-- The status line above is what a reviewer reads first: the title's type, how much could break, where you ran it and
      where it still has to run. E.g. "**Type:** fix · **Risk:** low · **Tested on:** Linux, RX 6700 XT ·
      **Needs:** Windows, any GPU".
-     Open as work in progress (forge.py pr create adds "WIP: ") and mark it ready (forge.py pr ready) once every
-     section and every Everyone box is done. Keep this description current, and post a comment for each new commit,
-     measurement or test run: CONTRIBUTING.md, "Commits and pull requests". -->
+     Open as work in progress (forge.py pr create adds "WIP: ") and mark it ready (forge.py pr ready) once it is
+     ready for review: done, tested on your own PC, the checks passing, measured, this description complete and every
+     Everyone box true (CONTRIBUTING.md, "Ready for review: out of WIP"). Keep this description current, and post a
+     comment for each new commit, measurement or test run: CONTRIBUTING.md, "Commits and pull requests". -->
 
 ## Why
 
@@ -81,8 +82,12 @@ How to reproduce: <the save or spot, the settings and switches, the commands>
 ## Testing
 
 <!-- Unmistakable: what has been tested, what hasn't, and what must be before merge.
-     Tested: what you ran and checked, where (OS, GPU, driver) and how: the game-free checks; in the game, the area and
-     the steps; a tester's result.
+     Tested: what you ran and checked, where (OS, GPU, driver) and how. First your own run, on your PC: a change the
+     game runs ran in the game (the area and the steps, and for a fix, that How to reproduce no longer shows the bug);
+     then the game-free checks and any tester's result.
+     Not testable by hand: only when the fix's own case can't be run by hand (hardware you don't have, a race or crash
+     you can't trigger): what can't be run, why, and what stands in for it (a game-free test, a log line, a Test Farm
+     run). Delete the line when everything could be run.
      Not tested: what this PR could affect that nobody has run, and why.
      Must be tested: one item per thing that has to be checked before merge and that you can't check yourself: exactly
      where (OS, GPU, driver, or a Test Farm tag such as linux, amd, radv, windows, steamdeck), the steps for someone
@@ -91,7 +96,9 @@ How to reproduce: <the save or spot, the settings and switches, the commands>
      E.g. "- Windows, any GPU (I'm on Linux; this is a Windows fix): start a new file, open the pause menu at 4K,
      expecting every row to end inside the screen (Test Farm: @Beanstalk windows, the pause menu at 4K)". -->
 
-**Tested:** <what, where and how>
+**Tested:** <what, where and how: your own run first>
+
+**Not testable by hand:** <what can't be run by hand, why, and what stands in for it; or delete this line>
 
 **Not tested:** <what, and why>
 
@@ -127,7 +134,11 @@ Fixes #
 - [ ] One topic.
 - [ ] The title is a Conventional Commit (`type(scope): description`) of the status line's type.
 - [ ] Why gives the reason plainly and links the issues that fit (the tracker searched).
+- [ ] Tested on my own PC where it runs (in the game, for a change the game runs), as Testing's Tested says; what
+  can't be run by hand is in Testing's Not testable by hand, with why.
 - [ ] Measurements has a verdict, or one line saying why there is nothing to measure.
+- [ ] Nothing gets worse that I know of: any cost (speed, latency, memory, a setup that worked before) is measured and
+  in Risks.
 - [ ] Testing names what was tested, what wasn't, and what must still be tested, where and how.
 - [ ] Rebased on current `main`.
 - [ ] `python -I -B tests/run_all.py` passes (any failure that also fails on `main` is named).
