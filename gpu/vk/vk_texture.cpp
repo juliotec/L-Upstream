@@ -1786,8 +1786,11 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
     const uint64_t total = tex.guest_size;
     if (!total || (total > (1ull << 31) && !tex.sparse)) return false;   // (a sparse image: only what holds texels)
     // (depth-stencil: the depth aspect only; packed D24S8 storage is not copied into it as is: such targets are
-    // rendered, not uploaded)
-    if (tex.aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return false;
+    // rendered, not uploaded. A DEPTH24_STENCIL8 kept as D32_SFLOAT_S8_UINT, vk_formats.cpp depth24_or_32, is: its
+    // words split into the depth's floats and the stencil's bytes, two copies)
+    const bool d24s8_as_d32 = tex.nvn_format == NVN_FORMAT_DEPTH24_STENCIL8 && tex.format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+                              tex.bpb == 4 && !tex.sparse;
+    if (tex.aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) && !d24s8_as_d32) return false;
     st_uploads++;
     {   // RX_VK_LOG_UPLOADS=<present>: the uploads from that present on (200 of them; what churns)
         static const int64_t from = getenv("RX_VK_LOG_UPLOADS") ? atoll(getenv("RX_VK_LOG_UPLOADS")) : -1;
@@ -1822,7 +1825,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
     const int src_bpb = tex.bpb;
     const int out_bpb = tex.astc ? 4 : widen_from ? (widen_from == 3 ? 4 : widen_from == 6 ? 8 : 16) : src_bpb;
     const uint32_t copy_layers = tex.type == VK_IMAGE_TYPE_3D ? 1 : tex.layers;
-    const VkImageAspectFlags aspect = tex.aspect;
+    const VkImageAspectFlags aspect = d24s8_as_d32 ? VK_IMAGE_ASPECT_DEPTH_BIT : tex.aspect;
     std::vector<VkBufferImageCopy> copies;
     std::vector<uint8_t> scratch, lin;
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -1864,7 +1867,9 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                 const uint64_t block_bytes = (uint64_t)g.tw * th * g.td * src_bpb;
                 const uint32_t px_h = std::min(g.h - y0 * (uint32_t)tex.block_h, th * (uint32_t)tex.block_h);
                 const uint64_t out_bytes = tex.astc ? (uint64_t)g.w * px_h * g.d * 4 : (uint64_t)g.tw * th * g.td * out_bpb;
-                const Staging st = staging((out_bytes + 15) & ~15ull, 16);
+                // (the stencil's bytes after the depth's floats, in the same staging: one byte a texel)
+                const uint64_t s_off = (out_bytes + 15) & ~15ull, s_bytes = d24s8_as_d32 ? out_bytes / 4 : 0;
+                const Staging st = staging(d24s8_as_d32 ? s_off + ((s_bytes + 15) & ~15ull) : (out_bytes + 15) & ~15ull, 16);
                 if (!st.buffer) {
                     // (the sparse binds queued by the rows before are this image's: bound now, not left in sparse_binds
                     // for the next flush, which binds them into another texture's image)
@@ -1967,6 +1972,25 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                                            std::span<uint8_t>(out, (size_t)g.w * px_h * g.d * 4));
                 } else if (widen_from) {
                     widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb, widen_alpha(src_vf));
+                } else if (tex.nvn_format == NVN_FORMAT_DEPTH24 && tex.format == VK_FORMAT_D32_SFLOAT) {
+                    // (DEPTH24 kept as D32_SFLOAT, vk_formats.cpp depth24_or_32: the guest's 24-bit unorm depth, the low
+                    // 24 bits of each word, as the float the image holds)
+                    for (uint64_t i = 0; i + 4 <= out_bytes; i += 4) {
+                        uint32_t v;
+                        std::memcpy(&v, out + i, 4);
+                        const float f = (float)(v & 0xffffffu) / 16777215.0f;
+                        std::memcpy(out + i, &f, 4);
+                    }
+                } else if (d24s8_as_d32) {
+                    // (the guest's words: depth in the low 24 bits, stencil in the top 8)
+                    uint8_t* sten = out + s_off;
+                    for (uint64_t i = 0; i + 4 <= out_bytes; i += 4) {
+                        uint32_t v;
+                        std::memcpy(&v, out + i, 4);
+                        const float f = (float)(v & 0xffffffu) / 16777215.0f;
+                        std::memcpy(out + i, &f, 4);
+                        sten[i / 4] = (uint8_t)(v >> 24);
+                    }
                 }
                 st_bytes += (int64_t)out_bytes;
                 // (a sparse image: only its blocks this holds texels other than zero get memory; the others read
@@ -2016,7 +2040,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                             }
                     if (!some) continue;
                 }
-                flush_mapped_range(st.allocation, st.offset, out_bytes);   // (all CPU conversion workers joined before publication)
+                flush_mapped_range(st.allocation, st.offset, d24s8_as_d32 ? s_off + s_bytes : out_bytes);   // (all CPU conversion workers joined before publication)
                 VkBufferImageCopy c{};
                 c.bufferOffset = st.offset;
                 c.bufferRowLength = tex.astc ? g.w : g.tw * tex.block_w;
@@ -2025,6 +2049,11 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                 c.imageOffset = {0, (int32_t)(y0 * (uint32_t)tex.block_h), 0};
                 c.imageExtent = {g.w, px_h, g.d};
                 copies.push_back(c);
+                if (d24s8_as_d32) {
+                    c.bufferOffset = st.offset + s_off;
+                    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+                    copies.push_back(c);
+                }
             }
         }
     }
