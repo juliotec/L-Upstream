@@ -1481,8 +1481,8 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
                 // (device_policy.h networks_left_out: every vendor but NVIDIA; and where the multiplies run in software, whoever made the GPU;
-                // kept where the WMMA 16x16x16 tiles run them)
-                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || (dev.policy.networks_left_out && !Shader::Backend::SPIRV::mma_wmma16))) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
+                // kept where the WMMA 16x16x16 tiles run them: Wmma16Fits, or EmitSPIRV would compile the software multiply)
+                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || (dev.policy.networks_left_out && !(Shader::Backend::SPIRV::mma_wmma16 && Shader::Backend::SPIRV::Wmma16Fits(profile_pinned(), t->program))))) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
                     throw std::runtime_error(network_left_out);
             }
             // (pinned to 32 lanes only where 32-lane subgroups cover its workgroup, as its pipeline is: pin_subgroup, pins_32)
