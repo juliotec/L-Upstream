@@ -1296,11 +1296,13 @@ const char* threaded_env() {
     if (getenv("RX_VK_RECORDER")) return "RX_VK_RECORDER";
     return nullptr;
 }
-/// (Auto's line says what Auto is: the CPU's rule with threaded::kAutoEnabled on, Off everywhere were it off)
+/// (Auto's line says what Auto is: the CPU's rule with threaded::kAutoEnabled on, Off everywhere were it off. Its tiers are
+/// threaded::kAutoRenderCores and kAutoRecorderCores, 4 and 6 cores: tests/test_threaded_rendering.py holds the text to them)
 const char* hn_threaded(int v, int variant) {
     static const char* const t[] = {
         threaded::kAutoEnabled
-            ? "On where the processor has 12 or more threads for the game, and nothing rules it out; otherwise Off."
+            ? "On with 6 or more processor cores for the game, the render thread alone with 4 or 5, Off with fewer or where "
+              "ruled out."
             : "The same as Off, on every PC.",
         "The picture is drawn on threads of its own while the game goes on to its next frame. Still being tested: it "
         "can show flashes.",
@@ -1878,8 +1880,9 @@ Row rows[] = {
      "Attach the zip there and paste the report. Nothing is uploaded for you."},
     // (longshot) for testing, not a player's choice: when each made frame is shown (vk_framegen.cpp)
     {TAB_DEBUG, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
-    // (longshot, threaded_rendering.h: the render thread and the recorder thread together, one row. Auto, On, Off as V-Sync's,
-    // so its text is tx_vsync's. Read once, at the start: menu_threaded_rendering)
+    // (longshot, threaded_rendering.h: the render thread and the recorder thread, one row: On both, Auto by the cores (both,
+    // the render thread alone or neither). Auto, On, Off as V-Sync's, so its text is tx_vsync's. Read once, at the start:
+    // threaded_choice)
     {TAB_DEBUG, "Threaded rendering", &opts.threaded_rendering, 0, 2, 1, tx_vsync,
      "Draws the picture on threads of its own, beside the game's, on a processor with threads to spare. Applies after a "
      "restart.", hn_threaded, true, true},
@@ -5613,46 +5616,38 @@ void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings:
 // (the switches read once, at the first present: they are for the whole run, and each present asked twice)
 int menu_vsync() { static const int run = env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : 0; return run ? run : opts.vsync; }
 /// (longshot) The Threaded rendering row, resolved once for the run (threaded_rendering.h): the row as the options file had it
-/// at the start (menu_init, asked here too: a reader can come before the device is picked), the logical processors the process
-/// may run on (usable_cpus: its affinity mask) and, for Auto, whether the mode is safe on this run. Known at the start and
+/// at the start (menu_init, asked here too: a reader can come before the device is picked), the physical cores among the
+/// logical processors the process may run on (usable_cores: its affinity mask, a core's SMT siblings counted once; the
+/// logical count where the cores cannot be read) and, for Auto, whether the mode is safe on this run. Known at the start and
 /// read here: the capture off (RX_VK_CAPTURE=0: a replay behind the game is right only from the capture),
 /// RX_VK_LOW_SPEC, a frame dump (RX_VK_DUMP), a benchmark replay (RX_VK_BENCH), and buffer pools with no mirrors at all
-/// (pools_mirrored: RX_VK_MIRROR=0, an integrated GPU, GCN), asked last and only when Auto would otherwise say yes, since it
-/// reads the device. Not known at the start, so not here: one pool refused its mirror or over the mirrors' budget while the
-/// game runs (that needs the run-time fallback, which is not written). On is the player's word: nothing is checked for it
-bool menu_threaded_rendering() {
-    static const bool on = [] {
+/// (pools_mirrored: RX_VK_MIRROR=0, an integrated GPU, GCN), asked last and only when Auto would otherwise pick a thread, in
+/// either of its tiers, since it reads the device. Not known at the start, so not here: one pool refused its mirror or over the
+/// mirrors' budget while the game runs (that needs the run-time fallback, which is not written). On is the player's word:
+/// nothing is checked for it. Each reader takes its half: menu_render_thread, menu_recorder_thread
+static const threaded::Choice& threaded_choice() {
+    static const threaded::Choice choice = [] {
         menu_init();
-        const unsigned cpus = usable_cpus();
+        const unsigned cpus = usable_cpus(), cores = usable_cores();
         const char* capture = getenv("RX_VK_CAPTURE");
         // (vk_memory.cpp capture_on's reading: 0 none, anything else the capture)
         const char* unsafe = capture && atoi(capture) == 0 ? "RX_VK_CAPTURE" :
                              env_on("RX_VK_LOW_SPEC") ? "RX_VK_LOW_SPEC" : getenv("RX_VK_DUMP") ? "RX_VK_DUMP" :
                              getenv("RX_VK_BENCH") ? "RX_VK_BENCH" : nullptr;
-        threaded::Choice c = threaded::choose(opts.threaded_rendering, cpus, unsafe != nullptr);
-        if (c.why == threaded::Why::AutoCpus && !pools_mirrored()) {
-            c = threaded::Choice{false, threaded::Why::AutoUnsafe};
+        threaded::Choice c = threaded::choose(opts.threaded_rendering, cores, unsafe != nullptr);
+        if (threaded::auto_picked(c) && !pools_mirrored()) {
+            c = threaded::Choice{false, false, threaded::Why::AutoUnsafe};
             unsafe = "the buffer pools have no mirrors";
         }
-        switch (c.why) {
-        case threaded::Why::On: logf("vk: Threaded rendering: On (the render thread and the recorder thread)"); break;
-        case threaded::Why::Off: logf("vk: Threaded rendering: Off"); break;
-        case threaded::Why::AutoGate:
-            logf("vk: Threaded rendering: Auto: off (Auto is turned off in this build; %u logical processors, its rule is on "
-                 "from %u)", cpus, threaded::kAutoCpus);
-            break;
-        case threaded::Why::AutoUnsafe: logf("vk: Threaded rendering: Auto: off (not safe on this run: %s)", unsafe); break;
-        case threaded::Why::AutoFewCpus:
-            logf("vk: Threaded rendering: Auto: off (%u logical processors, on from %u)", cpus, threaded::kAutoCpus);
-            break;
-        case threaded::Why::AutoCpus:
-            logf("vk: Threaded rendering: Auto: on, the render thread and the recorder thread (%u logical processors)", cpus);
-            break;
-        }
-        return c.on;
+        char line[256];
+        threaded::describe(line, sizeof line, c, cores, cpus, unsafe);
+        logf("vk: Threaded rendering: %s", line);
+        return c;
     }();
-    return on;
+    return choice;
 }
+bool menu_render_thread() { return threaded_choice().render_thread; }
+bool menu_recorder_thread() { return threaded_choice().recorder_thread; }
 bool intel_compiles_side_by_side() {   // (RX_VK_NO_INTEL_SERIAL in the row: menu_init. Asked once the device is made)
     return intel_side_by_side_chosen(opts.intel_compiles, dev.props.deviceID, dev.props.driverVersion);
 }

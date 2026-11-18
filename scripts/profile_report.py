@@ -327,7 +327,7 @@ def main():
             gpu_block = block
 
     # ---- the frame trace's columns
-    cols = [c for c in (frames[0].keys() if frames else []) if c not in ("frame", "at_ns")]
+    cols = [c for c in (frames[0].keys() if frames else []) if c not in ("frame", "at_ns", "ab_side")]   # (ab_side: HOS_AB)
 
     def mean(rs, c):
         return statistics.fmean([num(r, c) for r in rs]) if rs else 0.0

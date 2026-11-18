@@ -64,6 +64,7 @@ struct DeviceFacts {
     bool rebar = false;             // (a discrete card with a DEVICE_LOCAL | HOST_VISIBLE memory type on its VRAM heap; no rule reads it yet)
     // CPU
     unsigned cpus_all = 0, cpus_usable = 0;   // (hardware_concurrency; usable_cpus, the affinity mask's count)
+    unsigned cores_usable = 0;   // (longshot: usable_cores, the physical cores among those, SMT siblings counted once; 0 unknown)
     // what Vulkan says the card can do, whatever this run turns on
     bool mesh_shader = false;       // (task and mesh shaders: dev.mesh_capable)
     bool mesh_queries = false;      // (their counts in pipeline statistics, as this run has them: off with the Compute mode)
@@ -471,9 +472,9 @@ struct DevicePolicy {
     unsigned texture_threads = 1, texture_gather_threads = 1;
     // The preparation's workers in play (policy_rule::program_workers_in_play). No switch. Read (vk_draw.cpp prepare_run)
     unsigned program_workers_in_play = 2;
-    // Threaded rendering's Auto is on from 12 CPUs the process may use, where the mode is safe on this run
-    // (threaded_rendering.h). Site (vk_menu.cpp), step 7
-    bool threaded_auto_cpus = false;
+    // Threaded rendering's Auto by the cores the process may use, where the mode is safe on this run (threaded_rendering.h):
+    // the render thread from 4 cores, the recorder thread too from 6. Site (vk_menu.cpp), step 7
+    bool threaded_auto_render = false, threaded_auto_recorder = false;
     // Linux with 20 GB of RAM or less: the shader modules are let go after the precompile (1.5-1.8 GB); a memory shortfall
     // then does the same on any PC, at the site. RX_VK_DROP_MODULES, RX_VK_KEEP_MODULES. Site (vk_draw.cpp), step 2
     bool drop_modules_small_ram = false;
@@ -585,7 +586,10 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     p.texture_threads = texture_threads(f.cpus_all);
     p.texture_gather_threads = texture_gather_threads(f.cpus_all);
     p.program_workers_in_play = program_workers_in_play(f.cpus_all, f.cpus_usable);
-    p.threaded_auto_cpus = threaded::auto_picks(f.cpus_usable);
+    {
+        const threaded::Choice cpu = threaded::auto_picks(f.cores_usable);
+        p.threaded_auto_render = cpu.render_thread, p.threaded_auto_recorder = cpu.recorder_thread;
+    }
     p.drop_modules_small_ram = !f.windows && f.ram > 0 && f.ram <= 20 * kGB;
     return p;
 }
@@ -713,11 +717,11 @@ template <class Line> void device_policy_log(const DevicePolicy& p, const Device
     {
         PolicyLine l("facts");
         l.add(" %04x:%04x, driver id %d, version %#x (%.100s), type %d, %s; VRAM %llu MB, allowed at the start %llu MB, RAM %llu MB,"
-              " resizable BAR %d; CPUs %u (%u usable); mesh shaders %d, float add %d, cooperative matrices %d, 16-bit stage"
+              " resizable BAR %d; CPUs %u (%u usable, %u cores); mesh shaders %d, float add %d, cooperative matrices %d, 16-bit stage"
               " inputs %d, lanes %u to %u (32 on stages %#x)",
               (unsigned)f.vendor_id, (unsigned)f.device_id, (int)f.driver_id, (unsigned)f.driver_version, f.driver_info, (int)f.device_type,
               f.windows ? "Windows" : "not Windows", mb(f.vram_heap), mb(f.allowed_at_start), mb(f.ram), (int)f.rebar, f.cpus_all,
-              f.cpus_usable, (int)f.mesh_shader, (int)f.float32_atomic_add, (int)f.coop_matrix_ext, (int)f.storage_io16,
+              f.cpus_usable, f.cores_usable, (int)f.mesh_shader, (int)f.float32_atomic_add, (int)f.coop_matrix_ext, (int)f.storage_io16,
               (unsigned)f.subgroup_size, (unsigned)f.subgroup_max, (unsigned)f.sg32_stages);
         line(l.text);
     }
@@ -796,7 +800,8 @@ template <class Line> void device_policy_log(const DevicePolicy& p, const Device
         l.flag("rdna4", p.rdna4);
         l.add("; workers %u%s, capture helpers %u, texture threads %u (gather %u), program workers in play %u", p.workers,
               p.set(Sw::workers) ? "*" : "", p.capture_helpers, p.texture_threads, p.texture_gather_threads, p.program_workers_in_play);
-        l.flag("threaded_auto_cpus", p.threaded_auto_cpus);
+        l.flag("threaded_auto_render", p.threaded_auto_render);
+        l.flag("threaded_auto_recorder", p.threaded_auto_recorder);
         l.flag("drop_modules_small_ram", p.drop_modules_small_ram);
         line(l.text);
     }

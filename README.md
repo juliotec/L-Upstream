@@ -292,8 +292,9 @@ everything it does on the network or with other programs:
   from `github.com/NVIDIA/DLSS`. The game itself checks for nothing when it starts.
 - **Your Discord status, through the Discord app on this PC.** While Discord runs, it shows "Playing Longshot" with the
   time played, through the Discord app's own local connection (a named pipe on Windows; the socket `discord-ipc-0` in
-  `$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp` on Linux). It sends "Longshot", the Longshot version, the start time and
-  the icon's name. Turn it off with **Gameplay → Discord status** in the in-game menu.
+  `$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp` on Linux). It sends where Link is and his age (Kakariko Village - Adult) with his hearts, Gold Skulltula
+  tokens and pieces of heart below it while you play, the Longshot version until he is in a map, the start time and the icon's name, or the text and
+  picture you set yourself (below). Turn it off with **Gameplay → Discord status** in the in-game menu.
 - **Files outside the game folder:** the builder's folder, the settings and the saves (above), and shortcuts if you ask
   for them. **Bug report** (Gameplay tab) writes a folder in `bug-reports` in the game folder, with your home folder and
   user name taken out of its logs, and **Save my pipeline list** saves a zip in your Downloads folder: you decide whether
@@ -524,7 +525,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Player: Damage taken | Half, Normal, Double, Quadruple (live, while Debug tools is on; Half rounds damage up to a quarter heart; Heart protection wins) | Normal |
 | | Developer: Save my pipeline list | Saves a zip of the pipelines your play built into Downloads ([below](#send-your-pipeline-list)) | |
 | | Developer: Frame pacing | Off, On | Off; a quality preset turns it on |
-| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 12 or more processor threads for the game | Auto |
+| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 6 or more processor cores for the game, and the render thread alone with 4 or 5 | Auto |
 | | Developer: Descriptor reuse | Off, On (changes at once) | On |
 | | Developer: Sampler cache | Off, On (changes at once) | Off |
 | | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
@@ -711,9 +712,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   for one run.
 - **Threaded rendering:** On draws the picture on threads of its own (a render thread and a recorder thread) while
   the game goes on to its next frame, for a higher frame rate on a processor with threads to spare; it is still being
-  tested and can show flashes. Off draws it on the game's own thread, as before. Auto chooses by the processor
-  (On with 12 or more threads for the game, Off with fewer, and Off wherever the mode is not safe). It applies after
-  a restart. `RX_VK_ASYNC` and `RX_VK_RECORDER`, when set, choose for
+  tested and can show flashes. Off draws it on the game's own thread, as before. Auto chooses by the processor's cores
+  for the game, each core counted once however many threads it runs: On with 6 or more, the render thread alone with 4
+  or 5 (where the recorder thread beside it was slower), Off with fewer, and Off wherever the mode is not safe. It
+  applies after a restart. `RX_VK_ASYNC` and `RX_VK_RECORDER`, when set, choose for
   one run.
 - **Robust buffers** (Debug tab, Developer): a read past a buffer's end is dropped instead of stopping the GPU. Auto is
   on, on every card; Off can be faster on some NVIDIA cards.
@@ -800,8 +802,33 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   one line in `gpu/vk/menu_i18n.h`. Place and item names stay English for now. Japanese, Chinese and Korean letters come
   from the game's own fonts for them, with Windows' (Yu Gothic, Microsoft YaHei, Microsoft JhengHei, Malgun Gothic) or
   Linux's Noto CJK where a game font lacks one.
-- **Discord status** shows "Playing Longshot" and the time played in your Discord status. It is on by default and does
-  nothing unless a Discord client is running on this PC; with the row Off nothing is sent to it.
+- **Discord status** shows "Playing Longshot" in bold, and under it where Link is and his age while you play
+  (Kakariko Village - Adult, Inside the Deku Tree - Child, Fighting Queen Gohma - Child) with his hearts, Gold Skulltula
+  tokens and the pieces of heart he has found below that (❤️ 2.75/3 · 🕷️ 12 · 💗 5), or the version (v3.0.0 RC7) until he is in a map, and the
+  time played; the version is also the picture's hover text. It is on by default and does nothing unless a Discord client is running on this PC; with the row Off nothing is sent to it. What it says is yours to change in
+  `longshot_options.ini` (the menu keeps these lines):
+
+  | Line | What it sets | Default |
+  |---|---|---|
+  | `discord_text=` | the status's two lines | `{location\|{location} - {age}{break}{hearts\|❤️ {hearts}/{max_hearts} · }{skulltulas\|🕷️ {skulltulas} · }{heart_pieces\|💗 {heart_pieces}}}{!location\|{version} {build}{!version\| {commit}}}` |
+  | `discord_image=` | the large picture: an art asset's name in the Discord application, or an `https://` link to a picture | `longshot` |
+  | `discord_image_text=` | the picture's text, shown on hover | `Longshot {version} {build}{!version\| {commit}}` |
+  | `discord_app_id=` | the Discord application: the bold name ("Playing Longshot") and its art; Discord shows no other name there | Longshot's |
+
+  In the status, `{location}` is where Link is, `{age}` Child or Adult, `{map}` the game's own name for the map,
+  `{hearts}` and `{max_hearts}` his hearts (quarters as .25 .5 .75), `{rupees}` his rupees, `{skulltulas}` his Gold Skulltula
+  tokens and `{heart_pieces}` the pieces of heart he has found (all of them, not only the 0 to 3 he holds: worked out from his hearts and the boss heart containers he has taken): all empty on the title screen. Emoji work as they are. Longshot's version comes in parts: `{version}` the release (v3.0.0), `{build}` a
+  release candidate or nightly made readable (RC7, N486; nothing on a release), `{commit}` the commits since it and
+  their hash (25-g7a029028; the defaults show it only on a nightly, N486 09a20cd6, which has no version number) and `{release}` all of it as the menu shows it (v3.0.0-rc.7-25-g7a029028). `{break}` ends the
+  first line: what follows is the smaller second line. `{location|...}` shows what is inside only when there is a
+  location (any of the names works: `{commit| [{commit}]}`), `{!location|...}` only when there is none, and these
+  nest. A part that is empty also takes its brackets
+  and extra space with it, so `Longshot {version} {build} [{commit}]` reads "Longshot v3.0.0 RC7 [25-g7a029028]" on a test
+  build and "Longshot v3.0.0" on a release. Write a brace as `{{`. For example:
+  - `discord_text={location|{location}{break}}{version} {build} {commit}`: the place without the age or the stats, and
+    the version with its commit;
+  - `discord_text={location|{location} - {age}}`: the place and the age only, nothing on the title screen;
+  - `discord_text=`: no text, the picture and the time played only.
 - **Send performance statistics** (a tick on the launcher's page, off by default): the game counts how its frames,
   hitches and movies went on each map, with one-second samples of Link's X/Y/Z position and camera yaw/pitch. The
   launcher sends five-minute batches to the team at its next start, with the GPU, driver, CPU, OS and renderer but no

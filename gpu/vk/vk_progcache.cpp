@@ -41,6 +41,7 @@
 #include "vk_internal.h"
 #include "vk_progcache.h"
 #include "prepare_workers.h"
+#include "threaded_rendering.h"   // (longshot: usable_cores counts by threaded::cores_of)
 #include "vk_programs.h"
 
 namespace mkwvk {
@@ -1141,6 +1142,29 @@ unsigned usable_cpus() {
     for (uint64_t m = (uint64_t)proc; m; m &= m - 1) n++;
     // (a mask covers one processor group, 64 CPUs at most: past that, Windows may run the process on every group)
     return n < 64 ? std::clamp(n, 1u, all) : all;
+}
+/// (longshot) The physical cores among the logical processors the process may run on: Threaded rendering's Auto count
+/// (threaded_rendering.h, whose tiers were measured by cores: on 4 cores the recorder thread made a third of the frames long,
+/// 18 Nov). GetLogicalProcessorInformation's cores, one mask each of its logical processors (on Linux host/posix's, from sysfs
+/// core_id and physical_package_id), each counted once when any of its logical processors is in the affinity mask
+/// (threaded::cores_of), so a Steam Deck's 4 cores and 8 threads count 4. The affinity mask not read: every core. The cores
+/// not read (the call fails, or no core is in the mask): usable_cpus, the logical count, as before. Never more than that
+unsigned usable_cores() {
+    DWORD_PTR proc = 0, sys = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) proc = ~(DWORD_PTR)0;
+    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> info;
+    DWORD len = 0;
+    if (!GetLogicalProcessorInformation(nullptr, &len) && len) {   // (the size it needs)
+        info.resize(len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION) + 1);
+        len = (DWORD)(info.size() * sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+        if (GetLogicalProcessorInformation(info.data(), &len)) info.resize(len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+        else info.clear();
+    }
+    std::vector<uint64_t> masks;
+    for (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION& e : info)
+        if (e.Relationship == RelationProcessorCore) masks.push_back((uint64_t)e.ProcessorMask);
+    const unsigned cores = threaded::cores_of(masks.data(), (unsigned)masks.size(), (uint64_t)proc), cpus = usable_cpus();
+    return cores ? std::min(cores, cpus) : cpus;
 }
 unsigned half_cpus() {
     return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));

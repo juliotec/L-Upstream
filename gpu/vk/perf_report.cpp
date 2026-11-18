@@ -32,6 +32,10 @@
 
 #include "perf_curl.h"
 
+#ifdef _WIN32
+#include <psapi.h>   // (PROCESS_MEMORY_COUNTERS_EX, K32GetProcessMemoryInfo: ram_used_gb)
+#endif
+
 namespace mkwvk {
 
 std::atomic<bool> perf_measure{false};

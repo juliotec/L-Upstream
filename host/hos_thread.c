@@ -1368,13 +1368,28 @@ HLE(_ZN2nn2os19GetCurrentStackInfoEPmS1_) {
     if (ARG(1)) G64(ARG(1)) = cur->stack_size;
 }
 
+/* (longshot) nn::os::YieldThread gives up the virtual core only, not the processor (HOS_OS_YIELD=1: SwitchToThread as
+   well, as before; HOS_AB may flip it, each yield deciding alone). OoT yields after every job and actor callback. On a
+   PC of 4 cores in Castle Town's market the job threads' CPU time was about their running time plus their time inside
+   SwitchToThread (the six BaseProc executors 107 % of a core measured, 45.5 % of it running, 51.6 % in SwitchToThread):
+   kernel time handing the processor to another thread and taking it back, about 0.75 of the four processors over the
+   job threads. hos_vcore_yield already hands the virtual core to a waiting game thread of better or equal priority, which
+   is what the game's yield asks for; the OS still moves threads between processors at the end of their time slices. */
+static int os_yield(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("HOS_OS_YIELD");
+        v = e && !env_value_off(e);
+    }
+    return hos_ab_value("HOS_OS_YIELD", v);
+}
 HLE(_ZN2nn2os11YieldThreadEv) {
 #ifdef TRACY_ENABLE
     HT_WAIT(tz, "YieldThread");
     HT_ZONE_TEXTF(tz, "lr %#llx", (unsigned long long)c->x[30]);
 #endif
     hos_vcore_yield();
-    SwitchToThread();
+    if (os_yield()) SwitchToThread();
 }
 /* HOS_SLEEP_LOG=1 (diagnostic): guest sleeps by caller (LR) every 5 s: count, asked, slept */
 void hos_sleep_logged(int64_t ns, uint64_t lr) {

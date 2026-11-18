@@ -4943,7 +4943,7 @@ void status_tick() {
         if (f) fprintf(f, "frame,ms,pipe_waits,pipe_wait_ms,left_out,translate_ms,uploads,upload_mb,textures,memsync_ms,pipelines_ms,"
                           "uploads_ms,programs_ms,slot_wait_ms,gpu_behind_ms,draw_ms,desc_ms,cmds_ms,tex_lookup_ms,textures_gone,"
                           "late_wait_ms,readback_wait_ms,tex_frame_ms,game_ms,render_ms,gpu_wait_ms,pace_ms,wait_render_ms,"
-                          "wait_gpu_ms,wait_main_ms,main_cpu_ms,main_blocked_ms,main_vcore_ms,shown_ms,shown_at_ns,at_ns\n");
+                          "wait_gpu_ms,wait_main_ms,main_cpu_ms,main_blocked_ms,main_vcore_ms,shown_ms,shown_at_ns,at_ns,ab_side\n");
         return f;
     }();
 #ifdef TRACY_ENABLE
@@ -4976,18 +4976,22 @@ void status_tick() {
         static int64_t l_mt[3];
         int64_t mt[3] = {0, 0, 0};
         if (host->main_thread_times) host->main_thread_times(mt);
+        // (at_ns: this present on the host's clock, hos_now_ns: the clock of the profile's samples, presents.csv and events.txt,
+        // so a frame is found in them. ab_side (longshot): the frame's side in an A/B within the run, HOS_AB (host/hos_ab.c):
+        // -1 none, 0 or 1, 2 or 3 in a transition; scripts/ab_summary.py)
+        static int64_t l_at;
+        const int64_t at = host->now_ns ? host->now_ns() : 0;
+        const int ab_side = host->version >= 34 && host->ab_frame ? host->ab_frame(l_at, at) : -1;
+        l_at = at;
         fprintf(trace, "%llu,%.2f,%lld,%.2f,%lld,%.1f,%lld,%.2f,%zu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,"
-                       "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lld,%lld\n",
+                       "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lld,%lld,%d\n",
                 (unsigned long long)frames, (now_ns - last_ns) / 1e6, (long long)(pw - l_pw), pwms - l_pwms, (long long)(ps - l_ps),
                 tr - l_tr, (long long)(up - l_up), (upb - l_upb) / 1048576.0, texture_count(), dp(PROF_MEMSYNC), dp(PROF_PIPE),
                 dp(PROF_UPLOAD), dp(PROF_PROGRAM), dp(PROF_SLOTWAIT), (st_wait_ns - l_wait) / 1e6, dp(PROF_DRAW), dp(PROF_DESC),
                 dp(PROF_CMDS), dp(PROF_TEXGET), (unsigned long long)(gone - l_gone), (late - l_late) / 1e6, (rb - l_rb) / 1e6,
                 (tf - l_tf) / 1e6, ff.part[fps_stats::kGame], ff.part[fps_stats::kRender], ff.part[fps_stats::kGpuWait],
                 ff.part[fps_stats::kPace], ff.part[fps_stats::kWaitRender], ff.part[fps_stats::kWaitGpu], ff.part[fps_stats::kWaitMain],
-                (mt[2] - l_mt[2]) / 1e6, (mt[1] - l_mt[1]) / 1e6, (mt[0] - l_mt[0]) / 1e6, shown_ms, shown_at,
-                // (at_ns: this present on the host's clock, hos_now_ns: the clock of the profile's samples, presents.csv and
-                // events.txt, so a frame is found in them)
-                (long long)(host->now_ns ? host->now_ns() : 0));
+                (mt[2] - l_mt[2]) / 1e6, (mt[1] - l_mt[1]) / 1e6, (mt[0] - l_mt[0]) / 1e6, shown_ms, shown_at, (long long)at, ab_side);
 #ifdef TRACY_ENABLE
         // (LONGSHOT_TRACY: the trace's main values as plots, beside the zones)
         HT_PLOT("game_ms", ff.part[fps_stats::kGame]);
@@ -6776,12 +6780,12 @@ void fo_log(double frames) {
 
 /// (longshot) Whether this run has the render thread, from the one place async_on reads: RX_VK_ASYNC when it is set (the
 /// switch, for testing, over the menu: 0 the submitting thread, any other value the render thread), else the Insert
-/// menu's Threaded rendering as this run resolved it (vk_menu.cpp menu_threaded_rendering: On, or what Auto picks).
-/// Read once: a change of the row applies at the next start
+/// menu's Threaded rendering as this run resolved it, its render thread's half (vk_menu.cpp menu_render_thread: On, or Auto
+/// from 4 cores, in both of its tiers). Read once: a change of the row applies at the next start
 int render_thread_mode() {
     static const int mode = [] {
         const char* e = getenv("RX_VK_ASYNC");
-        return e ? atoi(e) : menu_threaded_rendering() ? 1 : 0;
+        return e ? atoi(e) : menu_render_thread() ? 1 : 0;
     }();
     return mode;
 }
@@ -6808,8 +6812,10 @@ bool async_on() {
     return on;
 }
 // (the recorder's half of the Threaded rendering row: with RX_VK_RECORDER unset, vk_recorder.h's mode_from_env asks the row
-// through this, set before anything runs; the checks that build vk_recorder.h alone leave it null, the recorder off)
-[[maybe_unused]] const bool rec_setting_hooked = (rec::g_setting_thread = menu_threaded_rendering, true);
+// through this, set before anything runs; the checks that build vk_recorder.h alone leave it null, the recorder off. The
+// recorder thread's half (menu_recorder_thread: On, or Auto from 6 cores), not the render thread's: on 4 cores Auto has the
+// render thread alone, as the recorder thread beside it was the slowest there, 18 Nov)
+[[maybe_unused]] const bool rec_setting_hooked = (rec::g_setting_thread = menu_recorder_thread, true);
 
 void readback_fell_back(int what) {
     (what == 0 ? bh_st.rb_fallback : what == 1 ? bh_st.tex_page_only : what == 2 ? bh_st.tex_exact : bh_st.rb_exact)++;

@@ -18,9 +18,10 @@ struct Options {
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int vsync = 0;        // (longshot) V-Sync, the swapchain's present mode (vk_main.cpp create_swapchain, made again at once): 0 Auto
                           // (mailbox where the driver has it), 1 On (FIFO), 2 Off (immediate). RX_VK_FIFO / RX_VK_IMMEDIATE over it
-    int threaded_rendering = 0;   // (longshot) Threaded rendering (threaded_rendering.h): 0 Auto (by the CPU; off everywhere were
-                          // threaded::kAutoEnabled off), 1 On (the render thread and the recorder thread), 2 Off. Read once, at the
-                          // start (menu_threaded_rendering); RX_VK_ASYNC and RX_VK_RECORDER, when set, over it
+    int threaded_rendering = 0;   // (longshot) Threaded rendering (threaded_rendering.h): 0 Auto (by the CPU's cores: both threads
+                          // from 6, the render thread alone with 4 or 5; off everywhere were threaded::kAutoEnabled off), 1 On (the
+                          // render thread and the recorder thread), 2 Off. Read once, at the start (menu_render_thread,
+                          // menu_recorder_thread); RX_VK_ASYNC and RX_VK_RECORDER, when set, over it
     int hdr = 0;          // (longshot) HDR10 out (vk_framegen.cpp framegen_hdr): 0 off, 1 the SDR picture expanded, 2 the game's own (native) HDR; when the display has it (the swapchain made again at once)
     int hdr_white = 200;  // HDR paper white, nits (the picture's white)
     int hdr_peak = 1000;  // HDR peak brightness, nits (its brightest highlights)
@@ -144,10 +145,12 @@ void menu_auto_tune(double gpu_ms, double draws, double fps);   // (the replay's
 /// (for the run only: the row keeps the player's choice). 0 Auto, 1 On, 2 Off
 int menu_vsync();
 /// (longshot) The Threaded rendering row as this run resolved it, once, at the start (threaded_rendering.h's rule: On, or what
-/// Auto picks for this PC): true, the render thread and the recorder thread. What the row says, not the environment's
-/// switches: RX_VK_ASYNC and RX_VK_RECORDER, when set, are read over it by their own readers (vk_replay.cpp
-/// render_thread_mode, vk_recorder.h mode_from_env). A change of the row applies at the next start. Any thread
-bool menu_threaded_rendering();
+/// Auto picks for this PC), in its two halves: menu_render_thread, the render thread (On; Auto from 4 cores), and
+/// menu_recorder_thread, the recorder thread (On; Auto from 6 cores, never without the render thread). What the row says,
+/// not the environment's switches: RX_VK_ASYNC and RX_VK_RECORDER, when set, are read over it by their own readers
+/// (vk_replay.cpp render_thread_mode, vk_recorder.h mode_from_env). A change of the row applies at the next start. Any thread
+bool menu_render_thread();
+bool menu_recorder_thread();
 void menu_set_gpu_count(int count);
 std::string driver_text();   // (vk_main.cpp: the driver as it names itself, for the log and Save my pipeline list)
 std::string device_name_text();   // (vk_main.cpp: the GPU the game runs on, as its driver names it)

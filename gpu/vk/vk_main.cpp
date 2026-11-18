@@ -832,6 +832,7 @@ bool create_device() {
 #endif
         pf.cpus_all = std::thread::hardware_concurrency();
         pf.cpus_usable = usable_cpus();
+        pf.cores_usable = usable_cores();   // (longshot: Threaded rendering's Auto counts by it)
         pf.mesh_shader = dev.mesh_capable;
         pf.mesh_queries = dev.mesh_queries;
         pf.buffer_device_address = f12.bufferDeviceAddress;

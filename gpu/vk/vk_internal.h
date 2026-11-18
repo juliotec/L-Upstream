@@ -553,6 +553,9 @@ bool compile_all();   // vk_draw.cpp
 /// (longshot) The CPUs this process may run on: its affinity mask (sched_getaffinity on Linux, through host/posix), not every CPU
 /// the PC has. The prepare's pools are sized from it: a process limited to 12 of 24 CPUs ran 24 threads on them
 unsigned usable_cpus();   // vk_progcache.cpp
+/// (longshot) The physical cores among those CPUs, a core's SMT siblings counted once (usable_cpus where they cannot be read):
+/// Threaded rendering's Auto counts by it (threaded_rendering.h)
+unsigned usable_cores();   // vk_progcache.cpp
 /// (longshot) Half the PC's CPUs (one a core where a core runs two threads: the translation's and the stage libraries' workers, at
 /// below normal priority), and never more than usable_cpus: on 12 of 24 CPUs, 6 workers made the translation 40% slower than 12
 unsigned half_cpus();   // vk_progcache.cpp
