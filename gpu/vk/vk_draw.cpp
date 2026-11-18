@@ -6239,10 +6239,9 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
         vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, d.swm[1]);
     }
     if (DYN_CHANGED(bias) || DYN_CHANGED(bias_unorm)) {
-        if (dev.depth_bias_control && vkCmdSetDepthBias2EXT) {
+        if (d.bias_unorm && dev.depth_bias_control && vkCmdSetDepthBias2EXT) {
             VkDepthBiasRepresentationInfoEXT rep{VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT};
-            rep.depthBiasRepresentation = d.bias_unorm ? VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT
-                                                       : VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORMAT_EXT;
+            rep.depthBiasRepresentation = VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT;
             VkDepthBiasInfoEXT bi{VK_STRUCTURE_TYPE_DEPTH_BIAS_INFO_EXT, &rep};
             bi.depthBiasConstantFactor = d.bias[0], bi.depthBiasClamp = d.bias[1], bi.depthBiasSlopeFactor = d.bias[2];
             vkCmdSetDepthBias2EXT(cmd, &bi);
