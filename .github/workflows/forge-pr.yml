@@ -214,7 +214,7 @@ jobs:
             t="$(echo "$t" | xargs)"
             [ -n "$t" ] || continue
             echo "== forge.py search: $t"
-            python3 -I "$f" search --state all "$t" || echo "forge.py search failed for: $t"
+            python3 -I "$f" search --repo MagicBeanDev/Longshot --state all "$t" || echo "forge.py search failed for: $t"
           done
 
       - name: Search PRs and issues (API)
