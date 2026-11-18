@@ -40,7 +40,9 @@ def main():
     end = cpu.index("                copies.push_back(c);", start) + len("                copies.push_back(c);")
     # The publication site must remain after conversion workers joined and before a copy is queued.
     assert cpu.index("for (std::thread& t : pool) t.join();") < start < cpu.index("vkCmdCopyBufferToImage(upload_cmd(), buffer, tex.image", start)
-    actual += "\nvoid cpu_slice(Staging st, uint64_t out_bytes) {\n" + cpu[start:end] + "\n}\n"
+    # (a color upload: no DEPTH24_STENCIL8 stencil bytes after the texels)
+    actual += ("\nvoid cpu_slice(Staging st, uint64_t out_bytes) {\n    [[maybe_unused]] const bool d24s8_as_d32 = false;\n"
+               "    [[maybe_unused]] const uint64_t s_off = 0, s_bytes = 0;\n" + cpu[start:end] + "\n}\n")
     fixture = (ROOT / "tests/texture_staging_publication_test.cpp").read_text(encoding="utf-8").replace("/* ACTUAL */", actual)
     with tempfile.TemporaryDirectory(prefix="texture-staging-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
