@@ -170,6 +170,8 @@ jobs:
                   page += 1
           pr = get("/pulls/%s" % n)
           print("#%s %s (%s, head %s)" % (n, pr.get("title"), pr.get("state"), (pr.get("head") or {}).get("sha", "")[:8]))
+          print("\n== PR description")
+          print(pr.get("body") or "")
           for rv in get("/pulls/%s/reviews" % n):
               print("\n== review %s by %s, %s, %s (commit %s)" % (rv["id"], (rv.get("user") or {}).get("login"),
                     rv.get("state"), rv.get("submitted_at"), (rv.get("commit_id") or "")[:8]))
