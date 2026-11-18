@@ -48,11 +48,15 @@ namespace Shader::Backend::SPIRV {
 using Sirit::Id;
 using u32 = std::uint32_t;
 namespace IR {
-struct Program {   // (what DefineWmma16MatrixFunction reads)
+struct Program {   // (what Wmma16Fits and DefineWmma16MatrixFunction read)
 	std::array<u32, 3> workgroup_size{};
 	u32 shared_memory_size{};
+	struct { bool uses_int8{}, uses_int16{}; } info;
 };
 }
+struct Profile {
+	bool support_explicit_workgroup_layout{}, support_workgroup_layout_8bit_access{}, support_workgroup_layout_16bit_access{};
+};
 struct EmitContext : Sirit::Module {
 	using Sirit::Module::Module;
 	std::array<Id, 5> U32{}, F16{};
@@ -60,6 +64,7 @@ struct EmitContext : Sirit::Module {
 	Id subgroup_local_invocation_id{};
 	Id wmma16_function{};
 	bool uses_explicit_workgroup_layout{};
+	Profile profile;
 	std::vector<Id> interfaces;
 	Id Const(u32 value) { return Constant(U32[1], value); }
 };
@@ -69,11 +74,12 @@ struct EmitContext : Sirit::Module {
 using namespace Shader::Backend::SPIRV;
 
 int main(int argc, char** argv) {
-	if (argc < 7) return 2;
+	if (argc < 8) return 2;
 	const u32 width = std::atoi(argv[2]), own = std::atoi(argv[4]);
 	const bool explicit_layout = argv[3][0] == '1';
 	mma_wmma16_fast = argv[5][0] == '1';
 	mma_wmma16_full_subgroups = argv[6][0] == '1';
+	mma_wmma16_shared_limit = std::atoi(argv[7]);
 	EmitContext ctx{0x00010600};
 	ctx.AddCapability(spv::Capability::Shader);
 	ctx.AddCapability(spv::Capability::Float16);
@@ -109,6 +115,7 @@ int main(int argc, char** argv) {
 	Id own_shared{};
 	if (explicit_layout) {   // (as DefineSharedMemory's make with an explicit layout)
 		ctx.uses_explicit_workgroup_layout = true;
+		ctx.profile.support_explicit_workgroup_layout = true;
 		ctx.AddExtension("SPV_KHR_workgroup_memory_explicit_layout");
 		ctx.AddCapability(spv::Capability::WorkgroupMemoryExplicitLayoutKHR);
 		const Id array_type{ctx.TypeArray(ctx.U32[1], ctx.Const((own + 3) / 4))};
@@ -150,15 +157,18 @@ int main(int argc, char** argv) {
 }
 """
 
-# name, workgroup X, explicit layout, own shared bytes, fast, full subgroups, wanted
+# name, workgroup X, explicit layout, own shared bytes, fast, full subgroups, shared memory limit (0: none), wanted
 CASES = (
-	("one subgroup", 32, 0, 0, 0, 1, "wmma16"),
-	("one subgroup, one multiply", 32, 0, 0, 1, 1, "wmma16"),
-	("two subgroups", 64, 0, 0, 0, 1, "wmma16"),
-	("two subgroups, own shared memory, explicit layout", 64, 1, 100, 0, 1, "wmma16"),
-	("one subgroup, own shared memory, explicit layout, one multiply", 32, 1, 64, 1, 1, "wmma16"),
-	("48 lanes wide", 48, 0, 0, 0, 1, "software"),
-	("no full subgroups", 64, 0, 0, 0, 0, "software"),
+	("one subgroup", 32, 0, 0, 0, 1, 0, "wmma16"),
+	("one subgroup, one multiply", 32, 0, 0, 1, 1, 0, "wmma16"),
+	("two subgroups", 64, 0, 0, 0, 1, 0, "wmma16"),
+	("two subgroups, own shared memory, explicit layout", 64, 1, 100, 0, 1, 0, "wmma16"),
+	("one subgroup, own shared memory, explicit layout, one multiply", 32, 1, 64, 1, 1, 0, "wmma16"),
+	("48 lanes wide", 48, 0, 0, 0, 1, 0, "software"),
+	("no full subgroups", 64, 0, 0, 0, 0, 0, "software"),
+	("two subgroups, tiles fill the shared memory", 64, 0, 0, 0, 1, 2 * 2048 + 4, "wmma16"),
+	("two subgroups, tiles past the shared memory", 64, 0, 0, 0, 1, 2 * 2048, "software"),
+	("own shared memory, explicit layout, tiles past the shared memory", 32, 1, 100, 0, 1, 112 + 2048, "software"),
 )
 
 
@@ -174,7 +184,9 @@ def main():
 	marker = "bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program)"
 	if marker not in warp:
 		raise SystemExit("FAIL: emit_spirv_warp.cpp has no DefineWmma16MatrixFunction")
-	fixture = FIXTURE.replace("@@FUNCTION@@", block(warp, marker))
+	if "bool Wmma16Fits(" not in warp:
+		raise SystemExit("FAIL: emit_spirv_warp.cpp has no Wmma16Fits")
+	fixture = FIXTURE.replace("@@FUNCTION@@", block(warp, "bool Wmma16Fits(") + "\n" + block(warp, marker))
 	sirit = vk / "sirit"
 	with tempfile.TemporaryDirectory(prefix="wmma16-spirv-val-") as tmp:
 		tmp = Path(tmp)
@@ -187,9 +199,9 @@ def main():
 		if r.returncode:
 			print(r.stdout + r.stderr)
 			raise SystemExit("FAIL: the fixture did not build")
-		for n, (name, width, explicit, own, fast, full, want) in enumerate(CASES):
+		for n, (name, width, explicit, own, fast, full, limit, want) in enumerate(CASES):
 			spv = tmp / ("case%d.spv" % n)
-			r = subprocess.run([str(exe), str(spv), str(width), str(explicit), str(own), str(fast), str(full)],
+			r = subprocess.run([str(exe), str(spv), str(width), str(explicit), str(own), str(fast), str(full), str(limit)],
 							   capture_output=True, text=True, timeout=30)
 			if r.returncode or r.stdout.split() != [want]:
 				print(r.stdout + r.stderr)
