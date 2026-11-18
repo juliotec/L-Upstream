@@ -30,6 +30,17 @@ def main():
 		for info in infos:
 			if LIMIT not in info:
 				bad.append("%s binds {%s} without clamping it to maxStorageBufferRange (VUID 00333)" % (fn, info))
+	# (a clamped range alone leaves a dispatch reading later layers past it: each keeps its layers within the range)
+	checks = (("bool upload_astc_gpu(", "const uint64_t fit = std::max<uint64_t>(" + LIMIT + " / pitch, 1);", "BC runs of layers"),
+	          ("bool upload_astc_gpu(", "k1 - k0 < run && k1 - k0 < fit &&", "BC runs of layers"),
+	          ("bool upload_astc_gpu(", "const bool one = all && pitch * layers.size() <= " + LIMIT + ";", "one dispatch for all layers"),
+	          ("bool upload_astc_gpu(", "vkCmdDispatch(cmd, (g.tw + 7) / 8, (g.th + 7) / 8, one ? tex.layers : 1);", "the all-layer dispatch"),
+	          ("bool upload_unswizzle_gpu(", "if ((uint64_t)(tex.layers - 1) * tex.L.layer_size + g.swizzled > " + LIMIT + ") return false;", "its layers"))
+	for fn, line, what in checks:
+		at = tex.index(fn)
+		body = tex[at:tex.index("\n}\n", at)]
+		if line not in body:
+			bad.append("%s: %s not kept within maxStorageBufferRange (a dispatch reads layers past the clamped range)" % (fn, what))
 	if bad:
 		raise SystemExit("\n".join(bad))
 	print("the decoders' storage buffer ranges are within maxStorageBufferRange: ok")
