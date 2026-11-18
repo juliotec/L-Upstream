@@ -303,7 +303,7 @@ jobs:
                       break
               print("(%d hits)" % hits)
 
-      # (several PRs in one run: batch.json on the branch named by branch, a list of {number, branch, body, comment};
+      # (several PRs in one run: batch.json on the branch named by branch, a list of {number, branch, body, comment, ready, close};
       #  a forge head holding commits by someone else is not overwritten: that PR is skipped and its commits listed)
       - name: Batch of PR updates
         if: inputs.action == 'batch'
@@ -311,7 +311,7 @@ jobs:
           MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
         shell: python3 -I {0}
         run: |
-          import base64, json, os, subprocess
+          import base64, json, os, subprocess, urllib.request
           auth = base64.b64encode(("%s:%s" % (os.environ["FORGE_USER"], os.environ["MAGICBEAN_TOKEN"])).encode()).decode()
           print("::add-mask::" + auth)
           hdr = ["-c", "http.extraheader=AUTHORIZATION: basic " + auth]
@@ -357,6 +357,18 @@ jobs:
                       print(r.stdout + r.stderr, flush=True)
                       if r.returncode:
                           failed.append(n)
+                          continue
+                  if it.get("ready"):
+                      r = subprocess.run(["python3", "-I", "scripts/forge.py", "pr", "ready", n], cwd=tools, capture_output=True, text=True)
+                      print(r.stdout + r.stderr, flush=True)
+                      if r.returncode:
+                          failed.append(n)
+                  if it.get("close"):
+                      req = urllib.request.Request("https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot/pulls/" + n, method="PATCH",
+                                                  data=json.dumps({"state": "closed"}).encode(),
+                                                  headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
+                      with urllib.request.urlopen(req) as resp:
+                          print("closed #%s: %s %s" % (n, resp.status, json.load(resp).get("state")), flush=True)
               except Exception as e:
                   print("error: %s" % e)
                   failed.append(n)

@@ -1,0 +1,57 @@
+# Fork only (juliotec/L-Upstream): main (longshot-main) plus one branch, built for Windows and Linux to measure that one
+# change against main. Nothing is published: the builders' files stay as this run's artifacts. The merge is pushed to
+# single/<branch> so the builders can check it out; delete that branch after.
+name: Single PR build
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: the fix/* or feat/* branch to merge into longshot-main
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    name: longshot-main + the branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      ref: ${{ steps.m.outputs.ref }}
+      tag: ${{ steps.m.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: longshot-main
+          fetch-depth: 0
+      - id: m
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          git config user.name "single-pr-build"
+          git config user.email "single-pr-build@users.noreply.github.com"
+          git fetch -q origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+          git merge --no-edit "origin/$BRANCH"
+          ref=$(git rev-parse HEAD)
+          git push -f origin "HEAD:refs/heads/single/$BRANCH"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "tag=single-${ref:0:8}" >> "$GITHUB_OUTPUT"
+          echo "longshot-main + $BRANCH = $ref"
+
+  linux:
+    name: Linux builder
+    needs: merge
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      tag: ${{ needs.merge.outputs.tag }}
+      ref: ${{ needs.merge.outputs.ref }}
+
+  windows:
+    name: Windows builder
+    needs: merge
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      tag: ${{ needs.merge.outputs.tag }}
+      ref: ${{ needs.merge.outputs.ref }}
