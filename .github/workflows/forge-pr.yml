@@ -10,10 +10,10 @@ on:
         options: [longshot]
         default: longshot
       action:
-        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status / reviews = on PR number; search = PRs and issues for query"
+        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status / reviews = on PR number; search = PRs and issues for query; batch = batch.json on branch"
         required: true
         type: choice
-        options: [push, create, update, comment, ready, status, reviews, search, audit]
+        options: [push, create, update, comment, ready, status, reviews, search, audit, batch]
       branch:
         description: "Branch on juliotec/L-Upstream (push, create, update with push)"
         required: false
@@ -77,7 +77,7 @@ jobs:
       - name: Check the inputs
         run: |
           case "$ACTION" in
-            push|create) [ -n "$BRANCH" ] || { echo "branch is required"; exit 1; } ;;
+            push|create|batch) [ -n "$BRANCH" ] || { echo "branch is required"; exit 1; } ;;
             update|comment|ready|status|reviews|audit) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
             search) [ -n "$QUERY" ] || { echo "query is required"; exit 1; } ;;
           esac
@@ -127,7 +127,7 @@ jobs:
           git -c http.extraheader="AUTHORIZATION: basic $auth" push --force "$FORK_URL" "HEAD:refs/heads/$BRANCH"
 
       - name: PR on MagicBeanDev/Longshot
-        if: inputs.action != 'push' && inputs.action != 'reviews' && inputs.action != 'search' && inputs.action != 'audit'
+        if: inputs.action != 'push' && inputs.action != 'reviews' && inputs.action != 'search' && inputs.action != 'audit' && inputs.action != 'batch'
         working-directory: tools
         run: |
           printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
@@ -302,6 +302,67 @@ jobs:
                   if len(got) < 50:
                       break
               print("(%d hits)" % hits)
+
+      # (several PRs in one run: batch.json on the branch named by branch, a list of {number, branch, body, comment};
+      #  a forge head holding commits by someone else is not overwritten: that PR is skipped and its commits listed)
+      - name: Batch of PR updates
+        if: inputs.action == 'batch'
+        env:
+          MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
+        shell: python3 -I {0}
+        run: |
+          import base64, json, os, subprocess
+          auth = base64.b64encode(("%s:%s" % (os.environ["FORGE_USER"], os.environ["MAGICBEAN_TOKEN"])).encode()).decode()
+          print("::add-mask::" + auth)
+          hdr = ["-c", "http.extraheader=AUTHORIZATION: basic " + auth]
+          me = "juliotec2@hotmail.com"
+          src = os.path.abspath("src")
+          tools = os.path.abspath("tools")
+          items = json.load(open(os.path.join(src, "batch.json"), encoding="utf-8"))
+          def git(*a, check=True):
+              r = subprocess.run(["git", "-C", src] + list(a), capture_output=True, text=True)
+              if check and r.returncode:
+                  raise RuntimeError("git %s: %s" % (a[-2] if len(a) > 1 else a[0], r.stderr.strip()[-500:]))
+              return r
+          git("fetch", "--quiet", "origin", "+refs/heads/longshot-main:refs/batch/main")
+          failed = []
+          for it in items:
+              n, b = str(it["number"]), it.get("branch") or ""
+              print("\n######## #%s %s" % (n, b), flush=True)
+              try:
+                  if b:
+                      git("fetch", "--quiet", "origin", "+refs/heads/%s:refs/batch/ours" % b)
+                      r = git(*hdr, "fetch", "--quiet", os.environ["FORK_URL"], "+refs/heads/%s:refs/batch/forge" % b, check=False)
+                      if r.returncode == 0:
+                          new = git("log", "--no-merges", "--format=%h %ae %s", "refs/batch/forge", "^refs/batch/ours", "^refs/batch/main").stdout.splitlines()
+                          foreign = [x for x in new if x.split(" ")[1] != me]
+                          if foreign:
+                              print("the forge head has commits by someone else; not pushed, not updated:")
+                              print("\n".join(foreign))
+                              failed.append(n)
+                              continue
+                      else:
+                          print("no forge branch yet: " + r.stderr.strip()[-300:])
+                      git(*hdr, "push", "--force", os.environ["FORK_URL"], "refs/batch/ours:refs/heads/" + b)
+                      print("pushed " + git("rev-parse", "--short=8", "refs/batch/ours").stdout.strip(), flush=True)
+                  cmd = ["python3", "-I", "scripts/forge.py", "pr", "update", n]
+                  if it.get("body"):
+                      f = os.path.join(os.environ["RUNNER_TEMP"], "body-%s.md" % n)
+                      open(f, "w", encoding="utf-8").write(it["body"])
+                      cmd += ["--body-file", f]
+                  if it.get("comment"):
+                      cmd += ["--comment", it["comment"]]
+                  if len(cmd) > 6:
+                      r = subprocess.run(cmd, cwd=tools, capture_output=True, text=True)
+                      print(r.stdout + r.stderr, flush=True)
+                      if r.returncode:
+                          failed.append(n)
+              except Exception as e:
+                  print("error: %s" % e)
+                  failed.append(n)
+          print("\nfailed: " + (" ".join("#" + x for x in failed) or "none"))
+          if failed:
+              raise SystemExit(1)
 
       - name: Forget the session
         if: always()
