@@ -364,11 +364,18 @@ jobs:
                       if r.returncode:
                           failed.append(n)
                   if it.get("close"):
-                      req = urllib.request.Request("https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot/pulls/" + n, method="PATCH",
-                                                  data=json.dumps({"state": "closed"}).encode(),
-                                                  headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
-                      with urllib.request.urlopen(req) as resp:
-                          print("closed #%s: %s %s" % (n, resp.status, json.load(resp).get("state")), flush=True)
+                      r = subprocess.run(["python3", "-I", "scripts/forge.py", "pr", "close", n], cwd=tools, capture_output=True, text=True)
+                      print(r.stdout + r.stderr, flush=True)
+                      if r.returncode:
+                          req = urllib.request.Request("https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot/issues/" + n, method="PATCH",
+                                                       data=json.dumps({"state": "closed"}).encode(),
+                                                       headers={"Authorization": "token " + os.environ["MAGICBEAN_TOKEN"], "Content-Type": "application/json", "Accept": "application/json"})
+                          try:
+                              with urllib.request.urlopen(req) as resp:
+                                  print("closed #%s: %s %s" % (n, resp.status, json.load(resp).get("state")), flush=True)
+                          except urllib.error.HTTPError as e:
+                              print("close #%s: HTTP %s %s" % (n, e.code, e.read().decode(errors="replace")[:500]), flush=True)
+                              failed.append(n)
               except Exception as e:
                   print("error: %s" % e)
                   failed.append(n)
