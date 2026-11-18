@@ -1039,7 +1039,7 @@ const Shader::Profile& profile() {
 /// The profile of a stage pinned to 32 lanes (compute, and the mesh fallback's compute stages, pin_subgroup): the guest's warp
 /// is the host's there, so the short path for warp ops, as before. The long one in every compute program made their SPIR-V new
 /// and longer: the driver's cache had none of it, and AMD compiled the shaders for hours
-const Shader::Profile& profile_pinned() {
+const Shader::Profile& profile_pinned(uint64_t invocations = 64) {
     static const Shader::Profile p = [] {
         Shader::Profile q = profile();
         if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
@@ -1051,7 +1051,8 @@ const Shader::Profile& profile_pinned() {
         }
         return q;
     }();
-    return p;
+    // (a workgroup 32-lane subgroups cannot cover is not pinned, pins_32: its program takes the long path)
+    return pins_32(VK_SHADER_STAGE_COMPUTE_BIT, invocations) ? p : profile();
 }
 
 /// The profile of a graphics stage: one the GPU pins to 32 lanes as well (pin_subgroup: RDNA2's and RDNA3's fragment, task
@@ -1065,7 +1066,7 @@ const Shader::Profile& profile_graphics(VkShaderStageFlags stage) {
         return q;
     }();
     static const bool forced = getenv("RX_VK_WARP64") != nullptr;
-    return !forced && (dev.sg32_stages & stage) ? pinned : profile();
+    return !forced && pins_32(stage) ? pinned : profile();
 }
 
 const std::vector<Code>& codes_of(const NvnState& s) {
@@ -1308,6 +1309,9 @@ uint64_t translator_stamp() {
                               // made on a 16-aligned GPU is no use on a 64-aligned one in the same folder, a laptop's two GPUs)
                               (uint32_t)storage_binding_align()};
     add(lanes, sizeof lanes);
+    // (and a GPU whose 32-lane subgroups cannot cover the largest guest workgroup, 1024 invocations: its larger compute programs
+    // are not pinned, pins_32, and take the long path. Only then, so other GPUs keep their caches)
+    if (dev.sg32_stages && 32ull * dev.max_workgroup_subgroups < 1024) add(&dev.max_workgroup_subgroups, sizeof dev.max_workgroup_subgroups);
     // (k10) f16 lowered to f32 on a GPU without f16 shaders (host_info): only then, so other GPUs keep their caches
     if (!dev.vk12.shaderFloat16) {
         const uint32_t no_f16 = 0x6e663136u;   // ("nf16")
@@ -1475,7 +1479,9 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                 if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.policy.networks_left_out)) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
                     throw std::runtime_error(network_left_out);
             }
-            const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(), rt, t->program, bindings);
+            // (pinned to 32 lanes only where 32-lane subgroups cover its workgroup, as its pipeline is: pin_subgroup, pins_32)
+            const auto& wg = t->program.workgroup_size;
+            const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(uint64_t(wg[0]) * wg[1] * wg[2]), rt, t->program, bindings);
             // (EvilOOT) RX_VK_DUMP_SPV=<folder>: the SPIR-V of the programs RX_VK_MISS_LOG_PROG names (all: unset), for spirv-val
             if (const char* dir = getenv("RX_VK_DUMP_SPV"); dir && Shader::Optimization::g_nvn2_miss_log_this) {
                 char path[512];
