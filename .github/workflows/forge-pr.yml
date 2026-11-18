@@ -10,10 +10,10 @@ on:
         options: [longshot]
         default: longshot
       action:
-        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status / reviews = on PR number"
+        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status / reviews = on PR number; search = PRs and issues for query"
         required: true
         type: choice
-        options: [push, create, update, comment, ready, status, reviews]
+        options: [push, create, update, comment, ready, status, reviews, search]
       branch:
         description: "Branch on juliotec/L-Upstream (push, create, update with push)"
         required: false
@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: ""
+      query:
+        description: "Search terms, several split by | (search)"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: forge-pr
@@ -67,12 +72,14 @@ jobs:
       BODY: ${{ inputs.body }}
       COMMENT: ${{ inputs.comment }}
       TESTED_IN_GAME: ${{ inputs.tested_in_game }}
+      QUERY: ${{ inputs.query }}
     steps:
       - name: Check the inputs
         run: |
           case "$ACTION" in
             push|create) [ -n "$BRANCH" ] || { echo "branch is required"; exit 1; } ;;
             update|comment|ready|status|reviews) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
+            search) [ -n "$QUERY" ] || { echo "query is required"; exit 1; } ;;
           esac
           [ "$ACTION" != create ] || [ -n "$TITLE" ] || { echo "title is required"; exit 1; }
           case "$ACTION" in comment|update) [ -n "$COMMENT" ] || { echo "comment is required"; exit 1; } ;; esac
@@ -120,7 +127,7 @@ jobs:
           git -c http.extraheader="AUTHORIZATION: basic $auth" push --force "$FORK_URL" "HEAD:refs/heads/$BRANCH"
 
       - name: PR on MagicBeanDev/Longshot
-        if: inputs.action != 'push' && inputs.action != 'reviews'
+        if: inputs.action != 'push' && inputs.action != 'reviews' && inputs.action != 'search'
         working-directory: tools
         run: |
           printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
@@ -194,6 +201,50 @@ jobs:
                   continue
               print("-- %s by %s, %s%s" % (ev.get("type"), (ev.get("user") or {}).get("login"), ev.get("created_at"),
                     (": " + ev["body"][:200]) if ev.get("body") else ""))
+
+      # (PRs and issues on MagicBeanDev/Longshot, open, closed and merged, for each term of query split on |)
+      - name: Search PRs and issues (forge.py search)
+        if: inputs.action == 'search'
+        continue-on-error: true
+        run: |
+          f="$MAGICBEAN_TOOLING/scripts/forge.py"
+          if ! python3 -I "$f" search --help > /dev/null 2>&1; then echo "forge.py has no search: the API search below is the only one"; exit 0; fi
+          IFS='|' read -ra terms <<< "$QUERY"
+          for t in "${terms[@]}"; do
+            t="$(echo "$t" | xargs)"
+            [ -n "$t" ] || continue
+            echo "== forge.py search: $t"
+            python3 -I "$f" search --state all "$t" || echo "forge.py search failed for: $t"
+          done
+
+      - name: Search PRs and issues (API)
+        if: inputs.action == 'search'
+        env:
+          MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
+        shell: python3 -I {0}
+        run: |
+          import json, os, urllib.error, urllib.parse, urllib.request
+          api = "https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot"
+          for term in [t.strip() for t in os.environ["QUERY"].split("|") if t.strip()]:
+              print("\n== API search: %s" % term)
+              hits = 0
+              for page in range(1, 5):
+                  req = urllib.request.Request("%s/issues?state=all&limit=50&page=%d&q=%s" % (api, page, urllib.parse.quote(term)),
+                                               headers={"Authorization": "token " + os.environ["MAGICBEAN_TOKEN"],
+                                                        "Accept": "application/json", "User-Agent": "longshot-forge-pr"})
+                  try:
+                      with urllib.request.urlopen(req, timeout=60) as r:
+                          got = json.load(r)
+                  except urllib.error.HTTPError as e:
+                      raise SystemExit("%s: HTTP %s" % (req.full_url, e.code))
+                  for i in got:
+                      pr = i.get("pull_request")
+                      state = "merged" if pr and pr.get("merged") else i.get("state")
+                      print("%s %s %s %s" % ("PR" if pr else "issue", state, i.get("html_url"), i.get("title")))
+                  hits += len(got)
+                  if len(got) < 50:
+                      break
+              print("(%d hits)" % hits)
 
       - name: Forget the session
         if: always()
