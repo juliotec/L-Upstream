@@ -60,14 +60,25 @@ def wiring():
     shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
     need("(mma_wmma16 ? 2048u : 0u)" in shader and "(mma_wmma16_fast ? 4096u : 0u)" in shader,
          "the program cache's stamp does not tell WMMA16 programs apart")
-    need("!Shader::Backend::SPIRV::mma_wmma16)" in shader, "the networks are still left out on AMD with WMMA16")
+    gate_line = [l for l in shader.split("\n") if "dev.policy.networks_left_out &&" in l and "network_left_out" not in l]
+    need(len(gate_line) == 1, "the network gate was not found (%d)" % len(gate_line))
+    need("(dev.policy.networks_left_out && !(Shader::Backend::SPIRV::mma_wmma16 && Shader::Backend::SPIRV::Wmma16Fits(profile_pinned(), t->program)))" in gate_line[0],
+         "a network the WMMA16 tiles do not run is kept on AMD, and compiled as the software multiply the gate leaves out")
     need("inline bool mma_wmma16_full_subgroups = false;" in layout, "mma_layout.h lacks mma_wmma16_full_subgroups")
     wi = block(coop, "void wmma16_init(")
     need(re.search(r"if \(!dev\.vk13\.computeFullSubgroups\) \{[^}]*software_multiplies", wi) and
          wi.index("computeFullSubgroups") < wi.index("mma_wmma16_full_subgroups = true;") < wi.index("mma_wmma16 = true;"),
          "wmma16_init turns the tiles on without full compute subgroups")
+    need("[[nodiscard]] bool Wmma16Fits(const Profile& profile, const IR::Program& program);" in (SPIRV / "emit_spirv.h").read_text(encoding="utf-8"),
+         "emit_spirv.h does not declare Wmma16Fits")
     fn = block(warp, "bool DefineWmma16MatrixFunction(")
-    gate = fn[:fn.index("const u32 threads")] if "const u32 threads" in fn else ""
+    call = "if (!Wmma16Fits(ctx.profile, program)) return false;"
+    need(call in fn and "const u32 threads" in fn and fn.index(call) < fn.index("const u32 threads"),
+         "DefineWmma16MatrixFunction does not take its tiles exactly where Wmma16Fits says")
+    fits = block(warp, "bool Wmma16Fits(")
+    gate = fits[:fits.index("const u32 threads")] if "const u32 threads" in fits else ""
+    need("profile.support_explicit_workgroup_layout" in fits and "mma_wmma16_shared_limit" in fits,
+         "Wmma16Fits does not follow the explicit layout and the shared memory limit")
     need("!mma_wmma16_full_subgroups" in gate and "program.workgroup_size[0] % 32 != 0" in gate and "return false;" in gate,
          "DefineWmma16MatrixFunction runs the tiles in a workgroup whose subgroups may lack lanes")
     draw = (VK / "vk_draw.cpp").read_text(encoding="utf-8")
