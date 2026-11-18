@@ -74,7 +74,7 @@ def wiring():
     pin = block(draw, "void pin_subgroup(")
     need("!(workgroup_x % 32) && dev.vk13.computeFullSubgroups" in pin and "REQUIRE_FULL_SUBGROUPS_BIT" in pin,
          "pin_subgroup no longer asks for full subgroups where the tiles are used")
-    need(draw.count("pin_subgroup(ci.stage, q.workgroup[0]") == 1 and draw.count("pin_subgroup(ci.stage, p.workgroup[0]") == 1,
+    need(draw.count("pin_subgroup(st, p.workgroup[0]") == 1,
          "a compute pipeline is not pinned with its workgroup width")
     return warp
 
