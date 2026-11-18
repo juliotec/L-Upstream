@@ -60,13 +60,12 @@ def main():
     check("if (DYN_CHANGED(bias) || DYN_CHANGED(bias_unorm))" in draw, "the bias is set again when its unit changes")
     blk = re.search(r"if \(DYN_CHANGED\(bias\) \|\| DYN_CHANGED\(bias_unorm\)\) \{(.*?)\n    \}\n", draw, re.S)
     b = blk.group(1) if blk else ""
-    check("if (dev.depth_bias_control && vkCmdSetDepthBias2EXT)" in b and "vkCmdSetDepthBias2EXT(cmd, &bi);" in b,
-          "vkCmdSetDepthBias2EXT with the extension")
-    check("d.bias_unorm ? VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT" in b and
-          ": VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORMAT_EXT" in b,
-          "FORCE_UNORM for bias_unorm, the format's unit otherwise")
+    check("if (d.bias_unorm && dev.depth_bias_control && vkCmdSetDepthBias2EXT)" in b and "vkCmdSetDepthBias2EXT(cmd, &bi);" in b,
+          "vkCmdSetDepthBias2EXT only for a bias in D24 units")
+    check("rep.depthBiasRepresentation = VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT;" in b and
+          "FORMAT_EXT" not in b, "FORCE_UNORM there; every other bias keeps the plain call")
     check(re.search(r"\} else\s*vkCmdSetDepthBias\(cmd, d\.bias\[0\], d\.bias\[1\], d\.bias\[2\]\);", b) is not None,
-          "vkCmdSetDepthBias without the extension")
+          "vkCmdSetDepthBias for every other bias, with or without the extension")
     # VUID-vkCmdSetDepthBias-depthBiasClamp-00790 / VUID-VkDepthBiasInfoEXT-depthBiasClamp-08950: 0 without the feature
     check("dev.depth_bias_clamp = f.features.depthBiasClamp == VK_TRUE;" in main_cpp,
           "the depthBiasClamp feature is read from the enabled features")
