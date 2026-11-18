@@ -69,7 +69,7 @@ struct {
 	} vk12;
 	bool float_atomic_add = false;
 	struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
-	struct { bool gather_offset = false; } fixes;
+	struct { bool gather_offset = false, warp64 = false, frag_shuffle_fallback = false; } policy;
 } dev;
 '''
 
