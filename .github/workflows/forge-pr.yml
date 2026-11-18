@@ -364,7 +364,9 @@ jobs:
                       if r.returncode:
                           failed.append(n)
                   if it.get("close"):
-                      if True:
+                      r = subprocess.run(["python3", "-I", "scripts/forge.py", "pr", "close", n, "--comment", it.get("close_comment") or "Closing, as explained in the comment above."], cwd=tools, capture_output=True, text=True)
+                      print(r.stdout + r.stderr, flush=True)
+                      if r.returncode:
                           req = urllib.request.Request("https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot/issues/" + n, method="PATCH",
                                                        data=json.dumps({"state": "closed"}).encode(),
                                                        headers={"Authorization": "token " + os.environ["MAGICBEAN_TOKEN"], "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "longshot-forge-pr"})
