@@ -1137,7 +1137,15 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         if (overlaps(dirty, (uint64_t)layer * layer_size + tail0, (uint64_t)(layer + 1) * layer_size)) layers.push_back(layer);
     if (layers.empty()) return true;
     const bool all = layers.size() == tex.layers;
-    const Staging s = staging(tail * layers.size(), std::max<uint64_t>(256, dev.props.limits.minStorageBufferOffsetAlignment));
+    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    // (each layer staged at an aligned pitch: at k * tail, a layer's storage buffer offset could miss
+    // minStorageBufferOffsetAlignment, VUID-VkWriteDescriptorSet-descriptorType-00328)
+    const uint64_t pitch = (tail + align - 1) / align * align;
+    if (pitch > UINT32_MAX) {
+        astc_fail = "its layout";
+        return false;
+    }
+    const Staging s = staging(pitch * layers.size(), std::max<uint64_t>(256, align));
     if (!s.buffer) {
         astc_fail = "no staging memory for its ASTC blocks";
         return false;
@@ -1145,16 +1153,16 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     std::vector<uint8_t> scratch;
     for (size_t k = 0; k < layers.size(); k++) {
         const uint64_t at = (uint64_t)layers[k] * layer_size + tail0;
-        if (at >= total) continue;
-        const uint64_t n = std::min(tail, total - at);
-        std::memcpy(s.data + k * tail, guest_bytes(tex.gpu + at, n, scratch), n);
+        const uint64_t n = at < total ? std::min(tail, total - at) : 0;
+        if (n) std::memcpy(s.data + k * pitch, guest_bytes(tex.gpu + at, n, scratch), n);
+        if (n < pitch) std::memset(s.data + k * pitch + n, 0, pitch - n);   // (zeros past the guest's bytes, not the staging's old ones)
     }
-    const uint64_t staged = tail * layers.size();
+    const uint64_t staged = pitch * layers.size();
     flush_mapped_range(s.allocation, s.offset, staged);   // (encoded blocks read by the GPU decoder, not necessarily coherent)
     st_bytes += (int64_t)staged;
     VkCommandBuffer cmd = upload_cmd();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    descriptors_disturbed();   // (the next draw or dispatch binds its own pipeline and descriptors again)
     if (tex.bc) {   // (decoded into the scratch a run of consecutive layers at a time, re-encoded, copied in)
         if (!bc_scratch_layout(cmd, tex.bc_resized)) {
             astc_fail = "no memory for the BC3 scratch";
@@ -1168,13 +1176,16 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             // (longshot-amd: a resized BC3 image: the level decodes at the game's size, g.w x g.h, and is encoded at iw x ih)
             AstcPush pc{};
             pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-            pc.layer_stride = (uint32_t)tail;
+            pc.layer_stride = (uint32_t)pitch;
             const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
             pc.x_shift = 9 + g.tile_h + g.tile_d;
             pc.block_size = gobs_x << pc.x_shift;
             pc.block_height = g.tile_h;
             pc.block_height_mask = (1u << g.tile_h) - 1;
             pc.native_tiling = 1;
+            // (a run's layers are read at k * pitch from its descriptor's start: no more of them than
+            // maxStorageBufferRange holds, or the later ones are read past the range, VUID-VkWriteDescriptorSet-descriptorType-00333)
+            const uint64_t fit = std::max<uint64_t>(dev.props.limits.maxStorageBufferRange / pitch, 1);
             for (size_t k0 = 0; k0 < layers.size();) {
                 size_t k1 = k0 + 1;
                 // (one layer a run: with runs of up to kBcLayers, an array's layers past the run's first came out wrong in the
@@ -1182,11 +1193,11 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
                 // 8x8) at those levels from a distance, had its tiles outlined in dark lines (RX 6600: none with one layer a run,
                 // nor with the arrays kept as RGBA8). RX_VK_BC_LAYERS=<n>: up to n a run, the scratch's layers: bc_layers)
                 const uint32_t run = bc_layers();
-                while (k1 < layers.size() && k1 - k0 < run && layers[k1] == layers[k1 - 1] + 1) k1++;
+                while (k1 < layers.size() && k1 - k0 < run && k1 - k0 < fit && layers[k1] == layers[k1 - 1] + 1) k1++;
                 const uint32_t n = (uint32_t)(k1 - k0);
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-                const uint64_t from = k0 * tail + off;
-                VkDescriptorBufferInfo bi{s.buffer, s.offset + from, staged - from};
+                const uint64_t from = k0 * pitch + off;
+                VkDescriptorBufferInfo bi{s.buffer, s.offset + from, std::min<uint64_t>(staged - from, dev.props.limits.maxStorageBufferRange)};
                 VkDescriptorImageInfo ii{VK_NULL_HANDLE, bc_scratch_view, VK_IMAGE_LAYOUT_GENERAL};
                 VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
                 w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1212,21 +1223,24 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         if (g.offset < tail0 || off >= tail || (off % align)) continue;
         AstcPush pc{};
         pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-        pc.layer_stride = (uint32_t)tail;
+        pc.layer_stride = (uint32_t)pitch;
         const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
         pc.x_shift = 9 + g.tile_h + g.tile_d;
         pc.block_size = gobs_x << pc.x_shift;
         pc.block_height = g.tile_h;
         pc.block_height_mask = (1u << g.tile_h) - 1;
         pc.native_tiling = 1;
-        for (size_t k = 0; k < (all ? 1 : layers.size()); k++) {
-            const VkImageView view = astc_level_view(&tex, level, all ? ~0u : layers[k]);
+        // (all the layers in one dispatch only while they lie within maxStorageBufferRange: the decoder reads layer z at
+        // z * pitch from the descriptor's start; past it, one dispatch a layer)
+        const bool one = all && pitch * layers.size() <= dev.props.limits.maxStorageBufferRange;
+        for (size_t k = 0; k < (one ? 1 : layers.size()); k++) {
+            const VkImageView view = astc_level_view(&tex, level, one ? ~0u : layers[k]);
             if (!view) {
                 astc_fail = "no view of a level";
                 return false;
             }
-            const uint64_t from = (all ? 0 : k * tail) + off;
-            VkDescriptorBufferInfo bi{s.buffer, s.offset + from, staged - from};
+            const uint64_t from = (one ? 0 : k * pitch) + off;
+            VkDescriptorBufferInfo bi{s.buffer, s.offset + from, std::min<uint64_t>(staged - from, dev.props.limits.maxStorageBufferRange)};
             VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
             w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1235,7 +1249,7 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             w[1].pImageInfo = &ii;
             vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_layout, 0, 2, w);
             vkCmdPushConstants(cmd, astc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
-            vkCmdDispatch(cmd, (g.tw + 7) / 8, (g.th + 7) / 8, all ? tex.layers : 1);
+            vkCmdDispatch(cmd, (g.tw + 7) / 8, (g.th + 7) / 8, one ? tex.layers : 1);
         }
     }
     st_astc++;
@@ -1326,6 +1340,9 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         // (the shader reads whole GOB-block rows: a level whose last one runs past the storage, which the CPU path
         // reads from a zero-padded copy, would read past the pool and fault the device)
         if (g.offset + (uint64_t)(tex.layers - 1) * tex.L.layer_size + g.swizzled > total) return false;
+        // (the shader reads layer z at z * layer_size from the level's offset, all layers in one dispatch: past
+        // maxStorageBufferRange the later ones would be read outside the range; the CPU path takes such a texture)
+        if ((uint64_t)(tex.layers - 1) * tex.L.layer_size + g.swizzled > dev.props.limits.maxStorageBufferRange) return false;
     }
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
@@ -1352,7 +1369,7 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         pc.block_height = g.tile_h;
         pc.block_height_mask = (1u << g.tile_h) - 1;
         pc.native_tiling = 1;
-        VkDescriptorBufferInfo bi{src.buffer, src.offset + g.offset, total - g.offset};
+        VkDescriptorBufferInfo bi{src.buffer, src.offset + g.offset, std::min<uint64_t>(total - g.offset, dev.props.limits.maxStorageBufferRange)};
         VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;

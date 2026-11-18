@@ -61,7 +61,7 @@ void bc_encode_resized(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t, 
 /* COPY */
 
 /// upload_astc_gpu()'s runs over the layers it stages (dirty ones, in order): (index of the run's first, its count)
-static std::vector<std::pair<size_t, uint32_t>> upload_runs(const std::vector<uint32_t>& layers) {
+static std::vector<std::pair<size_t, uint32_t>> upload_runs(const std::vector<uint32_t>& layers, uint64_t fit = ~0ull) {
     std::vector<std::pair<size_t, uint32_t>> out;
     for (size_t k0 = 0; k0 < layers.size();) {
         /* RUN */
@@ -122,6 +122,8 @@ int main() {
     check(upload_runs(dirty) == Runs{{0, 3}, {3, 2}, {5, 1}}, "into an 8-layer scratch: the gaps alone end the runs");
     capacity = 4;
     check(upload_runs({7, 8, 9, 10, 11, 12, 13, 14, 15}) == Runs{{0, 4}, {4, 4}, {8, 1}}, "9 layers in a row into a 4-layer scratch: 4, 4 and 1");
+    check(upload_runs({7, 8, 9, 10, 11, 12, 13, 14, 15}, 3) == Runs{{0, 3}, {3, 3}, {6, 3}},
+          "maxStorageBufferRange holding 3 staged layers: no run reads past it (VUID-VkWriteDescriptorSet-descriptorType-00333)");
     if (failures) return 1;
     std::printf("PASS: no run is larger than the scratch, and a larger request comes out whole\n");
     return 0;
