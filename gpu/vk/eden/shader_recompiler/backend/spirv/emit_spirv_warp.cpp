@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -396,6 +397,21 @@ void DefineSoftwareMatrixFunction(EmitContext& ctx) {
 }
 
 
+bool Wmma16Fits(const Profile& profile, const IR::Program& program) {
+    // (only where every subgroup is full: the cooperative matrix operations and the subgroup barriers then run with all
+    // 32 lanes, as the startup test checked them. Otherwise the software multiply)
+    if (!mma_wmma16_full_subgroups || program.workgroup_size[0] == 0 || program.workgroup_size[0] % 32 != 0) return false;
+    const u32 threads = std::max(1U, program.workgroup_size[0] * program.workgroup_size[1] * program.workgroup_size[2]);
+    const u32 subgroups = (threads + 31) / 32;
+    // (EmitContext::DefineSharedMemory uses_explicit_workgroup_layout)
+    const bool explicit_layout = profile.support_explicit_workgroup_layout &&
+                                 (!program.info.uses_int8 || profile.support_workgroup_layout_8bit_access) &&
+                                 (!program.info.uses_int16 || profile.support_workgroup_layout_16bit_access) &&
+                                 program.shared_memory_size != 0;
+    const u32 own_bytes = explicit_layout ? (program.shared_memory_size + 15U) & ~15U : (program.shared_memory_size + 3U) & ~3U;
+    return mma_wmma16_shared_limit == 0 || own_bytes + subgroups * mma_wmma16_tile_words * 4 + 4 <= mma_wmma16_shared_limit;
+}
+
 // (longshot, AMD RDNA 3/4) HMMA_nx2 on 16x16x16 cooperative matrices (mma_layout.h mma_wmma16). Each subgroup has 512
 // words of workgroup memory past the program's own: A (row major), B's K halves 0-7 and 8-15 (column major, the
 // other half's rows zero) and C/D (row major), every 16x16 f16. The lanes write their fragments at the console's
@@ -404,16 +420,12 @@ void DefineSoftwareMatrixFunction(EmitContext& ctx) {
 // words of D back. False when the tiles do not fit the device's shared memory: the program then takes the software
 // multiply.
 bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program) {
-    // (only where every subgroup is full: the cooperative matrix operations and the subgroup barriers then run with all
-    // 32 lanes, as the startup test checked them. Otherwise the software multiply)
-    if (!mma_wmma16_full_subgroups || program.workgroup_size[0] == 0 || program.workgroup_size[0] % 32 != 0) return false;
+    if (!Wmma16Fits(ctx.profile, program)) return false;
     const u32 threads = std::max(1U, program.workgroup_size[0] * program.workgroup_size[1] * program.workgroup_size[2]);
     const u32 subgroups = (threads + 31) / 32;
     const bool explicit_layout = ctx.uses_explicit_workgroup_layout && program.shared_memory_size != 0;
     const u32 offset_bytes = explicit_layout ? (program.shared_memory_size + 15U) & ~15U : 0U;
-    const u32 own_bytes = explicit_layout ? offset_bytes : (program.shared_memory_size + 3U) & ~3U;
     const u32 words = subgroups * mma_wmma16_tile_words;
-    if (mma_wmma16_shared_limit != 0 && own_bytes + words * 4 + 4 > mma_wmma16_shared_limit) return false;
 
     const Id u32ty{ctx.U32[1]};
     const Id word_pointer{ctx.TypePointer(spv::StorageClass::Workgroup, u32ty)};
