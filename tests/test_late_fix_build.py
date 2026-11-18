@@ -327,6 +327,36 @@ int main() {
         note(WB_DIFF, pg, 0x100000010ull);                // (after: D's low 32 bits, as the stamps are)
         CHECK(build(c9, 0x10000000aull) && late_fixes.size() == 1 && late_fixes[0].after == 0xa);
     }
+    // (a2) a page found late only at the replay (late_new: capture_late_at_replay) keeps the CPU's words of its capture: it
+    // is not copied again from guest memory, and its fix counts from the capture's own view of the GPU (late_done), so the
+    // words of a diff write-back done since are taken from the shadow too
+    reset();
+    note(WB_DIFF, pg, 11);
+    {
+        Capture c = cap({(uint32_t)pg}, 9);
+        c.late_new = {0};
+        CHECK(!build(c, 9) && fell(3) == 1);              // (no stamps yet: as any late page, a block made and the capture waits)
+        filled(pg, 5);
+        completed_now = 12, copied_pages.clear(), flushes = 0;   // (the write-back is done by now: 12)
+        CHECK(late_fix_build(c) && late_fixes.size() == 1 && late_fixes[0].after == 9);
+        CHECK(copied_pages.empty() && flushes == 1);      // (not copied again: guest memory is the game's later frame by now)
+        CHECK(late_pages.count((uint32_t)pg) == 1);
+        late_fixes.clear(), late_pages.clear();
+        // (the same page late at the capture already: as before, copied again, and nothing to fix once the write-back is done)
+        Capture old = cap({(uint32_t)pg}, 9);
+        CHECK(build(old, 12) && late_fixes.empty());
+        // (stamps that began counting after the capture's view cannot say which words: the page goes the old way)
+        filled(pg, 10);
+        Capture young = cap({(uint32_t)pg}, 9);
+        young.late_new = {0};
+        CHECK(build(young, 12) && late_fixes.empty() && copied_pages.size() == 1);
+        // (a whole copy or a write in place since the capture's view: no record of which words, the old way too)
+        filled(pg, 5);
+        in_place(pg, 10);
+        Capture direct = cap({(uint32_t)pg}, 9);
+        direct.late_new = {0};
+        CHECK(build(direct, 12) && late_fixes.empty() && copied_pages.size() == 1);
+    }
     // (c) a page written in place by a submission not done by D: which words, unknown, so it waits
     reset();
     note(WB_DIFF, pg, 11);

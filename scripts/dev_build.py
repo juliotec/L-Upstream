@@ -229,9 +229,10 @@ def builder_dir():
     return os.path.join(home(), "builder", tools_lock_key())
 
 
-# (Windows: the variables the Windows builder sets to its tools folder's tools: builder/LongshotBuilder/Runner.cs sets EMSDK and
-# RX_CPM, and nx2/make_game.py bundled_mingw finds its llvm-mingw as LONGSHOT_MINGW, which nx2/build.py run alone needs set)
-WINDOWS_TOOL_ENV = (("llvm-mingw", "LONGSHOT_MINGW"), ("emsdk", "EMSDK"), ("cpm", "RX_CPM"))
+# (Windows: the variables the Windows builder sets to its tools folder's tools: builder/LongshotBuilder/Runner.cs sets RX_CPM,
+# and nx2/make_game.py bundled_mingw finds its llvm-mingw as LONGSHOT_MINGW, which nx2/build.py run alone needs set. No EMSDK:
+# llvm-mingw has every compiler and LLVM tool the Windows build looks up, tests/test_windows_toolchain.py)
+WINDOWS_TOOL_ENV = (("llvm-mingw", "LONGSHOT_MINGW"), ("cpm", "RX_CPM"))
 
 
 def windows_tool_dirs():

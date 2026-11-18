@@ -12,6 +12,12 @@ Read this before opening, updating, reviewing or marking a pull request ready.
   and what you saw: `pr create --tested-in-game "RTX 3080, driver 580.95, Linux: Kakariko, no flicker after a load"`
   (it goes up as the first comment). `pr create` refuses a branch that changes the game's files without it. Use
   `--force` only when the person you work for asks you to open it untested; if you can't run the game, ask them.
+- **A switch the PR adds is on from the first push** when the change is meant for players
+  ([CONTRIBUTING.md](../CONTRIBUTING.md#code-and-data-conventions)): the Test Farm, testers and your own A/B runs take
+  the branch as it is, and a change left off "until it is measured" has them test main's behaviour instead. The
+  measurements gate leaving WIP, not the default: if they go against the change, turn the default off or drop the
+  change before `pr ready`, and say which in the description and a comment. Off by default is for a switch that is
+  only for testing.
 - Open the PR as **work in progress**. Keep it WIP until it is
   [ready for review](../CONTRIBUTING.md#ready-for-review-out-of-wip): done, tested on your own PC (or Testing's *Not
   testable by hand* says what can't be run and why), the checks passing, measured, the description complete and every

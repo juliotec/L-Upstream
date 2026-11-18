@@ -102,11 +102,14 @@ def main():
                  "VK_FORMAT_D32_SFLOAT_S8_UINT),"):
         if case not in fmt:
             raise SystemExit("vk_format does not use depth24_or_32: " + case.split(":")[0])
+    never = block(tex, "bool upload_never(const Texture& tex) {")
+    if "&& !d24s8_kept_as_d32(tex))" not in never:
+        raise SystemExit("upload_never still drops a DEPTH24_STENCIL8 kept as D32_SFLOAT_S8_UINT")
     up = block(tex, "bool upload_inner(Texture& tex, const Ranges* dirty) {")
     for need, what in (
             ("tex.nvn_format == NVN_FORMAT_DEPTH24 && tex.format == VK_FORMAT_D32_SFLOAT", "DEPTH24 as D32_SFLOAT"),
             ("(float)(v & 0xffffffu) / 16777215.0f", "the 24-bit unorm to float conversion"),
-            ("&& !d24s8_as_d32) return false;", "DEPTH24_STENCIL8 as D32_SFLOAT_S8_UINT is still dropped"),
+            ("const bool d24s8_as_d32 = d24s8_kept_as_d32(tex);", "DEPTH24_STENCIL8 as D32_SFLOAT_S8_UINT"),
             ("sten[i / 4] = (uint8_t)(v >> 24);", "the stencil byte split"),
             ("c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;", "the stencil copy"),
             ("d24s8_as_d32 ? s_off + s_bytes : out_bytes", "the stencil bytes flushed")):

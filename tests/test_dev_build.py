@@ -116,11 +116,11 @@ class Windows(OnSystem):
             self.assertEqual(dirs[t.name], os.path.join(db.builder_dir(), *t.dest.split("/")))
         # (every variable the Windows builder sets comes from a tool its setup requires)
         names = [n for n, _ in db.WINDOWS_TOOL_ENV]
-        self.assertEqual([v for _, v in db.WINDOWS_TOOL_ENV], ["LONGSHOT_MINGW", "EMSDK", "RX_CPM"])
+        self.assertEqual([v for _, v in db.WINDOWS_TOOL_ENV], ["LONGSHOT_MINGW", "RX_CPM"])
         self.assertTrue(set(names + ["python", "third-party"]) <= set(tools.REQUIRED["windows-x64"]))
         with open(os.path.join(ROOT, "builder", "LongshotBuilder", "Runner.cs"), encoding="utf-8") as f:
             runner = f.read()
-        self.assertIn('("EMSDK", "emsdk"), ("RX_CPM", "cpm")', runner)
+        self.assertIn('var sets = new[] { ("RX_CPM", "cpm") };', runner)
 
     def test_windows_toolchain_env(self):
         dirs = db.windows_tool_dirs()
@@ -129,7 +129,7 @@ class Windows(OnSystem):
         with mock.patch.object(tools, "install") as inst, mock.patch.dict(sys.modules, tools=tools):
             env, got = db.windows_toolchain()
         inst.assert_called_once()
-        self.assertEqual(env, {"LONGSHOT_MINGW": dirs["llvm-mingw"], "EMSDK": dirs["emsdk"], "RX_CPM": dirs["cpm"]})
+        self.assertEqual(env, {"LONGSHOT_MINGW": dirs["llvm-mingw"], "RX_CPM": dirs["cpm"]})
         self.assertEqual(got, dirs)
         self.assertEqual(db.python_candidates(dirs["python"]), [os.path.join(dirs["python"], "python.exe")])
         self.assertEqual(db.python_candidates(None), [])

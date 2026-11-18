@@ -153,7 +153,9 @@ there: its data stays in `LongshotLauncher-data` beside it.
 preparation builds:
 
 - **Most** (recommended, the default): every shader and the pipelines the game is known to use (the shipped list and
-  what your own play noted).
+  what your own play noted). Compute programs on those lists have all their texture variants warmed. An unlisted
+  compute program stays translated on disk and the driver builds its pipeline on first dispatch. With no compute
+  programs listed, preparation warms them all.
 - **All**: the predicted pipelines too, about 50,000 guesses at pipelines no list names. The preparation takes about 40%
   longer (415 s against 292 s on an RTX 3090 with a 12-core CPU), and play almost never uses them.
 
@@ -330,6 +332,7 @@ A game started from a terminal prints there instead, as it is.
 | Parts of the picture are missing, or a message says your card has no mesh shader support | The card or its driver has no mesh shaders, so Longshot draws through its compute fallback, which leaves some draws out. Update the driver; a card with mesh shaders draws everything ([#640](https://github.com/NotRexed/Hookshot/issues/640)). |
 | A place has a wrong texture, or a floor or wall is missing | Look for `longshot_damaged_files.txt` in the game folder. The build writes it when your dump is incomplete (about 23.3 GB instead of 23.8 GB), listing each damaged file and what was put in its place. Dump the game again and build from the new dump; the file is then removed. |
 | AMD: blocky textures, solid rectangles in the sky or unusually dark courtyard surfaces | Try the [AMD texture workaround](#amd-texture-workaround). It uses more graphics memory. |
+| Windows: HDR is on, but the game stays SDR | The **HDR** row's help in the menu, and the `vk: HDR:` line in the log, say why. "HDR is off for this display": turn on **Use HDR** in Windows' **Settings > System > Display**. "Windows has HDR on, but the graphics driver offers the game no HDR output": reinstall the graphics driver with a clean install and restart the PC ([steps](docs/common-issues.md#windows-hdr-is-on-but-the-game-stays-sdr)), then [report it](https://git.magicbean.dev/MagicBeanDev/Longshot/issues/new) if it stays. |
 | **Performance** | |
 | Stutter the first time you see something | Normal for now: shaders are being prepared, and it is smooth the next time you pass. You can help remove it for everyone: [send your pipeline list](#send-your-pipeline-list). |
 | Windows, NVIDIA: stutter on every start, in places you have seen | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines). In the NVIDIA Control Panel, under Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself. |
@@ -575,10 +578,12 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
   misbehave (the intro's narration running ahead: #1742). 60 is the safe choice.
   Gohma's ceiling-positioning fault is fixed, tested in complete fights at about 98-99 FPS and at 60.
+  The frozen Zoras under the ice in Zora's Domain stand as still above 60 as at 60 (they twitched: #988).
   Scarecrow's Song keeps the timing of its eight-note recording and playback above 60. Saved songs are not retimed;
   re-record a song after updating if its recorded rhythm was lost.
   Epona jumps fences above 60 as she does at 60 (she had galloped through them, more often the higher the cap).
   The Shadow Temple's barge carries Link and the enemies on it above 60 as at 60 (above 100 FPS they slid to its back).
+  After you play a song, its notes show one at a time with its melody above 60, as at 60.
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `HOS_FPS_MAX=<61-1000>` sets a cap for one
   run.

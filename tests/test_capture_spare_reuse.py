@@ -77,6 +77,18 @@ int main() {
         assert(driver_allocations == count);
     }
 
+    // A tight spare budget should leave room for other common sizes alongside a 17-28 MiB capture.
+    budget = 32*MB;
+    shortfall = 0;
+    for (uint64_t need : {16*MB+1, 20*MB, 20*MB+1, 24*MB, 24*MB+1, 28*MB, 28*MB+1, 32*MB}) {
+        assert(cap_buf_get(need, b, a, m, size));
+        assert(size == ((need+4*MB-1)/(4*MB))*(4*MB));
+    }
+    assert(cap_buf_size(32*MB+1) == 64*MB);
+    assert(cap_buf_size(16*MB) == 16*MB);
+    budget = UINT64_MAX;
+    assert(cap_buf_get(16*MB+1, b, a, m, size) && size == 32*MB);
+
 }
 """
     # Hold a real prewarm worker inside its allocator while a retirement or pressure

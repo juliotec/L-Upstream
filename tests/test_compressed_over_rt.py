@@ -96,7 +96,7 @@ def main():
     src = (ROOT / "gpu" / "vk" / "vk_texture.cpp").read_text(encoding="utf-8")
     body = src[src.index("Texture* texture_touch(Texture* tex, bool for_sampling) {"):]
     start = body.index("    const bool compressed = tex->astc || tex->bc ||")
-    end = body.index("\n", body.index("    uint32_t owned = ", start))
+    end = body.index("\n", body.index("    uint64_t owned = ", start))
     decision = body[start:end]
     assert "gpu_owned_since(tex->gpu, tex->guest_size)" in decision, decision
     # (the log after it is in the block: up to its closing brace)
@@ -115,7 +115,7 @@ def main():
         subprocess.run([cxx, "-std=c++17", "-D_CRT_SECURE_NO_WARNINGS", "-include", str(ENV_ON_H), "-Wall",
                         "-Wno-unused-function", "-Werror", str(tmp / "f.cpp"), "-o", str(exe)],
                        check=True)
-        fn = src[src.index("uint32_t gpu_owned_since(uint64_t gpu, uint64_t n) {"):]
+        fn = src[src.index("uint64_t gpu_owned_since(uint64_t gpu, uint64_t n) {"):]
         fn = fn[:fn.index("\n}\n") + 3]
         (tmp / "owned.cpp").write_text(OWNED.replace("FUNCTION", fn), encoding="utf-8")
         owned = tmp / ("owned.exe" if os.name == "nt" else "owned")

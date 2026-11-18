@@ -54,6 +54,7 @@ typedef struct { void *p; } CONDITION_VARIABLE, *PCONDITION_VARIABLE;
 typedef struct { uint64_t x[32]; volatile int poll; } Ctx;
 static int64_t now_ns = 1000000000;
 static int64_t hos_now_ns(void) { return now_ns; }
+static volatile int hos_fps_timing;   /* (host/hos_thread.c: the FPS counter's Breakdown off, so no frame-trace times) */
 enum { HOS_CHAIN_WAIT = 1, HOS_CHAIN_WOKE, HOS_CHAIN_SIGNAL, HOS_CHAIN_SLEEP, HOS_CHAIN_AWAKE, HOS_CHAIN_PRESENT };
 #define HOS_CHAIN(kind, key) ((void)(kind), (void)(key))   /* (HOS_CHAIN off: host/hos.h) */
 static int escapes_logged, hos_fps_timing;

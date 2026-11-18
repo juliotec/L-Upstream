@@ -24,8 +24,10 @@
    changes decoder in its middle. A stream that cannot start on the host (a misaligned workspace, no free entry, a
    dictionary libzstd does not take) runs lifted from its start, as before.
 
-   The default (and HOS_NATIVE_ZSTD=1) also gives the thread's virtual core up while libzstd runs (as a sleep does:
-   hos_vcore_away/back), so the game's other threads can have it; HOS_NATIVE_ZSTD=2 decodes on the host and keeps the core.
+   The default (and HOS_NATIVE_ZSTD=2) keeps the thread's virtual core while libzstd runs. HOS_NATIVE_ZSTD=1 gives it up
+   meanwhile (as a sleep does: hos_vcore_away/back), so the game's other threads can have it; on an Arc 155H iGPU that
+   froze the game at loads in 7 runs of 10 (the game read no controller for 20 s to 5 min, lr 0x83489670), keeping the core
+   in none of 3, with loading screens no longer (RTX 4070 SUPER tours, docs/tested/2026-11-17-native-zstd-default-*).
 
    The game's other zstd path, the resource loaders' whole-buffer decode (the ARes_Loading threads: about a fifth of a core
    while an area loads, more than the stream decode there), is zstd's decompressMultiFrame inlined in f_8010b380 (x0 the
@@ -104,7 +106,7 @@ static int zs_mode(void) {
     static int mode = -1;
     int m = __atomic_load_n(&mode, __ATOMIC_RELAXED);
     if (m < 0) {
-        m = zs_wanted("HOS_NATIVE_ZSTD") ? (env_int("HOS_NATIVE_ZSTD", 1) == 2 ? 2 : 1) : 0;
+        m = zs_wanted("HOS_NATIVE_ZSTD") ? (env_int("HOS_NATIVE_ZSTD", 2) == 1 ? 1 : 2) : 0;
         if (zs_publish(&mode, m) && m)
             hos_log("zstd: the game's stream decode on the host's libzstd %s (HOS_NATIVE_ZSTD=%d%s)", ZSTD_versionString(), m,
                     m == 1 ? ": the core given up while it decodes" : "");

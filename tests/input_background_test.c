@@ -60,6 +60,7 @@ volatile int hos_nvn_sync_log_on;
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)stick; *buttons |= bridge_buttons; return bridge_active; }
 static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }
 #define GP(a) at(a)
+static void *hos_guest_range(uint64_t a, uint64_t n) { return a <= 512 && n <= 512 - a ? memory + a : NULL; }
 #define G32(a) (*(uint32_t *)at(a))
 #define G64(a) (*(uint64_t *)at(a))
 #define ARG(n) (c->x[n])

@@ -118,7 +118,8 @@ Where a step below needs files from the Builder, use the Windows builder of the 
 
 ### Tools: mise, CircleCI and AI agents
 
-- **mise** pins every tool this repo uses. Install it ([mise docs](https://mise.jdx.dev/getting-started.html)), then in the repo run `mise install` and, once per clone, `mise run setup` (it installs the pre-commit and commit-msg hooks). `mise run lint` and `mise run test` run the same checks CI does.
+- **mise** pins every tool this repo uses. Install it ([mise docs](https://mise.jdx.dev/getting-started.html)), then in the repo run `mise install` and, once per clone, `mise run setup` (it installs the pre-commit and commit-msg hooks and the Python build requirements). `mise run lint` and `mise run test` run the same checks CI does. List all tasks with `mise tasks`. `mise run build`
+  builds a game folder from your own dump, and `mise exec --` runs a script that has no task in the pinned tool environment.
 - **CircleCI** runs CI for this repo; [docs/ci.md](docs/ci.md) has the flow and what runs when. Sign up at https://circleci.com/signup and ask in Discord to be added to the MagicBeanDev org, so you can see runs, read logs and rerun jobs.
 - **CircleCI CLI:** `mise install` installs the pinned version, or see the [official install docs](https://circleci.com/docs/guides/toolkit/circleci-cli/). Run `circleci auth login` once.
 - **CircleCI MCP server**, so an AI agent can read failures and logs and rerun jobs. Claude Code: `claude mcp add --transport http circleci-mcp-server https://mcp.circleci.com/v1/mcp`, then `/mcp` and Authenticate. Cursor: search "circleci" in the MCP marketplace.
@@ -183,7 +184,7 @@ builds (it prints NVIDIA's license notice and needs `--accept-nvidia-license` or
 ```powershell
 python -I scripts/ngx_sdk.py --platform windows C:\path\ngx-sdk
 $env:LONGSHOT_NGX_SDK = "C:\path\ngx-sdk"
-python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Longshot-dlss"
+mise run build --nup "C:\path\your-game.nup" --out "C:\Games\Longshot-dlss"
 ```
 
 On Windows, NVIDIA's static `nvsdk_ngx_s.lib` is linked into `longshot_vk.dll` (with `gpu/vk/vk_ngx_msvc_rt.cpp` and
@@ -204,19 +205,32 @@ state on an external SSD, see [portable Builder setup](docs/windows-portable-bui
 
 ## Building
 
+`build-dev` and `build-fast` compile an already lifted standalone workspace. In a fresh workspace, lift it first with
+`mise exec -- python -I nx2/lift.py --standalone --write` (using your own dump), then rerun the compile task. Use the
+full `mise run build` task to produce a complete game folder from a `.nup` or extracted dump.
+
+`mise run build` takes the same arguments as `python -I nx2/make_game.py`, quoted for your shell; it passes each one to the
+builder unchanged. Its `build-deps` dependency installs `requirements.txt` into mise's Python first (downloading the
+packages the first time), so the pinned interpreter has the same prerequisites as the direct builder command.
+
 | Command | What it does |
 |---|---|
-| `python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Longshot" --language en-US` | A complete game folder from a `.nup`, in about 15 minutes on a 12-core desktop ([build times](docs/development.md#build-times)). |
-| `python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Longshot"` | The same, from extracted folders. |
-| `python -I nx2/make_game.py --check --nup "C:\path\your-game.nup"` | Check the game and its version without building. |
+| `mise run build --nup "C:\path\your-game.nup" --out "C:\Games\Longshot" --language en-US` | A complete game folder from a `.nup`, in about 15 minutes on a 12-core desktop ([build times](docs/development.md#build-times)). |
+| `mise run build --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Longshot"` | The same, from extracted folders. |
+| `mise run build --check --nup "C:\path\your-game.nup"` | Check the game and version without building. |
 | `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | Record the dump in `work/dump.txt`. |
 | `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
-| `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/longshot.exe` and `longshot_vk.dll`. |
-| `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build and take screenshots in `work/runs/<name>/shots`. |
+| `mise run build-dev` | Compile the existing lifted tree into `work/sa/build/longshot.exe` (or Linux's `longshot`), defaulting to 4 jobs; extra arguments go to `nx2/build.py`. |
+| `mise run build-fast` | The standalone build at `-O1`, defaulting to 8 jobs: development only, never for performance numbers. |
+| `mise run run-win -Seconds 120` | Windows only: run the standalone build and take screenshots in `work/runs/<name>/shots` (defaults to `vk`). Uses a process-local PowerShell policy; at the time limit, asks the window to close and waits 10 s. A forced fallback returns 1 and says so. |
+| `mise run packs ls ../base-main` | List development packs over a base, without building anything. |
+| `mise run packs base ../base-main --romfs <romfs> --exefs <exefs>` | Build this checkout as a development base ([Testing a change against a base](docs/development.md#testing-a-change-against-a-base)). |
+| `mise run packs pack ../base-main my-fix --tree <checkout>` | Build one change as a small pack over its base. |
+| `mise run packs rt ../base-main ../rt-my-fix my-fix` | Assemble a runtime from a base and a pack. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE_EVERY`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 
 Use a separate `--work` folder (or `OOT_WORK`) to keep more than one dump. The lifted C and every build stay local.
-Not measuring speed? [A faster build for development](docs/development.md#a-faster-build-for-development) compiles the
+Not measuring speed? `mise run build-fast` ([details](docs/development.md#a-faster-build-for-development)) compiles the
 hot code at `-O1`, about a quarter less compile time; never use it for fps, timings or a release.
 
 ## Testing
@@ -298,10 +312,15 @@ for scripted input, screenshots, frame dumps and profiles are in the development
   <part>` in the same commit.
 - Treat local mkw-recomp and Eglantine checkouts as read-only references.
 - New switches use `RX_` in the renderer and `HOS_` in the runtime. A change that should have one (to A/B it, to turn
-  it off, to roll it back) gets one, and it ships at its **recommended** value: on by default when that is what you
-  recommend and the measurements back it, off when it is only for testing or not yet measured enough; never off just
-  because it is new. It costs nothing while off, and it is documented beside the switches around them. The PR's
-  *Flags and settings* says its value before and after, and why.
+  it off, to roll it back) gets one, and it ships at its **recommended** value: on by default when the change is meant
+  for players, off only when the switch is for testing (a diagnostic, an experiment nobody proposes to ship); never
+  off just because it is new or not yet measured. **The pull request carries that value from its first push**, WIP or
+  not: the Test Farm, testers and your own runs test the branch as it is, so they test what would merge without setting
+  anything, and the switch is how to turn it off for an A/B or a rollback. The measurements and the run on your own PC
+  are what take it out of WIP ([Ready for review](#ready-for-review-out-of-wip)), not what turn it on; if they go
+  against it, turn the default off or drop the change before it leaves WIP, and say which. It costs nothing while
+  off, and it is documented beside the switches around them. The PR's *Flags and settings* says its value before and
+  after, and why.
 - The GPU replay rules in [design notes, section 4](docs/design.md#4-the-lessons-from-mkw-as-rules-here) are not
   suggestions: nothing the replay reads may come from live guest memory, waits are honoured per queue, and texture and
   sampler registrations stay in submission order.

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <cwchar>
 #include <mutex>
 #include <new>
 #include <string>
@@ -759,16 +760,21 @@ bool create_device() {
     if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
     bool task_mesh_fallback = false;
 #ifdef _WIN32
-    // (https://github.com/NotRexed/Hookshot/issues/996) AMD's RDNA 2 cards, Navi 21 to 23, can time out on task + mesh draws
-    // in the Windows driver: mesh_mode.h
+    // AMD's Windows driver can time out on Navi 21 to 23 on task + mesh draws (Hookshot issue 996) and
+    // on mesh-only draws (Longshot issue 1239): mesh_mode.h
     task_mesh_fallback = mesh_rule::task_mesh_fallback_default(dev.props.vendorID, dev.props.deviceID);
 #endif
+    const bool rdna2_windows = task_mesh_fallback;
     if (mesh_mode == 1) task_mesh_fallback = false;   // (Native: the card's own mesh shaders for every draw)
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
     dev.task_mesh_fallback = task_mesh_fallback && dev.mesh_shader && f12.bufferDeviceAddress && !env_on("RX_VK_NO_MESH_FALLBACK");
-    if (dev.task_mesh_fallback) logf("vk: task + mesh programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)");
+    dev.mesh_only_fallback = dev.task_mesh_fallback && rdna2_windows;
+    if (dev.task_mesh_fallback)
+        logf("vk: %s programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)",
+             dev.mesh_only_fallback ? "mesh-only and task + mesh" : "task + mesh");
     logf("vk: mesh shaders: %s, from %s: %s", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
-         mesh_choice.why, dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
+         mesh_choice.why, dev.mesh_shader ? (dev.mesh_only_fallback ? "mesh-only and task + mesh draws on the compute path"
+                            : dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
                          : dev.mesh_fallback ? "the compute path" : "none");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
@@ -1001,6 +1007,7 @@ bool invalidate_lost_surface(VkResult result) {
 namespace {
 bool open_window_surface(bool log_failure);
 void window_size(uint32_t* width, uint32_t* height);
+int system_hdr_on(std::string* display);
 }
 
 bool create_swapchain(uint32_t width, uint32_t height) {
@@ -1052,22 +1059,41 @@ bool create_swapchain(uint32_t width, uint32_t height) {
             f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             fmt = f;
     // (longshot) the Insert menu's HDR: a 10-bit HDR10 surface when the display lists one (Windows: "Use HDR" on in its display
-    // settings), the picture then written by framegen_hdr. Otherwise the SDR one above, said once
+    // settings), the picture then written by framegen_hdr. Otherwise the SDR one above, and why (dev.hdr_sdr_why: Windows'
+    // own setting tells "HDR off" from "the driver lists none with HDR on", as NVIDIA's can), said
+    // again when the reason or the display asked about changes, and when the menu's HDR was turned off in between
     dev.hdr = false;
+    dev.hdr_sdr_why = hdr_sdr_none;
+    static int told = -1;   // (the HdrSdrWhy last said, hdr_sdr_none an HDR10 surface; -1 nothing yet, or HDR off since)
+    static std::string told_display;
+    if (!opts.hdr) told = -1;
     if (opts.hdr) {
         for (const auto& f : formats)
             if ((f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || f.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32) &&
                 f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
                 fmt = f, dev.hdr = true;
-        static bool told;
-        if (!told) {
-            told = true;
+        std::string display;   // (the display Windows was asked about, named in the line: a PC can have several)
+        if (!dev.hdr) {
+            const int system_hdr = dev.swapchain_colorspace ? system_hdr_on(&display) : -1;
+            dev.hdr_sdr_why = !dev.swapchain_colorspace ? hdr_sdr_no_extension
+                              : system_hdr == 0     ? hdr_sdr_os_off
+                              : system_hdr == 1     ? hdr_sdr_driver
+                                                    : hdr_sdr_unknown;
+            if (!display.empty()) display = " (" + display + ")";
+        }
+        if ((int)dev.hdr_sdr_why != told || display != told_display) {
+            told = dev.hdr_sdr_why, told_display = display;
+            static const char* const why[] = {
+                "", " (no VK_EXT_swapchain_colorspace)", " (HDR is off for this display in Windows' display settings)",
+                (" though Windows has HDR on for this display: the graphics driver offers the game none (a clean reinstall of "
+                 "the driver, then a restart: longshot.magicbean.dev/help)"),
+                " (is HDR on in the display settings?)"};
+            static_assert(sizeof why / sizeof *why == hdr_sdr_count, "create_swapchain: a line for each HdrSdrWhy");
             if (dev.hdr)
                 logf("vk: HDR: an HDR10 surface (format %d), paper white %d nits, peak %d nits", (int)fmt.format, opts.hdr_white,
                      opts.hdr_peak);
             else
-                logf("vk: HDR: the display lists no HDR10 surface%s: SDR",
-                     dev.swapchain_colorspace ? " (is HDR on in the display settings?)" : " (no VK_EXT_swapchain_colorspace)");
+                logf("vk: HDR: the display%s lists no HDR10 surface%s: SDR", display.c_str(), why[dev.hdr_sdr_why]);
         }
     }
     // mailbox when the driver has it (latest frame, no tear). The game paces itself (nn_vi.c).
@@ -1248,6 +1274,70 @@ bool create_swapchain(uint32_t width, uint32_t height) {
 namespace {
 
 HWND main_window = nullptr;
+#ifdef _WIN32
+// (longshot) Windows 11 24H2's advanced colour info (DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2 and the names of its numbers in
+// the Windows SDK), written out for headers that lack it or keep it behind NTDDI_VERSION. tests/test_hdr_sdr_why.py holds
+// the layout and the numbers against the SDK's own
+struct AdvancedColorInfo2 {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    UINT32 flags, color_encoding, bits_per_color_channel, active_color_mode;
+};
+enum : UINT32 {
+    kGetAdvancedColorInfo2 = 15,   // (DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2)
+    kAdvancedColorModeHdr = 2      // (DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR; 0 SDR, 1 wide colour)
+};
+#endif
+// (longshot) whether the system has HDR on for the window's display: 1 on, 0 off, -1 not known. Windows' own setting ("Use
+// HDR"), as its display settings show it: create_swapchain's word on why the swapchain is SDR. *display is given the
+// display's name (the monitor's, else Windows' "\.\DISPLAYn") once it is found, for the log. Windows 11 24H2 tells the mode
+// (activeColorMode). An older one only tells "advanced colour", which is HDR or the wide colour an SDR display is given:
+// off is off, on without "wide colour enforced" is HDR, and on with it is not told apart here (not known, so the old
+// question and no wrong word). Elsewhere not known (a Linux compositor lists HDR10 when it has HDR on).
+// Asked at each swapchain while HDR is on and the surface SDR: a few hundredths of a millisecond (tests/test_hdr_sdr_why.py
+// prints it), beside a swapchain's tens, and an answer kept could outlive Windows' setting
+int system_hdr_on(std::string* display) {
+#ifdef _WIN32
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof mi;
+    if (!main_window || !GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTONEAREST), &mi)) return -1;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    LONG r = ERROR_INSUFFICIENT_BUFFER;
+    for (int tries = 0; r == ERROR_INSUFFICIENT_BUFFER && tries < 4; tries++) {   // (the displays can change in between)
+        UINT32 np = 0, nm = 0;
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS) return -1;
+        paths.resize(np), modes.resize(nm);
+        r = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths.data(), &nm, modes.data(), nullptr);
+        paths.resize(np), modes.resize(nm);
+    }
+    if (r != ERROR_SUCCESS) return -1;
+    for (const DISPLAYCONFIG_PATH_INFO& p : paths) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+        source.header = {DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, sizeof source, p.sourceInfo.adapterId, p.sourceInfo.id};
+        if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS || wcscmp(source.viewGdiDeviceName, mi.szDevice)) continue;
+        if (display) {
+            DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
+            target.header = {DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, sizeof target, p.targetInfo.adapterId, p.targetInfo.id};
+            const bool named = DisplayConfigGetDeviceInfo(&target.header) == ERROR_SUCCESS && target.monitorFriendlyDeviceName[0];
+            char utf8[256] = "";
+            WideCharToMultiByte(CP_UTF8, 0, named ? target.monitorFriendlyDeviceName : mi.szDevice, -1, utf8, sizeof utf8 - 1,
+                                nullptr, nullptr);
+            *display = utf8;
+        }
+        AdvancedColorInfo2 info2{};
+        info2.header = {(DISPLAYCONFIG_DEVICE_INFO_TYPE)kGetAdvancedColorInfo2, sizeof info2, p.targetInfo.adapterId,
+                        p.targetInfo.id};
+        if (DisplayConfigGetDeviceInfo(&info2.header) == ERROR_SUCCESS) return info2.active_color_mode == kAdvancedColorModeHdr;
+        DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO info{};
+        info.header = {DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO, sizeof info, p.targetInfo.adapterId, p.targetInfo.id};
+        if (DisplayConfigGetDeviceInfo(&info.header) != ERROR_SUCCESS) return -1;
+        return !info.advancedColorEnabled ? 0 : info.wideColorEnforced ? -1 : 1;
+    }
+#else
+    (void)display;
+#endif
+    return -1;
+}
 // (longshot) longshot --prepare-shaders (a builder, after a build): the same work with no game, its progress as
 // "@@progress" lines on stdout. A skip there leaves longshot_prepare_skipped beside the game: its own starts then
 // leave the work out too (what was not prepared is built when first drawn), until a --prepare-shaders run ends it
@@ -1471,6 +1561,9 @@ void prepare_with_screen() {
             for (int k = 0; k < 3; k++) prep_guess[k].store(guess[k]);
         }
         if (update) prep_skip[0].store(true), prep_skip[1].store(true);
+        // (Compile shaders on Most, the default: no prediction runs, and its guess, half again the programs, is not in the total
+        // while the programs are prepared. Left in, it shrank their share of the bar, and the bar jumped once they were done)
+        if (!compile_all()) prep_skip[1].store(true);
         const bool prepared = !update && prepare_run(prep_progress, false);
         if (!prepared) prep_skip[0].store(true);
         // (a first start, or one after a start that did not finish them: the pipelines the notes predict, into the driver's cache)
@@ -1610,6 +1703,7 @@ bool started_up() {
             prepare_guess(guess);
             for (int k = 0; k < 3; k++) bar.guess(k, guess[k]);
         }
+        if (!compile_all()) bar.skip(1);   // (Most: no prediction, and no guess of it in the total while the programs run)
         part = 0;
         const bool prepared = prepare_run(progress, false, true);
         // (or the last run did not finish the prediction; Compile shaders on Most: never, compile_all)
@@ -1872,10 +1966,10 @@ bool prepare_compiler_busy() { return prepare_cpu_busy.load(std::memory_order_re
 } // namespace mkwvk
 
 // (longshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process), or the game quit
-// (the Insert menu's Quit and Restart now, host/control.c's quit, which end it the same way): while the shaders are prepared,
-// their workers are stopped and what they made is kept first (10 s at most: a driver can take longer on one pipeline). Then the
-// files that count the starts that crashed in a step are put back as this start found them (crash_markers.h): a close is not a
-// crash. Looked up by name, so an executable and a back end of different versions still close
+// (the Insert menu's Quit and Restart now, host/control.c's quit, which end it the same way). First the files that count the
+// starts that crashed in a step are put back as this start found them (crash_markers.h): a quit is not a crash. Then, while the
+// shaders are prepared, their workers are stopped and what they made is kept (10 s at most: a driver can take longer on one
+// pipeline). Looked up by name, so an executable and a back end of different versions still close
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1884,6 +1978,10 @@ __attribute__((visibility("default")))
 #endif
 void mkwvk_close_asked(void) {
     using namespace mkwvk;
+    // (before anything that takes time: the caches' saves below and the 10 s for the workers, with the window not answering. A
+    // player who quits again then ends the process (Force Quit, End task), and so does the system at a log-out: that end comes
+    // after a quit, and must not count as a crash either)
+    crash_markers::close();
     programs_census_log("close");
     perf_report_final(-1);    // (the performance summary's last: ExitProcess is _exit on Linux, so no atexit runs there)
     module_ids_flush();
@@ -1895,7 +1993,6 @@ void mkwvk_close_asked(void) {
         prepare_stop();
         if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
     }
-    crash_markers::close();   // (after the stop: a step whose workers crash the driver while it stops still counts)
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
 }
 

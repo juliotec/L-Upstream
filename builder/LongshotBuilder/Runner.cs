@@ -104,7 +104,7 @@ sealed class Runner
         si.Environment.Remove("LONGSHOT_FFX_SDK");
         si.Environment.Remove("LONGSHOT_XESS_SDK");
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
-        var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm") };
+        var sets = new[] { ("RX_CPM", "cpm") };   // (no EMSDK: the compiler is llvm-mingw's, nx2/make_game.py bundled_mingw)
         foreach (var (name, folder) in sets)
         {
             var path = Path.Combine(tools.Root, folder);

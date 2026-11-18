@@ -67,6 +67,21 @@
 namespace mkwvk {
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out, issue 109)
 int64_t presents_now;   // (the presents so far, for SlowWatch)
+/// (longshot) The last present confirmed *shown* by VK_KHR_present_wait, in microseconds from vkQueuePresentKHR to the
+/// frame reaching the screen: written by the presenter thread, taken by the frame trace. -1 when no present was waited
+/// for (no extension, or not FIFO), so a row says whether it has a presentation clock at all
+std::atomic<int64_t> shown_wait_us{-1};
+/// (longshot) The host clock at which the last present was confirmed *shown*, for the frame trace's single
+/// presentation clock: 0 when the driver gave no confirmation. Same gate as shown_wait_us
+std::atomic<int64_t> shown_at_ns{0};
+/// (longshot) Running total and count of present-to-shown confirmations, drained by perf_report.cpp into the next
+/// summary so the relay can show the presentation clock in the field, not only in the local frame-trace CSV
+std::atomic<int64_t> shown_sum_us{0}, shown_count{0};
+void take_shown_samples(double& sum_ms, int64_t& count) {
+    const int64_t total = shown_sum_us.exchange(0);
+    count = shown_count.exchange(0);
+    sum_ms = total / 1000.0;
+}
 void hang_watch_start();   // (EvilOOT, vk_hangdump.cpp: RX_VK_HANG_DUMP)
 void gpu_hang_watch_start();   // (below: a GPU that stops finishing work, reported and ended)
 struct CondNote { int64_t present; uint64_t addr, x, y; int mode; bool on; };   // (the last render conditions, for a dark frame)
@@ -1263,7 +1278,8 @@ bool ub_try_gap(size_t first, size_t lim, uint64_t addr, uint64_t n) {
 // it is kept while that gap covers it and its page is unstamped)
 struct UbWord {
     uint64_t addr = 0, rec = 0;
-    uint32_t page = 0, v = 0;
+    uint64_t page = 0;   // (its page's generation when noted: memory_page_stamp)
+    uint32_t v = 0;
     bool on = false;
 };
 thread_local UbWord ub_words[128];
@@ -1354,7 +1370,7 @@ bool ub_read(uint64_t addr, void* dst, uint64_t n) {
             return true;
         }
     }
-    const uint32_t page = n == 4 ? memory_page_stamp(addr) : 0;
+    const uint64_t page = n == 4 ? memory_page_stamp(addr) : 0;
     if (!memory_read_as_submitted(addr, dst, n)) return false;
     // (most words are not inside an inline update: the scan that finds that is kept for the gap, and the next words
     // in the gap do not walk the list. A word kept from that gap is the capture's own bytes)
@@ -2659,6 +2675,7 @@ void submit_memory_work(uint64_t value) {
     memory_take_capture(value, completed());
     const auto m2 = std::chrono::steady_clock::now();
     memory_collect_written();
+    memory_check_submit(value);   // (RX_VK_MEM_CHECK: nothing unless it is set)
     const auto m3 = std::chrono::steady_clock::now();
     memsync_part_ns[1] += std::chrono::duration_cast<std::chrono::nanoseconds>(m2 - m1).count();
     memsync_part_ns[2] += std::chrono::duration_cast<std::chrono::nanoseconds>(m3 - m2).count();
@@ -4926,7 +4943,7 @@ void status_tick() {
         if (f) fprintf(f, "frame,ms,pipe_waits,pipe_wait_ms,left_out,translate_ms,uploads,upload_mb,textures,memsync_ms,pipelines_ms,"
                           "uploads_ms,programs_ms,slot_wait_ms,gpu_behind_ms,draw_ms,desc_ms,cmds_ms,tex_lookup_ms,textures_gone,"
                           "late_wait_ms,readback_wait_ms,tex_frame_ms,game_ms,render_ms,gpu_wait_ms,pace_ms,wait_render_ms,"
-                          "wait_gpu_ms,wait_main_ms,main_cpu_ms,main_blocked_ms,main_vcore_ms,at_ns\n");
+                          "wait_gpu_ms,wait_main_ms,main_cpu_ms,main_blocked_ms,main_vcore_ms,shown_ms,shown_at_ns,at_ns\n");
         return f;
     }();
 #ifdef TRACY_ENABLE
@@ -4952,18 +4969,22 @@ void status_tick() {
         // thread's own time over the trace's frame (MkwVkHost main_thread_times): on the CPU, blocked in waits and sleeps, and
         // waiting for a virtual core. Its time running but off the CPU (the system's other work) is the frame less the three
         const fps_stats::Frame ff = fps_last_frame();
+        // (one clock at the frame's arrival: -1 when the driver gave no present-wait confirmation, so the row says so)
+        const int64_t shown_us = shown_wait_us.exchange(-1);
+        const double shown_ms = shown_us < 0 ? -1 : shown_us / 1000.0;
+        const int64_t shown_at = shown_at_ns.exchange(0);   // (the same confirmation, on the host clock)
         static int64_t l_mt[3];
         int64_t mt[3] = {0, 0, 0};
         if (host->main_thread_times) host->main_thread_times(mt);
         fprintf(trace, "%llu,%.2f,%lld,%.2f,%lld,%.1f,%lld,%.2f,%zu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,"
-                       "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lld\n",
+                       "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lld,%lld\n",
                 (unsigned long long)frames, (now_ns - last_ns) / 1e6, (long long)(pw - l_pw), pwms - l_pwms, (long long)(ps - l_ps),
                 tr - l_tr, (long long)(up - l_up), (upb - l_upb) / 1048576.0, texture_count(), dp(PROF_MEMSYNC), dp(PROF_PIPE),
                 dp(PROF_UPLOAD), dp(PROF_PROGRAM), dp(PROF_SLOTWAIT), (st_wait_ns - l_wait) / 1e6, dp(PROF_DRAW), dp(PROF_DESC),
                 dp(PROF_CMDS), dp(PROF_TEXGET), (unsigned long long)(gone - l_gone), (late - l_late) / 1e6, (rb - l_rb) / 1e6,
                 (tf - l_tf) / 1e6, ff.part[fps_stats::kGame], ff.part[fps_stats::kRender], ff.part[fps_stats::kGpuWait],
                 ff.part[fps_stats::kPace], ff.part[fps_stats::kWaitRender], ff.part[fps_stats::kWaitGpu], ff.part[fps_stats::kWaitMain],
-                (mt[2] - l_mt[2]) / 1e6, (mt[1] - l_mt[1]) / 1e6, (mt[0] - l_mt[0]) / 1e6,
+                (mt[2] - l_mt[2]) / 1e6, (mt[1] - l_mt[1]) / 1e6, (mt[0] - l_mt[0]) / 1e6, shown_ms, shown_at,
                 // (at_ns: this present on the host's clock, hos_now_ns: the clock of the profile's samples, presents.csv and
                 // events.txt, so a frame is found in them)
                 (long long)(host->now_ns ? host->now_ns() : 0));
@@ -6244,6 +6265,7 @@ void presenter_loop() {
 #endif
     static const auto wait_for_present = dev.present_wait
         ? (PFN_vkWaitForPresentKHR)vkGetDeviceProcAddr(dev.device, "vkWaitForPresentKHR") : nullptr;
+    static const bool frame_trace_on = getenv("RX_VK_FRAME_TRACE") && atoi(getenv("RX_VK_FRAME_TRACE"));
     VkSwapchainKHR ids_of = VK_NULL_HANDLE;   // (the swapchain the present ids count on: they start again on a new one)
     uint64_t next_id = 0;
     std::unique_lock lk(presenter.mu);
@@ -6289,7 +6311,16 @@ void presenter_loop() {
                 VkResult w = VK_TIMEOUT;
                 for (int step = 0; step < 5 && w == VK_TIMEOUT; step++) w = wait_for_present(dev.device, sc, id, 20000000ull);
                 if (w == VK_ERROR_DEVICE_LOST) device_lost();
-                if (w == VK_SUCCESS) shown_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts).count();
+                if (w == VK_SUCCESS) {
+                    shown_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts).count();
+                    const int64_t wait_us = (int64_t)(shown_ms * 1000);
+                    // (no bookkeeping at all when neither consumer is on: the perf tick or the frame trace)
+                    if (perf_measure.load(std::memory_order_relaxed) || frame_trace_on) {
+                        shown_wait_us.store(wait_us);                      // (the frame trace's presentation clock)
+                        shown_at_ns.store(host->now_ns ? host->now_ns() : fps_clock());
+                        shown_sum_us.fetch_add(wait_us), shown_count.fetch_add(1);   // (the perf summary's)
+                    }
+                }
             }
         }
         {   // (what it waited for, every 600 presents)
@@ -6471,6 +6502,7 @@ struct Job {
     bool has_crop = false;
     nvn_prog prog;
     std::chrono::steady_clock::time_point queued;
+    uint64_t cap_seq = 0;       // (RX_VK_MEM_CHECK: the number of the capture made with it, for its take to match; 0: none)
 };
 std::mutex q_mu;
 std::condition_variable q_cv, q_space, q_idle;
@@ -6922,7 +6954,10 @@ void replay_thread_main() {
         else if (j.kind == JOB_REGISTER_TEXTURE || j.kind == JOB_REGISTER_SAMPLER) fa_window.regs++;
         else if (j.kind == JOB_TEXTURE_RELEASED || j.kind == JOB_PROGRAM_RELEASED) fa_window.releases++;
         switch (j.kind) {
-        case JOB_SUBMIT: submit_job(j.handles, j.value, j.queue); break;
+        case JOB_SUBMIT:
+            memory_check_expect_capture(j.cap_seq);   // (RX_VK_MEM_CHECK: its take is of the capture its submit made)
+            submit_job(j.handles, j.value, j.queue);
+            break;
         case JOB_PRESENT:   // (the frame's work whole before it is shown)
             if (present_held) held_present_run(true);   // (two presents ahead: the one before it first)
             if (cpu_wait_unmet()) {
@@ -6970,6 +7005,7 @@ void replay_thread_main() {
                 HT_SCOPE("signal job: capture");
 #endif
                 std::lock_guard lk(replay_mu);
+                memory_check_expect_capture(j.cap_seq);   // (RX_VK_MEM_CHECK)
                 memory_take_capture(j.queue, completed());
                 st_resume_captures++;
             }
@@ -7155,6 +7191,7 @@ void submit_q(const uint64_t* handles, int n, uint64_t queue) {
         // counted into the other set, and the foliage, grass, characters and particles of that frame were never drawn.
         // With it the syncs take the submits' captures, as the console's GPU sees its memory.
         memory_capture_submit();
+        memory_check_expect_capture(memory_check_capture_seq());   // (RX_VK_MEM_CHECK: taken below, on this thread)
         // (RX_VK_SUBMIT_DELAY_US=<us> (a test): a console's GPU starts later than this replay does. Does what a submission reads
         // arrive just after it, from the game's other threads?)
         static const int delay_us = getenv("RX_VK_SUBMIT_DELAY_US") ? atoi(getenv("RX_VK_SUBMIT_DELAY_US")) : 0;
@@ -7183,6 +7220,7 @@ void submit_q(const uint64_t* handles, int n, uint64_t queue) {
     memory_capture_submit();   // (the pages as they are now, on the game's thread: vk_memory.cpp)
     bh_note_waits(handles, n);
     Job j{JOB_SUBMIT};
+    j.cap_seq = memory_check_capture_seq();   // (RX_VK_MEM_CHECK: 0 unless it is set)
     j.handles.assign(handles, handles + std::max(n, 0));
     j.queue = queue;
     enqueue(std::move(j));
@@ -7316,6 +7354,7 @@ void event_signal_queued(uint64_t gpu, uint32_t value) {
     std::lock_guard lk(submit_order_mu);
     if (bh_signal_meets(gpu, value)) {
         memory_capture_submit();
+        j.cap_seq = memory_check_capture_seq();   // (RX_VK_MEM_CHECK)
         j.id = 1, j.queue = q_values.load();   // (its capture, and the newest value handed out: the take's)
         bh_st.sig_caps++;
     }

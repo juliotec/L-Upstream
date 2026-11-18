@@ -44,6 +44,11 @@ void queue_flush();          // (the same, taking dev.present_mu)
 // (longshot) held submits out, then vkDeviceWaitIdle with the present queue's lock taken too (dev.present_mu held): the device's
 // every queue is synchronized by the host around it
 void device_wait_idle_locked();
+// (longshot) why the swapchain is SDR though the Insert menu's HDR is on (Device::hdr_sdr_why): no VK_EXT_swapchain_colorspace;
+// HDR off in Windows' display settings; HDR on there but the driver lists no HDR10 surface
+// (docs/common-issues.md); the display lists none and the system's setting is not known (Linux, or a Windows that doesn't say).
+// hdr_sdr_count: how many, for the log's and the menu's line for each
+enum HdrSdrWhy : int { hdr_sdr_none, hdr_sdr_no_extension, hdr_sdr_os_off, hdr_sdr_driver, hdr_sdr_unknown, hdr_sdr_count };
 
 struct Device {
     VkInstance instance = VK_NULL_HANDLE;
@@ -75,12 +80,16 @@ struct Device {
     bool eds3_polygon = false, eds3_clamp = false, eds3_blend = false, eds3_a2c = false;
     bool swapchain_colorspace = false;   // (longshot) VK_EXT_swapchain_colorspace: HDR10 surfaces are listed
     bool hdr = false;                    // (longshot) the swapchain is HDR10 (ST 2084, Rec. 2020): framegen_hdr writes it
+    // (longshot) why it is SDR with HDR on, for the log and the menu's hint: written by create_swapchain and read by the menu on
+    // the presenting thread both (menu_record), as hdr is
+    HdrSdrWhy hdr_sdr_why = hdr_sdr_none;
     bool mesh_fallback = false;   // (longshot) no VK_EXT_mesh_shader: task and mesh programs as compute shaders (vk_shader.cpp)
     bool task_mesh_fallback = false;
+    bool mesh_only_fallback = false;   // (the Windows RDNA 2 workaround includes mesh-only programs)
     bool mesh_capable = false;    // (longshot) the card has task and mesh shaders, whatever the Mesh shaders mode this run uses
                                   // (mesh_shader): the Quality preset Auto (this PC)'s tier, vk_main.cpp auto_profile
     bool uses_mesh_fallback(bool has_task) const {
-        return mesh_fallback || (task_mesh_fallback && has_task);
+        return mesh_fallback || (task_mesh_fallback && (has_task || mesh_only_fallback));
     }
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
@@ -301,8 +310,16 @@ void memory_capture_submit();
 /// The replay of the next submit: its capture (false: none, the pages are collected now as before)
 bool memory_take_capture(uint64_t value, uint64_t completed);
 int64_t memory_late_wait_ns();   // (longshot: RX_VK_FRAME_TRACE's late_wait_ms)
+void take_shown_samples(double& sum_ms, int64_t& count);   // (present-to-shown confirmations since the last summary)
 bool memory_capture_now(uint64_t value, uint64_t completed);   // (longshot: made and taken at once)
 uint64_t memory_captures_begun();   // (longshot: how many captures have been begun so far; any thread)
+// (RX_VK_MEM_CHECK=1, mem_check.h: off, each returns at once) the number of the capture this thread's last
+// memory_capture_submit queued; the replay, before a take: the capture the submission's own submit made; a submission's
+// memory work done
+uint64_t memory_check_capture_seq();
+void memory_check_expect_capture(uint64_t seq);
+void memory_check_submit(uint64_t value);
+void memory_check_writer(int kind, uint64_t key);   // (before a memory_stamp_gpu: what writes, mem_check::Writer, and a program's key)
 /// The submission the replay records next (bindings note it: a pool's mirror is in use until it is done)
 void memory_recording_value(uint64_t value, uint64_t completed);
 // (longshot) The recording being made, as vk_replay.cpp numbers them (Recording::part), and the newest of them in which
@@ -323,7 +340,7 @@ void memory_read_as_submitted_many(const SubmittedRead* reads, size_t count);   
 bool pools_mirrored();   // (vk_memory.cpp mirror_on: the buffer pools have VRAM mirrors)
 bool memory_sparse_wait(VkSemaphoreSubmitInfo* w);   // (vk_memory.cpp, RX_VK_MIRROR_SPARSE: a submission's wait for the sparse binds; dev.present_mu held)
 uint64_t memory_capture_view();          // (bumped when a capture is published or any page is stamped)
-uint32_t memory_page_stamp(uint64_t gpu); // (that address's page only)
+uint64_t memory_page_stamp(uint64_t gpu); // (that address's page only)
 uint64_t gpu_pool_end(uint64_t gpu);   // (longshot) where the memory pool holding that address ends, 0: in none (vk_memory.cpp)
 uint64_t gpu_pool_start(uint64_t gpu); // (EvilOOT) and where it begins
 uint64_t gpu_pool_piece(uint64_t gpu, uint64_t n, bool& in_pool);   // (longshot) how much of a range from gpu one import can hold (vk_memory.cpp)
@@ -416,12 +433,12 @@ void vk_timeline_wait(uint64_t v);
 /// gives it) to be done on the GPU: 1 when it is, 0 when the wait ran out, -1 when that part cannot be waited for (the recordings
 /// have no timeline of their own, RX_VK_PER_QUEUE_FENCES=0, no part number, or the part is not known)
 int vk_part_wait(uint64_t part, uint64_t timeout_ns);
-uint32_t memory_generation();
+uint64_t memory_generation();
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
-bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen);
+bool memory_written_since(uint64_t guest, uint64_t size, uint64_t gen);
 void memory_stamp(uint64_t guest, uint64_t size);   // a write the watch does not see (GPU writes, host writes)
 /// The page runs of [guest, guest + size) written after gen, as byte ranges from guest (appended to out)
-void memory_written_runs(uint64_t guest, uint64_t size, uint32_t gen, std::vector<std::pair<uint64_t, uint64_t>>& out);
+void memory_written_runs(uint64_t guest, uint64_t size, uint64_t gen, std::vector<std::pair<uint64_t, uint64_t>>& out);
 uint64_t memory_pages_collected();                  // (statistics)
 
 /// An NVN format as Vulkan stores it (vk_formats.cpp): ASTC is decoded to RGBA8, block_w x block_h
@@ -463,6 +480,18 @@ bool image_compact_pass_end(uint64_t* freed_bytes, uint32_t* freed_blocks);
 void destroy_image(VkImage image, VmaAllocation allocation);
 /// What an allocation really takes (VkMemoryRequirements.size: padding, alignment, the driver's metadata), 0 for none
 uint64_t allocation_size(VmaAllocation allocation);
+/// (mem_account.h) What the images create_image made and destroy_image has not destroyed take, by allocation_size: those in a
+/// device-local heap, or those in system memory; whether an allocation's memory is in a device-local heap (false for none);
+/// and whether the device has a heap that is not device-local (an integrated GPU with one heap has none: the driver counts all
+/// the renderer holds as the device's)
+uint64_t images_made_bytes(bool in_vram);
+/// (and the same of every buffer made by create_buffer, create_buffer_cached and create_device_buffer, and of the sparse
+/// mirrors' blocks. vk_memory.cpp: what its pools hold of those is added to known, by ledger ([0] VRAM, [1] system memory),
+/// and the capture spares are looked at for it)
+uint64_t buffers_made_bytes(bool in_vram);
+void memory_account_sample(uint64_t known[2]);
+bool allocation_in_vram(VmaAllocation allocation);
+bool system_heap_exists();
 /// (dedicated: its own memory object, not a share of a 64 MB block: for the 16 to 32 MB ones that fit two to a block and leave
 /// the rest of it free)
 bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer,

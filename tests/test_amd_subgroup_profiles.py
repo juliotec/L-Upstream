@@ -150,7 +150,7 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
     fixture = (FIXTURE + section(internal, "inline bool pins_32(", "/// (longshot) Where a storage buffer binding starts")
                + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
                + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
-               + section(shader, "const Shader::Profile& profile()", "const std::vector<Code>& codes_of(")
+               + section(shader, "const Shader::Profile& profile()", "const std::vector<SharedCode>& codes_of(")
                + section(warp, "Id HostThreadId(", "Id GuestLane(")
                + section(warp, "bool UseShuffleFallback(", "Id ShuffleAbsolute(") + check_stamp + CASES)
     with tempfile.TemporaryDirectory(prefix="longshot-subgroup-profile-") as tmp:

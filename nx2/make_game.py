@@ -28,6 +28,7 @@ build's last step, the shaders' preparation, was skipped or failed and is left t
 """
 import argparse
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import errno
 import filecmp
 import hashlib
@@ -1834,6 +1835,79 @@ def vk_profile_for(work, environ, readable=None, root=ROOT):
     return prof if (readable or (lambda p: profile_readable(p, any_os=True)))(prof) else None
 
 
+HOT_LIST = "hot_funcs.txt"   # (the lift's hot list, A64_HOT_FUNCS: one lifted function a line, f_<its guest address>)
+# (the one every build uses: committed, with its note in assets/profiles/README.md: guest addresses only, no game code. Copied to
+# <work>/hot_funcs.txt, where the lift key hashes its contents as it hashes a developer's own list)
+HOT_LIST_SHIPPED = os.path.join("assets", "profiles", HOT_LIST)
+
+
+def hot_list_for(work, environ, root=ROOT):
+    """The hot list the lift is given (A64_HOT_FUNCS): <work>/hot_funcs.txt; "" for none, every lifted function in the -O1
+    chunks; or None, which leaves the lift the shell's A64_HOT_FUNCS. In this order:
+      - LONGSHOT_HOT_LIST=0: none (an A/B against the list, or a quicker build: no hot pieces at -O2);
+      - the checkout's own work/hot_funcs.txt (a developer's list, which main copies to <work> before this): that one;
+      - a list A64_HOT_FUNCS names in the shell: None (the lift reads it, and the key hashes its contents);
+      - else the committed assets/profiles/hot_funcs.txt, copied to <work>/hot_funcs.txt when it differs (in the AppImage and
+        the Windows builder's tools folder too: both carry assets/profiles/), or read where it is when <work> is the
+        checkout's own work folder (a copy there would count as the checkout's own list from then on). A tree without one
+        builds with no list.
+    A <work>/hot_funcs.txt the build does not use is removed: it was used whenever it was there, so after a build with a list
+    a build without one still got that list (issue 505). Never the checkout's own file (--work in the checkout's work folder)
+    or the one the shell's A64_HOT_FUNCS names"""
+    dst = os.path.join(work, HOT_LIST)
+    own = os.path.join(root, "work", HOT_LIST)
+    shell = environ.get("A64_HOT_FUNCS", "")
+
+    def drop_stale(say=True):
+        if not os.path.exists(dst):
+            return
+        if os.path.exists(own) and os.path.samefile(own, dst):
+            return
+        if shell and os.path.exists(shell) and os.path.samefile(shell, dst):
+            return
+        os.remove(dst)
+        if say:
+            print("the hot list: %s, another list from an earlier build (or put there by hand), removed: a list of your own "
+                  "goes in the checkout's work/ or A64_HOT_FUNCS" % dst, flush=True)
+
+    if environ.get("LONGSHOT_HOT_LIST", "").strip() == "0":
+        drop_stale(say=False)   # (asked for: whatever list the work folder holds is not this build's)
+        return ""
+    if os.path.isfile(own):
+        return dst
+    if shell:
+        drop_stale()
+        return None
+    shipped = os.path.join(root, HOT_LIST_SHIPPED)
+    if not os.path.isfile(shipped):
+        drop_stale()
+        return None
+    checkout_work = os.path.join(root, "work")
+    if os.path.isdir(work) and os.path.isdir(checkout_work) and os.path.samefile(work, checkout_work):
+        # (--work in the checkout's own work folder: a copy there would be the checkout's own list from then on, the first
+        # choice of every later build, and a change of the committed list would never reach it. The lift reads the committed
+        # file where it is, and lift_key hashes a list outside <work> by its contents)
+        return shipped
+    # (written only when it differs, as the profiles are: an unchanged list keeps the lift and the hot pieces)
+    if not (os.path.exists(dst) and filecmp.cmp(shipped, dst, shallow=False)):
+        if os.path.exists(dst):
+            print("the hot list: %s, another list from an earlier build (or put there by hand), replaced by the committed one: "
+                  "a list of your own goes in the checkout's work/ or A64_HOT_FUNCS" % dst, flush=True)
+        copy_writable(shipped, dst)
+    return dst
+
+
+def hot_list_line(hot, environ, root=ROOT):
+    """The build log's line for hot_list_for's answer (the lift then says how many of its functions it found)"""
+    if hot == "":
+        return "the hot list: none (LONGSHOT_HOT_LIST=0): every lifted function at -O1"
+    if hot is None:
+        return "the hot list: %s" % ("the one A64_HOT_FUNCS names" if environ.get("A64_HOT_FUNCS") else "none")
+    if os.path.isfile(os.path.join(root, "work", HOT_LIST)):
+        return "the hot list: the checkout's work/%s" % HOT_LIST
+    return "the hot list: the committed %s" % HOT_LIST_SHIPPED.replace(os.sep, "/")
+
+
 def game_name(out, work, nup=None):
     """The game's own name and icon (nx2/game_title.py): read from the .nup when there is one and kept in the folder, then, on
     Windows, made into the exe's icon and the name Windows shows for it (work/longshot_game.res, linked by nx2/build.py). A
@@ -2055,6 +2129,7 @@ LIFT_ENV_NOT_OUTPUT = {   # (read by the lift's sources, and no change to what i
     "A64_SITE_PROFILE": "the game's runtime (a64_rt.c), at play", "RX_VK_NAN_GUARD": "nx2/bake_ds's own run",
     "RX_VK_NO_F16": "nx2/bake_ds's own run",
     "HOS_NO_FASTFP": "the game's runtime (FASTFP_HEADER in nx2/fastfp.py, read by the lifted C at play)",
+    "HOS_FMA_FAST": "the game's runtime (nx2/fma_soft.h, read by the generated C at play)",
 }
 
 
@@ -2133,11 +2208,16 @@ def lift_key(exefs, work, env, planning=True, paths=None):
             h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
             with open(f, "rb") as src:
                 h.update(hashlib.sha1(src.read(), usedforsecurity=False).digest())
-    # (the hot list the lift reads: the build's, <work>/hot_funcs.txt, hashed above, else one A64_HOT_FUNCS names in the shell;
+    # (the hot list the lift reads: the build's, <work>/hot_funcs.txt, hashed above, else one A64_HOT_FUNCS names in the shell
+    # or the build's env (the committed list read in place when --work is the checkout's own work folder: hot_list_for);
     # run() gives the lift the build's env over the shell's. Its path is not in the key (LIFT_PATH_ENV), so that list's contents
     # are, or its path when it is not there)
     hot = env.get("A64_HOT_FUNCS") or os.environ.get("A64_HOT_FUNCS")
-    if hot and os.path.abspath(hot) != os.path.abspath(os.path.join(work, "hot_funcs.txt")):
+    if env.get("A64_HOT_FUNCS") == "":
+        # (LONGSHOT_HOT_LIST=0, hot_list_for: the build's env gives the lift no list, over the shell's, though the checkout's own
+        # work/hot_funcs.txt may be there and hashed above (--work in the checkout's work folder): not the key of a lift with it)
+        h.update(b"A64_HOT_FUNCS none" + bytes(1))
+    elif hot and os.path.abspath(hot) != os.path.abspath(os.path.join(work, "hot_funcs.txt")):
         if os.path.isfile(hot):
             with open(hot, "rb") as src:
                 h.update(b"A64_HOT_FUNCS" + bytes(1) + hashlib.sha1(src.read(), usedforsecurity=False).digest())
@@ -2595,6 +2675,34 @@ def spinning_disk(folder):
     return _disk.spinning(folder)
 
 
+def overlap_package_read(jobs, package_stat, out, work, kept, romfs):
+    """A large first unpack can feed the lift while the archive's remaining files are extracted."""
+    if jobs <= 1 or package_stat.st_size < 1 << 30 or os.path.lexists(kept) or os.path.lexists(romfs):
+        return False
+    from build import free_mb
+    # The reader keeps its directory tables while the lift holds the decoded functions.
+    # Leave small-memory machines and known spinning drives on the sequential path.
+    return (free_mb() or 0) >= 8192 and not any(spinning_disk(folder) for folder in (out, work))
+
+
+def package_identity(st):
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+@contextlib.contextmanager
+def clean_incomplete_unpack(game):
+    try:
+        yield
+    except (OSError, SystemExit):
+        try:
+            shutil.rmtree(game)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print("Could not remove the incomplete extraction at %s (%s)." % (game, e), flush=True)
+        raise
+
+
 def warn_slow_disk(*folders):
     """A build reads and writes tens of gigabytes, and on a hard drive it takes much longer than on an SSD. Say so, and build
     anyway: the player may have no other folder with the room. Said once, for the first folder on a hard drive."""
@@ -2803,6 +2911,7 @@ def main(a=None):
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
+    remaining_assets = None
     say("stage", "read", "Reading your game files")
     clear_folder(exefs)
     kept = os.path.join(out, ".longshot_exefs")   # (the game's code as read, kept in the folder: what an update builds from again)
@@ -2843,33 +2952,47 @@ def main(a=None):
                 os.remove(os.path.join(out, ".longshot_romfs_checked"))
             # Keep the last usable cache until the new package has been read and validated.
             staged_exefs = os.path.join(game, "exefs")
-            try:
-                run(PY + ["nx2/nup.py", a.nup, "--extract", game])
-                check_modules(staged_exefs)
-                check_supported_build(staged_exefs)
-                if not os.path.isdir(os.path.join(game, "romfs")):
-                    fail("The package did not contain a romfs folder.")
-                check_unpacked_romfs(os.path.join(game, "romfs"), "Your .nup file %s" % a.nup)
-            except (OSError, SystemExit):
-                try:
-                    shutil.rmtree(game)
-                except FileNotFoundError:
-                    pass
-                except OSError as e:
-                    print("Could not remove the incomplete extraction at %s (%s)." % (game, e), flush=True)
-                raise
-            if os.path.exists(romfs):
-                shutil.rmtree(romfs)
-            shutil.move(os.path.join(game, "romfs"), romfs)
-            keep_heads(out, game, stamp)
-            shutil.move(staged_exefs, exefs)
-            shutil.rmtree(game, ignore_errors=True)
-            shutil.rmtree(kept, ignore_errors=True)
-            shutil.copytree(exefs, kept)
-            write_stamp(good, stamp + chr(10))
+            overlap = overlap_package_read(a.jobs, st, out, work, kept, romfs)
+            extract = PY + ["nx2/nup.py", a.nup, "--extract", game]
+
+            def read_assets():
+                with clean_incomplete_unpack(game):
+                    run(extract + (["--only", "romfs"] if overlap else []))
+                    if overlap:
+                        if package_identity(os.stat(a.nup)) != package_identity(st):
+                            fail("The game package changed during extraction. Start the build again with the complete package.")
+                    else:
+                        check_modules(staged_exefs)
+                        check_supported_build(staged_exefs)
+                    staged_romfs = os.path.join(game, "romfs")
+                    if not os.path.isdir(staged_romfs):
+                        fail("The package did not contain a romfs folder.")
+                    check_unpacked_romfs(staged_romfs, "Your .nup file %s" % a.nup)
+                    if overlap and (os.path.lexists(romfs) or os.path.lexists(kept)):
+                        fail("Another build populated this game folder while its assets were being extracted.")
+                if not overlap and os.path.exists(romfs):
+                    shutil.rmtree(romfs)
+                shutil.move(staged_romfs, romfs)
+                keep_heads(out, game, stamp)
+                if not overlap:
+                    shutil.move(staged_exefs, exefs)
+                shutil.rmtree(game, ignore_errors=True)
+                shutil.rmtree(kept, ignore_errors=True)
+                shutil.copytree(exefs, kept)
+                write_stamp(good, stamp + chr(10))
+
+            if overlap:
+                with clean_incomplete_unpack(game):
+                    run(extract + ["--only", "exefs"])
+                    check_modules(staged_exefs)
+                    check_supported_build(staged_exefs)
+                    shutil.move(staged_exefs, exefs)
+                remaining_assets = read_assets
+            else:
+                read_assets()
         check_modules(exefs)
-        # (also when the .nup was read before: a folder built from a 23.3 GB dump by an earlier builder gets them too)
-        stand_in_damaged_files(out, romfs)
+        if not remaining_assets:
+            stand_in_damaged_files(out, romfs)
     else:
         check_cache_paths(out, (kept, romfs))
         refuse_dump_links(a.exefs)
@@ -2895,8 +3018,11 @@ def main(a=None):
     if os.path.exists(src):
         copy_writable(src, os.path.join(work, "image", "chunks.txt"))
     env = {"OOT_WORK": work, "OOT_EXEFS": exefs, "OOT_ROMFS": romfs, "OOT_DUMP": out, "RX_RELEASE": "1", "A64_HOT_CHUNK": "1"}
-    if os.path.exists(os.path.join(work, "hot_funcs.txt")):
-        env["A64_HOT_FUNCS"] = os.path.join(work, "hot_funcs.txt")
+    # (the hot list: a developer's own work/hot_funcs.txt, else the committed assets/profiles/ one; LONGSHOT_HOT_LIST=0 none)
+    hot = hot_list_for(work, os.environ)
+    if hot is not None:
+        env["A64_HOT_FUNCS"] = hot
+    print(hot_list_line(hot, os.environ), flush=True)
     if os.path.exists(os.path.join(work, "longshot_pieces.prof")) and profile_readable(os.path.join(work, "longshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "longshot_pieces.prof")
     vk_profile = vk_profile_for(work, os.environ)
@@ -2982,7 +3108,17 @@ def main(a=None):
             fail("The translated game came out cut short twice (%s). Check that the drive with %s has free space, and that no antivirus "
                  "and no second Longshot Builder is working in that folder, then update again." % (", ".join(cut[:6]), work))
 
-    translate()
+    if remaining_assets:
+        print("Reading the remaining game assets alongside translation.", flush=True)
+        with ThreadPoolExecutor(max_workers=1) as reader:
+            assets = reader.submit(remaining_assets)
+            try:
+                translate()
+            finally:
+                assets.result()
+        stand_in_damaged_files(out, romfs)
+    else:
+        translate()
 
     # (the compile's timer: build.py reads the record of the earlier builds on this PC, says which files this run really
     # rebuilds and how long the rest will take, and reports each module's seconds; they go into the record below)
@@ -3199,6 +3335,10 @@ def main(a=None):
             reports, issue = _addresses.address("crash_reports"), _addresses.address("crash_issue")
             if reports.startswith("https://") and issue.startswith("https://"):
                 f.write("crash_reports=%s\ncrash_issue=%s\n" % (reports, issue))
+            # (the game sends its own perf summaries to this address; the launcher only configures it, as for crash reports)
+            perf = _addresses.address("perf_reports")
+            if perf.startswith("https://"):
+                f.write("perf_reports=%s\n" % perf)
     PHASES.part("pipeline lists, icon and stamps")
     # (the game's code as read: written again by every build, so not left behind in the work folder. The translated code (sa\gen)
     # and the compiled objects stay: the next build skips the lift when nothing it reads changed (#428) and compiles only what

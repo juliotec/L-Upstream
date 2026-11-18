@@ -242,7 +242,14 @@ bool image_compact_pass_end(uint64_t* freed_bytes, uint32_t* freed_blocks) {
     return compact_over(freed_bytes, freed_blocks);
 }
 
+// (mem_account.h) what every image made here takes, by its allocation: the textures', the render targets', the upscalers', the
+// scratch ones. vk_texture.cpp takes the ones it knows off it, and the rest is the budget line's "other images". Counted apart
+// by where the memory is, [0] a device-local heap and [1] system memory: the last resort below puts an image there when VRAM is full
+static std::atomic<uint64_t> image_bytes[2]{};
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated, bool target, bool textures) {
+    const auto made = [&] {
+        return image_bytes[allocation_in_vram(allocation) ? 0 : 1].fetch_add(allocation_size(allocation), std::memory_order_relaxed), true;
+    };
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     // (in VRAM or not at all: an image VMA puts in system memory when VRAM is full is read over PCIe every frame,
@@ -253,22 +260,22 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
     if (dedicated) {   // (a memory object of its own, which freeing gives back whole: a pool's block is kept by VMA when it empties)
         VmaAllocationCreateInfo dai = ai;
         dai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(vma, &ci, &dai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
+        if (vmaCreateImage(vma, &ci, &dai, &image, &allocation, nullptr) == VK_SUCCESS) return made();
     }
     if (VmaPool pool = textures && textures_pool() ? textures_pool()
                        : target && target_images_pool() ? target_images_pool() : images_pool()) {
         VmaAllocationCreateInfo pai = ai;
         pai.pool = pool;
         pai.usage = VMA_MEMORY_USAGE_UNKNOWN;
-        if (vmaCreateImage(vma, &ci, &pai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
+        if (vmaCreateImage(vma, &ci, &pai, &image, &allocation, nullptr) == VK_SUCCESS) return made();
     }
-    if (vmaCreateImage(vma, &ci, &ai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
+    if (vmaCreateImage(vma, &ci, &ai, &image, &allocation, nullptr) == VK_SUCCESS) return made();
     if (ai.flags & VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT) {
         static std::atomic<int> told_budget{0};
         if (told_budget++ < 10) logf("vk: image over budget, retrying without WITHIN_BUDGET");
         VmaAllocationCreateInfo vai = ai;
         vai.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
-        if (vmaCreateImage(vma, &ci, &vai, &image, &allocation, nullptr) == VK_SUCCESS) return true;
+        if (vmaCreateImage(vma, &ci, &vai, &image, &allocation, nullptr) == VK_SUCCESS) return made();
     }
     // (longshot) VRAM is full (a 4 GB card at a high resolution, #96): an image left unmade is a black screen, so it goes
     // to system memory instead, slow but drawn
@@ -278,9 +285,10 @@ bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& al
     if (vmaCreateImage(vma, &ci, &sai, &image, &allocation, nullptr) != VK_SUCCESS) return false;
     static std::atomic<int> told{0};
     if (told++ < 4) logf("vk: VRAM full: a %ux%u image (format %d) in system memory", ci.extent.width, ci.extent.height, (int)ci.format);
-    return true;
+    return made();
 }
 void destroy_image(VkImage image, VmaAllocation allocation) {
+    image_bytes[allocation_in_vram(allocation) ? 0 : 1].fetch_sub(allocation_size(allocation), std::memory_order_relaxed);
     vmaDestroyImage(vma, image, allocation);
 }
 uint64_t allocation_size(VmaAllocation allocation) {
@@ -288,6 +296,29 @@ uint64_t allocation_size(VmaAllocation allocation) {
     if (allocation) vmaGetAllocationInfo(vma, allocation, &info);
     return info.size;
 }
+uint64_t images_made_bytes(bool in_vram) { return image_bytes[in_vram ? 0 : 1].load(std::memory_order_relaxed); }
+bool allocation_in_vram(VmaAllocation allocation) {
+    if (!allocation) return false;
+    VmaAllocationInfo info{};
+    vmaGetAllocationInfo(vma, allocation, &info);
+    return info.memoryType < dev.memory.memoryTypeCount &&
+           (dev.memory.memoryHeaps[dev.memory.memoryTypes[info.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
+}
+bool system_heap_exists() {
+    for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
+        if (!(dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) return true;
+    return false;
+}
+// (mem_account.h) and what every buffer made here takes, and every sparse mirror's block: [0] in a device-local heap, [1] in
+// system memory. With the images' count these are all the allocator holds for the renderer, so what the budget line leaves
+// "unaccounted" is what the allocator never made. The pools take the buffers they know off it; the rest is "other buffers"
+static std::atomic<uint64_t> buffer_bytes[2]{};
+static void buffer_count(VmaAllocation allocation, bool made) {
+    std::atomic<uint64_t>& n = buffer_bytes[allocation_in_vram(allocation) ? 0 : 1];
+    if (made) n.fetch_add(allocation_size(allocation), std::memory_order_relaxed);
+    else n.fetch_sub(allocation_size(allocation), std::memory_order_relaxed);
+}
+uint64_t buffers_made_bytes(bool in_vram) { return buffer_bytes[in_vram ? 0 : 1].load(std::memory_order_relaxed); }
 bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer,
                    VmaAllocation& allocation, void** mapped, bool dedicated) {
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -302,6 +333,7 @@ bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, V
     if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, &info) != VK_SUCCESS) return false;
+    buffer_count(allocation, true);
     if (mapped) *mapped = info.pMappedData;
     return true;
 }
@@ -326,6 +358,7 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
         *mapped = nullptr;
         return false;
     }
+    buffer_count(allocation, true);
     if (mapped) *mapped = info.pMappedData;
     return true;
 }
@@ -355,6 +388,7 @@ bool invalidate_mapped_checked(VmaAllocation allocation, uint64_t size) {
     return !size || vmaInvalidateAllocation(vma, allocation, 0, size) == VK_SUCCESS;
 }
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation) {
+    if (allocation) buffer_count(allocation, false);
     vmaDestroyBuffer(vma, buffer, allocation);
 }
 bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation, bool dedicated) {
@@ -367,7 +401,9 @@ bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     ai.priority = memory_tiers().rest;
     if (dev.memory_budget) ai.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
     if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-    return vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, nullptr) == VK_SUCCESS;
+    if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, nullptr) != VK_SUCCESS) return false;
+    buffer_count(allocation, true);
+    return true;
 }
 /// (longshot, RX_VK_MIRROR_SPARSE) A buffer with sparse residency and no memory: its blocks are bound one by one
 /// (vk_memory.cpp, sparse_mirror.h). req: its size, block (alignment) and memory types
@@ -398,12 +434,13 @@ bool alloc_sparse_block(const VkMemoryRequirements& req, VmaAllocation& allocati
         allocation = nullptr;
         return false;
     }
+    buffer_count(allocation, true);
     memory = info.deviceMemory;
     offset = info.offset;
     return true;
 }
 void free_sparse_block(VmaAllocation allocation) {
-    if (allocation) vmaFreeMemory(vma, allocation);
+    if (allocation) buffer_count(allocation, false), vmaFreeMemory(vma, allocation);
 }
 void destroy_sparse_buffer(VkBuffer buffer) {   // (its blocks' memory is the caller's to free, after)
     if (buffer) vkDestroyBuffer(dev.device, buffer, nullptr);

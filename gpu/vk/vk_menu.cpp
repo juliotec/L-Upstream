@@ -162,6 +162,19 @@ const char* tx_compact_menu_key(int v) {
     return names[std::clamp(v, 0, 1)];
 }
 const char* tx_hdr(int v) { return v == 1 ? "Expanded" : v == 2 ? "Native (the game's)" : "Off"; }
+/// HDR: on, when the swapchain stayed SDR, why (dev.hdr_sdr_why, vk_main.cpp create_swapchain). Variants: each reason
+const char* hn_hdr(int v, int variant) {
+    static const char* const t[] = {
+        "The picture stays SDR: the graphics driver offers no HDR output (no VK_EXT_swapchain_colorspace).",
+        "The picture stays SDR: HDR is off for this display in Windows' display settings.",
+        ("The picture stays SDR: Windows has HDR on, but the graphics driver offers the game no HDR output. Reinstall the "
+         "driver with a clean install, then restart the PC (longshot.magicbean.dev/help)."),
+        "The picture stays SDR: the display offers no HDR output. Is HDR on in the display settings?"};
+    const int reasons = hdr_sdr_count - 1;   // (every HdrSdrWhy but hdr_sdr_none)
+    static_assert(sizeof t / sizeof *t == hdr_sdr_count - 1, "hn_hdr: a line for each HdrSdrWhy but hdr_sdr_none");
+    if (variant >= 0) return variant < reasons ? t[variant] : nullptr;
+    return v && dev.hdr_sdr_why != hdr_sdr_none ? t[std::clamp((int)dev.hdr_sdr_why, 1, reasons) - 1] : nullptr;
+}
 const char* tx_tonemap(int v) { return v == 1 ? "PsychoV35" : "Vanilla"; }
 const char* tx_nits(int v) {
     static char b[24];
@@ -1631,7 +1644,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
      "the paper white and its highlights up to the peak. Native: the game's own HDR, told the display's peak and paper white.",
-     nullptr, false, true},
+     hn_hdr, false, true},
     {TAB_GRAPHICS, "HDR paper white", &opts.hdr_white, 80, 400, 10, tx_nits,
      "How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.", nullptr, false, true},
     {TAB_GRAPHICS, "HDR peak brightness", &opts.hdr_peak, 400, 4000, 100, tx_nits,
@@ -4115,16 +4128,42 @@ void draw_options(ui::Ctx& c) {
         hits.add(x, 0, x + tw[i], hh, menu_hit::kTab, i);
         x += tw[i];
     }
-    {   // (which build, at the banner's left, so a report can say it without opening the log: as players see it, version_text,
-        // "Longshot v3.0.0-rc.1" or "Longshot Nightly 46 · 434712bb"; the log and the bug report keep the whole name)
-        std::string ver = std::string("Longshot ") + version_text(LONGSHOT_VERSION);
-        const float room = (c.w - total) * 0.5f - 60 * s - c.safe, px = 15 * s;
+    {   // (the banner's left: the Longshot logo and its name, a little larger than the tabs' ink; at Small and Medium smaller
+        // until it fits, at Large at its size or not at all, as the version)
+        const float room = (c.w - total) * 0.5f - 60 * s - c.safe, px = 24 * s;
+        float aspect = 1;
+        ImTextureData* logo = ui::logo(&aspect);
+        const auto width = [&](float p) {
+            return (logo ? p * 1.25f * aspect + 10 * s : 0) + ui::size_of(c.f.heading, p, "Longshot").x;
+        };
+        const float fit = ui::fit_px(px, opts.menu_size == 3 ? px : 14 * s, 0.5f * s, room, width);
+        if (fit > 0) {
+            float lx = c.safe;
+            if (logo) {
+                const float lh = fit * 1.25f;
+                c.d->AddImage(logo->GetTexRef(), ImVec2(lx, ty - lh * 0.5f), ImVec2(lx + lh * aspect, ty + lh * 0.5f));
+                lx += lh * aspect + 10 * s;
+            }
+            ui::text_mid(c, c.f.heading, fit, lx, ty, ui::kBannerInk, "Longshot");
+        }
+    }
+    {   // (which build, at the banner's right, so a report can say it without opening the log: as players see it, version_text,
+        // "v3.0.0-rc.1" or "Nightly 46 · 434712bb"; the log and the bug report keep the whole name. Under it, a development
+        // run's own name for what it tests, LONGSHOT_BUILD_NAME (mise run run-win -BuildName), when the run sets one)
+        const std::string ver = version_text(LONGSHOT_VERSION);
+        const char* named = getenv("LONGSHOT_BUILD_NAME");
+        const std::string name = named ? named : "";
+        const float room = (c.w - total) * 0.5f - 60 * s - c.safe, px = 15 * s, right = c.w - c.safe;
         const auto width = [&](float p) { return ui::size_of(c.f.body, p, ver.c_str()).x; };
         // (still too long, as a source build's "v2.0.11-821-g7b81752-dirty" since the Audio tab: at Small and Medium smaller
         // until it fits, on half-point steps, 10 points at the least; at Large, the size for a TV across the room, at its size
         // or not at all, as before)
         const float fit = ui::fit_px(px, opts.menu_size == 3 ? px : kVersionMinPt * s, 0.5f * s, room, width);
-        if (fit > 0) ui::text_mid(c, c.f.body, fit, c.safe, ty, ui::kBannerInk, ver.c_str());
+        const auto name_width = [&](float p) { return ui::size_of(c.f.body, p, name.c_str()).x; };
+        const float name_fit = name.empty() ? 0 : ui::fit_px(13 * s, opts.menu_size == 3 ? 13 * s : kVersionMinPt * s, 0.5f * s, room, name_width);
+        const float vy = name_fit > 0 ? ty - 8 * s : ty;
+        if (fit > 0) ui::text_mid_right(c, c.f.body, fit, right, vy, ui::kBannerInk, ver.c_str());
+        if (name_fit > 0) ui::text_mid_right(c, c.f.body, name_fit, right, ty + 9 * s, ui::alpha(ui::kBannerInk, 0.8f), name.c_str());
     }
     // the rows, in the column; the help beside it
     float cx0, cx1, hx0, hx1;

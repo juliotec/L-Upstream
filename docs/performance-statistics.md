@@ -1,7 +1,8 @@
 # Performance statistics
 
 A player can tick **Send performance statistics** on the launcher's page (Windows and Linux). It is off by default. With it
-on, the game counts how its frames went and the launcher sends the counts to the team's Grafana. These are the numbers
+on, the game counts how its frames went and sends the counts to the team's Grafana itself; the launcher only configures
+it (the tick and the relay's address). These are the numbers
 that say where Longshot stutters, plays its movies badly or loses its pacing, sliced by GPU, driver, CPU, OS, kernel,
 renderer and map, each on its own. Each one-second sample also includes Link's X/Y/Z position and the gameplay camera's
 yaw and pitch, as the game sends them: the middle of the 100-unit cell Link is in and of the 45-degree yaw and 30-degree
@@ -64,6 +65,18 @@ summary carries no ID, so two summaries can't be tied to one player.
     `ExitProcess` is `_exit` on Linux) or the device is lost. A summary holds 16 maps at most, as the relay takes them
     (`perf_report::kMaxMaps`): a 17th map within one period (warp songs, quick scene changes) ends that summary early,
     and the new map starts the next.
+  - **The game sends each summary itself** on the thread that wrote it, with the system's curl (the crash helper's
+    `find_curl`: `curl.exe` on Windows, `/usr/bin/curl` on Linux; `RX_VK_PERF_TEST_CURL` stands in for it in a test build).
+    Curl is started and waited for off the render thread — spawning a process and waiting never hold up a present — with
+    `--max-time 8` and a 10 s cap. It posts to `perf_reports=`, which the launcher stamps into the folder's
+    `longshot_version.txt` from `nx2/addresses.ini`; a summary without it stays in `perf_pending/`. The game works out
+    the `release` label itself from the version and source fingerprint (the crash helper's rule). What the relay took is
+    kept as sent in `perf_sent/` unless `keep_sent=0`; what it refused (400, 413, 415, 422) is deleted; a busy or
+    unreachable answer (including 404 during a deploy and a redirect) leaves the summary for the next send. There is no
+    backoff file: one summary every 5 minutes is already below the relay's rate limit.
+  - At start, and on a clean exit, the game sends what earlier sessions left in `perf_pending/` (oldest first) and then
+    clears the files a crash or an unstoppable close leaves behind: a `.tmp` summary cut short and curl's header/answer
+    files. The `.json` summaries stay until sent. Both run on the summary's own thread, never on a frame's.
   - Before each summary the game reads the tick again: unticked while it runs, it stops measuring and writes nothing more.
   - At most 48 summaries wait in `perf_pending/`: past that the game writes none, so a player who never opens the
     launcher doesn't fill the disk.
@@ -71,14 +84,9 @@ summary carries no ID, so two summaries can't be tied to one player.
     are counted as the game takes them, so a movie still playing at a summary counts too. The host reads the pose from
     Link's update at most 4 times a second, only from the gameplay camera's view, and gives none once it hasn't been
     set for a second or Link is back at the title.
-- **The launcher** (LongshotLauncher, with `nx2/perf_report.py`): it shows the tick, and at its start runs
-  `nx2/perf_report.py <folder> --send` in a process of its own, so Play, which closes the launcher at once, doesn't cut a
-  send short. It sends what is waiting to `perf_reports` in `nx2/addresses.ini`, oldest first, over one kept
-  connection (one TLS handshake for them all; through a system proxy, one request each), at most 12 a start. A summary
-  the relay took or refused is deleted (one it took is kept as sent in `perf_sent/`, unless the copies are off); one it
-  couldn't reach, or one it answered busy (429 or 5xx), stays for next time. A busy relay isn't asked again before its
-  `Retry-After` (at most a day), or else an hour, doubled each time it is busy again, up to a day: the time is kept in
-  `perf_pending/.next`.
+- **The launcher** (LongshotLauncher): it shows the tick and writes `send=1` (and `keep_sent=0`) into the game folder's
+  `longshot_perf.ini`, and stamps the relay's address into `longshot_version.txt` when it builds the folder. It does not
+  send: `nx2/perf_report.py` is kept as the stand-in relay used by the checks and for local testing.
 - **The relay** (Longshot-api's telemetry service, `POST https://data-services.magicbean.dev/telemetry/perf`, run by
   Bean-Ops): checks each summary, caps every label's values (the rest become
   `other`), and exposes them as Prometheus metrics. Grafana's **Longshot performance** dashboard reads them, with a
@@ -95,6 +103,7 @@ default; either is said on the sender's stderr. The game reads its own from the 
 | Switch | Default | Range | What it does |
 |---|---|---|---|
 | `RX_VK_PERF_INTERVAL` (the game) | `300` s | 60 to 840 | Seconds of play between two summaries. At most 840: the relay takes a map's seconds up to 900, and a summary ends on the frame past the period. Past about five minutes the one-second samples are thinned to fit 60 KiB |
+| `RX_VK_PERF_TEST_CURL` (test builds) | unset | a path | Sends summaries to this stand-in instead of the system's curl, so the game-free checks can test the send |
 | `LONGSHOT_PERF_MAX_SENDS` | `12` | 1 to 48 | Summaries sent at one start (an hour of play); the rest wait for the next start |
 | `LONGSHOT_PERF_TIMEOUT` | `10` s | 2 to 60 | A request's time limit |
 | `LONGSHOT_PERF_BACKOFF` | on | on, off | Leaves a busy relay alone as above; off asks it at every start |
@@ -106,5 +115,7 @@ default; either is said on the sender's stderr. The game reads its own from the 
 With the tick off, the game reads one small file at its first frame and checks one flag on Link's update; it does not read
 the pose. With it on, Link's update reads the pose at most 4 times a second (a clock read otherwise), and every frame takes the Breakdown's timings (the host times its sleeps) and `add_frame()` (16 ns at
 `-O1` in `tests/test_perf_report.cpp`); each second stores one compact sample, and every five minutes the batch is made
-under a lock and written on a thread of its own. Sending happens in the launcher, never in the game. Measured on an RTX 3060 Laptop with the frame rate uncapped: main and this feature, off and on, within
-1 fps of each other (the pull request has the runs).
+under a lock and written on a thread of its own. The send (a curl spawn and a wait) happens on that same thread, never on
+a frame's, so it cannot hold up a present; the cost on the render thread is one thread creation every 5 minutes. Measured
+on an RTX 3060 Laptop with the frame rate uncapped: main and this feature, off and on, within
+1 fps of each other (the pull request has the runs). Not yet measured with the send in the game — that run is needed.

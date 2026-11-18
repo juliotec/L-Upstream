@@ -322,7 +322,10 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
                                           kPresetSettle);
     // (the game's native HDR: State::feature_hdr. What the game presents, not the option and the swapchain: with Native
     // picked and the game's picture not PQ, the scene is LDR, and an HDR feature would get LDR colour)
-    const bool hdr = present_native_pq.load(std::memory_order_relaxed);
+    // (longshot) and DLAA before the game's bloom and tone map (vk_temporal.cpp temporal_pre_bloom): the scene's linear light,
+    // past 1 at every highlight, before the exposure. The same feature takes the tone-mapped picture, made linear, in a frame
+    // that runs it at the network instead
+    const bool hdr = present_native_pq.load(std::memory_order_relaxed) || temporal_hdr_input();
     if (s.feature && s.feature_ow == ow && s.feature_oh == oh && rw <= s.feature_rw && rh <= s.feature_rh &&
         rw >= s.min_rw && rh >= s.min_rh && s.feature_preset == preset && s.feature_hdr == hdr &&
         (!native_aa || s.feature_aa))

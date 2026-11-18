@@ -371,6 +371,12 @@ def wiring():
     check("perf_report_init()" in fps and "perf_frame(" in fps, "vk_fps.cpp starts the summary and adds each frame")
     check("perf_measure" in (vk / "vk_fps.h").read_text(encoding="utf-8"), "the Breakdown is measured while the summary is on")
     cpp = (vk / "perf_report.cpp").read_text(encoding="utf-8")
+    check((vk / "perf_curl.cpp").exists() and (vk / "perf_curl.h").exists(),
+          "curl's posting lives in perf_curl.cpp/h")
+    check((vk / "perf_os.h").exists() and (vk / "perf_os_posix.cpp").exists() and (vk / "perf_os_win.cpp").exists(),
+          "external-tool spawning is a generic OS interface with one file per platform")
+    check("CreateProcessW" not in cpp and "posix_spawn" not in cpp and "find_curl" not in cpp,
+          "perf_report.cpp keeps the policy, not the platform's curl and spawn code")
     check('"longshot_perf.ini"' in cpp and '"send="' in cpp, "the game reads the tick from longshot_perf.ini")
     check('pr::summary_period(getenv("RX_VK_PERF_INTERVAL"))' in cpp and "since_summary >= period" in cpp,
           "the game's interval is RX_VK_PERF_INTERVAL")

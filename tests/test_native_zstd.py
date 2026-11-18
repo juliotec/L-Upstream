@@ -15,7 +15,7 @@ zstd decoder over a small guest window, on frames made here with python-zstandar
   DDict whose ID libzstd reads otherwise, or with all 64 host entries in use (and an entry is free again once its stream
   ends);
 - every page changed is marked for the GPU mirror (HOS_WRITTEN) after its last change, and the virtual core is given up and
-  taken back once a call (kept with HOS_NATIVE_ZSTD=2);
+  taken back once a call with HOS_NATIVE_ZSTD=1 (kept by default and with =2);
 - a broken copy (the staging buffer's fill never stored) must fail.
 
 The game's whole-buffer decode (hos_zstd_frames for f_8010b380, HOS_NATIVE_ZSTD_FRAMES) on the same kinds of frames in one
@@ -416,7 +416,7 @@ def check_calls(chk, name, calls, mode="1"):
     for k, (h, changed, unmarked, aways, backs, x0, *_) in enumerate(calls):
         chk(unmarked == 0, "%s: call %d changed %d page(s) without a mark after the change" % (name, k, unmarked))
         if h:
-            chk(aways == backs and aways == (1 if mode in ("1", "", None) else 0) or (aways == backs == 0 and signed(x0) == -1),
+            chk(aways == backs and aways == (1 if mode == "1" else 0) or (aways == backs == 0 and signed(x0) == -1),
                 "%s: call %d gave the core up %d times and took it back %d" % (name, k, aways, backs))
         else:
             chk(changed == 0, "%s: call %d left to the lifted code but wrote %d page(s)" % (name, k, changed))
@@ -536,7 +536,7 @@ def checks(exe, tmp, quick=False):
     chk(calls[65][0] == 1 and signed(calls[65][5]) == 0 and calls[66][0] == 1, "64 entries: not free again after a stream ended")
     # the core kept with =2
     good(chk, exe, tmp, "HOS_NATIVE_ZSTD=2", text, compress(text), 4096, mode="2")
-    # the default: unset or empty, done on the host and the core given up, as with =1
+    # the default: unset or empty, done on the host and the core kept, as with =2
     good(chk, exe, tmp, "the switch unset", text, compress(text), 4096, mode=None)
     good(chk, exe, tmp, "the switch empty", text, compress(text), 4096, mode="")
     return chk.failed

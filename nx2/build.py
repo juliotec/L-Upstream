@@ -743,7 +743,7 @@ def chunk_opt_o2(gen):
                 continue
             with open(os.path.join(gen, name), "rb") as f:
                 text = f.read()
-            if any(m.group(1) in want for m in lifted_c.HEAD_BYTES.finditer(text)):
+            if any(m.group(1) in want for m in lifted_c.definitions(text)):
                 chunks.add(name)
     return chunks
 
@@ -930,7 +930,7 @@ def rss_mb(proc):
 def largest_function(text):
     """The largest function of a lifted file's text, in bytes: each function from the newline before its definition, as mem_need
     was first measured; a giant's pieces are functions of their own (split_giants.py, the copy compile_one compiles)"""
-    starts = [m.start() - 1 for m in lifted_c.HEAD_BYTES.finditer(text)]
+    starts = [m.start() - 1 for m in lifted_c.definitions(text)]
     i = text.find(b"\nstatic __attribute__((noinline)) uintptr_t s_")
     while i >= 0:
         starts.append(i)
@@ -1110,6 +1110,10 @@ def ffmpeg_version_key():
 # instead of Windows' write watch (GetWriteWatch over the 6 GB MKW's GPU sees took ~20 ms a scan, in one thread or
 # four: the race's replay waited ~12 ms a frame for it). Always: the guest window is not write-watched
 WRITE_TRACK = ["-DA64_WRITE_TRACK"]
+# (longshot) the lifted game's stores mark their page only where the page is a GPU page (host/mark_bitmap.c, nx2/rtgen.py
+# A64_MARK_BITMAP); the host's own marks stay. On by default; RX_MARK_BITMAP=0 builds the lifted game marking every page
+# it stores to, as before
+MARK_BITMAP = [] if os.environ.get("RX_MARK_BITMAP", "").strip().lower() in ("0", "off", "false", "no") else ["-DA64_MARK_BITMAP"]
 
 # (longshot) the host CPU the lifted game and the runtime are built for: x86-64-v3 (AVX2, FMA, BMI1/2, LZCNT,
 # MOVBE; Haswell and Zen 1 on). With FMA the FPX1 fast paths cover double-precision FMA (RECOMP_FPX_FMA64; it took
@@ -1159,7 +1163,7 @@ def flags(gen, rt64, opt, polls):
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-I" + NX2_RT, "-Wno-everything",
         "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
-        (["-DA64_POLLING"] if polls else []) + WRITE_TRACK
+        (["-DA64_POLLING"] if polls else []) + WRITE_TRACK + MARK_BITMAP
 
 
 # LONGSHOT_LIGHT_PASSES (on by default; 0 turns it off): ordinary lifted chunks compile at -O1 without its module passes (the

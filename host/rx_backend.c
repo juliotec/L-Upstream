@@ -167,7 +167,9 @@ static void host_mark_written(const void *p, uint64_t n) {
    zeroed; the region allocator never hands it to the game) */
 static uint64_t host_guest_alloc(uint64_t size) {
     const uint64_t a = hos_region_alloc(size, 0x10000);
-    if (a) memset(hos_guest_base() + a, 0, size);
+    /* (marked written after the zeros: the region may lie where a freed one did, under an import the renderer still
+       holds with its copies of the old bytes) */
+    if (a) memset(hos_guest_base() + a, 0, size), host_mark_written(hos_guest_base() + a, size);
     return a;
 }
 

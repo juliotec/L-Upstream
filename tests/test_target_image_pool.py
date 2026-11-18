@@ -78,7 +78,7 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("vkCmdClearDepthStencilImage", after)
 
     def test_a_gone_render_targets_views_go_to_the_pool_with_its_image(self):
-        later = block(self.tex, "void destroy_later(Texture& tex)")
+        later = block(self.tex, "void destroy_later(Texture& tex, uint64_t completed)")
         self.assertRegex(later, r"if \(tex\.pool_key && tex\.allocation && tex\.sparse_chunks\.empty\(\) && pool_cap\(\)\)")
         self.assertIn("d.view_map = std::move(tex.views)", later)
         self.assertIn("d.views.push_back(kv.second)", later)   # (the others' views destroyed, as before)
@@ -90,7 +90,10 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
         self.assertLess(trim, frame.index("if (!dead_targets::pass_due(frame_no)) {"))   # (every present, not every tenth)
-        self.assertIn("pool_pressure = !known ? 0 : (used > allowed / 100 * 97) ? 2 : (pressure > allowed / 10 * 9) ? 1 : 0;", frame)
+        # (the pool's pressure is the arbiter's level, from the lines this read before: pressure past 90% of the allowance, 1,
+        # and the count past 97% of it, 2 (mem_account.h, tests/test_mem_account.py). #637 made the one "pressed" these two)
+        self.assertIn("const mem_account::Ask asked = arbiter.look(pressure, used, known ? allowed : 0);", frame)
+        self.assertIn("pool_pressure = (uint8_t)asked.level;", frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")

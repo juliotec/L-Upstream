@@ -113,17 +113,19 @@ inline uint64_t mirror_budget(uint64_t vram) {
 
 /// An integrated GPU's texture budget from its share of the allowance (texture_budget.h integrated_bytes) and the PC's
 /// RAM, which it draws from (vk_texture.cpp texture_frame): a third of the RAM is left to the game and the system (8 GB at
-/// least, 16 at most), then a cap by the RAM (1.5 GB at 8, 2 at 12, 2.5 at 16, 3.5 at 24, 4 at 32, 6 above), 1 GB at least,
-/// and never more than the share. RAM not known: taken as 8 GB
+/// least, 16 at most), then a cap by the RAM (1.5 GB at 8, 2 at 12, 2.5 at 16, 3.5 at 24, 4 at 32, 6 above; when ASTC is
+/// decoded on the CPU, 6 GB at 24 and 8 above, as RGBA8 textures take ~4x the space of BC3), 1 GB at least, and never
+/// more than the share. RAM not known: taken as 8 GB
 inline uint64_t integrated_reserved(uint64_t ram) {   // (what of the RAM is left to the game, its targets and the system)
     return std::max<uint64_t>(std::min<uint64_t>(ram / 3, 16 * kGB), 8 * kGB);
 }
-inline uint64_t integrated_texture_budget(uint64_t share, uint64_t ram) {
+inline uint64_t integrated_texture_budget(uint64_t share, uint64_t ram, bool astc_on_cpu = false) {
     if (!ram) ram = 8 * kGB;
     const uint64_t reserved = integrated_reserved(ram);
     const uint64_t available = ram > reserved ? ram - reserved : 0;
     uint64_t b = std::min(available, share);
     const uint64_t cap = ram <= 8 * kGB ? 1536 * kMB : ram <= 12 * kGB ? 2048 * kMB : ram <= 16 * kGB ? 2560 * kMB
+                       : astc_on_cpu ? (ram <= 24 * kGB ? 6144 * kMB : 8192 * kMB)
                        : ram <= 24 * kGB ? 3584 * kMB : ram <= 32 * kGB ? 4096 * kMB : 6144 * kMB;
     b = std::min(b, cap);
     b = std::max<uint64_t>(b, 1024 * kMB);
@@ -131,9 +133,9 @@ inline uint64_t integrated_texture_budget(uint64_t share, uint64_t ram) {
 }
 
 /// The texture cache's budget at the first look (texture_frame): texture_budget.h by the card, an integrated GPU's by the RAM too
-inline uint64_t texture_budget(uint64_t allowed, uint64_t vram, uint64_t ram, bool integrated) {
+inline uint64_t texture_budget(uint64_t allowed, uint64_t vram, uint64_t ram, bool integrated, bool astc_on_cpu = false) {
     if (!integrated) return texture_rule::dedicated_bytes(allowed, vram, ram);
-    return integrated_texture_budget(texture_rule::integrated_bytes(allowed, vram), ram);
+    return integrated_texture_budget(texture_rule::integrated_bytes(allowed, vram, astc_on_cpu), ram, astc_on_cpu);
 }
 
 /// Whether the card counts as small for the textures' top levels (vk_texture.cpp low_vram_texture_mips, with Minimum's
@@ -555,7 +557,7 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     // sizes
     p.small_vram_textures = small_vram_textures(allowed, integrated, f.ram);
     p.astc_bc_all = astc_bc_policy::all(allowed, integrated);
-    p.texture_budget = texture_budget(allowed, heap, f.ram, integrated);
+    p.texture_budget = texture_budget(allowed, heap, f.ram, integrated, p.astc_on_cpu);
     p.mirror_budget = mirror_budget(heap);
     p.target_pool_mb = target_pool::default_mb(allowed);
     p.compact_min_free = vram_compact::default_min_free(allowed);
@@ -632,6 +634,8 @@ template <class Get> void device_policy_env(DevicePolicy& p, const DeviceFacts& 
     flag(Sw::split_ub_flush, "RX_VK_SPLIT_UBFLUSH", p.split_ub_flush);
     flag(Sw::ub_snapshot, "RX_VK_UB_SNAPSHOT", p.ub_snapshot);
     flag(Sw::astc_on_cpu, "RX_VK_ASTC_CPU", p.astc_on_cpu);
+    // (the integrated GPU's texture budget follows whether ASTC is decoded on the CPU)
+    p.texture_budget = policy_rule::texture_budget(f.allowed_at_start, f.vram_heap, f.ram, f.integrated(), p.astc_on_cpu);
     flag(Sw::batch_submits, "RX_VK_BATCH", p.batch_submits);
     flag(Sw::compute_builds_serial, "RX_VK_COMPUTE_SERIAL", p.compute_builds_serial);
     flag(Sw::pcache_fetch_lock, "RX_VK_PCACHE_FETCH_LOCK", p.pcache_fetch_lock);

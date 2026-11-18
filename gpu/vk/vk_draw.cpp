@@ -38,6 +38,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
 #include "vk_paths.h"
+#include "vk_progress.h"   // (PrepareWork: prepare_run's count of the programs, each at its cost)
 #include "pipeline_cache_file.h"
 #include "vk_draw.h"
 #ifdef TRACY_ENABLE
@@ -673,6 +674,7 @@ std::atomic<int64_t> pcache_built_since_save{0};
 // most precompiled pipelines as not found in the app's cache (~460 of ~12,900 here), which it then serves from its own.
 std::atomic<size_t> pcache_saved_size{0};
 bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
+bool pcache_file_rejected = false;   // (pcache_init: the cache's file was there but not for this device and driver)
 /// A pipeline cache file's data, or nothing when it cannot be read or was made by another device or driver
 PipelineCacheFile pcache_file_read(const std::string& path) {
     return PipelineCacheFile::read(path, [](const uint8_t* head, uint64_t size) {
@@ -989,13 +991,20 @@ bool pcache_load_off() {
         const char* e = getenv("RX_VK_PCACHE_LOAD");
         const int sw = e && *e ? (env_value_off(e) ? 0 : 1) : -1;   // (longshot_env.h: 0/off/false/no)
         const bool preparing = env_on("LONGSHOT_PREPARE_ONLY"), at_create = programs_load_at_create();
+        bool cgroup_limited = false;
 #ifdef _WIN32
         const bool linux_nvidia = false;
         const uint32_t ram_mb = 0;
 #else
         const bool linux_nvidia = dev.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;   // (not NVK: Mesa's, with Mesa's cache)
         const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
-        const uint32_t ram_mb = pages > 0 && page > 0 ? (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20) : 0;
+        uint64_t capacity = pages > 0 && page > 0 ? ((uint64_t)pages * (uint64_t)page) >> 20 : UINT64_MAX;
+        if (linux_nvidia && sw < 0 && !preparing && at_create) {
+            const uint64_t limit = compute_gate::cgroup_memory().limit_mb;
+            cgroup_limited = limit < capacity;
+            if (cgroup_limited) capacity = std::max<uint64_t>(1, limit);   // zero means unknown to the cache policy
+        }
+        const uint32_t ram_mb = capacity == UINT64_MAX ? 0 : (uint32_t)std::min<uint64_t>(capacity, UINT32_MAX);
 #endif
         // (NVIDIA's folder walked only where everything else says not to read the file; its size alone counts, not Mesa's)
         pcache_load::Measured cache{pcache_load::Cache::kUnknown, 0};
@@ -1011,7 +1020,7 @@ bool pcache_load_off() {
         std::string seen;   // (what was looked at: the switch, or the RAM and NVIDIA's cache where they were)
         if (sw >= 0) seen = std::string("RX_VK_PCACHE_LOAD=") + e;
         else if (choice.why == pcache_load::Why::kRam || looked)
-            seen = std::to_string(ram_mb) + " MB of RAM";
+            seen = std::to_string(ram_mb) + (cgroup_limited ? " MB cgroup memory limit" : " MB of RAM");
         if (looked) {
             seen += ", NVIDIA's own shader cache ";
             seen += cache.cache == pcache_load::Cache::kOff       ? std::string("off (__GL_SHADER_DISK_CACHE, or no folder for it)")
@@ -1053,6 +1062,18 @@ void pcache_init() {
     pcache_no_save = off;
     pcache_drop_stale();   // (before the files are read)
     auto data = off ? PipelineCacheFile{} : pcache_file_read(pcache_path);
+    // (a file there that this device and driver cannot take: another driver made it (a driver update changes the
+    // pipelineCacheUUID), another GPU, or a write cut short. The cache starts empty, and what the pipelines' marker says is in
+    // it is gone: precompile_run warms again before the game rather than compile the noted pipelines in play. After
+    // ProjectReLink db54a4bc and aabc7ad8)
+    FILE* was = !off && data.empty() ? fopen(pcache_path.c_str(), "rb") : nullptr;   // (as pcache_file_read opens it)
+    const bool refused = was && fgetc(was) != EOF;
+    if (was) fclose(was);
+    if (refused) {
+        pcache_file_rejected = true;
+        logf("vk: pipeline cache: %s was made for another driver or GPU (or is damaged): it starts empty, and the noted "
+             "pipelines are built again", pcache_path.c_str());
+    }
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     ci.initialDataSize = data.size();
     ci.pInitialData = data.empty() ? nullptr : data.data();
@@ -1384,6 +1405,7 @@ bool compiles_nothing(VkPipelineCreateFlags flags) { return (flags & VK_PIPELINE
 /// Counted and logged (the first 8, then at each power of two), so the Intel runs show how often it happens
 std::atomic<int64_t> st_intel_gate_busy{0};
 VkResult intel_gate_busy() {
+    gate_busy = true;   // quick_pipeline can retry when the compiler is free
     const int64_t n = ++st_intel_gate_busy;
     if (n <= 8 || (n & (n - 1)) == 0)
         logf("vk: asked cold: Intel's gate busy (a worker compiles); left to a worker, %lld so far", (long long)n);
@@ -1402,46 +1424,6 @@ VkResult cached_graphics(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl)
 /// an Iris Xe PC with 32 GB did not hold. On RADV with an integrated GPU too: a Radeon 760M PC with 12 GB was killed for memory
 /// while the first start made the mesh fallback's compute pipelines on every CPU (#1398). RX_VK_COMPUTE_AT_ONCE=<n>: at most
 /// n on any GPU, 0: no limit, as before
-#ifndef _WIN32
-/// (Linux) What the process's cgroup v2 limits leave, in MB: the least of memory.max less memory.current over its cgroup and
-/// those above it (a limit on a parent slice binds too); kUnknownMB with none set, or no cgroup v2 (compute_gate.h
-/// cgroup_room_mb). MemAvailable does not see them, and a cgroup's OOM killer ends the game whatever the system has
-uint64_t cgroup_available_mb() {
-    std::string path;
-    if (FILE* f = fopen("/proc/self/cgroup", "r")) {
-        char line[4096];
-        while (fgets(line, sizeof line, f))
-            if (!strncmp(line, "0::", 3)) {
-                path = line + 3;
-                while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) path.pop_back();
-                break;
-            }
-        fclose(f);
-    }
-    if (path.empty() || path[0] != '/') return compute_gate::kUnknownMB;
-    uint64_t room = compute_gate::kUnknownMB;
-    for (;;) {
-        const std::string dir = "/sys/fs/cgroup" + (path == "/" ? std::string() : path);
-        char max[64] = {};
-        unsigned long long current = 0;
-        bool read = false;
-        if (FILE* f = fopen((dir + "/memory.max").c_str(), "r")) {
-            read = fgets(max, sizeof max, f) != nullptr;
-            fclose(f);
-        }
-        if (read && max[0] >= '0' && max[0] <= '9') {
-            if (FILE* f = fopen((dir + "/memory.current").c_str(), "r")) {
-                if (fscanf(f, "%llu", &current) == 1) room = std::min(room, compute_gate::cgroup_room_mb(max, current));
-                fclose(f);
-            }
-        }
-        if (path == "/") break;
-        const size_t slash = path.find_last_of('/');
-        path = slash == 0 ? "/" : path.substr(0, slash);
-    }
-    return room;
-}
-#endif
 uint64_t memory_available_mb() {
 #ifdef _WIN32
     MEMORYSTATUSEX m{};
@@ -1457,7 +1439,7 @@ uint64_t memory_available_mb() {
         if (!strcmp(key, "MemAvailable:")) kb = v, found = true;
     fclose(f);
     // (the least of the system's and the cgroup's: kUnknownMB is the largest, so either one alone stands when the other is not known)
-    return std::min(found ? (uint64_t)(kb >> 10) : compute_gate::kUnknownMB, cgroup_available_mb());
+    return std::min(found ? (uint64_t)(kb >> 10) : compute_gate::kUnknownMB, compute_gate::cgroup_memory().available_mb);
 #endif
 }
 compute_gate::Gate& compute_compiles() {
@@ -1707,7 +1689,7 @@ VkPipeline compute_pipeline_cached(const Program& q, bool noopt) {
 /// (a graphics pipeline made with the cache chosen for it: pcache through the play caches, another or none as it is)
 VkResult graphics_with(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
     if (cache && cache == pcache) return cached_graphics(ci, pl);
-    IntelDriverGate gate(compiles_nothing(ci->flags));
+    IntelDriverGate gate(quick_build || compiles_nothing(ci->flags));
     if (gate.busy) return intel_gate_busy();
     return guarded_graphics_held(cache, ci, pl);
 }
@@ -1751,17 +1733,17 @@ FILE* note_file = nullptr;
 std::unordered_set<uint64_t> noted;   // (a pipeline once in the file, however many runs meet it)
 std::string pipe_notes_path() { return cache_path("longshot_pipelines.bin"); }
 /// (longshot) longshot_pipelines.bin.built: a precompile that got to its end built every note there was into the pipeline cache
-/// (its stamp, and how many). RX_VK_LOAD=create loads pipelines from the caches alone, and only once this says they are there.
+/// (its stamp, note count and compute coverage). RX_VK_LOAD=create loads pipelines from the caches alone, and only once this says they are there.
 /// What adds notes without building them (state_list_prepare) removes it; a note play adds was built by play, into its cache
 std::string precompile_built_path() { return pipe_notes_path() + ".built"; }
-void precompile_built_write(size_t notes) {
+void precompile_built_write(size_t notes, uint64_t compute_coverage) {
     // (not by a --prepare-shaders run: on NVIDIA the pipeline cache that process writes does not answer the play process
     // ("kept 0 of 32"), so the first play after a preparation found none of the noted pipelines in a cache and compiled them
     // in play with draws left out. Left unwritten, the first play start builds them itself, and its cache does answer)
     if (env_on("LONGSHOT_PREPARE_ONLY")) return;
     if (FILE* f = fopen(precompile_built_path().c_str(), "wb")) {
-        const uint64_t rec[2] = {program_cache_stamp(), (uint64_t)notes};
-        fwrite(rec, 8, 2, f);
+        const uint64_t rec[] = {program_cache_stamp(), (uint64_t)notes, compute_coverage};
+        fwrite(rec, sizeof rec, 1, f);
         fclose(f);
     }
 }
@@ -2153,14 +2135,27 @@ struct ComputePlan {
     bool all = false, none = false, learned_only = false;
     size_t shipped = 0, learned = 0;   // (the keys the shipped list names, and those play dispatched here)
     size_t fresh = 0;                  // (the shipped list's that this install's play has not dispatched)
+
+    // The play process's .built marker can satisfy a later Builder request if it
+    // warmed every compute, or the same set. The order of the list is immaterial.
+    static constexpr uint64_t every = 1;
+    uint64_t coverage() const {
+        if (all) return every;
+        uint64_t stamp = 0;
+        if (!none) {
+            std::vector<uint64_t> sorted(keys.begin(), keys.end());
+            std::sort(sorted.begin(), sorted.end());
+            for (const auto key : sorted) stamp = mix(stamp, key);
+        }
+        return stamp << 1;
+    }
 };
-/// RX_VK_PRECOMPILE_COMPUTES, as computes_plan reads it. Unset: "listed" on Mesa's Intel driver, all on a first start
-/// elsewhere. There every compute program on a first start was 4,058 programs and 9,691 variants for the driver, where the
-/// shipped list and this PC's play name about 230: the rest held the preparation for hours, and two of them were never
-/// built (compute_pin.h too_big). A program the list misses is made at its first dispatch, as any GPU's with "listed"
+// Most translates the whole seed and warms compute pipelines for programs seen in play. Without a usable list, computes_plan("listed") falls back to every kept program.
+bool compile_level_all();
 const char* precompile_computes_which() {
     if (const char* e = getenv("RX_VK_PRECOMPILE_COMPUTES")) return e;
-    return dev.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ? "listed" : nullptr;
+    if (dev.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA || !compile_level_all()) return "listed";
+    return nullptr;
 }
 ComputePlan computes_plan(const char* which, bool state_lists) {
     ComputePlan plan;
@@ -2175,6 +2170,15 @@ ComputePlan computes_plan(const char* which, bool state_lists) {
     const bool listed = which && !strcmp(which, "listed");
     plan.all = which && !plan.learned_only && !listed ? !strcmp(which, "all") : listed ? plan.keys.empty() : !plan.learned;
     plan.none = !plan.all && which && !strcmp(which, "none");
+    return plan;
+}
+// Warming for the driver and keeping pipelines resident during play are separate.
+// On All the driver's warm includes every compute, even after this install has played.
+const ComputePlan& compute_warm_plan() {
+    static const ComputePlan plan = [] {
+        const char* which = precompile_computes_which();
+        return computes_plan(which ? which : "all", !env_on("RX_VK_NO_STATE_LIST"));
+    }();
     return plan;
 }
 std::mutex state_mu;
@@ -3038,9 +3042,17 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
 }
 
 /// (longshot) RX_VK_QUICK_MS, read once and logged: quick_pipe.h
-double quick_budget_ms() {
+double quick_budget_ms(bool must = false) {
+    static const char* setting = getenv("RX_VK_QUICK_MS");
+    static const bool required_only = [] {
+        if (setting && strcmp(setting, "required") != 0) return false;
+        logf("vk: quick pipelines only for draws that must wait (RX_VK_QUICK_MS=required)");
+        return true;
+    }();
+    // take() exempts mandatory draws from the frame budget. A positive value enables that path.
+    if (required_only) return must ? quick_pipe::kQuickSuggestedMs : 0;
     static const double ms = [] {
-        const char* e = getenv("RX_VK_QUICK_MS");
+        const char* e = setting;
         bool bad = false;
         const double v = quick_pipe::quick_ms(e, &bad);
         if (bad)
@@ -3072,7 +3084,7 @@ double pipe_wait_budget_ms() {
 /// into no cache, set as the entry's pipeline and not ready: the worker's full build replaces it. At most RX_VK_QUICK_MS a frame
 /// on each recording thread, but for a draw that cannot be left out (must). true: the entry has one to draw with
 bool quick_pipeline(PipeEntry& e, const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool must) {
-    const double budget_ms = quick_budget_ms();
+    const double budget_ms = quick_budget_ms(must);
     if (budget_ms <= 0 || program_modules_dropped(p)) return false;
     static thread_local quick_pipe::FrameBudget budget;
     const auto now_ms = [] {
@@ -3090,6 +3102,8 @@ bool quick_pipeline(PipeEntry& e, const Program& p, const NvnState& s, const Tar
     };
     double quick_took = 0;
     const auto build = [&](bool& busy) -> VkPipeline {
+        // Unoptimized native task/mesh shaders can reset RADV during a load (issue 1000).
+        if (dev.driver_id == VK_DRIVER_ID_MESA_RADV && p.mesh && !p.fallback) return VK_NULL_HANDLE;
         const double t0 = now_ms();
         gate_busy = false;
         const quick_pipe::Raise quick(quick_build);
@@ -4466,6 +4480,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 if (b && d.is_written) {
                     const auto t1 = slow_desc_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                     const uint64_t guest = host->gpu_guest(base);
+                    memory_check_writer(1, p.key);   // (RX_VK_MEM_CHECK: a storage buffer this program writes)
                     if (guest) { ParLock lk; memory_stamp_gpu(guest, n); }
                     if (slow_desc_timing()) slow_descriptor(t1, "stamp", base, n);
                 }
@@ -5441,8 +5456,18 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     {   // (longshot) A colour pass after a depth pass tests EQUAL against what another program wrote. Intel's compiler does not give two
         // programs the same position to the last bit, and the ground came out in holes: the sky through them, a white forest.
         // A small margin towards the camera instead. RX_VK_EQ_BIAS=<units>, 0: as the game asks
+        // Not for a draw that blends: the game keeps such a draw (a haze sheet across Death Mountain Trail's entrance, program
+        // 701ae221d88b2908) where the depth is exactly its own, and LESS_OR_EQUAL drew the whole sheet over the mountain behind:
+        // a flat khaki veil on Intel (Arc 155H). The prepass's colour passes the margin was made for do not blend: some have blending
+        // on with ONE, ZERO (the same as off), and those keep the margin (without it, Death Mountain Trail's ground had holes).
         static const float eq_bias = dev.policy.equal_depth_bias;   // (device_policy.h: 64 on Intel, then the switch)
-        if (eq_bias > 0 && d.dt && !d.dw && d.dop == VK_COMPARE_OP_EQUAL) {
+        bool blends = false;
+        for (int i = 0; i < at.n && !blends; i++) {
+            const nvn_blend_st& b = s.blend[i];
+            blends = (s.color.blend_en >> i & 1) && at.color_format[i] && (!cur_program || target_write_mask(*cur_program, s, i)) &&
+                     (blend_factor(b.src_rgb) != VK_BLEND_FACTOR_ONE || blend_factor(b.dst_rgb) != VK_BLEND_FACTOR_ZERO);
+        }
+        if (eq_bias > 0 && d.dt && !d.dw && d.dop == VK_COMPARE_OP_EQUAL && !blends) {
             d.dop = VK_COMPARE_OP_LESS_OR_EQUAL;
             d.bias_en = VK_TRUE;
             d.bias[0] = -eq_bias, d.bias[1] = 0.0f, d.bias[2] = 0.0f;
@@ -8266,6 +8291,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_CMDS);
     texture_watch_prog(p.key);
     if (!same_desc) gfx_sampled() = draw_sampled();
+    // (longshot) NVIDIA DLAA before the game's bloom and tone map: the frame's draws into the scene and those that read it, and
+    // at the bloom's first draw DLAA on the scene, before this draw reads it (vk_temporal.cpp, pre_bloom.h)
+    temporal_pre_bloom(cmd, p.key, gfx_sampled(), at.color, at.n);
     static const bool barrier_every = env_on("RX_VK_BARRIER_EVERY_DRAW");   // (an experiment: a pass each)
     if (barrier_every) end_pass(cmd);
     reactive_scene_draw(cmd, p, s, at);
@@ -9586,7 +9614,7 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
 /// and every thread takes queued variants before it takes another program, so a program's variants are compiled side by side
 /// and only a few programs are read in at once. The gate (compute_gate.h) decides how many compiles run. progress: in programs.
 /// only: the programs to warm, the precompile's plan (computes_plan), null for every kept one. The programs done
-size_t warm_computes_apart(void (*progress)(size_t done, size_t total), const std::function<void(Program&)>& warm,
+size_t warm_computes_apart(const std::function<void(size_t done, size_t total)>& progress, const std::function<void(Program&)>& warm,
                            const std::unordered_set<uint64_t>* only) {
     std::vector<uint64_t> keys = program_cache_compute_keys();
     if (only) keys.erase(std::remove_if(keys.begin(), keys.end(), [&](uint64_t k) { return !only->count(k); }), keys.end());
@@ -9736,10 +9764,12 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // (~20 s of a ~165 s prepare with fewer and fewer CPUs busy, 12 workers on a 24-thread PC). Taken first, the graphics programs
     // fill in behind them
     std::vector<uint32_t> order(programs);
+    size_t computes = 0;
     {
         size_t at = 0;
         for (size_t k = 0; k < programs; k++)
             if (seed_is_compute(k)) order[at++] = (uint32_t)k;
+        computes = at;
         for (size_t k = 0; k < programs; k++)
             if (!seed_is_compute(k)) order[at++] = (uint32_t)k;
     }
@@ -9753,9 +9783,23 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         const char* e = getenv("RX_VK_COMPUTE_WARM_APART");
         return e ? !env_value_off(e) : dev.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
     }();
+    // Use the same selection for a compile during translation and for the separate driver pass.
+    const std::unordered_set<uint64_t> none;
+    const ComputePlan* plan = warm_cs ? &compute_warm_plan() : nullptr;
+    const auto* only = !plan || plan->all ? nullptr : plan->none ? &none : &plan->keys;
+    // (longshot) The bar's count, in programs, each at its cost (PrepareWork, vk_progress.h): the compute programs first, with their
+    // driver compiles, held it near 0% for as long as they took (#1522). Those the plan compiles count at that cost, as many as it
+    // names (the seed's own keys are the translator's, not read here); the rest are translated alone. work: in thirds of a graphics
+    // program; warm_credited: what this thread's compute program has counted of its compiles so far, warm_seen: whether it compiled
+    const size_t warmed_computes = only ? std::min(only->size(), computes) : computes;
+    const PrepareWork work_of(programs, warmed_computes, warm_cs);
+    std::atomic<uint64_t> work{0};
+    static thread_local uint64_t warm_credited = 0;
+    static thread_local bool warm_seen = false;
     bool warming_apart = false;   // (the pass after the translation runs: warm_compute compiles)
     const auto warm_compute = [&](Program& p) {
         if (!warm_cs || taau_key(p.key) || (apart && !warming_apart)) return;
+        if (!apart && only && !only->count(p.key)) return;
         ensure_layout(p);
         // (as a dispatch, a load and the precompile ask for it: the same pin, so the same pipeline in the caches)
         const VkComputePipelineCreateInfo ci = compute_pipeline_info(p, true);
@@ -9773,6 +9817,13 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         }
         if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr), p.layout = VK_NULL_HANDLE;
         if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
+        // (compiled on the worker that translated it: each variant moves the bar, its program's share at most. The pass apart
+        // counts its own, below)
+        warm_seen = true;
+        if (!warming_apart && warm_credited < work_of.warm_each) {
+            const uint64_t step = std::min<uint64_t>(PrepareWork::kGraphics, work_of.warm_each - warm_credited);
+            warm_credited += step, work += step;
+        }
     };
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
@@ -9785,10 +9836,13 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
             const size_t k = order[i / 3];
             if (seed_is_compute(k)) {   // (longshot) a compute program with each of its texture variants, each warmed
                 if (i % 3 == 0) {
+                    warm_credited = 0, warm_seen = false;
                     const SeedVariants v = seed_compute(k, 64, warm_compute);
                     made += v.variants != 0, variants += v.variants, asking += v.variants > 1, capped += v.capped && v.variants;
+                    if (!apart && warm_seen)   // (its compiles, all counted)
+                        work += work_of.warm_each - std::min(warm_credited, work_of.warm_each);
                 }
-                done++;
+                done++, work++;
                 continue;
             }
             // (its stage libraries are not built here any more, but by warm_libraries below, from the program cache: here
@@ -9809,7 +9863,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
                 for (Stage& st : p->stages)
                     if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
             }
-            done++;
+            done++, work++;
         }
     };
     std::vector<std::thread> threads;
@@ -9822,7 +9876,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
              segment_heap() ? "the segment heap: as many as the free memory allows" : "half the CPUs");
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
-        if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
+        if (progress) progress(work_of.done(work.load()), programs);   // (in programs' worth, as the log counts them, PrepareWork)
         compute_compiles_log();
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
@@ -9848,10 +9902,15 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         const size_t before = libs.load();
         // (the programs the precompile keeps ready, and no others: on Mesa's Intel driver the listed ones, precompile_computes_which.
         // The rest are compiled at their first dispatch)
-        const ComputePlan plan = computes_plan(precompile_computes_which(), !env_on("RX_VK_NO_STATE_LIST"));
-        const std::unordered_set<uint64_t> none;
-        const std::unordered_set<uint64_t>* only = plan.all ? nullptr : plan.none ? &none : &plan.keys;
-        const size_t programs_warmed = warm_computes_apart(progress, warm_compute, only);
+        // (its count, in the programs it warms, onto the share of the bar the compute programs' compiles have: not a count of its
+        // own on the programs' part, which held the bar at what the translation had reached until it passed it)
+        const uint64_t translated_work = work.load(), warm_share = work_of.warm_each * warmed_computes;
+        const auto apart_progress = [&](size_t d, size_t t) {
+            if (!progress) return;
+            work.store(translated_work + (t ? warm_share * std::min(d, t) / t : warm_share));
+            progress(work_of.done(work.load()), programs);
+        };
+        const size_t programs_warmed = warm_computes_apart(apart_progress, warm_compute, only);
         logf("vk: preparation: the compute pipelines of %zu compute programs compiled for the driver's cache (%s): %zu variants on "
              "%u threads in %.1f s%s", programs_warmed, only ? "those the precompile keeps" : "every kept one",
              libs.load() - before, usable_cpus(), std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count(),
@@ -9924,7 +9983,7 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
     const std::vector<NoteRef> refs = pipe_notes_refs();
     if (ended_inside >= 2) {
         remove(warming.c_str());
-        precompile_built_write(refs.size());
+        precompile_built_write(refs.size(), compute_warm_plan().coverage());
         logf("vk: precompile: the last two starts did not get through building the noted pipelines into the cache: left as they "
              "are, a pipeline the caches lack is made when it is first drawn");
         return;
@@ -9941,18 +10000,14 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
     const size_t total = refs.size();
     // (the compute pipelines after them, the plan's compute programs', counted in the progress from the start: reported as the
     // notes' total once those were done, the screen read "32,623 / 32,623", 100%, "a few seconds left" while they were built, #714)
-    // (longshot) Only those the precompile keeps where RX_VK_PRECOMPILE_COMPUTES says which, or its default does: on Mesa's
-    // Intel driver the listed ones (precompile_computes_which), as the preparation's own warm builds them. Every kept one there
-    // was 4,059 programs at a game's first start on an Iris Xe with 16 GB, the driver's compiles on 12 threads, and Linux killed
-    // the game for memory at 1,852 of them (#1344). A program left out is made at its first dispatch, as with "listed"
+    // Use the seed warm's selection here too. Compiling the rest at the next
+    // start would move the same work to the title screen.
     std::vector<uint64_t> computes = program_cache_compute_keys();
-    if (const char* which = precompile_computes_which()) {
-        const ComputePlan plan = computes_plan(which, !env_on("RX_VK_NO_STATE_LIST"));
-        if (!plan.all)
-            computes.erase(std::remove_if(computes.begin(), computes.end(),
-                                          [&](uint64_t k) { return plan.none || !plan.keys.count(k); }),
-                           computes.end());
-    }
+    const ComputePlan& plan = compute_warm_plan();
+    if (!plan.all)
+        computes.erase(std::remove_if(computes.begin(), computes.end(),
+                                      [&](uint64_t k) { return plan.none || !plan.keys.count(k); }),
+                       computes.end());
     const size_t all_n = total + computes.size();
     std::atomic<size_t> done{0}, built{0}, failed{0}, no_program{0};
     const std::string notes_path = pipe_notes_path();
@@ -9981,9 +10036,7 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
         if (progress) progress(done.load(), all_n);
         prepare_progress_log("noted pipelines", done.load(), total, t0, log_at);
     });
-    // (the compute pipelines too, the plan's compute programs' (precompile_computes_which: every kept one, the listed ones on
-    // Mesa's Intel driver): a first start in start mode makes them all, and a load at a create call only asks the caches, so on a new install a first dispatch found none (666 in one first session). Built
-    // into the cache and let go, as the noted ones; only once those are all done)
+    // Build the selected compute pipelines into the cache after the graphics notes.
     std::atomic<size_t> computes_done{0}, computes_built{0}, computes_failed{0};
     const auto c0 = std::chrono::steady_clock::now();
     warm_bounded::run(done == total && !prepare_stopped() ? computes.size() : 0, threads, [&](size_t i) {
@@ -10019,7 +10072,7 @@ void precompile_warm(void (*progress)(size_t done, size_t total)) {
         logf("vk: precompile: the pipeline cache %s, in %.0f ms", precompile_save::said(pcache_save_outcome).c_str(),
              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
         // (not by the preparation's own process: warm_bounded.h leaves_marker)
-        if (warm_bounded::leaves_marker(prepare_only, all, prepare_stopped())) precompile_built_write(total);
+        if (warm_bounded::leaves_marker(prepare_only, all, prepare_stopped())) precompile_built_write(total, compute_warm_plan().coverage());
         crash_markers::end(warming);
     }
     logf("vk: precompile: %zu noted pipelines of %zu programs and %zu compute pipelines of %zu compute programs built into the "
@@ -10242,8 +10295,10 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     // caches alone never meets a pipeline the prepare should have compiled. The first start after a preparation builds them
     // there and lets each go, precompile_warm: before the game, and never more of them alive than workers)
     if (programs_load_at_create()) {
-        // (the pipeline cache's files dropped at this start, pcache_drop_stale: what the marker says is in them is gone)
-        if (pcache_drop_stale()) remove(precompile_built_path().c_str());
+        // (the pipeline cache's files dropped at this start, pcache_drop_stale, or its file refused as another driver's,
+        // pcache_init: what the marker says is in them is gone. The file read first, so the marker is judged on what it holds)
+        pcache_init();
+        if (pcache_drop_stale() || pcache_file_rejected) remove(precompile_built_path().c_str());
         // (and where the driver's own cache lost what the marker says was built: notes_lost_by_driver)
         if (precompile_covers_notes() && !env_on("LONGSHOT_PREPARE_ONLY") && notes_lost_by_driver())
             remove(precompile_built_path().c_str());
@@ -10292,7 +10347,8 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     for (const auto& n : notes) wanted.insert(n->prog), wanted_variants.insert(mix(n->prog, n->variant));
     // (the compute programs: those this install's play dispatched (longshot_computes.bin) and those the shipped state list names,
     // each once; every kept one on a first start, with nothing dispatched yet: computes_plan)
-    const ComputePlan plan = computes_plan(precompile_computes_which(), !env_on("RX_VK_NO_STATE_LIST"));
+    const ComputePlan plan = env_on("LONGSHOT_PREPARE_ONLY") ? compute_warm_plan()
+        : computes_plan(precompile_computes_which(), !env_on("RX_VK_NO_STATE_LIST"));
     if (!plan.all && !plan.none) wanted.insert(plan.keys.begin(), plan.keys.end());
     std::vector<Program*> computes, fallbacks;
     std::unordered_set<uint64_t> listed_here;   // (the listed keys this install has a program of)
@@ -10462,7 +10518,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     logf("vk: precompile: compute pipelines: %zu kept ready (%zu from the pipeline caches, %zu compiled now), %zu not made",
          cs_cached + cs_compiled, cs_cached, cs_compiled, cs_failed);
     // (every note built, by a run that got to its end: RX_VK_LOAD=create may load them from the caches from the next start on)
-    if (!gone_on && !prepare_stopped()) precompile_built_write(graphics_n);
+    if (!gone_on && !prepare_stopped()) precompile_built_write(graphics_n, plan.coverage());
     // (pipelines that took this long were compiled, not found: written before the title, the start-up screen saying so, as
     // precompile_warm does under RX_VK_LOAD=create; in play it would wait for 64 MB of growth: precompile_save.h)
     static const int save_s = precompile_save::after_s(getenv("RX_VK_PRECOMPILE_SAVE_S"));
@@ -10534,10 +10590,9 @@ bool predict_pending() {
 // options_path; 0 Most, the default; 1 All; any other number is Most). All builds the predicted pipelines too: about 50,000 for the driver's own cache, over 40 % more time (a full preparation on an RTX
 // 3090 with 24 threads: 415 and 413 s against 292 s without them), for pipelines play almost never draws ("vk: predicted
 // pipelines met in play"). RX_VK_COMPILE_SHADERS=all or most over the file (the game's --compile-shaders sets it, host/hos_main.c).
-// Asked only where a prediction would run: on Most it says so in the log, and takes away what an earlier preparation on All left
-// (the marker of one not finished, its sample and its keys), which would otherwise speak of pipelines this preparation did not
-// build
-bool compile_all() {
+// Compute selection also reads the level. Only the prediction path (compile_all below) clears an old prediction.
+namespace {
+bool compile_level_all() {
     static const bool all = [] {
         const char* why = "the default";
         int v = 0;
@@ -10565,11 +10620,19 @@ bool compile_all() {
         } else {
             logf("vk: Compile shaders: Most (%s): the predicted pipelines are left out; a pipeline no list names is made when it "
                  "is first drawn", why);
-            remove(predict_pending_path().c_str());
-            remove((pipe_notes_path() + ".predicted").c_str());
-            remove((pipe_notes_path() + ".predicted_keys").c_str());
         }
         return v != 0;
+    }();
+    return all;
+}
+} // namespace
+bool compile_all() {
+    static const bool all = [] {
+        if (compile_level_all()) return true;
+        remove(predict_pending_path().c_str());
+        remove((pipe_notes_path() + ".predicted").c_str());
+        remove((pipe_notes_path() + ".predicted_keys").c_str());
+        return false;
     }();
     return all;
 }
@@ -11532,12 +11595,17 @@ void pipeline_cache_play() {
 
 // ---- (longshot) What the programs' loader asks of the pipelines (vk_pipelines.h) ----
 bool precompile_covers_notes() {
-    uint64_t rec[2] = {0, 0};
+    uint64_t rec[3]{};
     FILE* f = fopen(precompile_built_path().c_str(), "rb");
     if (!f) return false;
-    const bool ok = fread(rec, 8, 2, f) == 2 && rec[0] == program_cache_stamp();
+    const size_t n = fread(rec, sizeof(*rec), 3, f);
     fclose(f);
-    return ok;
+    if (n < 2 || rec[0] != program_cache_stamp()) return false;
+    if (n == 3 && rec[2] == ComputePlan::every) return true;
+    // Play learns more keys as it dispatches them. Its usual start needn't repeat the warm
+    // each time that happens. A Builder must cover its current list, including a Most -> All upgrade.
+    if (env_on("LONGSHOT_PREPARE_ONLY")) return n == 3 && rec[2] == compute_warm_plan().coverage();
+    return n == 2 || !compute_warm_plan().all;
 }
 std::string pipe_notes_file() { return pipe_notes_path(); }
 std::vector<NoteRef> pipe_notes_refs() {

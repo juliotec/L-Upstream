@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def check_source():
     """mirror_make still copies the retired mirrors through the rule"""
     src = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
-    for needle in ('#include "mirror_inherit.h"', "const uint32_t synced = r.synced_gen;",
+    for needle in ('#include "mirror_inherit.h"', "const uint64_t synced = r.synced_gen;",
                    "mirror_inherit::runs(a, b, r.lo, p->lo, kPageShift",
                    "region_gen[region] <= synced", "page_gen(page) <= synced",
                    # (as mirror_sync: a bare entry's pages keep the mirror's copy)

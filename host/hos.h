@@ -106,6 +106,25 @@ extern uint64_t hos_space_end;   /* web: the guest window ends where the host's 
 static inline void *hos_guest_range(uint64_t a, uint64_t n) {
     return a < (uint64_t)HOS_SPACE_END && n <= (uint64_t)HOS_SPACE_END - a ? GP(a) : (void *)0;
 }
+/* (longshot) Host code's bulk writes of guest memory: n bytes at guest address a filled with a value, or copied from
+   host memory. The write, then the mark of its pages (HOS_WRITTEN), in that order: the renderer's capture takes a mark
+   and then copies the page, so a mark set before the bytes could be taken with the old bytes, and nothing would say
+   the page changed again. Any thread may call them at any time: the mark is a lock-free store, as the lifted code's
+   own after each of its stores, and one made while a capture is being taken stays set for the next capture. Why they
+   exist: memory the renderer had imported was zeroed at a free with no mark, and the renderer's copies of it (mirror,
+   capture, write-back shadow) kept the old bytes. tests/test_host_guest_writes.py stops a new memset or memcpy into
+   guest memory that is neither one of these nor followed by a mark, unless it is on its list with the reason.
+   The caller has checked the range (hos_guest_range). */
+static inline void hos_guest_fill(uint64_t a, int value, uint64_t n) {
+    void *const p = GP(a);
+    memset(p, value, (size_t)n);
+    HOS_WRITTEN(p, (size_t)n);
+}
+static inline void hos_guest_copy(uint64_t a, const void *src, uint64_t n) {
+    void *const p = GP(a);
+    memcpy(p, src, (size_t)n);
+    HOS_WRITTEN(p, (size_t)n);
+}
 #define HOS_TICK_HZ 31250000ULL   /* (mkw-recomp: the Switch 2 counter; the SDK checks it at init) */
 
 /* ---- logging: HOS_TRACE=1 logs every HLE call that uses HOS_TRACE_CALL. hos_log is info; hos_log_at gives a line another level,

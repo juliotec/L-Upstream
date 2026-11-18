@@ -192,7 +192,22 @@ NV(nvnDeviceInitialize) {
     RET(1);
 }
 NV(nvnDeviceFinalize) { ((nvn_dev *)P(0))->magic = 0; }
-NV(nvnDeviceGetProcAddress) { RET(U64(1) ? nvn_native_proc((const char *)GP(U64(1))) : 0); }
+/* (longshot) A proc name the game passes: read only inside guest memory and up to 255 characters, copied into out ("" when it
+   is not a string there). It was read in place to its end, which a pointer near the window's end (or no end) took past the
+   guest's memory into the host's */
+static const char *guest_name(uint64_t a, char *out, size_t cap) {
+    out[0] = 0;
+    const uint64_t room = a && a < (uint64_t)HOS_SPACE_END ? (uint64_t)HOS_SPACE_END - a : 0;
+    const size_t lim = room < cap ? (size_t)room : cap;
+    const char *s = lim ? (const char *)hos_guest_range(a, lim) : NULL;
+    const char *end = s ? (const char *)memchr(s, 0, lim) : NULL;
+    if (end) memcpy(out, s, (size_t)(end - s) + 1);
+    return out;
+}
+NV(nvnDeviceGetProcAddress) {
+    char name[256];
+    RET(U64(1) ? nvn_native_proc(guest_name(U64(1), name, sizeof name)) : 0);
+}
 /* (longshot) API version 231.40: OoT (SDK 22.2.8) skips its graphics setup unless the minor is >= 40 (main
    0x8348c11c); MKW's driver said 39, which MKW accepts too. */
 /* The Switch 2 NVN2 driver's device limits: its nvnDeviceGetInteger (sdk+0x65b680) run for every id under
@@ -963,7 +978,12 @@ static void texels(Ctx *c, int write, int strided) {
     HT_ZONE_TEXTF(tz, "%s", write ? "write" : "read");
 #endif
     if (write) rx_nvn_write_texels(t, level, layer0, r, data, row, img), watch_texels_source(t, data, img);
-    else rx_nvn_read_texels(t, level, layer0, r, data, row, img);
+    else {
+        /* (the texels land in a buffer of the game's choosing, which may be memory the GPU reads later, a pool it
+           uploads from: marked written after the copy, as any host write of guest memory the renderer may hold) */
+        rx_nvn_read_texels(t, level, layer0, r, data, row, img);
+        if (data) HOS_WRITTEN(data, (size_t)extent);
+    }
 }
 NV(nvnTextureReadTexels) { texels(c, 0, 0); }
 NV(nvnTextureReadTexelsStrided) { texels(c, 0, 1); }
@@ -3356,6 +3376,6 @@ void nvn2_dispatch(Ctx *c, const char *name, void **cache) {
 
 /* nvnBootstrapLoader(char const* name) -> the proc */
 HLE(nvnBootstrapLoader) {
-    const char *name = ARG(0) ? (const char *)GP(ARG(0)) : "";
-    RET(nvn_native_proc(name));
+    char name[256];
+    RET(nvn_native_proc(guest_name(ARG(0), name, sizeof name)));
 }

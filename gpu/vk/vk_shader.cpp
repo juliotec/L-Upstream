@@ -15,6 +15,7 @@
 #endif
 #include <io.h>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <stdexcept>
@@ -160,32 +161,75 @@ bool control_end(const uint8_t* ctl, uint32_t* end_out) {
 uint64_t code_key(const uint8_t* ctl, const uint8_t* area, uint32_t end) {
     return hash_bytes(area, end, hash_bytes(ctl, kControlSize));
 }
-Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area);
+Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area, uint64_t key);
+
+struct StageBytes {
+    std::array<uint8_t, kControlSize> control;
+    std::vector<uint8_t> area;
+    uint64_t key = 0;
+};
+
+bool read_stage_bytes(const nvn_stage_data& sd, StageBytes& bytes) {
+    uint32_t end = 0;
+    if (!sd.control || !sd.data || !host->gpu_read(sd.control, bytes.control.data(), kControlSize) ||
+        !control_end(bytes.control.data(), &end)) return false;
+    bytes.area.resize(end);
+    if (!host->gpu_read(sd.data, bytes.area.data(), end)) return false;
+    bytes.key = code_key(bytes.control.data(), bytes.area.data(), end);
+    if (const char* dir = getenv("RX_VK_DUMP_STAGES")) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)bytes.key);
+        if (FILE* f = fopen(path, "wb")) {
+            fwrite(bytes.control.data(), 1, kControlSize, f);
+            fwrite(bytes.area.data(), 1, end, f);
+            fclose(f);
+        }
+    }
+    return true;
+}
 
 Code read_code(const nvn_stage_data& sd) {
-    uint8_t ctl[kControlSize];
-    uint32_t end = 0;
-    if (!sd.control || !sd.data || !host->gpu_read(sd.control, ctl, sizeof ctl) || !control_end(ctl, &end)) return Code{};
-    std::vector<uint8_t> area(end);
-    if (!host->gpu_read(sd.data, area.data(), end)) return Code{};
-    if (const char* dir = getenv("RX_VK_DUMP_STAGES")) {   // (longshot, RX_VK_DUMP_STAGES=<folder>: control and code as the game has them)
-        char path[512];
-        snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)code_key(ctl, area.data(), end));
-        if (FILE* f = fopen(path, "wb")) fwrite(ctl, 1, sizeof ctl, f), fwrite(area.data(), 1, end, f), fclose(f);
+    StageBytes bytes;
+    if (!read_stage_bytes(sd, bytes)) return {};
+    return parse_code(bytes.control.data(), bytes.area, bytes.key);
+}
+
+using SharedCode = std::shared_ptr<const Code>;
+
+// The serial owns its lowered stages. This lookup keeps up to 2 MiB of code bytes to
+// recognize recent duplicates, and a weak reference so it cannot retain the lowered code.
+SharedCode read_live_code(const nvn_stage_data& sd) {
+    StageBytes bytes;
+    if (!read_stage_bytes(sd, bytes)) return {};
+    struct Slot {
+        StageBytes bytes;
+        bool native_mma = false;
+        std::weak_ptr<const Code> lowered;
+    };
+    static std::array<Slot, 32> recent;
+    auto& slot = recent[bytes.key % recent.size()];
+    static const bool dump_native = getenv("RX_VK_DUMP_NATIVE") != nullptr;
+    const bool reuse = !dump_native && bytes.area.size() <= (64u << 10);
+    if (reuse && slot.bytes.key == bytes.key && slot.native_mma == dev.native_mma) {
+        if (auto lowered = slot.lowered.lock(); lowered && slot.bytes.control == bytes.control && slot.bytes.area == bytes.area)
+            return lowered;
     }
-    return parse_code(ctl, area);
+    Code code = parse_code(bytes.control.data(), bytes.area, bytes.key);
+    if (!code.ok) return {};
+    auto lowered = std::make_shared<const Code>(std::move(code));
+    if (reuse) slot = {std::move(bytes), dev.native_mma, lowered};
+    return lowered;
 }
 
 /// A control section and its code, from the game's memory or the archives (the seed)
-Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area, uint64_t key) {
     Code c;
     uint32_t len, c1o;
-    const uint32_t end = (uint32_t)area.size();
     uint16_t st;
     std::memcpy(&len, ctl + 0x38, 4);
     std::memcpy(&c1o, ctl + 0x40, 4);
     std::memcpy(&st, ctl + 0x56, 2);
-    c.key = code_key(ctl, area.data(), end);
+    c.key = key;
     c.stage = st;
     if (st == 1) {
         static constexpr float kFit[] = {2.51f, 0.03f, 2.43f, 0.59f, 0.14f};
@@ -362,6 +406,10 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
     }
     c.ok = true;
     return c;
+}
+
+Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+    return parse_code(ctl, area, code_key(ctl, area.data(), (uint32_t)area.size()));
 }
 
 Shader::TextureType texture_type(int target) {
@@ -1030,7 +1078,7 @@ bool still_valid(const NvnState& s, const Program& p) {
 std::mutex shader_mu;
 std::unordered_map<uint64_t, std::vector<std::unique_ptr<Program>>> programs;   // by the stages' code keys
 namespace {
-std::unordered_map<uint64_t, std::vector<Code>> codes;                          // by program serial
+std::unordered_map<uint64_t, std::vector<SharedCode>> codes;                          // by program serial
 const Shader::Profile& profile() {
     static const Shader::Profile p = make_profile();
     return p;
@@ -1073,12 +1121,11 @@ const Shader::Profile& profile_graphics(VkShaderStageFlags stage) {
     return !forced && pins_32(stage) ? pinned : profile();
 }
 
-const std::vector<Code>& codes_of(const NvnState& s) {
+const std::vector<SharedCode>& codes_of(const NvnState& s) {
     auto& v = codes[s.prog.serial];
     if (v.empty())
         for (uint32_t i = 0; i < s.prog.nstage && i < 6; i++) {
-            Code c = read_code(s.prog.sd[i]);
-            if (c.ok) v.push_back(std::move(c));
+            if (auto code = read_live_code(s.prog.sd[i])) v.push_back(std::move(code));
         }
     return v;
 }
@@ -1300,7 +1347,8 @@ uint64_t translator_stamp() {
     const uint32_t depth = host->depth_minus_w() != 0;   // (d3zessete's PR 54: programs made in either depth mode are kept apart)
     add(&depth, sizeof depth);
     // (and a GPU's mesh shaders: a file of native task and mesh programs is no use to the compute fallback, nor its to one)
-    const uint32_t mesh = (dev.mesh_shader ? 1u : 0u) | (dev.mesh_fallback ? 2u : 0u) | (dev.task_mesh_fallback ? 4u : 0u);
+    const uint32_t mesh = (dev.mesh_shader ? 1u : 0u) | (dev.mesh_fallback ? 2u : 0u) |
+                          (dev.task_mesh_fallback ? 4u : 0u) | (dev.mesh_only_fallback ? 8u : 0u);
     add(&mesh, sizeof mesh);
     // (and what of the GPU the translator is told (make_profile): its warps' lanes and the driver's shuffle workaround, and
     // which stages it pins to 32 lanes, which keep the short path: profile_graphics. An explicit warp override bypasses
@@ -1856,19 +1904,19 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
 /// there are two) and mesh programs; a header-only stage, its per-primitive outputs (shader_lock held)
 const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[8]) {
     if (!dev.mesh_shader && !dev.mesh_fallback) return nullptr;
-    const std::vector<Code>& cs = codes_of(s);
-    const Code *fsc = nullptr, *prim = nullptr, *task = nullptr, *mesh = nullptr;
-    for (const Code& c : cs) {
-        if (c.header_only) prim = &c;
-        else if (c.stage == 6) task = &c;
-        else if (c.stage == 7) mesh = &c;
-        else if (c.stage == 1) fsc = &c;
+    const auto& cs = codes_of(s);
+    SharedCode fsc, prim, task, mesh;
+    for (const auto& c : cs) {
+        if (c->header_only) prim = c;
+        else if (c->stage == 6) task = c;
+        else if (c->stage == 7) mesh = c;
+        else if (c->stage == 1) fsc = c;
     }
     static int logged;
     if (logged++ < 6) log_program_stages(s, "mesh draw");
     if (!mesh) return nullptr;
     const bool fallback = dev.uses_mesh_fallback(task != nullptr);
-    const uint64_t key = mesh_key(task, *mesh, fsc, prim, color_types);
+    const uint64_t key = mesh_key(task.get(), *mesh, fsc.get(), prim.get(), color_types);
     auto& variants = programs[key];
     program_cache_load(key, variants);
     const uint64_t codes[4] = {mesh->key, fsc ? fsc->key : 0, task ? task->key : 0, prim ? prim->key : 0};
@@ -1891,21 +1939,19 @@ const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[
     struct Job {
         Program* p;
         NvnState s;
-        Code task, mesh, prim, fs;
-        bool has_task, has_prim, has_fs;
+        SharedCode task, mesh, prim, fs;
         uint8_t ct[8];
     };
     auto job = std::make_shared<Job>();
     job->p = raw, job->s = s;
-    job->has_task = task != nullptr, job->has_prim = prim != nullptr, job->has_fs = fsc != nullptr;
-    if (task) job->task = *task;
-    job->mesh = *mesh;
-    if (prim) job->prim = *prim;
-    if (fsc) job->fs = *fsc;
+    job->task = std::move(task);
+    job->mesh = std::move(mesh);
+    job->prim = std::move(prim);
+    job->fs = std::move(fsc);
     std::memcpy(job->ct, color_types, 8);
     jobs_push([job] {
-        translate_mesh_into(*job->p, job->s, job->has_task ? &job->task : nullptr, job->mesh,
-                            job->has_prim ? &job->prim : nullptr, job->has_fs ? &job->fs : nullptr, job->ct);
+        translate_mesh_into(*job->p, job->s, job->task.get(), *job->mesh,
+                            job->prim.get(), job->fs.get(), job->ct);
     }, false, &raw->ready, [job]() noexcept {
         job->p->failed = true;
         job->p->ready.store(true, std::memory_order_release);
@@ -1972,9 +2018,10 @@ std::string program_textures(const NvnState& s, const Program& p) {
 std::string program_code_keys(const NvnState& s) {
     std::string out;
     if (!s.has_prog) return out;
-    for (const Code& c : codes_of(s)) {
+    std::lock_guard lk(shader_mu);
+    for (const auto& c : codes_of(s)) {
         char b[40];
-        snprintf(b, sizeof b, " %u:%016llx", c.stage, (unsigned long long)c.key);
+        snprintf(b, sizeof b, " %u:%016llx", c->stage, (unsigned long long)c->key);
         out += b;
     }
     return out;
@@ -1983,8 +2030,9 @@ std::string program_code_keys(const NvnState& s) {
 /// (longshot) the bound compute program's code key (0: none): what "does not lower" names, for a rejected dispatch
 uint64_t compute_code_key(const NvnState& s) {
     if (!s.has_prog) return 0;
-    for (const Code& c : codes_of(s))
-        if (c.stage == 5 && !c.header_only) return c.key;
+    std::lock_guard lk(shader_mu);
+    for (const auto& c : codes_of(s))
+        if (c->stage == 5 && !c->header_only) return c->key;
     return 0;
 }
 
@@ -2123,18 +2171,18 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     PROF_EXACT();   // (the picks' slow path: a translation, a cache read; PROF_PROGRAM samples the rest)
     const bool compute = kind == ProgramKind::Compute;
     std::lock_guard lk(shader_mu);
-    const std::vector<Code>& cs = codes_of(s);
-    const Code* stage_code[8]{};
-    for (const Code& c : cs)
-        if (!c.header_only) stage_code[c.stage] = &c;
+    const auto& cs = codes_of(s);
+    SharedCode stage_code[8];
+    for (const auto& c : cs)
+        if (!c->header_only) stage_code[c->stage] = c;
     if (compute ? !stage_code[5] : !stage_code[0]) return nullptr;
     if (!compute && (stage_code[2] || stage_code[3] || stage_code[4])) {   // (geometry/tessellation: not translated)
         static int logged;
         if (logged++ < 40) log_program_stages(s, "dropped stages");
     }
     // the variants of these stages, for these vertex input types and colour output types
-    const bool tonemap = !compute && scene_tonemap_for(stage_code[1]);
-    const uint64_t key = compute ? stage_code[5]->key : graphics_key(*stage_code[0], stage_code[1], s.vattr, color_types, tonemap);
+    const bool tonemap = !compute && scene_tonemap_for(stage_code[1].get());
+    const uint64_t key = compute ? stage_code[5]->key : graphics_key(*stage_code[0], stage_code[1].get(), s.vattr, color_types, tonemap);
     auto& variants = programs[key];
     program_cache_load(key, variants);
     const uint64_t codes[4] = {stage_code[compute ? 5 : 0]->key, !compute && stage_code[1] ? stage_code[1]->key : 0, 0, 0};
@@ -2157,22 +2205,22 @@ const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t c
     static const bool sync = env_on("RX_VK_SYNC_SHADERS");
     if (compute || sync) {   // (compute: dispatches are never left out, so they are translated where they are)
         const auto t0 = std::chrono::steady_clock::now();
-        translate_into(*raw, s, stage_code[0], stage_code[1], compute ? stage_code[5] : nullptr, color_types);
+        translate_into(*raw, s, stage_code[0].get(), stage_code[1].get(), compute ? stage_code[5].get() : nullptr, color_types);
         st_translate_wait_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
         return raw->failed ? nullptr : raw;
     }
     struct Job {
         Program* p;
         NvnState s;
-        Code vs, fs;
-        bool has_fs;
+        SharedCode vs, fs;
         uint8_t ct[8];
     };
     auto job = std::make_shared<Job>();
-    job->p = raw, job->s = s, job->vs = *stage_code[0], job->has_fs = stage_code[1] != nullptr;
-    if (job->has_fs) job->fs = *stage_code[1];
+    job->p = raw, job->s = s;
+    job->vs = std::move(stage_code[0]);
+    job->fs = std::move(stage_code[1]);
     std::memcpy(job->ct, color_types, 8);
-    jobs_push([job] { translate_into(*job->p, job->s, &job->vs, job->has_fs ? &job->fs : nullptr, nullptr, job->ct); }, false,
+    jobs_push([job] { translate_into(*job->p, job->s, job->vs.get(), job->fs.get(), nullptr, job->ct); }, false,
               &raw->ready, [job]() noexcept {
                   job->p->failed = true;
                   job->p->ready.store(true, std::memory_order_release);

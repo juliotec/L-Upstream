@@ -110,10 +110,10 @@ def check_source():
         if needle not in weigh:
             raise SystemExit(why)
     avail = function(draw, "uint64_t memory_available_mb() {")
-    if "cgroup_available_mb()" not in avail:
+    if "compute_gate::cgroup_memory().available_mb" not in avail:
         raise SystemExit("the memory available is the system's alone: a cgroup's limit (memory.max) is not seen")
-    cgroup = function(draw, "uint64_t cgroup_available_mb() {")
-    for needle in ('"/proc/self/cgroup"', "/memory.max", "/memory.current", "compute_gate::cgroup_room_mb("):
+    cgroup = (ROOT / "gpu/vk/compute_gate.h").read_text(encoding="utf-8")
+    for needle in ('"/proc/self/cgroup"', "/memory.max", "/memory.current", "cgroup_room_mb(max, current)"):
         if needle not in cgroup:
             raise SystemExit("cgroup_available_mb does not read " + needle)
     gate = function(draw, "compute_gate::Gate& compute_compiles() {")

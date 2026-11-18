@@ -20,7 +20,7 @@ static fs::Frame frame(float ms, float game, float render, float gpu_wait, float
 
 int main() {
     // the buckets: the relay's lists, an upper bound each, +Inf last
-    CHECK("counts", pr::kFrameBucketCount == 13 && pr::kGpuBucketCount == 11);
+    CHECK("counts", pr::kFrameBucketCount == 13 && pr::kGpuBucketCount == 11 && pr::kFineBucketCount == 19);
     CHECK("a cut never splits a character", pr::json_text("ab\xc3\xa9", 3) == "\"ab\"" && pr::json_text("ab\xc3\xa9", 4) == "\"ab\xc3\xa9\"");
     CHECK("a 60 fps frame", pr::bucket_of(16.6, pr::kFrameBuckets) == 4);
     CHECK("on the bound", pr::bucket_of(16.7, pr::kFrameBuckets) == 4);
@@ -94,7 +94,13 @@ int main() {
         std::vector<pr::PositionSample> samples(1);
         samples[0] = {"Kokiri Forest (child)", -123.5, 4, 98.25, -1.2, 0.25, 60, 59, 2, 1000, 800};
         const std::string j = pr::summary_json(mc, true, 312.5, "Kokiri Forest (child)", &mem, maps, samples);
-        CHECK("version 1", j.rfind("{\"v\":1,", 0) == 0);
+        CHECK("version 2", j.rfind("{\"v\":2,", 0) == 0);
+        {   // the fine histogram is a separate field, so the relay's coarse frame_ms stays byte-for-byte for v1
+            const size_t a = j.find("\"fine_ms\":["), b = j.find("]", a);
+            const std::string list = j.substr(a, b - a);
+            CHECK("fine histogram", a != std::string::npos && std::count(list.begin(), list.end(), ',') == pr::kFineBucketCount - 1 &&
+                                       j.find("\"frame_ms\":[") != std::string::npos);
+        }
         CHECK("client identity before the game version", j.find("\"client\":\"Longshot\",\"version\":") != std::string::npos);
         CHECK("quotes escaped", j.find("\"AMD \\\"Radeon\\\" RX 7800 XT\"") != std::string::npos);
         CHECK("the map", j.find("\"Kokiri Forest (child)\":{\"new\":true,") != std::string::npos);
@@ -159,10 +165,70 @@ int main() {
                                          std::count(big.begin(), big.end(), '{') == std::count(big.begin(), big.end(), '}'));
     }
 
+    // the render thread's replay phases: a separate object, so the relay's strict parts_ms stays as it is
+    CHECK("phases", pr::kPhases == 13 && std::string(pr::phase_name(pr::kSubmit)) == "submit" &&
+                        std::string(pr::phase_name(pr::kDesc)) == "descriptors" &&
+                        std::string(pr::phase_name(pr::kSlotWait)) == "slot_wait" &&
+                        std::string(pr::phase_name(pr::kPhases)).empty());
+    {
+        pr::MapTotals m;
+        m.seconds = 1;
+        for (int p = 0; p < pr::kPhases; p++) m.phase[p] = p + 1;
+        pr::Machine mc;
+        mc.version = "v3.0.0";
+        mc.present_mode = "mailbox", mc.vsync = "off", mc.framegen = "on";
+        const std::string j = pr::summary_json(mc, false, 1, "Kokiri Forest (child)", nullptr, {{"Kokiri Forest (child)", m}});
+        CHECK("phases_ms", j.find("\"phases_ms\":{\"submit\":1,\"present\":2,\"draw\":3,\"descriptors\":4,") != std::string::npos &&
+                               j.find("\"slot_wait\":13}") != std::string::npos);
+        CHECK("present labels", j.find("\"fps_cap\":0,\"present_mode\":\"mailbox\",\"vsync\":\"off\",\"framegen\":\"on\"") !=
+                                    std::string::npos);
+        CHECK("presentation clock", j.find("\"shown_ms\":{\"sum\":0,\"count\":0}") != std::string::npos);
+        CHECK("renderer waits", j.find("\"waits_ms\":{\"shader_translate\":") != std::string::npos &&
+                                    j.find("\"readback\":") != std::string::npos);
+        CHECK("per-cause detail", j.find("\"causes\":{\"main_cpu_ms\":") != std::string::npos &&
+                                      j.find("\"pipe_waits\":") != std::string::npos &&
+                                      j.find("\"textures_gone\":") != std::string::npos);
+    }
+
     // the kernel out of the Bug report's system line
     CHECK("linux", pr::kernel_of("Arch Linux (Linux 6.12.3-arch1-1), KDE (wayland)") == "6.12.3-arch1-1");
     CHECK("windows", pr::kernel_of("Windows 11 (build 26100)") == "10.0.26100");
     CHECK("unknown", pr::kernel_of("Linux").empty());
+
+    // the relay's address, stamped by the launcher into the game folder (the crash helper's rule)
+    {
+        std::string url;
+        const std::string stamp = "version=nightly-419-257c5491\nsource=5bd71d51\n"
+                                  "crash_reports=https://data-services.magicbean.dev/telemetry/crash\n"
+                                  "perf_reports=https://data-services.magicbean.dev/telemetry/perf\n";
+        CHECK("perf address", pr::stamp_address(stamp, "perf_reports", url) &&
+                                  url == "https://data-services.magicbean.dev/telemetry/perf");
+        CHECK("crash address", pr::stamp_address(stamp, "crash_reports", url) &&
+                                   url == "https://data-services.magicbean.dev/telemetry/crash");
+        CHECK("no key", !pr::stamp_address(stamp, "build_reports", url));
+        CHECK("http refused", !pr::stamp_address("perf_reports=http://local/telemetry/perf\n", "perf_reports", url));
+        CHECK("space refused", !pr::stamp_address("perf_reports=https://x/y more\n", "perf_reports", url));
+        CHECK("empty refused", !pr::stamp_address("perf_reports=\n", "perf_reports", url));
+    }
+
+    // the release flag the launcher used to fill in, now the game's own
+    CHECK("stable", pr::is_release_version("v3.0.0") && pr::is_release_version("v3.0.0-rc.7"));
+    CHECK("nightly", pr::is_release_version("nightly-419-257c5491"));
+    CHECK("not a release", !pr::is_release_version("v3.0.0-rc.7-2") && !pr::is_release_version("nightly-419-257c549") &&
+                               !pr::is_release_version(""));
+    CHECK("release", pr::is_release("v3.0.0", "5bd71d51", "5bd71d51"));
+    CHECK("source mismatch", !pr::is_release("v3.0.0", "5bd71d51", "other"));
+    CHECK("no source", !pr::is_release("v3.0.0", "", ""));
+
+    // curl's answer: only a definite refusal drops a summary (issue 1265)
+    CHECK("status", pr::http_status("HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n") == 200);
+    CHECK("last status", pr::http_status("HTTP/1.1 301 Moved\r\nHTTP/1.1 429 Too Many\r\n\r\n") == 429);
+    CHECK("no status", pr::http_status("") == 0);
+    CHECK("sent", pr::send_result(200) == pr::SendResult::Sent && pr::drop_after(pr::send_result(200)));
+    CHECK("refused", pr::send_result(400) == pr::SendResult::Refused && pr::drop_after(pr::send_result(413)));
+    CHECK("busy", pr::send_result(404) == pr::SendResult::Busy && pr::send_result(429) == pr::SendResult::Busy &&
+                     pr::send_result(503) == pr::SendResult::Busy && pr::send_result(301) == pr::SendResult::Busy);
+    CHECK("kept", !pr::drop_after(pr::send_result(0)) && !pr::drop_after(pr::send_result(404)));
 
     // what a frame costs (a player's): well under a microsecond, against a 16.7 ms frame
     {

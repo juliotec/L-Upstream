@@ -243,23 +243,23 @@ PCS = [
             "amd_cloth_no_optimizer fault_gate_serial allowance_at_count_rule mirrors split_ub_flush warp64 fsr4_tune "
             "astc_bc_all room_in_blocks_rule squeeze_damped threaded_auto_cpus",
          num=(0, 0, 0, 2, 0, 4, 4769, 2044, 614, 461, 922, -1, 256, 12, 32, 16, 97, 1, 4, 4, 6, 6, 3)),
-    # (ASTC on the CPU. The process may use 8 of the PC's 24 threads: the workers go by the 24, Threaded rendering's Auto
-    # by the 8, which the study names as two ways of counting)
+    # (ASTC on the CPU: 70% of 10,232 MB allowed is 7,162 MB, under the 8 GB cap for 32 GB RAM. The process may use 8 of the
+    # PC's 24 threads: the workers go by the 24, Threaded rendering's Auto by the 8, which the study names as two ways of counting)
     dict(name="Ryzen 9 7900X's graphics (32 GB), AMD's Windows driver, on 8 of 24 threads",
          facts=(0x1002, 0x164E, "AMD_PROPRIETARY", 0x800161, "INTEGRATED_GPU", "26.10.1 " + AMD_OLD, "AMD Radeon(TM) Graphics", 1, 0,
                 16300, 10232, 32600, 24, 8, 1, 1, 0, 0, 0, 1, 1, 64, 64, 0xFF),
          on="fetch_bounds networks_left_out nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
             "amd_cloth_no_optimizer fault_gate_serial astc_on_cpu allowance_at_count_rule split_ub_flush warp64 fsr4_tune "
             "astc_bc_all",
-         num=(0, 0, 0, 2, 0, 16, 4096, 3072, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 6, 4, 8, 6, 4)),
+         num=(0, 0, 0, 2, 0, 16, 7162, 3072, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 6, 4, 8, 6, 4)),
 ]
 
 # The switches (device_policy_env). The fields a switch can set, in the Sw enum's order (its bit in set_by_switch), and what
-# else the cases look at: the import chunk, which follows the mirrors
+# else the cases look at: the import chunk (which follows the mirrors) and the texture budget (which follows astc_on_cpu)
 SW = ["astc_on_cpu", "batch_submits", "compute_builds_serial", "pcache_fetch_lock", "split_before_draw", "ub_snapshot",
       "split_ub_flush", "occ_copy", "mirrors", "fsr4_tune", "position_invariant", "equal_depth_bias", "cap_spare_max",
       "staging_keep", "workers"]
-ENV_FIELDS = SW + ["import_chunk_mb"]
+ENV_FIELDS = SW + ["import_chunk_mb", "texture_budget"]
 NVIDIA, RADV, B580, UHD, AMD_WIN, RAPHAEL, SMALL = (
     "RTX 3090 (24 GB), NVIDIA's Linux driver, 24 threads", "RX 6800 XT, RADV", "Arc B580, Intel's Windows driver 101.9154",
     "UHD Graphics (i3-1115G4, 16 GB, 4 threads), Intel's Windows driver", "RX 6700 XT, AMD's Windows driver (RDNA 2 compiler)",
@@ -283,8 +283,9 @@ ENV = [
     (UHD, {"RX_VK_COMPUTE_SERIAL": "0"}, {"compute_builds_serial": 0}, ["compute_builds_serial"], []),
     (UHD, {"RX_VK_COMPUTE_SERIAL": "off"}, {"compute_builds_serial": 0}, ["compute_builds_serial"], []),
     (UHD, {"RX_VK_COMPUTE_SERIAL": ""}, {}, [], []),                                   # (was off)
-    (RAPHAEL, {"RX_VK_ASTC_CPU": "0"}, {"astc_on_cpu": 0}, ["astc_on_cpu"], []),
+    (RAPHAEL, {"RX_VK_ASTC_CPU": "0"}, {"astc_on_cpu": 0, "texture_budget": 4096}, ["astc_on_cpu"], []),
     (RAPHAEL, {"RX_VK_ASTC_CPU": ""}, {}, [], []),                                     # (was off)
+    (UHD, {"RX_VK_ASTC_CPU": "1"}, {"astc_on_cpu": 1}, ["astc_on_cpu"], []),           # (<= 16 GB RAM: budget cap stays 2560 MB)
     (NVIDIA, {"RX_VK_ASTC_CPU": "yes"}, {"astc_on_cpu": 1}, ["astc_on_cpu"], []),
     (NVIDIA, {"RX_VK_PCACHE_FETCH_LOCK": "1", "RX_VK_SPLIT_BEFORE_DRAW": "1", "RX_VK_UB_SNAPSHOT": "1"},
      {"pcache_fetch_lock": 1, "split_before_draw": 1, "ub_snapshot": 1}, ["pcache_fetch_lock", "split_before_draw", "ub_snapshot"], []),
@@ -366,6 +367,12 @@ RULES = [
     ("mbs(policy_rule::integrated_texture_budget(3000 %s, 0))" % MB, 1024),   # (RAM not known: as 8 GB, the 1 GB floor)
     ("mbs(policy_rule::integrated_texture_budget(512 %s, 32768 %s))" % (MB, MB), 512),   # (never more than the share)
     ("mbs(policy_rule::integrated_texture_budget(6144 %s, 65536 %s))" % (MB, MB), 6144),
+    ("mbs(call_integrated_texture_budget(8192 %s, 16384 %s, false))" % (MB, MB), 2560),
+    ("mbs(call_integrated_texture_budget(8192 %s, 16384 %s, true))" % (MB, MB), 2560),
+    ("mbs(call_integrated_texture_budget(8192 %s, 24576 %s, false))" % (MB, MB), 3584),
+    ("mbs(call_integrated_texture_budget(8192 %s, 24576 %s, true))" % (MB, MB), 6144),
+    ("mbs(call_integrated_texture_budget(8192 %s, 26283 %s, false))" % (MB, MB), 4096),
+    ("mbs(call_integrated_texture_budget(8192 %s, 26283 %s, true))" % (MB, MB), 8192),
     ("mbs(policy_rule::vma_block(8192 %s))" % MB, 32),
     ("mbs(policy_rule::vma_block(8192 %s + 1))" % MB, 64),
     ("mbs(policy_rule::target_block(8192 %s))" % MB, 16),
@@ -432,6 +439,15 @@ static DeviceFacts facts_of(const D& d) {
     return f;
 }
 static long long mbs(uint64_t bytes) { return bytes == ~0ull ? -1 : (long long)(bytes >> 20); }
+template <class B = bool>
+static uint64_t call_integrated_texture_budget(uint64_t share, uint64_t ram, B astc_on_cpu) {
+    if constexpr (requires(B cpu) { policy_rule::integrated_texture_budget(share, ram, cpu); }) {
+        return policy_rule::integrated_texture_budget(share, ram, astc_on_cpu);
+    } else {
+        (void)astc_on_cpu;
+        return policy_rule::integrated_texture_budget(share, ram);
+    }
+}
 static void log_block(int k, const DevicePolicy& p, const DeviceFacts& f) {
     device_policy_log(p, f, [&](const char* line) { std::printf("LOG %d %zu %s\n", k, std::strlen(line), line); });
 }
@@ -447,11 +463,11 @@ static void env_case(int i, const D& d) {
     device_policy_env(p, f, get);
     std::printf("ENV %d astc_on_cpu=%d batch_submits=%d compute_builds_serial=%d pcache_fetch_lock=%d split_before_draw=%d "
                 "ub_snapshot=%d split_ub_flush=%d occ_copy=%d mirrors=%d fsr4_tune=%d position_invariant=%d equal_depth_bias=%g "
-                "cap_spare_max=%lld staging_keep=%lld workers=%u import_chunk_mb=%u set=%u notes=%s\n",
+                "cap_spare_max=%lld staging_keep=%lld workers=%u import_chunk_mb=%u texture_budget=%lld set=%u notes=%s\n",
                 i, (int)p.astc_on_cpu, (int)p.batch_submits, (int)p.compute_builds_serial, (int)p.pcache_fetch_lock,
                 (int)p.split_before_draw, (int)p.ub_snapshot, (int)p.split_ub_flush, (int)p.occ_copy, (int)p.mirrors, (int)p.fsr4_tune,
                 (int)p.position_invariant, (double)p.equal_depth_bias, mbs(p.cap_spare_max), mbs(p.staging_keep), p.workers,
-                (unsigned)p.import_chunk_mb, (unsigned)p.set_by_switch, p.switch_notes);
+                (unsigned)p.import_chunk_mb, mbs(p.texture_budget), (unsigned)p.set_by_switch, p.switch_notes);
     if (i == 0 || p.set_by_switch) log_block(1000 + i, p, f);   // (the block with switches set: still six lines under their length)
 }
 int main() {
@@ -553,8 +569,10 @@ def check_source():
         ("vk_texture.cpp", "void texture_frame(uint64_t completed)",
          ("if (dev.policy.set(Sw::staging_keep)) return dev.policy.staging_keep;",
           "return policy_rule::staging_keep(vram_usage(&used, &allowed) ? allowed : 0);",
-          "policy_rule::squeeze_damped(allowed) ? (over / 4) : over;",
-          "own = policy_rule::integrated_texture_budget(driver_budget, system_ram);")),
+          # (of what is left of the excess once the pools gave theirs back: the budget's arbiter, account_ask)
+          "policy_rule::squeeze_damped(allowed) ? (left / 4) : left;",
+          "texture_rule::integrated_bytes(a, device_vram_bytes(), astc_on_cpu())",
+          "own = policy_rule::integrated_texture_budget(driver_budget, system_ram, astc_on_cpu());")),
         ("vk_replay.cpp", "bool batch_on() {", ("const bool v = dev.policy.batch_submits;",)),
         ("vk_replay.cpp", "bool occ_copy_wanted() {", ("if (par_threads() != 0) return false;", "return dev.policy.occ_copy;")),
         ("vk_replay.cpp", "bool part_ends_before_draw() {", ("return dev.policy.split_before_draw;",)),
@@ -665,7 +683,6 @@ def main():
     parser.add_argument("--headers", type=Path, required=True)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    check_source()
     for pc in PCS:   # (the table itself: every number given, every name on the list)
         if len(pc["num"]) != len(NUM_NAMES) or len(pc["facts"]) != 24:
             raise SystemExit("FAIL: the table's row for %s is short or long" % pc["name"])
@@ -809,6 +826,7 @@ def main():
         failures.append("a PC nothing is known of: %s, expected 0 1 2 4096 3072" % none)
     if failures:
         raise SystemExit("FAIL:\n  " + "\n  ".join(failures))
+    check_source()
     print("ok: %d PCs, each of DevicePolicy's %d fields as the rules have it; %d environments through the switches' one rule; "
           "%d rule edges; the log block under 900 characters a line; the facts filled before the device and the moved sites "
           "reading the policy" % (len(PCS), len(BOOLS) + len(NUM_NAMES), len(ENV), len(RULES)))

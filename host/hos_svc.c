@@ -462,7 +462,9 @@ void a64_svc(Ctx *c, uint32_t imm) {
     case 0x27: { /* OutputDebugString(str, size) */
         uint64_t n = c->x[1] > 4096 ? 4096 : c->x[1];
         char buf[4097];
-        memcpy(buf, GP(c->x[0]), n);
+        const void *from = hos_guest_range(c->x[0], n);   /* (longshot: guest memory only, not the host's, into the log) */
+        if (!from) n = 0;
+        else memcpy(buf, from, n);
         buf[n] = 0;
         hos_log("debug: %s", buf);
         c->x[0] = R_OK;
@@ -478,9 +480,10 @@ void a64_svc(Ctx *c, uint32_t imm) {
             c->x[0] = 0xCA01;
             return;
         }
-        {   /* (pages under a Vulkan import stay committed, zeroed: hos_mem.c FreeMemoryPages) */
+        {   /* (pages under a Vulkan import stay committed, zeroed: hos_mem.c FreeMemoryPages. Zeroed and marked written
+               (hos_guest_fill): the renderer's copies of them are the old bytes until it is told) */
             extern int rx_guest_imported(uint64_t lo, uint64_t hi);
-            if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) memset(GP(c->x[0]), 0, (size_t)c->x[1]);
+            if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) hos_guest_fill(c->x[0], 0, c->x[1]);
             else VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT);
         }
         c->x[0] = R_OK;

@@ -82,6 +82,8 @@ int64_t st_mirrors = 0, st_mirrors_freed = 0;
 bool mirror_upload = false;
 uint64_t mem_rec_value = 0;
 void early_in_place_write(uint64_t, uint64_t, uint64_t) {}  // early readback tracking is exercised separately
+bool mem_check_on() { return false; }   // (RX_VK_MEM_CHECK off: memory_note_gpu_write's hook)
+void mem_check_gpu_only(uint64_t, uint64_t) {}
 thread_local int ec_kind = 0;   // (RX_VK_LOG_EARLY_CHECK's kind: tests/test_readback_early.py)
 #include "rb_writeback.inc"
 std::vector<WriteBack> writebacks;
