@@ -13,14 +13,14 @@ on:
         description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status / reviews = on PR number; search = PRs and issues for query"
         required: true
         type: choice
-        options: [push, create, update, comment, ready, status, reviews, search]
+        options: [push, create, update, comment, ready, status, reviews, search, audit]
       branch:
         description: "Branch on juliotec/L-Upstream (push, create, update with push)"
         required: false
         type: string
         default: ""
       number:
-        description: "PR number on MagicBeanDev/Longshot (update, comment, ready, status, reviews)"
+        description: "PR number on MagicBeanDev/Longshot (update, comment, ready, status, reviews; audit: the highest number to check)"
         required: false
         type: string
         default: ""
@@ -78,7 +78,7 @@ jobs:
         run: |
           case "$ACTION" in
             push|create) [ -n "$BRANCH" ] || { echo "branch is required"; exit 1; } ;;
-            update|comment|ready|status|reviews) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
+            update|comment|ready|status|reviews|audit) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
             search) [ -n "$QUERY" ] || { echo "query is required"; exit 1; } ;;
           esac
           [ "$ACTION" != create ] || [ -n "$TITLE" ] || { echo "title is required"; exit 1; }
@@ -127,7 +127,7 @@ jobs:
           git -c http.extraheader="AUTHORIZATION: basic $auth" push --force "$FORK_URL" "HEAD:refs/heads/$BRANCH"
 
       - name: PR on MagicBeanDev/Longshot
-        if: inputs.action != 'push' && inputs.action != 'reviews' && inputs.action != 'search'
+        if: inputs.action != 'push' && inputs.action != 'reviews' && inputs.action != 'search' && inputs.action != 'audit'
         working-directory: tools
         run: |
           printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
@@ -201,6 +201,63 @@ jobs:
                   continue
               print("-- %s by %s, %s%s" % (ev.get("type"), (ev.get("user") or {}).get("login"), ev.get("created_at"),
                     (": " + ev["body"][:200]) if ev.get("body") else ""))
+
+      # (our open PRs numbered up to number: mergeable, the head commit's checks, reviews and comments, in one run)
+      - name: Audit our open PRs
+        if: inputs.action == 'audit'
+        env:
+          MAGICBEAN_TOKEN: ${{ secrets.MAGICBEAN_TOKEN }}
+        shell: python3 -I {0}
+        run: |
+          import json, os, urllib.error, urllib.request
+          api = "https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Longshot"
+          top = int(os.environ["NUMBER"])
+          def get(path, many=True):
+              out, page = [], 1
+              while True:
+                  sep = "&" if "?" in path else "?"
+                  url = "%s%s%spage=%d&limit=50" % (api, path, sep, page) if many else api + path
+                  req = urllib.request.Request(url, headers={"Authorization": "token " + os.environ["MAGICBEAN_TOKEN"], "Accept": "application/json", "User-Agent": "longshot-forge-pr"})
+                  try:
+                      with urllib.request.urlopen(req, timeout=60) as r:
+                          got = json.load(r)
+                  except urllib.error.HTTPError as e:
+                      return {"error": "HTTP %s %s" % (e.code, e.read()[:300].decode("utf-8", "replace"))}
+                  if not isinstance(got, list) or not many:
+                      return got
+                  out += got
+                  if len(got) < 50:
+                      return out
+                  page += 1
+          prs = [p for p in get("/pulls?state=open") if (p.get("user") or {}).get("login") == os.environ["FORGE_USER"] and p["number"] <= top]
+          print("%d open PRs by %s numbered up to %d: %s" % (len(prs), os.environ["FORGE_USER"], top, " ".join("#%d" % p["number"] for p in sorted(prs, key=lambda p: p["number"]))))
+          for p in sorted(prs, key=lambda p: p["number"]):
+              n = p["number"]
+              full = get("/pulls/%d" % n, many=False)
+              sha = (full.get("head") or {}).get("sha", "")
+              print("\n\n######## #%d %s" % (n, full.get("title")))
+              print("head %s (%s), base %s, mergeable %s, draft %s, updated %s" % (sha[:8], (full.get("head") or {}).get("ref"), (full.get("base") or {}).get("ref"), full.get("mergeable"), full.get("draft"), full.get("updated_at")))
+              st = get("/commits/%s/status" % sha, many=False)
+              print("== checks: combined %s" % st.get("state"))
+              for s in st.get("statuses") or []:
+                  print("-- %s: %s: %s %s" % (s.get("context"), s.get("status") or s.get("state"), s.get("description"), s.get("target_url") or ""))
+              for rv in get("/pulls/%d/reviews" % n):
+                  if not isinstance(rv, dict) or "id" not in rv:
+                      continue
+                  print("\n== review %s by %s, %s, %s (commit %s)%s" % (rv["id"], (rv.get("user") or {}).get("login"), rv.get("state"), rv.get("submitted_at"), (rv.get("commit_id") or "")[:8], ", stale" if rv.get("stale") else ""))
+                  if rv.get("body"):
+                      print(rv["body"])
+                  for c in get("/pulls/%d/reviews/%s/comments" % (n, rv["id"])):
+                      if not isinstance(c, dict):
+                          continue
+                      print("-- %s:%s by %s, %s%s" % (c.get("path"), c.get("position"), (c.get("user") or {}).get("login"), c.get("created_at"), ", resolved" if c.get("resolver") else ", not resolved"))
+                      print(">> " + (c.get("body") or "").replace("\n", "\n>> "))
+              print("\n== PR comments")
+              for c in get("/issues/%d/comments" % n):
+                  if not isinstance(c, dict):
+                      continue
+                  print("\n-- %s, %s" % ((c.get("user") or {}).get("login"), c.get("created_at")))
+                  print(c.get("body") or "")
 
       # (PRs and issues on MagicBeanDev/Longshot, open, closed and merged, for each term of query split on |)
       - name: Search PRs and issues (forge.py search)
