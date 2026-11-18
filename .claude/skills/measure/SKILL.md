@@ -51,7 +51,7 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-change my-change
 - Frame generation off (or report the game's own fps, never the shown one); the cap off (`HOS_FPS_MAX=1000`) or stated;
   no overlays, ReShade or shader-cache tools. A change to how frames are shown (frame generation, Frame pacing, V-Sync,
   the present path) is measured with them on, on the screen: the next bullet.
-- **Frame pacing is measured on the screen, not in the log** ([design.md section 13](../../../docs/design.md#13-frame-generations-presents-at-v-sync-off-as-rules)).
+- **Frame pacing is measured on the screen, not in the log** ([design.md section 13](../../../docs/design.md#13-frame-generations-presents-as-rules)).
   The log's `frame interpolation: ... shown on time` and `shown apart` counts are the display thread's present calls; a
   present can still wait for the GPU after its call (2026-11-16: no late frame in the log, 32% of the frames on the screen
   under 2 ms). Run PresentMon 2.x on the game during the same scripted camera turn (`PresentMon --process_name

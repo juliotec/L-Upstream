@@ -15,6 +15,7 @@ frame added at each present, the events where they happen), and the launcher's s
 python -I -B tests/test_perf_report.py [--cxx g++]
 """
 import argparse
+import http.client
 import http.server
 import json
 import os
@@ -258,6 +259,25 @@ def sender_switches(tmp):
         got = pr.send_waiting(str(f), url=relay.url)
         check(got == {"sent": 3, "refused": 0, "left": 0} and len(relay.bodies) == 3 and relay.connections == 2,
               "a kept connection the relay let go: the next summary on a new one, none sent twice (%s)" % got)
+
+        # (the same as Windows says it, on any OS: a kept connection's next request raises WinError 10053)
+        class Aborts(http.client.HTTPConnection):
+            def request(self, *a, **k):
+                if getattr(self, "used", False):
+                    raise ConnectionAbortedError(10053, "the connection was aborted by this machine")
+                self.used = True
+                return super().request(*a, **k)
+        f = game_folder(tmp, "aborted", summaries=3)
+        relay.connections = 0
+        relay.bodies.clear()
+        plain, http.client.HTTPConnection = http.client.HTTPConnection, Aborts
+        try:
+            got = pr.send_waiting(str(f), url=relay.url)
+        finally:
+            http.client.HTTPConnection = plain
+        check(got == {"sent": 3, "refused": 0, "left": 0} and [b["n"] for b in relay.bodies] == [0, 1, 2]
+              and relay.connections == 3,
+              "a kept connection aborted (ConnectionAbortedError): the next summary on a new one, none sent twice (%s)" % got)
 
         f = game_folder(tmp, "a start's share", summaries=20)
         relay.bodies.clear()

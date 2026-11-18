@@ -342,6 +342,12 @@ python -I ../Tooling/scripts/forge.py pr create fix/arc-walls --title "fix(vk): 
    reproduce only for a fix, the commits in the Measurements' columns). The comment under each heading says what a
    good answer looks like; in short:
    - the **status line** first: type, risk, where it was tested and where it still needs testing;
+   - the **TL;DR**, right after it: two to four plain sentences a player could follow, 120 words at most: what was
+     wrong or missing, what this PR changes, the headline result and how it was checked;
+   - the **Breakdown**: short bullets, one each for who it helps, what was wrong, what changes, what does not change,
+     how it was checked, what is still open and the risk. A description that keeps either one must fill it in (the
+     check refuses a placeholder, a TL;DR over 120 words, a Breakdown without bullets or with an empty one); one that
+     leaves them out still passes, with a warning that suggests them, so older pull requests stay valid;
    - **Why**, in plain words a player could follow, with the issues that fit linked (search the tracker first);
    - **How to reproduce**, for a fix only: where it was seen, the steps, expected against actual;
    - **What changed**: a two- or three-sentence summary, then the details by area, naming files and functions;

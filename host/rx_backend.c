@@ -63,6 +63,14 @@ int hos_mic_count(void);            /* nn_audio_in.c: the microphones, for the I
 const char *hos_mic_name(int index);
 void hos_mic_select(int mode, const char *name, int index);
 int hos_mic_test(int enabled, int gain, int *levels);
+void hos_sdl_rumble_test(void);   /* pad_sdl.c */
+int hos_nfc_count(void);            /* nn_nfp.c: the player's NFC tags, for the Insert menu's NFC tab */
+const char *hos_nfc_name(int index);
+int hos_nfc_tap(int index);
+int hos_nfc_state(void);
+const char *hos_nfc_dir(void);
+int hos_nfc_scan(int start);
+const char *hos_nfc_scan_name(void);
 void hos_bind(int set, int button, int slot, int code);
 int hos_prompts_face(void);         /* prompts.c */
 int hos_prompts_live_parts(void);   /* prompts.c */
@@ -287,6 +295,8 @@ static const MkwVkHost vk_host = {
     hos_audio_output_count, hos_audio_output_info, hos_audio_output_select, hos_audio_output_state,
     hos_mic_test, hos_perf_info, host_main_thread_times, host_out_of_memory,
     hos_monitor_count, hos_monitor_info, hos_monitor_select, hos_perf_tracking,
+    hos_sdl_rumble_test,
+    hos_nfc_count, hos_nfc_name, hos_nfc_tap, hos_nfc_state, hos_nfc_dir, hos_nfc_scan, hos_nfc_scan_name,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -570,6 +580,10 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
        : wgr_nvn_write_texels(t, level, layer0, r, src, row, img);
 }
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
+    /* (longshot) nothing there it can wait for (the back end's lock-free look: nothing ever written back, no texture the GPU
+       wrote): done with the core kept, as on the console, where the call is a cache operation. OoT makes it per shape per
+       view in its model work, each a release of the core and a wait for one again */
+    if (vk && vk->nvn_invalidate_quick && vk->nvn_invalidate_quick(gpu, size)) return;
     /* The callback can wait for replay or GPU write-back: let another guest thread use this core meanwhile. */
     const int away = hos_vcore_away();
     vk ? vk->nvn_invalidate(gpu, size) : wgr_nvn_invalidate(gpu, size);

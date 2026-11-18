@@ -73,8 +73,8 @@ struct OutSet {
     bool busy = false;
     // (Auto: frame[0..shown) each at its own time, due[k] (steady clock), game[k] the game's own frame; shown < 0: the
     // fixed multipliers' frames, made + 1 of them. A fixed multiplier's set with made frames has its times on the game's
-    // own timeline too, by_time (framegen_record, fixed_dues); display_main shows it at them where the swapchain does
-    // not wait for a refresh (fixed_on_timeline), else as before)
+    // own timeline too, by_time (framegen_record, fixed_dues); display_main shows it at them (fixed_on_timeline; under
+    // FIFO one a refresh at most, fifo_slot))
     int shown = -1;
     int64_t due[kMaxMult] = {};
     bool game[kMaxMult] = {};
@@ -200,7 +200,7 @@ void fixed_dues(int64_t last, int64_t now, int made, int64_t delay, int64_t* due
 /// one), and its game frame that much later, where the next set's first one follows
 int64_t pace_lead(int64_t frame, int made) { return made > 0 ? frame * made / (made + 1) : 0; }
 
-// doc: docs/design.md#13-frame-generations-presents-at-v-sync-off-as-rules (rule 3: the GPU's delay from sets taken as they came)
+// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 3: the GPU's delay from sets taken as they came)
 /// (longshot) The GPU's delay that a fixed multiplier's sets are shown at past their lead (fg.late_ns), from what the last
 /// set needed: its own delay (extra_ns) and how late (negative: early) its first frame could be shown against its time,
 /// and a millisecond to spare. The set's frames are done with the game frame's GPU work, so shown at times that did not
@@ -213,13 +213,30 @@ int64_t pace_delay(int64_t extra, int64_t need, int64_t frame) {
     return std::clamp<int64_t>(extra, 0, frame);
 }
 
-// doc: docs/design.md#13-frame-generations-presents-at-v-sync-off-as-rules (rule 2: sets on the game's timeline at V-Sync Off)
-/// (longshot) Whether display_main shows a fixed multiplier's set at its times on the game's timeline (by_time): where the
-/// swapchain does not wait for a refresh (immediate: V-Sync Off; mailbox), whatever Frame pacing says. There, shown as
-/// they came, a set's frames went out within a millisecond, the made frames hardly on the screen, and DLSS Frame Gen 3x
-/// at V-Sync Off looked like the game's own frame rate (RTX 5090, 165 Hz with G-Sync). FIFO (V-Sync On, and Auto with
-/// DLSS Frame Gen) shows one a refresh and keeps them as before. RX_VK_FG_TIMELINE=0 (env_off): never, as before
-bool fixed_on_timeline(bool by_time, bool fifo, bool env_off) { return by_time && !fifo && !env_off; }
+// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 2: sets on the game's timeline, any mode)
+/// (longshot) Whether display_main shows a fixed multiplier's set at its times on the game's timeline (by_time): whatever
+/// Frame pacing says and whatever the swapchain's mode. Where it does not wait for a refresh (immediate: V-Sync Off;
+/// mailbox), shown as they came, a set's frames went out within a millisecond, the made frames hardly on the screen, and
+/// DLSS Frame Gen 3x at V-Sync Off looked like the game's own frame rate (RTX 5090, 165 Hz with G-Sync). Under FIFO (V-Sync
+/// On, and Auto with DLSS Frame Gen) a VRR display shows each present when it comes, one a refresh at most: shown as they
+/// came, a set's frames were a refresh apart and its last one stayed until the next set came (3x at 60 fps on a 240 Hz
+/// G-Sync display: 4.2, 4.2 and 8.3 ms), and with Frame pacing On a set that came late went out at once and the frames
+/// after it a step apart from there (RTX 5070 Ti: 3x uneven, Auto even). RX_VK_FG_TIMELINE=0 (env_off): never, as before
+bool fixed_on_timeline(bool by_time, bool env_off) { return by_time && !env_off; }
+
+/// (longshot) Under FIFO, when a frame of a set on the game's timeline is presented: at its due time, but not sooner than a
+/// refresh (refresh; 0: not known) after the time the frame before was given (slot; 0: none yet). The screen shows one a
+/// refresh at most, and frames presented sooner (the game's rate times the multiplier at or past the display's; a set's
+/// frames due together after it came late) waited in the swapchain, the next set's copies waiting for its images. The
+/// times a refresh apart from the last one given, as Auto's slots, not from when the thread presented it: a wake up to a
+/// millisecond late is not added to every frame (display_main makes a present later than that the next one's slot). A
+/// slot past by more than half a refresh (the thread held up) gives now: the frame goes at once, as display_main does with
+/// any time already past
+int64_t fifo_slot(int64_t due, int64_t slot, int64_t refresh, int64_t now) {
+    if (slot <= 0 || refresh <= 0) return due;
+    const int64_t next = slot + refresh;
+    return std::max(due, next < now - refresh / 2 ? now : next);
+}
 
 void drop_pipe(Pipe& p) {
     if (p.pipe) vkDestroyPipeline(dev.device, p.pipe, nullptr);
@@ -572,7 +589,7 @@ void wait_until_near(int64_t ns) {
     std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
 }
 
-// doc: docs/design.md#13-frame-generations-presents-at-v-sync-off-as-rules (rule 4: the spare images a set presented ahead holds)
+// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 4: the spare images a set presented ahead holds)
 /// Present ahead (display_main): a set's copies go to the GPU together, ahead of their presents, which holds as many
 /// swapchain images acquired at once as the set has frames, so only where the swapchain has that many to spare (an acquire
 /// past them has to time out, the Vulkan spec); a set it cannot hold is shown one frame at a time. pace: Frame pacing On,
@@ -590,9 +607,11 @@ void display_main() {
     int64_t interval = 16666667, last_at = 0;
     // (by_time: sets on the game's timeline; early: those of them taken while the set before was shown; waited: those whose
     // copies did not go to the GPU as they came; ready: the others, ready_ns their first copies' ends past their game frames,
-    // summed)
-    struct { int on_time, late, skipped; int64_t since; int by_time, early, waited, ready; int64_t ready_ns; } stat{};
-    int64_t next_show = 0, shown_at = 0;
+    // summed; slotted: their frames held back under FIFO to a refresh after the one before, fifo_slot; games, game_ns: the sets'
+    // game frames presented and their time from the game's handing over (framegen_record) to their present call, summed)
+    struct { int on_time, late, skipped; int64_t since; int by_time, early, waited, ready; int64_t ready_ns; int slotted, games;
+             int64_t game_ns; } stat{};
+    int64_t next_show = 0, shown_at = 0, slot = 0;   // (slot: the time the last frame was given, for fifo_slot)
     int hist[7] = {};   // (<2 ms apart: two presents the screen hardly tells apart)
     static const char* timeline_env = getenv("RX_VK_FG_TIMELINE");
     const bool timeline_off = timeline_env && env_value_off(timeline_env);
@@ -604,15 +623,14 @@ void display_main() {
         bool auto_timed = false, line = false, timed = false, ahead = false, early = false, as_came = false;
         int shown = 0, copied = 0;
         int64_t step = 0, ready_at = 0;
+        int64_t refresh = 0;   // (on the game's timeline: the display's refresh, ns, for fifo_slot; 0 not known)
         PendingPresent pending[kMaxMult];
     };
     Taken taken[2];   // (the set being shown, and the next one, taken early: take_early)
     int held = 0;
-    // A fixed multiplier's set at its times on the game's timeline (by_time), where the swapchain does not wait for a
-    // refresh: fixed_on_timeline. Its game[] marks its game frame, as Auto's
-    const auto on_line = [&](const OutSet* set) {
-        return set->shown < 0 && fixed_on_timeline(set->by_time, dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR, timeline_off);
-    };
+    // A fixed multiplier's set at its times on the game's timeline (by_time): fixed_on_timeline. Its game[] marks its
+    // game frame, as Auto's
+    const auto on_line = [&](const OutSet* set) { return set->shown < 0 && fixed_on_timeline(set->by_time, timeline_off); };
     // Frame k of a set presented ahead: its copy into the window to the GPU now, its present at its time (present_commit)
     const auto copy = [&](Taken& s, int k) {
         const Job& j = s.j;
@@ -647,18 +665,22 @@ void display_main() {
         last_at = j.at;
         if (!stat.since) stat.since = j.at;
         if (j.at - stat.since > 5000000000LL) {
+            // (the game frame's latency here: from its handing over to its present call, the same with RX_VK_FG_TIMELINE=0, so
+            // one build gives both sides. A present call, not the screen: under FIFO a present can still wait in the swapchain's
+            // queue, which main's path fills more, so this reads main's side low, never the timeline's high)
             logf("vk: frame interpolation: %d frames shown on time, %d late (over 2 ms); shown apart: <2 ms %d, 2-7 %d, 7-9 %d, "
-                 "9-12 %d, 12-17 %d, 17-25 %d, over 25 %d", stat.on_time, stat.late, hist[0], hist[1], hist[2], hist[3], hist[4],
-                 hist[5], hist[6]);
+                 "9-12 %d, 12-17 %d, 17-25 %d, over 25 %d; the game's frames presented %.1f ms after the game handed them over",
+                 stat.on_time, stat.late, hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6],
+                 stat.games ? stat.game_ns / 1e6 / stat.games : 0.0);
             if (stat.by_time)
-                logf("vk: frame interpolation: %d sets on the game's timeline (the swapchain does not wait for a refresh), "
-                     "%d taken early, %d with copies later than they came (left out of the GPU's delay); first copies "
-                     "done %.1f ms after their game frame (seen within 2 ms), %.1f ms past their lead for the GPU "
+                logf("vk: frame interpolation: %d sets on the game's timeline, %d taken early, %d with copies later than "
+                     "they came (left out of the GPU's delay), %d frames held to a refresh after the one before (FIFO); first "
+                     "copies done %.1f ms after their game frame (seen within 2 ms), %.1f ms past their lead for the GPU "
                      "(RX_VK_FG_TIMELINE=0: off)",
-                     stat.by_time, stat.early, stat.waited, stat.ready ? stat.ready_ns / 1e6 / stat.ready : 0.0,
+                     stat.by_time, stat.early, stat.waited, stat.slotted, stat.ready ? stat.ready_ns / 1e6 / stat.ready : 0.0,
                      fg.late_ns.load(std::memory_order_relaxed) / 1e6);
             memset(hist, 0, sizeof hist);
-            stat = {0, 0, 0, j.at, 0, 0, 0, 0, 0};
+            stat = {0, 0, 0, j.at, 0, 0, 0, 0, 0, 0, 0, 0};
         }
         // (longshot) The pacer. The game hands over frames 12 to 28 ms apart around a mean of 19, and shown as they came that
         // was the stutter, whatever the frame rate. Every frame now has its place on an even line, the recent frame time
@@ -685,14 +707,18 @@ void display_main() {
             if (!said) said = true, logf("vk: present ahead: a set's copies submitted at once, its presents on time");
             copy_up_to(s, room);
         }
+        // (fifo_slot's refresh; whether the swapchain is FIFO is read at each present: it is made again for a new mode. Asked
+        // after the copies: once a second it asks Windows, which is not the first copy's time, taken in copy)
+        const int mhz = s.line ? display_refresh_mhz() : 0;
+        s.refresh = mhz > 0 ? (int64_t)(1e12 / mhz) : 0;
     };
     // (longshot) While a set on the game's timeline waits for its frames' times, the next one is taken as soon as it comes,
     // its copies to the GPU then for as many of its frames as the swapchain has images beside the ones this set still holds
-    // (left: its frames still to be presented; vk_main.cpp asks for two sets' images where the swapchain does not wait for a
-    // refresh, but an NVIDIA surface has 6 spare, under two sets of 4); the rest as this set's presents give images back.
-    // Taken once this set's frames were shown, the copies queued behind the parts of the game's next frame submitted
-    // meanwhile: they were done that much later, the set past its times, and the GPU's delay (pace_delay) grew with its own
-    // lateness. Not within 3 ms of this set's next frame (its copies take that long to submit)
+    // (left: its frames still to be presented; vk_main.cpp asks for two sets' images, but an NVIDIA surface has 6 spare,
+    // under two sets of 4); the rest as this set's presents give images back. Taken once this set's frames were shown, the
+    // copies queued behind the parts of the game's next frame submitted meanwhile: they were done that much later, the set
+    // past its times, and the GPU's delay (pace_delay) grew with its own lateness. Not within 3 ms of this set's next frame
+    // (its copies take that long to submit)
     const auto take_early = [&](int left, int64_t until) {
         if (held != 1 || !taken[0].line || until - now_ns() < 3000000) return;
         const int spare = (int)dev.swap_spare.load(std::memory_order_relaxed);
@@ -754,11 +780,22 @@ void display_main() {
         const bool timed = s.timed;
         for (int k = 0; k < s.shown; k++) {
             int64_t due = timed ? j.set->due[k] : pace ? next_show : 0;
-            const int64_t own = due;   // (a frame on the game's timeline is late against its own time, below)
+            // (a frame on the game's timeline is late against its own time, below; under FIFO against its refresh slot, a
+            // refresh after the slot before, also where fifo_slot starts again from now: so a set late from the GPU or a
+            // held thread is counted, the review, 2026-11-17)
+            int64_t own = due;
             int64_t now = now_ns();
+            if (s.refresh && dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR) {   // (one a refresh at most)
+                if (slot > 0) own = std::max(due, slot + s.refresh);
+                const int64_t at = fifo_slot(due, slot, s.refresh, now);
+                stat.slotted += at > due && at > now;
+                due = at;
+            }
             if (due < now) due = now;
             if (!timed && due > j.at + interval + s.step) due = j.at + interval + s.step;
             if (timed && due > now + 100000000) due = now;   // (a game frame time gone wrong: not held back)
+            const int64_t slot_was = slot;
+            slot = due;
             // (the wait in steps of 2 ms at most while the next set may still be taken early: at 2x it comes while this set's
             // game frame waits, which a look at the wait's start alone missed; and while a set taken early has its first copy's
             // end still to be seen, ready_at. Its copies that had no images go to the GPU as this set's presents give them back)
@@ -776,9 +813,11 @@ void display_main() {
             }
             while (now_ns() < due) SwitchToThread();
             const int64_t t = now_ns();
+            if (t > slot + 1000000) slot = t;   // (presented late, the next set taken meanwhile: the next a refresh after it)
             if (s.ahead) {
                 if (!present_commit(s.pending[k])) {   // (not shown: the line goes on, and the overlay and the counts leave it out)
                     next_show = t + s.step;
+                    slot = slot_was;   // (nothing shown: its slot is not taken)
                     continue;
                 }
             } else {
@@ -789,6 +828,7 @@ void display_main() {
                 present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
             }
             menu_note_frame(!s.auto_timed && k == j.set->made);
+            if (timed ? j.set->game[k] : k == j.set->made) stat.games++, stat.game_ns += t - j.at;   // (the set's game frame)
             if (shown_at) {
                 const int64_t d = t - shown_at;
                 hist[d < 2000000 ? 0 : d < 7000000 ? 1 : d < 9000000 ? 2 : d < 12000000 ? 3 : d < 17000000 ? 4
@@ -1391,9 +1431,9 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     note_maker(maker);
     // (longshot) The set's times on the game's own timeline (fixed_dues): each frame at its place between the two game
-    // frames, its lead (pace_lead) and the GPU's delay (pace_delay) later. display_main shows the set at them where the
-    // swapchain does not wait for a refresh (fixed_on_timeline). Without a frame before it (the first, a hitch) or a made
-    // frame, none
+    // frames, its lead (pace_lead) and the GPU's delay (pace_delay) later. display_main shows the set at them
+    // (fixed_on_timeline; under FIFO one a refresh at most, fifo_slot). Without a frame before it (the first, a hitch) or a
+    // made frame, none
     if (blend && set->made > 0 && fg.game_ns > 0) {
         const int64_t extra = fg.late_ns.load(std::memory_order_relaxed);
         fixed_dues(before, now, set->made, pace_lead(fg.game_ns, set->made) + extra, set->due);

@@ -43,6 +43,7 @@
 #include "sparse_mirror.h"
 #include "sparse_spare.h"
 #include "linux_pressure.h"
+#include "page_marks.h"   // (wb_ever: invalidate_quick)
 #include "page_table_census.h"   // (the page table's windows, and the census of the pools outside them)
 #include <atomic>
 #include <unordered_set>
@@ -92,6 +93,24 @@ struct Pool {
     uint64_t direct_write_epoch = 0;   // (the part that last wrote it in guest memory, before it had a mirror)
     uint64_t retired_value = 0;  // (retired: the submission that may still use it)
     bool was_mirrored = false;   // (its mirror was given back: its pages stay in the captures, for the next one)
+    // (longshot) the bytes bound from it, at most 1 MB a binding (RX_VK_MIRROR_HEAT_CAP_KB), decayed every 16 submissions: which
+    // pools the GPU reads most, for mirrors_by_heat. Added to without the lock (__atomic), read under it. Neither the whole bound
+    // ranges nor the bindings alone: on a 4 GB RTX 3050 Ti a 160 MB pool bound ~0.6 times a submission, 57 MB a binding (21 GB of
+    // ranges every 600 submissions), and a 132 MB one bound ~7 times, 1.1 MB a binding (4.7 GB); with the 132 MB one's mirror the
+    // frame ran at 59-60 fps against 55 with the 160 MB one's (the GPU 12.3-13.6 ms against 15.0: a wide binding is not read
+    // whole), and small pools bound a thousand times a frame for a few bytes each held the room by their count
+    uint64_t heat = 0;
+    // (longshot) its mirror's VRAM refused by the driver (a full or cut-up 4 GB card): tried again from this submission on, as the
+    // texture cache gives VRAM back, instead of never (RX_VK_MIRROR_HEAT=0: never, as before)
+    uint64_t retry_epoch = 0;
+    uint8_t refusals = 0;
+    static uint64_t heat_of(uint64_t size) {
+        static const uint64_t cap = [] {
+            const char* e = getenv("RX_VK_MIRROR_HEAT_CAP_KB");
+            return e && atoll(e) > 0 ? (uint64_t)atoll(e) << 10 : 1ull << 20;
+        }();
+        return std::min(size, cap);
+    }
     // (longshot) the GPU wrote it past what is copied back (memory_note_gpu_write: a bare entry's guessed range, the pointer
     // table's, a wide binding's): that is in its mirror alone, so the mirror is never given back (mirrors_give_back)
     bool gpu_only = false;
@@ -160,11 +179,16 @@ std::map<uint64_t, Pool>::node_type imported_take(std::map<uint64_t, Pool>::iter
     live_reach.remove(it->second.hi - it->second.lo);
     return imported.extract(it);
 }
+#ifdef _WIN32
 struct SrwMutex {   // (a slim reader/writer lock: half std::mutex's cost, taken for every buffer a draw binds)
     SRWLOCK l = SRWLOCK_INIT;
     void lock() { AcquireSRWLockExclusive(&l); }
     void unlock() { ReleaseSRWLockExclusive(&l); }
 };
+#else
+// (off Windows SRWLOCK is a pthread rwlock, host/posix/windows.h: more atomic steps than a mutex for a lock only ever taken whole)
+using SrwMutex = std::mutex;
+#endif
 SrwMutex pools_mu;
 uint32_t generation = ~0u;
 uint64_t align = 4096;
@@ -592,7 +616,7 @@ uint64_t memory_guest_pages() {
     static bool tried = false;
     if (tried) return guest_pages_address;
     tried = true;
-    if (env_on("RX_VK_NO_FOLLOW")) return 0;   // (on: Kokiri's lighting. The menus' blank text was the rule in graphics stages, now compute only)
+    // (the table is for Kokiri's lighting. The menus' blank text was the pointer rule in graphics stages, now compute only)
     VkBuffer b = VK_NULL_HANDLE;
     VmaAllocation a = nullptr;
     void* mapped = nullptr;
@@ -1132,6 +1156,18 @@ uint64_t cap_buf_size(uint64_t need) {
         if ((uint64_t)cm << 20 >= need) return (uint64_t)cm << 20;
     return (need + (1u << 20) - 1) & ~((1ull << 20) - 1);
 }
+// (longshot) The mirror syncs' pages from the captures go to the mirrors by the write-back diff's compute pass (msync_pass_add,
+// after memory_end_submission), not as copy regions. On unless set off (RX_VK_MSYNC_PASS=0, the switches' one rule: longshot_env.h)
+bool msync_pass_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_MSYNC_PASS");
+        const bool v = !e || !env_value_off(e);
+        logf("vk: mirror syncs' pages from the captures %s (RX_VK_MSYNC_PASS)",
+             v ? "by a compute pass" : "as copy regions, as before");
+        return v;
+    }();
+    return on;
+}
 // (longshot, on since the stutter fix) The big capture buffers made ahead, on a worker thread. A capture of a scene load holds
 // 16 to 256 MB of the pages the game wrote (texture storage), and its buffer was made on the game's thread, inside capture_make:
 // AMD's driver commits and clears a host-visible memory object when it is allocated, ~0.8 ms a MB, and the log's isolated spikes
@@ -1141,10 +1177,11 @@ uint64_t cap_buf_size(uint64_t need) {
 // a spare of each class of 32, 64 and 128 MB is made in the background once, and again as soon as one is taken.
 // (The log at the scene loads without it: "capture ... the buffer of 32/64/256 MB 13-41 ms")
 bool late_fix_on();   // (below)
-// (longshot: storage and an address too with the late pages' fix, which writes the write-backs' words into a capture's buffer)
+// (longshot: storage and an address too with the late pages' fix, which writes the write-backs' words into a capture's buffer,
+// and with the mirror syncs' pass, which reads a capture's buffer by its address: msync_pass_on)
 VkBufferUsageFlags cap_usage() {
     static const VkBufferUsageFlags u = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-        (late_fix_on() ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0);
+        (late_fix_on() || msync_pass_on() ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0);
     return u;
 }
 std::atomic<int> cap_prewarm_busy{0};
@@ -1635,11 +1672,16 @@ WbPages wb_parts;
 // (longshot) the pages' last write in place (part 0: note_direct_write), for the late pages' fix: no record of which words,
 // so a capture with such a page late waits, as before, whatever else writes it back
 WbPages wb_direct;
+// (longshot) and whether a page was ever written back, read without wb_pages_mu: wb_pages' "ever" for invalidate_quick
+// (vk_replay.cpp), on the game's thread with its virtual core held. Marked under wb_pages_mu before the pages' values, which
+// are never dropped either (page_marks.h: the order)
+PageMarks<kPages, kChunkPages> wb_ever;
 // (RX_VK_LOG_RB_WRITERS, diagnostics: set once it is on) each range noted, to rb_page_note (below, with the writers it keeps)
 void (*wb_writers_hook)(uint64_t lo, uint64_t hi, uint64_t value, uint64_t part) = nullptr;
 void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value, uint64_t part) {
     if (!value || guest_hi <= guest_lo) return;
     std::lock_guard lk(wb_pages_mu);
+    wb_ever.mark(guest_lo >> kPageShift, (guest_hi - 1) >> kPageShift);
     for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) {
         wb_pages.set(p, value);
         if (part || !wb_parts.empty()) wb_parts.set(p, part);
@@ -1648,6 +1690,11 @@ void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value, uint64_
     if (wb_writers_hook) wb_writers_hook(guest_lo, guest_hi, value, part);
 }
 } // namespace
+/// (longshot) Whether any page of [guest, guest + size) was ever written back: memory_writeback_value's *ever, without its lock
+/// (invalidate_quick, on the game's thread with its virtual core held)
+bool memory_writeback_ever(uint64_t guest, uint64_t size) {
+    return size && wb_ever.any(guest >> kPageShift, (guest + size - 1) >> kPageShift);
+}
 /// The newest write-back value of the range's pages (0: none; *ever: whether any page was ever written back). With part
 /// and whole: *part is the newest part that wrote any of them back from a mirror (0: none), *whole the newest value among
 /// the pages with no part (written in place: their whole submission is what a read waits for; 0: none)
@@ -3607,10 +3654,17 @@ uint64_t device_vram_bytes() {
         if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
     return test_vram_bytes(vram);
 }
+// (RX_VK_MSYNC_PASS: defined after memory_end_submission)
+bool msync_pass_add(Pool& p, VkBuffer buf, const std::vector<VkBufferCopy>& rs);
+void msync_pass_flush();
+void msync_pass_report();
+extern bool msync_batching;
 namespace {
+// (longshot) room past the budget for the one hottest pool the full mirrors left out, while VRAM has it (mirrors_by_heat)
+uint64_t mirror_heat_extra = 0;
 uint64_t mirror_budget() {
     // (a quarter of the card, at most 2 GB under 15 GB, else 3 GB; at most 256 MB on cards of 4.5 GB or less: mirror_budget.h.
-    // No menu row or Quality preset sets it; RX_VK_MIRROR_MB=<MB> for a test)
+    // No menu row or Quality preset sets it; RX_VK_MIRROR_MB=<MB> for a test. Plus mirrors_by_heat's room for its hottest pool)
     static const uint64_t b = [] {
         if (const char* e = getenv("RX_VK_MIRROR_MB")) return (uint64_t)atoi(e) << 20;
         const uint64_t vram = device_vram_bytes();
@@ -3618,9 +3672,26 @@ uint64_t mirror_budget() {
         if (vram && vram <= (6ull << 30) + (512ull << 20)) return std::min<uint64_t>(1700ull << 20, vram / 3);
         return mirror_rule::auto_bytes(vram);
     }();
-    return b;
+    return b + mirror_heat_extra;
 }
 uint64_t mirror_bytes = 0, mirror_epoch = 0;
+// (longshot, mirrors_by_heat) the mirrors, past RX_VK_MIRROR_SMALL_PCT (70) % of the budget, only for a pool the GPU binds much
+// (mirror_hot_bytes): the rest stays for a hot pool. First come, first served, a hundred small pools bound at the start filled the
+// 512 MB of a 4 GB card, most of them written by the GPU (never given back), and a 132 MB pool the game's indirect dispatches read
+// stayed in system memory in most starts: the dispatches 4.6 ms a frame against 2.8 with it in VRAM (55 fps against 59.5, standing,
+// Kokiri Forest)
+uint64_t mirror_hot_bytes() {   // (RX_VK_MIRROR_HOT_MB, 64: a pool's heat, bound bytes decayed, from which it is hot)
+    static const uint64_t hot = (uint64_t)(getenv("RX_VK_MIRROR_HOT_MB") ? std::max(1, atoi(getenv("RX_VK_MIRROR_HOT_MB"))) : 64) << 20;
+    return hot;
+}
+uint64_t mirror_small_cap() {
+    static const uint64_t pct = [] {
+        const char* e = getenv("RX_VK_MIRROR_SMALL_PCT");
+        const int v = e ? atoi(e) : 70;
+        return (uint64_t)(v > 0 && v < 100 ? v : 100);
+    }();
+    return pct >= 100 ? UINT64_MAX : mirror_budget() / 100 * pct;
+}
 bool mirror_upload = false;   // (a submission is being recorded: its upload command buffer takes the syncs)
 std::vector<Pool*> mirror_wanted, mirror_synced;
 struct WriteBack {
@@ -4035,6 +4106,7 @@ void retire_pool(std::map<uint64_t, Pool>::iterator it) {
         logf("vk: pool %#llx remade larger (%zu retired)", (unsigned long long)old->lo, retired_pools.size());
 }
 int64_t st_sync_bytes, st_sync_copies, st_wb_bytes, st_mirrors;
+int64_t st_mirrors_freed = 0;   // (with st_mirrors: equal while no pool has a mirror)
 int64_t st_sync_live_pages, st_sync_cap_pages, st_sync_old_pages;   // (mirror syncs' dirty pages: live / this submit's capture / an earlier one's)
 std::unordered_map<uint64_t, int64_t> live_by_pool;
 std::unordered_map<uint64_t, std::pair<int64_t, int>> direct_by_pool;   // (bindings the GPU reads in guest memory: count, state)
@@ -4138,6 +4210,17 @@ void mirror_sync(Pool& p) {
     }
     if (run_hi) runs.push_back({run_lo, run_lo, run_hi - run_lo});
     for (const auto& [buf, rs] : cap_runs) {
+        if (msync_pass_on() && msync_pass_add(p, buf, rs)) {   // (as the pass's chunks: dispatched below, or after the presync's loop)
+            if (p.shadow) {   // (RX_VK_PASS_TIMING: a span of their own; the copies' span below times both)
+                GprofSpan gp(upload_command_buffer(), "msync shadow copies (CPU pages from a capture -> shadow)");
+                gp.items = (int)rs.size();
+                for (const VkBufferCopy& r : rs) gp.bytes += r.size;
+                shadow_sync_copy(upload_command_buffer(), buf, p, rs);   // (the shadow as the mirror, as below: the pass writes the mirror only)
+            }
+            for (const VkBufferCopy& r : rs) st_sync_bytes += (int64_t)r.size;
+            st_sync_copies += (int64_t)rs.size();
+            continue;
+        }
         GprofSpan gp(upload_command_buffer(), "msync copies (CPU pages from a capture -> mirror)");
         gp.items = (int)rs.size();
         vkCmdCopyBuffer(upload_command_buffer(), buf, p.mirror, (uint32_t)rs.size(), rs.data());
@@ -4145,6 +4228,7 @@ void mirror_sync(Pool& p) {
         for (const VkBufferCopy& r : rs) st_sync_bytes += (int64_t)r.size, gp.bytes += r.size;
         st_sync_copies += (int64_t)rs.size();
     }
+    if (!msync_batching) msync_pass_flush();
     if (runs.empty()) return;
     checkpoint_mark(upload_command_buffer(), p.lo, 'm');
     GprofSpan gp(upload_command_buffer(), "msync copies (CPU pages live from guest memory -> mirror)");
@@ -4341,6 +4425,10 @@ bool memory_rb_refresh(VkCommandBuffer up) {
         if (k < 64) rb_segs.made |= 1ull << k;
     }
     if (rb_pages.empty() || !up) return false;
+    // (no pool has a mirror, as on an integrated GPU: no page has one to be copied into, and each was still looked up among the
+    // pools at every recording. The pages not read for a while still go, every 64th time)
+    static uint32_t unmirrored = 0;
+    if (st_mirrors == st_mirrors_freed && (++unmirrored & 63)) return false;   // (made and freed: a sparse mirror may hold no byte yet)
     auto written_ahead = [&](uint64_t lo, uint64_t hi) {   // (may be, by a recording ahead of this one in its submission)
         if (rb_hazards_epoch != mirror_epoch) return false;
         for (const RbHazard& h : rb_hazards)
@@ -4603,6 +4691,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         Pool* p = tl.p;
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+        __atomic_fetch_add(&p->heat, Pool::heat_of(size), __ATOMIC_RELAXED);   // (longshot: mirrors_by_heat)
         if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED) {
             note_in_place_read(!mirror_upload);
             return remember({p->buffer, off, size, 0});
@@ -4632,6 +4721,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (!p) return {};
     tl = {p, pools_gen.load(std::memory_order_relaxed)};
     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+    __atomic_fetch_add(&p->heat, Pool::heat_of(size), __ATOMIC_RELAXED);   // (longshot: mirrors_by_heat)
     const uint64_t off = guest - p->lo;
     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
         if (written) note_direct_write(*p, off, size);
@@ -4721,7 +4811,6 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
 // with the submissions that bound it; a mirror not bound for kIdleEpochs submissions goes when a wanted one does not
 // fit, or after kLongIdle; and a pool refused for the budget is tried again when it is next bound.
 constexpr uint64_t kIdleEpochs = 600, kLongIdle = 6000;
-int64_t st_mirrors_freed = 0;
 uint64_t st_mirror_bytes_freed = 0;
 // (longshot) A freed mirror's buffer is destroyed only once the GPU is past everything recorded until then. Its pool's
 // last_value counts the draws and dispatches that bound it, not the shaders that reach it through the guest page table:
@@ -4803,11 +4892,14 @@ void retired_imports_give_back() {   // (pools_mu held)
             want = retired_give_back::want(retired_give_back::settled(used, dead_import_bytes), budget, high, low);
     }
     const int64_t now = mode == Mode::GRACE ? import_now_ms() : 0;
-    uint64_t live_bytes = 0, retired_bytes = 0;
+    uint64_t retired_bytes = 0;
     size_t retired_alive = 0;
-    for (auto& [lo, p] : imported) live_bytes += p.hi - p.lo;
-    for (auto& nh : retired_pools) {   // (in the order they were retired: the oldest first)
-        Pool& p = nh.mapped();
+    // (this runs at every part of a submission. The oldest retired pools, their imports gone, are passed once: the list only
+    // grows and a retired pool is never imported again)
+    static size_t gone = 0;
+    while (gone < retired_pools.size() && !retired_pools[gone].mapped().memory) gone++;
+    for (size_t i = gone; i < retired_pools.size(); i++) {   // (in the order they were retired: the oldest first)
+        Pool& p = retired_pools[i].mapped();
         if (!p.memory) continue;
         const uint64_t idle = (uint64_t)std::max<int64_t>(0, now - p.retired_ms);
         // (longshot) a pool whose mirror was refused (over 1 GB, or no room in VRAM when it was asked for) has no mirror either:
@@ -4830,6 +4922,8 @@ void retired_imports_give_back() {   // (pools_mu held)
     static uint64_t logged_epoch;
     if (mirror_epoch - logged_epoch >= 1200) {
         logged_epoch = mirror_epoch;
+        uint64_t live_bytes = 0;   // (only this line reads it: every live pool walked for it at every part, before)
+        for (auto& [lo, p] : imported) live_bytes += p.hi - p.lo;
         logf("vk: imports: %zu live (%llu MB), %zu retired still imported (%llu MB), %llu retired given back (%llu MB)",
              imported.size(), (unsigned long long)(live_bytes >> 20), retired_alive, (unsigned long long)(retired_bytes >> 20),
              (unsigned long long)st_retired_imports_freed, (unsigned long long)(st_retired_import_bytes_freed >> 20));
@@ -5196,6 +5290,91 @@ void trims_settle() {
     }
 }
 
+// (longshot, cards of 4-6 GB) The mirrors by heat. A pool gets its mirror at its first binding while the budget has room, so the
+// pools bound first took it all: on a 4 GB RTX 3050 Ti (256-512 MB of mirrors) 23 small pools held the mirrors, read ~0.4 GB
+// over 600 submissions, while two pools of 160 and 132 MB, 96% of the 21.9 GB the GPU read over PCIe in those submissions,
+// stayed WANTED for good: mirrors_give_back only frees mirrors idle for kIdleEpochs, and the small ones are bound every frame.
+// Here a wanted pool that does not fit takes the room of mirrored pools bound at least four times less (heat), freed as the
+// idle ones are: done on the GPU, not GPU-only or GPU-written data, no inheritance pending (read in system memory after, slower,
+// not wrong). Every 64 submissions, the hottest wanted pool first. On by default on cards of 6.5 GB or less (mirror_budget's rule
+// for them), where the budget is what keeps the hot pools out; measured only on a 4 GB card, so larger cards keep first come, first
+// served: their budget and the last 30 % mirror_small_cap keeps are not measured with it. RX_VK_MIRROR_HEAT=0 / 1: off / on on any card
+bool mirror_heat_on() {
+    static const bool on = [] {
+        if (const char* e = getenv("RX_VK_MIRROR_HEAT")) return !env_value_off(e);
+        const uint64_t vram = device_vram_bytes();
+        return vram && vram <= (6ull << 30) + (512ull << 20);
+    }();
+    return on;
+}
+void mirrors_by_heat() {   // (pools_mu held)
+    std::vector<Pool*> wanted(mirror_wanted.begin(), mirror_wanted.end());
+    std::sort(wanted.begin(), wanted.end(), [](const Pool* a, const Pool* b) { return a->heat > b->heat; });
+    static int64_t logged, freed, made_room;
+    for (Pool* w : wanted) {
+        const uint64_t n = w->hi - w->lo, budget = mirror_budget(), wh = __atomic_load_n(&w->heat, __ATOMIC_RELAXED);
+        if (!wh || n > budget || n > (1ull << 30) || mirror_bytes + n <= budget) continue;   // (fits already: mirror_make makes it)
+        // (not hot: room made up to the budget is past the small cap, which mirror_make keeps from it, and the mirrors freed for
+        // it would be made again at their next binding)
+        if (wh < mirror_hot_bytes() && mirror_small_cap() < budget) continue;
+        // (the room it needs from the mirrored pools that give the most room for the least heat, colder ones first by heat a
+        // MB: a few small pools bound every frame can each be hotter than it, and the 23 of them held the room it needs. They
+        // go only if all of their heat together is at most half of its own: what the GPU then reads over PCIe is less, and
+        // they cannot take the room back from it, which would need twice its heat)
+        std::vector<Pool*> cold;
+        for (auto& [lo, p] : imported)
+            if (p.mstate == Pool::MIRROR_ON && !p.gpu_only && !p.gpu_written && !p.inherit_pending && p.last_value <= mem_completed &&
+                __atomic_load_n(&p.heat, __ATOMIC_RELAXED) < wh / 2)
+                cold.push_back(&p);
+        std::sort(cold.begin(), cold.end(), [](const Pool* a, const Pool* b) {   // (heat per MB of mirror given back)
+            return (double)a->heat / (double)std::max<uint64_t>(1, mirror_size(*a)) <
+                   (double)b->heat / (double)std::max<uint64_t>(1, mirror_size(*b));
+        });
+        uint64_t room = 0, cost = 0;
+        size_t take = 0;
+        while (take < cold.size() && mirror_bytes - std::min(room, mirror_bytes) + n > budget)
+            room += mirror_size(*cold[take]), cost += __atomic_load_n(&cold[take]->heat, __ATOMIC_RELAXED), take++;
+        if (mirror_bytes - std::min(room, mirror_bytes) + n > budget || cost > wh / 2) {   // (not enough colder room: as before)
+            // (longshot) The hottest pool left out, the mirrors full of ones the GPU writes (never given back: what it wrote is only
+            // there): it gets room past the budget, once, while the card has it. On a 4 GB RTX 3050 Ti at 512 MB, a 132 MB pool
+            // bound 7 times a submission was in VRAM in some starts and not in others, first come first served: the GPU 12.4-13.6 ms
+            // a frame against 15.0 (standing, Kokiri Forest), and with a budget of 640 MB for all pools the textures ran short.
+            // RX_VK_MIRROR_HEAT_EXTRA=1 (a test, off: measured on one card only): on
+            static const bool extra_on = env_on("RX_VK_MIRROR_HEAT_EXTRA");
+            uint64_t used = 0, allowed = 0;
+            if (extra_on && !mirror_heat_extra && w == wanted.front() && n <= (256ull << 20) && wh >= (16ull << 20) &&
+                vram_usage(&used, &allowed) && allowed && used + n + (64ull << 20) <= allowed / 100 * 92) {
+                mirror_heat_extra = n;
+                logf("vk: mirrors by heat: pool %#llx (%llu MB, heat %llu KB) given room past the budget (%llu MB more; VRAM %llu of "
+                     "%llu MB used) (RX_VK_MIRROR_HEAT_EXTRA)", (unsigned long long)w->lo, (unsigned long long)(n >> 20),
+                     (unsigned long long)(wh >> 10), (unsigned long long)(n >> 20), (unsigned long long)(used >> 20),
+                     (unsigned long long)(allowed >> 20));
+                continue;
+            }
+            static int told;
+            if (n >= (32ull << 20) && told++ < 24)
+                logf("vk: mirrors by heat: pool %#llx (%llu MB, heat %llu KB) given no room: %zu colder mirrors, %llu MB of them taken "
+                     "(heat %llu KB), the mirrors at %llu MB of %llu", (unsigned long long)w->lo, (unsigned long long)(n >> 20),
+                     (unsigned long long)(wh >> 10), cold.size(), (unsigned long long)(room >> 20), (unsigned long long)(cost >> 10),
+                     (unsigned long long)(mirror_bytes >> 20), (unsigned long long)(budget >> 20));
+            continue;
+        }
+        for (size_t i = 0; i < take; i++) {
+            Pool* p = cold[i];
+            if (logged++ < 40)
+                logf("vk: mirror of pool %#llx (%llu MB, heat %llu KB) given back for pool %#llx (%llu MB, heat %llu KB): the GPU reads "
+                     "that one more (RX_VK_MIRROR_HEAT=0: off)", (unsigned long long)p->lo, (unsigned long long)((p->hi - p->lo) >> 20),
+                     (unsigned long long)(p->heat >> 10), (unsigned long long)w->lo, (unsigned long long)(n >> 20),
+                     (unsigned long long)(wh >> 10));
+            mirror_free(*p);
+            freed++;
+        }
+        made_room++;
+    }
+    if (made_room && made_room % 16 == 1)
+        logf("vk: mirrors by heat: room made %lld times, %lld colder mirrors given back", (long long)made_room, (long long)freed);
+}
+
 void memory_begin_submission() {
     std::lock_guard lk(pools_mu);
     reap_mirrors();
@@ -5209,6 +5388,11 @@ void memory_begin_submission() {
     if (tex_capture_on()) publish_tex_spans(texture_frame_no());
     if (!mirror_on()) return;
     mirrors_trim();
+    if (mirror_heat_on()) {   // (longshot: mirrors_by_heat; the heat decays by a quarter every 16 submissions)
+        if (mirror_epoch % 16 == 0)
+            for (auto& [lo, p] : imported) __atomic_store_n(&p.heat, __atomic_load_n(&p.heat, __ATOMIC_RELAXED) / 4 * 3, __ATOMIC_RELAXED);
+        if (mirror_epoch % 64 == 0 && !mirror_wanted.empty()) mirrors_by_heat();
+    }
     {
         uint64_t want = 0;
         for (Pool* p : mirror_wanted) want += p->hi - p->lo;
@@ -5256,6 +5440,12 @@ void memory_begin_submission() {
         trims_settle();   // (a part's mirror made at its binding since)
         return;
     }
+    // (longshot: the hottest first. Unsorted, the small pools mirrors_by_heat had just given back were made again first, in the room
+    // it made for the hot one, and a 132 MB pool bound 7 times a submission stayed in system memory beside 353 small mirrors)
+    if (mirror_heat_on())
+        std::stable_sort(mirror_wanted.begin(), mirror_wanted.end(), [](const Pool* a, const Pool* b) {
+            return __atomic_load_n(&a->heat, __ATOMIC_RELAXED) > __atomic_load_n(&b->heat, __ATOMIC_RELAXED);
+        });
     for (Pool* p : mirror_wanted) mirror_make(*p);
     trims_settle();   // (the old mirror waits for no more only once every part has its own)
     mirror_wanted.clear();
@@ -5275,12 +5465,15 @@ void memory_begin_submission() {
 void memory_sync_mirrors_before_segments() {
     if (!mirror_on() || !mirror_upload) return;
     std::lock_guard lk(pools_mu);
+    msync_batching = true;   // (RX_VK_MSYNC_PASS: every pool's chunks in one dispatch, after the loop)
     for (auto& kv : imported) {
         Pool& p = kv.second;
         if (p.mstate != Pool::MIRROR_ON || p.synced_epoch == mirror_epoch) continue;
         mirror_sync(p);
         p.sync_seg = 0;
     }
+    msync_batching = false;
+    msync_pass_flush();
 }
 
 /// A pool's mirror made, filled in the recording's upload command buffer: all of it, then the pages a capture holds
@@ -5288,6 +5481,10 @@ void memory_sync_mirrors_before_segments() {
 /// given back) or over 1 GB (never)
 bool mirror_make(Pool& pool) {
     Pool* p = &pool;
+    if (mirror_epoch < p->retry_epoch) {   // (longshot: its VRAM refused not long ago; wanted again at a later binding)
+        if (p->mstate == Pool::MIRROR_WANTED) p->mstate = Pool::MIRROR_NONE;
+        return false;
+    }
     {
         const uint64_t n = p->hi - p->lo;
         // (longshot: RX_VK_MIRROR_TIGHT=1, none while VRAM is 90% full. Off: 8 GB cards sit there all the time, and without their mirrors
@@ -5312,7 +5509,12 @@ bool mirror_make(Pool& pool) {
                 take = (uint64_t)std::count(live.begin(), live.end(), (uint8_t)1) * sparse_req.alignment;
             }
         }
-        if (mirror_bytes + take > mirror_budget() || n > (1ull << 30) || tight) {
+        // (longshot) the last RX_VK_MIRROR_SMALL_PCT (70) % of the budget only for a pool the GPU binds much (its heat, at least
+        // RX_VK_MIRROR_HOT_MB (64) MB of bound bytes, decayed: mirror_hot_bytes). Holding only the pools under 32 MB to 70 %, pools of
+        // 44 to 68 MB took the rest before the 132 MB one
+        const bool small_full = mirror_heat_on() && __atomic_load_n(&p->heat, __ATOMIC_RELAXED) < mirror_hot_bytes() &&
+                                mirror_bytes + take > mirror_small_cap();
+        if (mirror_bytes + take > mirror_budget() || n > (1ull << 30) || tight || small_full) {
             if (sparse_buf) sparse_buffer_unused(sparse_buf, n, sparse_req, spare_after);
             p->mstate = n > (1ull << 30) ? Pool::MIRROR_REFUSED : Pool::MIRROR_NONE;
             static int logged;
@@ -5334,7 +5536,14 @@ bool mirror_make(Pool& pool) {
         }
         if (sparse_buf) p->sparse_made = n;   // (what the next mirror of this size may take its buffer by, mirror_free)
         if (!sparse_buf && !create_device_buffer(n, kUsage, p->mirror, p->mirror_alloc)) {
-            p->mstate = Pool::MIRROR_REFUSED;
+            // (longshot: again after 256, 512, ... submissions, eight times at most)
+            const bool again = mirror_heat_on() && p->refusals < 8;
+            p->mstate = again ? Pool::MIRROR_NONE : Pool::MIRROR_REFUSED;
+            if (again) p->retry_epoch = mirror_epoch + (256ull << p->refusals), p->refusals++;
+            static int logged_refused;
+            if (logged_refused++ < 16)
+                logf("vk: pool %#llx (%llu MB): its mirror's VRAM refused by the driver (%s)", (unsigned long long)p->lo,
+                     (unsigned long long)(n >> 20), again ? "tried again later" : "never again");
             return false;
         }
         {   // (longshot) the page table points at the mirror: what the GPU wrote is there, and guest memory has it only after the write-back
@@ -5559,6 +5768,7 @@ void sparse_grow_all(const std::vector<Pool*>& pools) {
     }
     VkCommandBuffer up = upload_command_buffer();
     full_barrier(up, "barrier (sparse fill: after the work before it wrote guest memory)");
+    bool filled = false;
     for (Got& g : gots) {
         Pool& p = *g.p;
         const uint64_t b = sparse_block(p), n = p.hi - p.lo;
@@ -5583,6 +5793,7 @@ void sparse_grow_all(const std::vector<Pool*>& pools) {
             }
         }
         if (!fill.empty()) {
+            filled = true;
             {
                 GprofSpan gp(up, "sparse fill (guest memory -> a mirror's new blocks)");
                 for (const VkBufferCopy& c : fill) gp.bytes += c.size;
@@ -5612,6 +5823,9 @@ void sparse_grow_all(const std::vector<Pool*>& pools) {
         mirror_bytes += g.blocks.size() * b;
         st_sparse_grown += (int64_t)g.blocks.size();
     }
+    // (RX_VK_MSYNC_PASS: a mirror sync after this in the uploads reads and writes these bytes in the pass's dispatch, which
+    // the copies' barrier above does not order)
+    if (filled && msync_pass_on()) full_barrier(up, "barrier (sparse fill: before the mirror syncs' pass)");
     pools_gen.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -5984,7 +6198,10 @@ bool wbd_pipe_ready() {
         }
     }
     const bool ok = wbd_pipe.pipe != VK_NULL_HANDLE;
-    logf("vk: write-back diff %s", ok ? "on (RX_VK_WB_DIFF=0: off)" : "off: its pipeline was not made");
+    // (longshot: the mirror syncs' pass makes it too, RX_VK_MSYNC_PASS, with the diff itself off or on)
+    logf("vk: write-back diff %s", !ok           ? "off: its pipeline was not made"
+                                   : wb_diff_on() ? "on (RX_VK_WB_DIFF=0: off)"
+                                                  : "off (RX_VK_WB_DIFF=0); its pipeline made for the mirror syncs' pass");
     return ok;
 }
 void shadow_written_to(std::vector<uint32_t>& list, const uint32_t* pages, int64_t n) {
@@ -6203,6 +6420,7 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
                  (long long)(st_sync_old_pages - l_old), (long long)(st_sync_live_pages - l_live), cap_bufs.size(),
                  (long long)st_sync_gpu_pages, (long long)st_sync_gpu_live, (long long)st_prot_kept.load());
             l_cap = st_sync_cap_pages, l_live = st_sync_live_pages, l_old = st_sync_old_pages;
+            msync_pass_report();   // (RX_VK_MSYNC_PASS: how its dispatches went)
             if (shadow_bytes || st_wbd_runs)
                 logf("vk: write-back diff (600 submits): %lld runs, %.1f MB compared; %lld pages read into the shadows; %llu MB of shadows; "
                      "pages the shadows knew that the CPU wrote: %lld in captures, %lld only in the collection, %lld only by the replay itself",
@@ -6479,6 +6697,164 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
     for (Pool* p : mirror_synced) p->synced_gen = gen_now;
     mirror_synced.clear();
     mirror_upload = false;
+}
+
+// ---- (longshot) The mirror syncs' pages from the captures by a compute pass (RX_VK_MSYNC_PASS, on unless set off) ----
+// A capture's buffer is host-cached system memory (create_buffer_cached), and a mirror sync copied its pages into the mirror as
+// copy regions, one or a few pages each (append_capture_copy joins only the contiguous ones): the GPU reads each region over
+// PCIe after the one before. The write-back diff's pass (shaders/wb_diff.comp) is a copy when its shadow is the destination
+// itself: it reads the source, compares it with the destination, and writes it there where they differ (twice, the same
+// address). So the regions go as its chunks, one workgroup a chunk, and a sync's chunks in one dispatch where their copies
+// were: the presync's (memory_sync_mirrors_before_segments) every pool's at once. No barrier between the chunks: the copies had
+// none either (each page of a mirror comes from one place in a sync), and the full barrier that ends the uploads
+// (texture_uploads_recorded) waits for all commands, the dispatch's too; a sparse mirror's fill before it in the same uploads
+// ends with one (sparse_grow_all: the copies' barrier orders copies only). The tables are blocks of host memory, each table on
+// cache atoms of its own (msync_block_get), a block taken again once the submission that last read it is done; a sync whose
+// table finds no room goes as the copies, as before. (Not the write-back diff's own ring, wbd_table_get: one table of 128 KB
+// or more a dispatch there, and a serial replay makes about 30 of these dispatches a frame, so its 64 tables could all be in
+// flight; a write-back that finds none copies whole and forgets its shadows.)
+std::vector<WbdChunk> msync_chunks;   // (pools_mu)
+struct MsyncCopy {
+    VkBuffer src, dst;
+    std::vector<VkBufferCopy> rs;
+};
+std::vector<MsyncCopy> msync_copies;   // (the same, as copies: for a sync whose table finds no room)
+bool msync_batching = false;
+int64_t st_msync_dispatches = 0, st_msync_chunks = 0, st_msync_fallbacks = 0;
+struct MsyncBlock {
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    uint8_t* map = nullptr;
+    VkDeviceAddress address = 0;
+    uint64_t value = 0, fill = 0;
+};
+constexpr int kMsyncBlocks = 16;
+constexpr uint64_t kMsyncBlockBytes = 256u << 10;   // (8192 chunks: a frame's presync took about 1,300 in the Market)
+MsyncBlock msync_blocks[kMsyncBlocks];
+int msync_block_cur = -1;
+
+/// (pools_mu held) Room for a table of `bytes`, from offset `at`: in the current block, or in the next one once the GPU is
+/// done with it. Each table starts on a cache atom of its own (nonCoherentAtomSize), as staging's slices do: a block's
+/// memory need not be coherent, a flush covers whole atoms (vkFlushMappedMemoryRanges), and a dispatch already submitted
+/// may still be reading the table before it in the block. (An atom of the block is one of its memory: VMA starts the
+/// allocations of a non-coherent memory type on an atom.)
+MsyncBlock* msync_block_get(uint64_t bytes, uint64_t& at) {
+    if (bytes > kMsyncBlockBytes) return nullptr;
+    const uint64_t align = std::max<uint64_t>(sizeof(WbdChunk), dev.props.limits.nonCoherentAtomSize);
+    if (msync_block_cur >= 0) {
+        MsyncBlock& b = msync_blocks[msync_block_cur];
+        const uint64_t start = (b.fill + align - 1) & ~(align - 1);
+        if (b.map && start + bytes <= kMsyncBlockBytes) {
+            b.fill = start + bytes;
+            b.value = std::max(b.value, mem_rec_value);
+            at = start;
+            return &b;
+        }
+    }
+    const int next = (msync_block_cur + 1) % kMsyncBlocks;
+    MsyncBlock& b = msync_blocks[next];
+    if (b.map && b.value > mem_completed) return nullptr;   // (still read by a submission the GPU has not done)
+    if (!b.map) {
+        void* map = nullptr;
+        if (!create_buffer(kMsyncBlockBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
+                           b.buf, b.alloc, &map) || !map) {
+            if (b.buf) destroy_buffer(b.buf, b.alloc);
+            b = {};
+            return nullptr;
+        }
+        VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        da.buffer = b.buf;
+        b.address = vkGetBufferDeviceAddress(dev.device, &da);
+        if (!b.address) {
+            destroy_buffer(b.buf, b.alloc);
+            b = {};
+            return nullptr;
+        }
+        b.map = (uint8_t*)map;
+    }
+    msync_block_cur = next;
+    b.fill = bytes;
+    b.value = mem_rec_value;
+    at = 0;
+    return &b;
+}
+
+/// (pools_mu held) A capture buffer's runs into p's mirror (offsets: the buffer's, the pool's) as the pass's chunks, for
+/// msync_pass_flush; false: none taken, the caller copies them (no pass, or a run not in whole words)
+bool msync_pass_add(Pool& p, VkBuffer buf, const std::vector<VkBufferCopy>& rs) {
+    if (rs.empty() || !p.mirror || !buf || !wbd_pipe_ready()) return false;
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = buf;
+    const VkDeviceAddress src = vkGetBufferDeviceAddress(dev.device, &da);
+    da.buffer = p.mirror;
+    const VkDeviceAddress dst = vkGetBufferDeviceAddress(dev.device, &da);
+    if (!src || !dst) return false;
+    for (const VkBufferCopy& r : rs)
+        if (!r.size || ((src + r.srcOffset) | (dst + r.dstOffset) | r.size) & 3) return false;
+    for (const VkBufferCopy& r : rs) {
+        const uint64_t s = src + r.srcOffset, d = dst + r.dstOffset;
+        if ((s ^ d) & 15) {   // (not alike within 16 bytes: words, 64 KB a chunk)
+            for (uint64_t at = 0; at < r.size; at += 64u << 10) {
+                const uint64_t len = std::min<uint64_t>(r.size - at, 64u << 10);
+                msync_chunks.push_back({s + at, d + at, d + at, (uint32_t)(len / 4), 0u});
+            }
+            continue;
+        }
+        wbd_split(d, r.size, [&](uint64_t a, uint64_t len, bool vecs) {   // (source, shadow, destination: the shadow is the destination)
+            msync_chunks.push_back({s + (a - d), a, a, (uint32_t)(len / (vecs ? 16 : 4)), vecs ? 1u : 0u});
+        });
+    }
+    msync_copies.push_back({buf, p.mirror, rs});
+    return true;
+}
+
+/// (pools_mu held) The chunks taken since as one dispatch in the upload command buffer, or as their copies when no table has room
+void msync_pass_flush() {
+    if (msync_chunks.empty()) {
+        msync_copies.clear();
+        return;
+    }
+    VkCommandBuffer cmd = upload_command_buffer();
+    const uint64_t bytes = msync_chunks.size() * sizeof(WbdChunk);
+    uint64_t at = 0;
+    MsyncBlock* b = msync_block_get(bytes, at);
+    if (!b) {
+        for (const MsyncCopy& c : msync_copies) {
+            GprofSpan gp(cmd, "msync copies (CPU pages from a capture -> mirror)");
+            gp.items = (int)c.rs.size();
+            vkCmdCopyBuffer(cmd, c.src, c.dst, (uint32_t)c.rs.size(), c.rs.data());
+            for (const VkBufferCopy& r : c.rs) gp.bytes += r.size;
+        }
+        st_msync_fallbacks++;
+        static int logged;
+        if (logged++ < 8)
+            logf("vk: mirror syncs' pass: no table room for %zu chunks: this sync as copies", msync_chunks.size());
+    } else {
+        memcpy(b->map + at, msync_chunks.data(), bytes);
+        flush_mapped_range(b->alloc, at, bytes);
+        const uint32_t n = (uint32_t)msync_chunks.size();
+        GprofSpan gp(cmd, "msync pass (CPU pages from a capture -> mirror, one dispatch)");
+        gp.items = (int)n;
+        for (const WbdChunk& c : msync_chunks) gp.bytes += (uint64_t)c.count * (c.vecs ? 16 : 4);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wbd_pipe.pipe);
+        const struct { uint64_t table; uint32_t count, pad; uint64_t observations; } pc{b->address + at, n, 0, 0};   // (no stamps, no observations)
+        vkCmdPushConstants(cmd, wbd_pipe.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+        // (a checkpoint of its own, as the write-back diff's: else a fault in it would read in a device-lost report as
+        // whatever was marked before it)
+        checkpoint_mark(cmd, n, 's');
+        vkCmdDispatch(cmd, std::min<uint32_t>(n, 65535u), (n + 65534u) / 65535u, 1);
+        st_msync_dispatches++, st_msync_chunks += (int64_t)n;
+    }
+    msync_chunks.clear();
+    msync_copies.clear();
+}
+
+/// (pools_mu held, every 600 submissions: memory_end_submission) How the pass's dispatches went
+void msync_pass_report() {
+    if (!msync_pass_on()) return;
+    logf("vk: mirror syncs' pass (600 submits): %lld dispatches, %lld chunks; %lld syncs as copies (no table room)",
+         (long long)st_msync_dispatches, (long long)st_msync_chunks, (long long)st_msync_fallbacks);
+    st_msync_dispatches = st_msync_chunks = st_msync_fallbacks = 0;
 }
 
 void memory_stats(int64_t* mirrors, uint64_t* mirror_mb, int64_t* sync_bytes, int64_t* sync_copies, int64_t* wb_bytes) {

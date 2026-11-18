@@ -1,5 +1,5 @@
-"""A fixed frame generation multiplier's frames at their times on the game's own timeline wherever the swapchain does not
-wait for a refresh (V-Sync Off), whatever Frame pacing says.
+"""A fixed frame generation multiplier's frames at their times on the game's own timeline, whatever Frame pacing says and
+whatever the V-Sync row; under FIFO one a refresh at most.
 
 With Frame pacing Off (its default) the display thread presented a set's frames as they came: within a millisecond of
 each other at V-Sync Off, so the screen showed the game's frame and hardly the made ones, and DLSS Frame Gen 3x looked like
@@ -15,16 +15,25 @@ the game's own frame rate. The real fixed_dues, pace_lead, pace_delay and fixed_
   once, and only sets whose first copy went as they came fed back: the delay settles and every frame is on time. As
   before (a set's copies only once all fit, every set fed back) it ran to a whole game frame;
 - the delay never passes a game frame, and a hitch leaves it;
-- only a set with its times on a swapchain that is not FIFO is shown at them, and RX_VK_FG_TIMELINE=0 turns it off;
-- present_image's frame slots: 3, and a slot per frame of two sets where the swapchain is made for two (V-Sync Off,
-  RX_VK_FG_TIMELINE on) while frame generation runs: a set's copies all at once, none waiting in its own first copy's
-  slot or in the slot of the shown set's copy; FIFO and RX_VK_FG_TIMELINE=0 keep 3.
+- every set with its times is shown at them, FIFO too, and RX_VK_FG_TIMELINE=0 turns it off;
+- under FIFO, modelled with a VRR display that shows each present when it comes, one a refresh at most, the game's
+  frames held by the three sets, the display thread waiting while two presents wait to be shown and waking a little
+  late (fifo_slot): 3x at ~60 fps on 240 Hz shows every frame when it is presented, as far after the one before as its
+  picture (with the set's frames together, as before, they were 4.2, 4.2 and 8.3 ms apart); a set whose frames came late
+  goes out a refresh apart, never two presents waiting; game frames 10 and 20 ms apart in turn at 3x on 165 Hz (faster
+  than the display in the short ones) are shown each when it is presented, the game held at 55 fps; 4x at 60 fps on a
+  239.5 Hz display taken as 240 Hz is shown evenly at the display's rate.
+
+- present_image's frame slots: 3, and a slot per frame of two sets where the swapchain is made for two (RX_VK_FG_TIMELINE
+  on, any present mode) while frame generation runs: a set's copies all at once, none waiting in its own first copy's
+  slot or in the slot of the shown set's copy; RX_VK_FG_TIMELINE=0 keeps 3.
 
 The text checks: every fixed set with a frame before (blend) and a made frame gets its times, whatever Frame pacing says;
-display_main decides from the swapchain's mode, puts only a set presented ahead on the timeline, takes the next one early
+display_main shows it at them whatever the swapchain's mode, under FIFO no sooner than fifo_slot allows (the display's
+refresh, the mode read at each present), puts only a set presented ahead on the timeline, takes the next one early
 (looked for every 2 ms of a wait) with its copies for the images free, the rest as presents give images back, and feeds
 back only a set whose first copy it waited for, that went as it came and that did not follow a long game frame.
-vk_main.cpp asks for two sets' images where the swapchain does not wait, one set's with RX_VK_FG_TIMELINE=0.
+vk_main.cpp asks for two sets' images, under FIFO too, one set's with RX_VK_FG_TIMELINE=0.
 python -I -B tests/test_framegen_fixed_pace.py [--cxx g++]
 """
 import argparse
@@ -99,6 +108,55 @@ static void count(const Run& r, int64_t close, int& late, int& together) {
     for (int i = r.n / 2; i < r.n; i++) {
         late += r.shown[i] > r.due[i] + 1000000;
         together += r.shown[i] - r.shown[i - 1] < close;
+    }
+}
+
+/* Under FIFO, on a VRR display: the display loop above, the copies taken early (two sets' images), each frame given its
+   time no sooner than fifo_slot allows (refresh: the display's refresh as Windows gives it) and presented wake ns after
+   it; the screen showing each present at its present or a refresh of its own (screen) after the one shown before,
+   whichever is later. The game's frame i comes gaps[i] after the one before, but not before set i - 3 was shown (three
+   sets); while two presents wait to be shown the display thread waits for the screen (FIFO's images). gpu[i]: set i's
+   frames done that long after its game frame; a set whose first copy was done before the thread came to it (the
+   display held the thread) feeds back its copy's end (ready_at, seen while the set before was shown). A present late
+   past its slot by over
+   1 ms (the thread held) is the next one's slot. r.present, r.flip, r.content: each frame's present, when the screen
+   showed it, where its picture is on the game's timeline; r.game: the game's frames; r.waiting: the most presents waiting
+   to be shown at a present; r.extra_max: the GPU's delay at its most over the second half */
+struct Fifo { int n, waiting, games; int64_t extra_max; int64_t present[8192], flip[8192], content[8192], game[2048]; };
+static void run_fifo(const int64_t* gaps, int sets, const int64_t* gpu, int made, int64_t refresh, int64_t screen,
+                     int64_t wake, Fifo& r, bool feed = true) {
+    int64_t last = 0, game_ns = 0, extra = 0, slot = 0, t = 0, done[3] = {0, 0, 0};
+    r.n = 0, r.waiting = 0, r.games = 0, r.extra_max = 0;
+    const auto waiting_at = [&](int64_t at) {
+        int w = 0;
+        for (int q = r.n - 1; q >= 0 && r.flip[q] > at; q--) w++;
+        return w;
+    };
+    for (int i = 0; i < sets; i++) {
+        const int64_t now = std::max(last + gaps[i], done[i % 3]);
+        const int64_t span = now - last;
+        if (last && span <= 100000000) game_ns = game_ns ? (game_ns * 7 + span) / 8 : span;
+        if (r.games < 2048) r.game[r.games++] = now;
+        int64_t due[8];
+        const int64_t set_extra = extra;
+        fixed_dues(last, now, made, pace_lead(game_ns, made) + set_extra, due);
+        const bool held = t >= now + gpu[i];                               /* its copy done before the thread came */
+        t = std::max(t, now + gpu[i]);                                     /* its first copy waited for */
+        const int64_t at = held ? now + gpu[i] : t;
+        if (feed && i > 0 && span * 2 <= game_ns * 3) extra = pace_delay(extra, set_extra + (at - due[0]) + 1000000, game_ns);
+        if (i >= sets / 2) r.extra_max = std::max(r.extra_max, extra);
+        for (int k = 0; k <= made && i > 0; k++) {
+            int64_t d = std::max(fifo_slot(due[k], slot, refresh, t), t);
+            slot = d;
+            t = d + wake;
+            for (int w = waiting_at(t); w >= 2; w = waiting_at(t)) t = r.flip[r.n - w];   /* FIFO's images */
+            if (t > slot + 1000000) slot = t;
+            r.waiting = std::max(r.waiting, waiting_at(t));
+            const int64_t flip = r.n ? std::max(t, r.flip[r.n - 1] + screen) : t;
+            if (r.n < 8192) r.present[r.n] = t, r.flip[r.n] = flip, r.content[r.n++] = last + span * (k + 1) / (made + 1);
+        }
+        done[i % 3] = t;
+        last = now;
     }
 }
 
@@ -208,12 +266,73 @@ int main() {
     CHECK(pace_delay(8 * ms, 12 * ms, frame) == 10 * ms);                /* up by half of what is missing */
     CHECK(pace_delay(8 * ms, 0, frame) == 7500000);                      /* down by a sixteenth of what is over */
 
-    /* where a set is shown at its times: with them, on a swapchain that is not FIFO, unless RX_VK_FG_TIMELINE=0 */
-    CHECK(fixed_on_timeline(true, false, false));
-    CHECK(!fixed_on_timeline(true, true, false));                        /* V-Sync On: FIFO shows one a refresh */
-    CHECK(!fixed_on_timeline(true, false, true));                        /* RX_VK_FG_TIMELINE=0 */
-    CHECK(!fixed_on_timeline(false, false, false));                      /* no times: the first set, a hitch, no made frame */
-    std::printf("PASS: a fixed multiplier's frames go out at their own times at V-Sync Off, and wait only as the GPU asks\n");
+    /* where a set is shown at its times: with them, whatever the swapchain, unless RX_VK_FG_TIMELINE=0 */
+    CHECK(fixed_on_timeline(true, false));
+    CHECK(!fixed_on_timeline(true, true));                               /* RX_VK_FG_TIMELINE=0 */
+    CHECK(!fixed_on_timeline(false, false));                             /* no times: the first set, a hitch, no made frame */
+
+    /* the slots under FIFO: none before the first frame or without the refresh, a due time past the next slot kept, a
+       sooner one held to a refresh after the slot before, a slot left far behind started again at now */
+    const int64_t hz240 = 4166666, hz165 = 6060606;                      /* as display_refresh_mhz gives them */
+    CHECK(fifo_slot(5 * ms, 0, hz240, 0) == 5 * ms);
+    CHECK(fifo_slot(5 * ms, 4 * ms, 0, 0) == 5 * ms);
+    CHECK(fifo_slot(20 * ms, 10 * ms, hz240, 10 * ms) == 20 * ms);
+    CHECK(fifo_slot(10 * ms, 10 * ms, hz240, 10 * ms) == 10 * ms + hz240);
+    CHECK(fifo_slot(10 * ms, 10 * ms, hz240, 12 * ms) == 10 * ms + hz240);       /* woken late: from the slot, not now */
+    CHECK(fifo_slot(10 * ms, 10 * ms, hz240, 30 * ms) == 30 * ms);               /* held up: again from now */
+    CHECK(fifo_slot(40 * ms, 10 * ms, hz240, 30 * ms) == 40 * ms);
+
+    /* FIFO on a 240 Hz VRR display, 3x at ~60 fps (180 shown a second), frames done 5 ms after their game frame, the
+       thread 0.3 ms late: each frame shown when it is presented (none waits) and as far after the one before as its
+       picture, 4.2 ms at least */
+    static int64_t g60[600], gpu5[600];
+    const int64_t jit[] = {16 * ms, 17300000, 16500000, 16900000, 16200000, 17100000};
+    for (int i = 0; i < 600; i++) g60[i] = jit[i % 6], gpu5[i] = 5 * ms;
+    static Fifo f;
+    run_fifo(g60, 600, gpu5, 2, hz240, hz240, 300000, f);
+    CHECK(f.waiting == 0);
+    for (int i = f.n / 2; i < f.n; i++) {
+        CHECK(f.flip[i] == f.present[i]);
+        const int64_t shown = f.flip[i] - f.flip[i - 1], moved = f.content[i] - f.content[i - 1];
+        CHECK(shown >= hz240 && shown <= 6 * ms);
+        CHECK(shown - moved <= 100000 && moved - shown <= 100000);       /* within 0.1 ms of its picture's time */
+    }
+    /* one set's frames done 35 ms after its game frame (a long GPU frame): the frames due together go out a refresh apart,
+       none waiting to be shown, and the sets after it on time again */
+    static int64_t gpu_late[600];
+    for (int i = 0; i < 600; i++) gpu_late[i] = i == 300 ? 35 * ms : 5 * ms;
+    run_fifo(g60, 600, gpu_late, 2, hz240, hz240, 300000, f);
+    CHECK(f.waiting == 0);
+    for (int i = 1; i < f.n; i++) CHECK(f.present[i] - f.present[i - 1] >= hz240);
+    for (int i = f.n - 300; i < f.n; i++) CHECK(f.flip[i] == f.present[i]);
+    /* 3x on a 165 Hz VRR display, the game's frames 10 and 20 ms apart in turn (three in 3.3 ms in the short ones, faster
+       than the display): the slots hold them a refresh apart, so each is shown when it is presented and none waits, and
+       the three sets hold the game at the display's 55 fps */
+    static int64_t g1020[600];
+    for (int i = 0; i < 600; i++) g1020[i] = i % 2 ? 20 * ms : 10 * ms;
+    /* each run twice: every set fed back, and none (display_main leaves a set out when its first copy waited, as_came:
+       at the refresh limit under FIFO it waits for FIFO's images, so every set is left out and the delay keeps its
+       value; the slots, later than any due time there, show the frames the same) */
+    for (const bool feed : {true, false}) {
+        run_fifo(g1020, 600, gpu5, 2, hz165, hz165, 300000, f, feed);
+        CHECK(f.waiting == 0);
+        for (int i = f.n / 2; i < f.n; i++) CHECK(f.flip[i] == f.present[i] && f.flip[i] - f.flip[i - 1] >= hz165);
+        const double fps = (f.games / 2 - 1) * 1e9 / (double)(f.game[f.games - 1] - f.game[f.games / 2]);
+        CHECK(fps > 53.5 && fps < 55.1);
+        /* and fed back, the display, not the GPU, held the sets: the GPU's delay stays near the copies' own 5 ms and 1 to
+           spare (it rose to a whole game frame, 18.3 ms, when the time the thread came to a set was fed back) */
+        CHECK(f.extra_max <= 7 * ms);
+    }
+    /* 4x at 60 fps on a 239.5 Hz display taken as 240: the slots come a little faster than the screen, FIFO's images
+       hold the thread back, and the screen shows them evenly at its own rate */
+    static int64_t g16[600];
+    for (int i = 0; i < 600; i++) g16[i] = 16666667;
+    const int64_t hz2395 = (int64_t)(1e9 / 239.5);
+    run_fifo(g16, 600, gpu5, 3, hz240, hz2395, 300000, f);
+    CHECK(f.waiting <= 2);
+    for (int i = f.n / 2; i < f.n; i++) CHECK(f.flip[i] - f.flip[i - 1] == hz2395);
+    std::printf("PASS: a fixed multiplier's frames go out at their own times, under FIFO a refresh apart at least, and wait "
+                "only as the GPU asks\n");
 }
 '''
 
@@ -237,8 +356,21 @@ def check_sources(source, main_cpp):
         "framegen_record: the set's made frames are known before its times"
 
     assert 'getenv("RX_VK_FG_TIMELINE")' in display, "display_main: RX_VK_FG_TIMELINE=0 turns the times off"
-    assert re.search(r"set->shown < 0 && fixed_on_timeline\(set->by_time, dev\.swap_mode == VK_PRESENT_MODE_FIFO_KHR, "
-                     r"timeline_off\)", display), "display_main: the swapchain's mode decides, not Frame pacing"
+    assert "set->shown < 0 && fixed_on_timeline(set->by_time, timeline_off)" in display, \
+        "display_main: a set with its times is shown at them, whatever Frame pacing and the swapchain's mode"
+    assert "const int mhz = s.line ? display_refresh_mhz() : 0;" in display and \
+        "s.refresh = mhz > 0 ? (int64_t)(1e12 / mhz) : 0;" in display, \
+        "display_main: a set on the timeline takes the display's refresh for fifo_slot"
+    slot = block(display, "if (s.refresh && dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR) {",
+                 where="gpu/vk/vk_framegen.cpp display_main")
+    assert "fifo_slot(due, slot, s.refresh, now)" in slot, "display_main: under FIFO, fifo_slot after the slot before"
+    assert "if (t > slot + 1000000) slot = t;" in display and "slot = slot_was;" in display, \
+        "display_main: a late present is the next one's slot; a present not shown gives its slot back"
+    at = display.index("if (s.refresh && dev.swap_mode == VK_PRESENT_MODE_FIFO_KHR) {")
+    assert display.index("int64_t due = timed ? j.set->due[k]") < at < display.index("if (due < now) due = now;") < \
+        display.index("slot = due;") < display.index("take_early(s.shown - k, due);"), \
+        "display_main: the slot on the frame's own due time, before a late one goes out at once; the slot it was given kept"
+    assert "s.timed = s.auto_timed || s.line;" in display, "display_main: such a set is shown at its times"
     assert re.search(r"int64_t due = timed \? j\.set->due\[k\]", display), "display_main: each frame at its own due time"
     take = block(display, "const auto take = [&](Taken& s, const Job& j, int room)", where="gpu/vk/vk_framegen.cpp")
     order = [take.index(t) for t in ("s.ahead = present_ahead_wanted(pace || line, s.shown,",
@@ -288,11 +420,13 @@ def check_sources(source, main_cpp):
         "display_main: a frame on the timeline is late against its own time"
 
     chain = block(main_cpp, "bool create_swapchain(", where="gpu/vk/vk_main.cpp")
-    assert "const uint32_t fg_sets = mode == VK_PRESENT_MODE_FIFO_KHR || !timeline ? 1 : 2;" in chain and \
+    assert "const uint32_t fg_sets = timeline && !set_too_big && !fifo_unpaced ? 2 : 1;" in chain and \
+        "const bool fifo_unpaced = mode == VK_PRESENT_MODE_FIFO_KHR && display_refresh_mhz() <= 0;" in chain and \
+        "const bool set_too_big = mode == VK_PRESENT_MODE_FIFO_KHR && caps.maxImageCount &&" in chain and \
         'getenv("RX_VK_FG_TIMELINE")' in chain and \
         "caps.minImageCount + std::min<uint32_t>(fg_sets * (uint32_t)swapchain_framegen()," in chain and \
         "(uint32_t)kPresentSlotsMax));" in chain, \
-        "create_swapchain: two sets' images where the swapchain does not wait for a refresh, one set's under FIFO and " \
+        "create_swapchain: two sets' images while the sets are on the timeline, under FIFO too (take_early); one set's " \
         "with RX_VK_FG_TIMELINE=0"
     assert "const uint32_t slots_made = (uint32_t)present_slots_for(swapchain_framegen(), fg_sets == 2);" in chain and \
         "dev.swap_slots = slots_made;" in chain and \
@@ -331,7 +465,8 @@ def main():
     check_sources(source, main_cpp)
     fixture = (PREFIX + f"constexpr int kPresentSlotsMax = {slots_max};\n" +
                "\n".join(block(source, m, where="gpu/vk/vk_framegen.cpp") for m in (
-                   "void fixed_dues(", "int64_t pace_lead(", "int64_t pace_delay(", "bool fixed_on_timeline(")) + "\n" +
+                   "void fixed_dues(", "int64_t pace_lead(", "int64_t pace_delay(", "bool fixed_on_timeline(",
+                   "int64_t fifo_slot(")) + "\n" +
                block(replay, "int present_slots_for(", where="gpu/vk/vk_replay.cpp") + MAIN)
     with tempfile.TemporaryDirectory(prefix="framegen-fixed-pace-") as tmp:
         cpp = Path(tmp) / "fixture.cpp"

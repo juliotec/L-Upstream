@@ -60,6 +60,8 @@ MEMORY = r"""
 #include <vector>
 constexpr uint64_t kPageShift = 12, kChunkPages = 16, kPages = 1024;
 #include "readback_early.h"   // (and its rule; with compat/longshot_env.h's env_on)
+#include "page_marks.h"   // (wb_ever, which wb_pages_note marks: invalidate_quick)
+using mkwvk::PageMarks;
 static void logf(const char*, ...) {}
 static struct { struct { char deviceName[256]; } props; } dev = {{""}};   // (the device's name: not asked; the pools' mirror is)
 static bool replay_render_thread_on() { return false; }
@@ -527,7 +529,7 @@ def main():
     a = p.parse_args()
     memory = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    pages = between(memory, "std::mutex wb_pages_mu;", "} // namespace\n/// The newest write-back value")
+    pages = between(memory, "std::mutex wb_pages_mu;", "} // namespace\n/// (longshot) Whether any page of")
     writers = between(memory, "namespace {\nthread_local uint32_t wr_what = 0;", "/// (RX_VK_LOG_RB_WRITERS) the writers of a range's pages")
     inv = block(replay, "void invalidate(uint64_t gpu, uint64_t size) {")
     if inv.index("rb_diag_finish(rbd, v);") > inv.index("rb_diag_done(gpu, size, rbd, d / 1e6, line);"):

@@ -20,7 +20,8 @@ Each case's comment says where a value means something else than it did before t
 
 Then the rules' edges (policy_rule), the log block (six "vk: policy:" lines a PC, each under 900 characters, whatever
 the driver calls itself), and the source: create_device fills the facts and makes the policy before the device, the start
-logs the block, the sites that moved read the policy, and neither is in a file of the shader translation's stamp.
+logs the block, the sites that moved read the policy, the header is no file of the shader translation's stamp, and each
+field the translation reads (vk_shader.cpp, the one stamped file that does) is folded into the program cache's stamp.
 
     python -I -B tests/test_device_policy.py --headers <Vulkan-Headers/include> [--cxx g++]
 """
@@ -42,7 +43,8 @@ VK = ROOT / "gpu" / "vk"
 # The yes/no fields, in DevicePolicy's order
 BOOLS = """fetch_bounds nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer
 amd_retry_no_optimizer amd_cloth_no_optimizer fault_gate_serial task_mesh_fallback intel_compile_gate compute_builds_serial
-pcache_fetch_lock split_before_draw astc_on_cpu inline_deku_web_loads dma_buf_imports nv_checkpoints allowance_at_count_rule
+pcache_fetch_lock split_before_draw astc_on_cpu inline_deku_web_loads networks_left_out dma_buf_imports nv_checkpoints
+allowance_at_count_rule
 mirrors ub_snapshot split_ub_flush native_float_add warp64 batch_submits mma_unroll_try global_table_loop occ_copy
 intel_side_by_side_auto fsr4_tune gpu_clock_peak presenter_queue pcache_small_pc small_vram_textures astc_bc_all
 room_in_blocks_rule squeeze_damped linux_hold_caps_budget dlss_cnn auto_render_third rtx rdna4 threaded_auto_cpus
@@ -115,7 +117,7 @@ PCS = [
     dict(name="RX 6700 XT, AMD's Windows driver (RDNA 2 compiler)",
          facts=(0x1002, 0x73DF, "AMD_PROPRIETARY", 0x800161, "DISCRETE_GPU", "26.10.1 " + AMD_OLD, "AMD Radeon RX 6700 XT", 1, 0,
                 12272, 11500, 32600, 12, 12, 1, 1, 0, 0, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
+         on="fetch_bounds networks_left_out nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
             "amd_retry_no_optimizer amd_cloth_no_optimizer fault_gate_serial task_mesh_fallback allowance_at_count_rule "
             "mirrors split_ub_flush warp64 fsr4_tune room_in_blocks_rule threaded_auto_cpus",
          num=(0, 0, 0, 2, 0, 4, 7158, 2048, 768, 512, 1437, -1, 256, 24, 64, 32, 97, 4, 4, 4, 6, 6, 3)),
@@ -124,7 +126,7 @@ PCS = [
     dict(name="RX 9070 XT, AMD's Windows driver (LLPC)",
          facts=(0x1002, 0x7550, "AMD_PROPRIETARY", 0x800161, "DISCRETE_GPU", "26.10.1 (LLPC)", "AMD Radeon RX 9070 XT", 1, 0,
                 16304, 15300, 32600, 16, 16, 1, 1, 1, 1, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer amd_cloth_no_optimizer "
+         on="fetch_bounds networks_left_out gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer amd_cloth_no_optimizer "
             "fault_gate_serial allowance_at_count_rule mirrors split_ub_flush warp64 fsr4_tune room_in_blocks_rule rdna4 "
             "threaded_auto_cpus",
          num=(0, 0, 0, 2, 0, 4, 11000, 3072, 768, 512, 1912, -1, 256, 24, 64, 32, 97, 5, 6, 4, 8, 6, 4)),
@@ -133,7 +135,7 @@ PCS = [
     dict(name="RX 6800 XT, RADV",
          facts=(0x1002, 0x73BF, "MESA_RADV", 0, "DISCRETE_GPU", "Mesa 26.2.5", "AMD Radeon RX 6800 XT (RADV NAVI21)", 0, 0,
                 16368, 16000, 32000, 16, 16, 1, 1, 1, 0, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors "
+         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors "
             "split_ub_flush warp64 batch_submits mma_unroll_try fsr4_tune room_in_blocks_rule threaded_auto_cpus",
          num=(0, 2, 0, 1, 85, 4, 11000, 3072, 768, 512, 2000, -1, 256, 24, 64, 32, 97, 5, 6, 4, 8, 6, 4)),
     # (GCN: no batched submits, the phi limit. Its heap is 8192 MB exactly: the small blocks (<= 8 GB) and the large
@@ -142,7 +144,7 @@ PCS = [
     dict(name="RX 580 (8 GB), RADV on GCN",
          facts=(0x1002, 0x67DF, "MESA_RADV", 0, "DISCRETE_GPU", "Mesa 26.2.5", "AMD Radeon RX 580 Series (RADV POLARIS10)", 0, 0,
                 8192, 8000, 16000, 8, 8, 0, 1, 1, 0, 0, 0, 1, 64, 64, 0),
-         on="fetch_bounds gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors "
+         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors "
             "split_ub_flush warp64 mma_unroll_try fsr4_tune astc_bc_all room_in_blocks_rule squeeze_damped "
             "drop_modules_small_ram",
          num=(0, 2, 50000, 1, 85, 4, 4778, 2048, 666, 500, 1000, -1, 256, 24, 32, 16, 97, 1, 2, 2, 4, 4, 2)),
@@ -152,7 +154,7 @@ PCS = [
     dict(name="RX Vega 64 (8 GB), RADV on GFX9",
          facts=(0x1002, 0x687F, "MESA_RADV", 0, "DISCRETE_GPU", "Mesa 26.2.5", "AMD Radeon RX Vega (RADV VEGA10)", 0, 0,
                 8176, 7900, 16000, 8, 8, 0, 1, 1, 0, 0, 1, 1, 64, 64, 0),
-         on="fetch_bounds gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors split_ub_flush "
+         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule mirrors split_ub_flush "
             "warp64 batch_submits mma_unroll_try fsr4_tune astc_bc_all room_in_blocks_rule squeeze_damped "
             "drop_modules_small_ram",
          num=(0, 2, 0, 1, 85, 4, 4769, 2044, 658, 493, 987, -1, 256, 12, 32, 16, 97, 1, 2, 2, 4, 4, 2)),
@@ -162,7 +164,7 @@ PCS = [
     dict(name="Steam Deck (LCD), RADV",
          facts=(0x1002, 0x163F, "MESA_RADV", 0, "INTEGRATED_GPU", "Mesa 25.1.0", "AMD Custom GPU 0405 (RADV VANGOGH)", 0, 1,
                 7168, 6800, 14800, 8, 8, 1, 1, 1, 0, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds gather_offset position_invariant dma_buf_imports allowance_at_count_rule "
+         on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule "
             "split_ub_flush warp64 batch_submits mma_unroll_try fsr4_tune gpu_clock_peak small_vram_textures astc_bc_all "
             "squeeze_damped linux_hold_caps_budget drop_modules_small_ram",
          num=(0, 2, 0, 1, 85, 16, 2560, 1792, 566, 425, 512, -1, 256, 0, 32, 16, 90, 1, 2, 2, 4, 4, 2)),
@@ -172,7 +174,7 @@ PCS = [
     dict(name="RX 6800, AMDVLK",
          facts=(0x1002, 0x73BF, "AMD_OPEN_SOURCE", 0, "DISCRETE_GPU", "2025.Q2.1 (LLPC)", "AMD Radeon RX 6800", 0, 0,
                 16368, 16000, 32000, 12, 12, 1, 1, 0, 0, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds gather_offset position_invariant mesh_no_optimizer dma_buf_imports "
+         on="fetch_bounds networks_left_out gather_offset position_invariant mesh_no_optimizer dma_buf_imports "
             "allowance_at_count_rule mirrors split_ub_flush warp64 fsr4_tune room_in_blocks_rule threaded_auto_cpus",
          num=(0, 0, 0, 1, 85, 4, 11000, 3072, 768, 512, 2000, -1, 256, 24, 64, 32, 97, 5, 4, 4, 6, 6, 3)),
     # (4 threads beside an integrated GPU: Auto's 33%. It reports the float add, but its family is not on the list. The
@@ -180,7 +182,7 @@ PCS = [
     dict(name="UHD Graphics (i3-1115G4, 16 GB, 4 threads), Intel's Windows driver",
          facts=(0x8086, 0x9A78, "INTEL_PROPRIETARY_WINDOWS", INTEL | 7088, "INTEGRATED_GPU", "101.7088", "Intel(R) UHD Graphics", 1, 0,
                 8100, 7402, 16100, 4, 4, 0, 1, 1, 0, 0, 1, 1, 32, 32, 0xFF),
-         on="fetch_bounds gather_offset position_invariant intel_compile_gate compute_builds_serial pcache_fetch_lock "
+         on="fetch_bounds networks_left_out gather_offset position_invariant intel_compile_gate compute_builds_serial pcache_fetch_lock "
             "split_before_draw allowance_at_count_rule ub_snapshot small_vram_textures astc_bc_all squeeze_damped "
             "auto_render_third",
          num=(64, 0, 0, 2, 0, 16, 2560, 2025, 616, 462, 512, -1, 256, 0, 32, 16, 90, 1, 2, 2, 2, 2, 2)),
@@ -189,7 +191,7 @@ PCS = [
     dict(name="Arc B580, Intel's Windows driver 101.9154",
          facts=(0x8086, 0xE20B, "INTEL_PROPRIETARY_WINDOWS", INTEL | 9154, "DISCRETE_GPU", "101.9154", "Intel(R) Arc(TM) B580 Graphics",
                 1, 0, 12216, 11600, 32500, 20, 20, 1, 1, 1, 0, 0, 1, 1, 32, 32, 0xFF),
-         on="fetch_bounds gather_offset position_invariant compute_builds_serial pcache_fetch_lock split_before_draw "
+         on="fetch_bounds networks_left_out gather_offset position_invariant compute_builds_serial pcache_fetch_lock split_before_draw "
             "allowance_at_count_rule mirrors ub_snapshot split_ub_flush native_float_add occ_copy intel_side_by_side_auto "
             "room_in_blocks_rule threaded_auto_cpus",
          num=(64, 0, 0, 2, 0, 4, 7126, 2048, 768, 512, 1450, -1, 256, 24, 64, 32, 97, 4, 6, 4, 8, 6, 4)),
@@ -197,7 +199,7 @@ PCS = [
     dict(name="Arc A750, Intel's Windows driver 101.9175",
          facts=(0x8086, 0x56A1, "INTEL_PROPRIETARY_WINDOWS", INTEL | 9175, "DISCRETE_GPU", "101.9175", "Intel(R) Arc(TM) A750 Graphics",
                 1, 0, 8128, 7700, 16200, 12, 12, 1, 1, 1, 0, 0, 1, 1, 32, 32, 0xFF),
-         on="fetch_bounds gather_offset position_invariant intel_compile_gate compute_builds_serial pcache_fetch_lock "
+         on="fetch_bounds networks_left_out gather_offset position_invariant intel_compile_gate compute_builds_serial pcache_fetch_lock "
             "split_before_draw allowance_at_count_rule mirrors ub_snapshot split_ub_flush occ_copy astc_bc_all "
             "room_in_blocks_rule squeeze_damped threaded_auto_cpus",
          num=(64, 0, 0, 2, 0, 4, 4741, 2032, 641, 481, 962, -1, 256, 12, 32, 16, 97, 3, 4, 4, 6, 6, 3)),
@@ -207,16 +209,16 @@ PCS = [
     dict(name="Iris Xe, ANV",
          facts=(0x8086, 0x9A49, "INTEL_OPEN_SOURCE_MESA", 0, "INTEGRATED_GPU", "Mesa 26.0.1", "Mesa Intel(R) Xe Graphics (TGL GT2)", 0, 0,
                 11850, 10000, 15800, 8, 8, 0, 1, 1, 0, 0, 1, 1, 32, 32, 0xFF),
-         on="fetch_bounds gather_offset position_invariant split_before_draw dma_buf_imports "
+         on="fetch_bounds networks_left_out gather_offset position_invariant split_before_draw dma_buf_imports "
             "allowance_at_count_rule ub_snapshot global_table_loop small_vram_textures astc_bc_all linux_hold_caps_budget "
             "drop_modules_small_ram",
-         num=(64, 0, 0, 1, 85, 16, 2560, 2048, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 2, 2, 4, 4, 2)),
+         num=(64, 0, 20000, 1, 85, 16, 2560, 2048, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 2, 2, 4, 4, 2)),
     # (neither discrete nor integrated: no mirrors, yet a dedicated card's budgets, blocks at the start and 97% line.
     # The study doubts it: the two tests are not a partition)
     dict(name="llvmpipe",
          facts=(0x10005, 0, "MESA_LLVMPIPE", 0, "CPU", "Mesa 26.0.1 (LLVM 20.1.8)", "llvmpipe (LLVM 20.1.8, 256 bits)", 0, 0,
                 32000, 25600, 32000, 16, 16, 0, 1, 0, 0, 0, 1, 1, 8, 8, 0),
-         on="fetch_bounds position_invariant dma_buf_imports allowance_at_count_rule split_ub_flush room_in_blocks_rule "
+         on="fetch_bounds networks_left_out position_invariant dma_buf_imports allowance_at_count_rule split_ub_flush room_in_blocks_rule "
             "threaded_auto_cpus",
          num=(0, 0, 0, 1, 85, 16, 11000, 3072, 768, 512, 3200, -1, 256, 24, 64, 32, 97, 1, 6, 4, 8, 6, 4)),
     # (a 6 GB card: the small spares and staging, the CNN model. The study doubts its 1700 MB of mirrors, set before
@@ -237,7 +239,7 @@ PCS = [
     dict(name="RX 5700 (8 GB), AMD's Windows driver (RDNA 1 compiler)",
          facts=(0x1002, 0x731F, "AMD_PROPRIETARY", 0x800161, "DISCRETE_GPU", "25.9.1 " + AMD_OLD, "AMD Radeon RX 5700", 1, 0,
                 8176, 7378, 16300, 12, 12, 0, 1, 0, 0, 0, 1, 1, 64, 64, 0x20),
-         on="fetch_bounds nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
+         on="fetch_bounds networks_left_out nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
             "amd_cloth_no_optimizer fault_gate_serial allowance_at_count_rule mirrors split_ub_flush warp64 fsr4_tune "
             "astc_bc_all room_in_blocks_rule squeeze_damped threaded_auto_cpus",
          num=(0, 0, 0, 2, 0, 4, 4769, 2044, 614, 461, 922, -1, 256, 12, 32, 16, 97, 1, 4, 4, 6, 6, 3)),
@@ -246,7 +248,7 @@ PCS = [
     dict(name="Ryzen 9 7900X's graphics (32 GB), AMD's Windows driver, on 8 of 24 threads",
          facts=(0x1002, 0x164E, "AMD_PROPRIETARY", 0x800161, "INTEGRATED_GPU", "26.10.1 " + AMD_OLD, "AMD Radeon(TM) Graphics", 1, 0,
                 16300, 10232, 32600, 24, 8, 1, 1, 0, 0, 0, 1, 1, 64, 64, 0xFF),
-         on="fetch_bounds nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
+         on="fetch_bounds networks_left_out nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
             "amd_cloth_no_optimizer fault_gate_serial astc_on_cpu allowance_at_count_rule split_ub_flush warp64 fsr4_tune "
             "astc_bc_all",
          num=(0, 0, 0, 2, 0, 16, 4096, 3072, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 6, 4, 8, 6, 4)),
@@ -431,9 +433,7 @@ static DeviceFacts facts_of(const D& d) {
 }
 static long long mbs(uint64_t bytes) { return bytes == ~0ull ? -1 : (long long)(bytes >> 20); }
 static void log_block(int k, const DevicePolicy& p, const DeviceFacts& f) {
-    VendorFixes x;
-    x.fetch_bounds = p.fetch_bounds, x.nan_bits = p.nan_bits, x.gather_offset = p.gather_offset;
-    device_policy_log(p, f, x, [&](const char* line) { std::printf("LOG %d %zu %s\n", k, std::strlen(line), line); });
+    device_policy_log(p, f, [&](const char* line) { std::printf("LOG %d %zu %s\n", k, std::strlen(line), line); });
 }
 static std::map<std::string, std::string> env;   // (a case's environment, in place of the process's)
 static const char* get(const char* name) {
@@ -542,9 +542,9 @@ def check_source():
     # (corrected: Compute for mesh programs by the driver the deadlock is in, asked before the rule; tests/test_mesh_mode_switch.py)
     if "if (mesh_mode_used == 0 && fadd_driver.driverID == VK_DRIVER_ID_MESA_RADV) mesh_mode_used = 2;" not in create:
         raise SystemExit("FAIL: create_device: Automatic's Compute is not RADV's, as device_policy.h's mesh_mode has it")
-    if "device_policy_log(dev.policy, dev.facts, dev.fixes," not in main:
+    if "device_policy_log(dev.policy, dev.facts," not in main:
         raise SystemExit("FAIL: vk_main.cpp does not log the policy block at the start")
-    if main.index("device_policy_log(dev.policy, dev.facts, dev.fixes,") < main.index('logf("vk: create_device failed");'):
+    if main.index("device_policy_log(dev.policy, dev.facts,") < main.index('logf("vk: create_device failed");'):
         raise SystemExit("FAIL: the policy block is logged before the device is made")
     # (the sites that moved read the policy: the rule and the switch are device_policy.h's, and no site reads its switch again)
     sources = {}
@@ -601,7 +601,7 @@ def check_source():
         for name in switches:
             if '"%s"' % name in code:
                 raise SystemExit("FAIL: %s reads %s itself: device_policy_env does, by the one rule" % (path.name, name))
-    # (the header reads the environment through what it is handed only, and nothing of it is in the translator's stamp: an
+    # (the header reads the environment through what it is handed only, and it is no file of the translator's stamp: an
     # edit to it must not have every player translate again. nx2/translator_files.py lists the stamp's files)
     if "getenv(" in header:
         raise SystemExit("FAIL: device_policy.h calls getenv: device_policy_env is handed its reader")
@@ -610,10 +610,44 @@ def check_source():
         raise SystemExit("FAIL: vk_internal.h's Device does not hold the facts and the policy")
     sys.path.insert(0, str(ROOT / "nx2"))
     import translator_files
+    # (the translation's own rules are read from the policy by vk_shader.cpp, and by no other file of the stamp. A rule
+    # changed in device_policy.h does not change LONGSHOT_SHADER_STAMP, so it reaches the program cache only through the
+    # values translator_stamp folds: each field vk_shader.cpp reads is folded there, itself or as the profile's value
+    # made from it and its switch)
+    folded = {
+        "warp64": ("p.warp_size_potentially_larger_than_guest = dev.policy.warp64;",
+                   "profile().warp_size_potentially_larger_than_guest ? 1u : 0u"),
+        "frag_shuffle_fallback": ("p.has_broken_spirv_fragment_shuffle = dev.policy.frag_shuffle_fallback;",
+                                  "profile().has_broken_spirv_fragment_shuffle ? 1u : 0u"),
+        "gather_offset": ("p.need_gather_subpixel_offset = dev.policy.gather_offset;",
+                          "profile().need_gather_subpixel_offset ? 64u : 0u"),
+        "inline_deku_web_loads": ("vrt.inline_global_128_loads = dev.policy.inline_deku_web_loads && vsc->key == kDekuWebVertexCode;",
+                                  "dev.policy.inline_deku_web_loads ? 1u : 0u"),
+        "networks_left_out": ("(Shader::Backend::SPIRV::mma_software || dev.policy.networks_left_out)",
+                              "dev.policy.networks_left_out ? 1u : 0u"),
+    }
     for path in translator_files.files(str(VK)):
         text = Path(path).read_text(encoding="utf-8", errors="replace")
-        if "device_policy" in text or "dev.policy" in text or "dev.facts" in text:
-            raise SystemExit("FAIL: %s is in the shader translation's stamp and uses the device policy" % path)
+        if Path(path).name == "device_policy.h":
+            raise SystemExit("FAIL: device_policy.h is in the shader translation's stamp")
+        if Path(path).name != "vk_shader.cpp":
+            if "dev.policy" in text or "dev.facts" in text or '"device_policy.h"' in text:
+                raise SystemExit("FAIL: %s is in the shader translation's stamp and uses the device policy: vk_shader.cpp "
+                                 "reads it for the translation, and folds what it reads into the stamp" % path)
+            continue
+        if "dev.facts" in text:
+            raise SystemExit("FAIL: vk_shader.cpp reads the device's facts: a rule by them is device_policy.h's")
+        stamp = block(text, "uint64_t translator_stamp() {")
+        read = sorted(set(re.findall(r"dev\.policy\.(\w+)", text)))
+        if read != sorted(folded):
+            raise SystemExit("FAIL: vk_shader.cpp reads the policy's %s and the check knows %s: a field the translation reads "
+                             "is folded into translator_stamp and named here" % (", ".join(read), ", ".join(sorted(folded))))
+        for name, (site, fold) in folded.items():
+            if site not in text:
+                raise SystemExit("FAIL: vk_shader.cpp no longer has %s" % site)
+            if fold not in stamp:
+                raise SystemExit("FAIL: translator_stamp does not fold %s (%s): programs made by one PC's rule would be kept "
+                                 "for another's" % (name, fold))
 
 
 def c_row(pc):

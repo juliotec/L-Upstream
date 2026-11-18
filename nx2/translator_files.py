@@ -28,10 +28,31 @@ DIRS = ("eden", "sirit", "compat")                       # (gpu/vk/<dir>/: every
 FILES = ("vk_shader.cpp", "vk_bank.cpp", "vk_state.h")   # (gpu/vk/<file>: after the folders' files, in this order)
 
 
+def _long(p):
+    """(Windows) p as an extended-length path (\\\\?\\...): a builder unpacked in a deep folder has translator sources past
+    260 characters (#1115), which a plain path can't open. nx2/version.py's long_path, here too: this file is loaded alone
+    (scripts/dev_packs.py, the checks). Elsewhere, or one already: as is"""
+    if os.name != "nt" or not p:
+        return p
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    return "\\\\?\\UNC\\" + p[2:] if p.startswith("\\\\") else "\\\\?\\" + p
+
+
+def _walk(top):
+    """os.walk(top), folders past 260 characters included (a plain walk leaves them out without a word, and the stamp would
+    change), each folder given back in top's own form"""
+    long_top = _long(top)
+    for d, dirs, fs in os.walk(long_top):
+        rel = d[len(long_top):].lstrip("\\/")
+        yield (os.path.join(top, rel) if rel else top), dirs, fs   # (as os.walk joins them: top's own spelling kept)
+
+
 def files(vk):
     """The stamped files below gpu/vk (vk), in the stamp's order: the folders' files sorted, then FILES as listed (appended,
     not sorted in: docs/BAKE.md's stamp trap)"""
-    found = [os.path.join(d, f) for top in DIRS for d, _, fs in os.walk(os.path.join(vk, top)) for f in fs]
+    found = [os.path.join(d, f) for top in DIRS for d, _, fs in _walk(os.path.join(vk, top)) for f in fs]
     return sorted(found) + [os.path.join(vk, n) for n in FILES]
 
 
@@ -44,6 +65,6 @@ def stamp(vk):
     """LONGSHOT_SHADER_STAMP's 16 hex digits for the translator below gpu/vk (vk)"""
     h = hashlib.sha1(usedforsecurity=False)
     for f in files(vk):
-        with open(f, "rb") as src:
+        with open(_long(f), "rb") as src:
             h.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(b"\r\n", b"\n"))
     return h.hexdigest()[:16]

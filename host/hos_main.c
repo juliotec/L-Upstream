@@ -2325,6 +2325,10 @@ int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
     hos_game_layout();   /* (the game folder's cache/ and logs/, before anything writes there, --prepare-shaders too: host/game_layout.c) */
+    {
+        void hos_relaunch_keep_env(void);   /* (host/hos_relaunch.c: whether the game was given a stderr, for a restart) */
+        hos_relaunch_keep_env();
+    }
     load_longshot_env();
     hos_profiling_env();   /* (HOS_PROFILE=1, host/profiling.c: after the file, which may set it) */
     hos_options_choose(argc, argv);   /* (before the Discord status reads it, below: host/options_path.c) */

@@ -28,8 +28,10 @@ struct Run {
 };
 
 // finish(round): how many items finish in that round (after its pause). stop_at: the round from which stopped() says so
-// (0: never). A cap on rounds stops a wait that would never end, which is the bug: reported as a failure, not a hang
-static Run run(size_t total, int stall_s, const std::function<size_t(size_t)>& finish, size_t stop_at = 0) {
+// (0: never). held(round): whether no stall is counted that round (none given: never). A cap on rounds stops a wait that
+// would never end, which is the bug: reported as a failure, not a hang
+static Run run(size_t total, int stall_s, const std::function<size_t(size_t)>& finish, size_t stop_at = 0,
+               const std::function<bool(size_t)>& held = nullptr) {
     std::atomic<size_t> done{0};
     const Clock::time_point base{};
     Clock::duration t{};
@@ -49,7 +51,8 @@ static Run run(size_t total, int stall_s, const std::function<size_t(size_t)>& f
         [&] {
             t += std::chrono::milliseconds(100);
             done += finish(r.rounds);
-        });
+        },
+        [&] { return held && held(r.rounds); });
     r.secs = std::chrono::duration<double>(t).count();
     if (capped) r.end = bounded_wait::End::kStopped, r.secs = -1;
     return r;
@@ -85,6 +88,15 @@ int main() {
     {   // (RX_VK_PRECOMPILE_STALL_S=0: wait for all, however long)
         const Run r = run(3, 0, [](size_t round) { return size_t(round == 9000 ? 3 : 0); });
         check(r.end == End::kDone && r.secs >= 899, "stall 0: waits for every build, 15 minutes of none finishing too");
+    }
+    {   // (a --prepare-shaders run, a compile at work for 360 s (an Iris Xe's mesh fallback stage): held, not left behind)
+        const Run r = run(3, 30, [](size_t round) { return size_t(round == 3600 ? 3 : 0); }, 0,
+                          [](size_t round) { return round < 3600; });
+        check(r.end == End::kDone && r.secs >= 359.9, "held while a compile is at work: waited for past the stall");
+    }
+    {   // (held, then no longer (the CPU went idle: stuck): the stall's seconds count from then)
+        const Run r = run(3, 30, [](size_t) { return size_t(0); }, 0, [](size_t round) { return round < 1000; });
+        check(r.end == End::kStalled && r.secs >= 100 && r.secs <= 130.2, "held no more: on after the stall's seconds from then");
     }
     {   // (the window closed: the wait ends at once, the close keeps what was built)
         const Run r = run(100, 30, [](size_t) { return size_t(0); }, 5);

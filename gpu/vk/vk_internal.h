@@ -13,7 +13,6 @@
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "compat/longshot_env.h"
 #endif
-#include "vk_vendor.h"
 #include "device_policy.h"
 #include "gpu_choice.h"
 
@@ -67,6 +66,7 @@ struct Device {
          sparse_images = false, // (sparse resident 2D images on the queue: the terrain's huge arrays)
          sparse_buffers = false, // (sparse-bound buffers on the queue: a pool imported as several dma-bufs)
          view_2d_of_3d = false, // (VK_EXT_image_2d_view_of_3d: a 3D texture a 2D sample instruction reads)
+         memory_priority = false, // (VK_EXT_memory_priority with its feature, asked for by RX_VK_MEMORY_PRIORITY: vk_vma.cpp)
          coop_matrix = false,   // (VK_KHR_cooperative_matrix with its feature)
          depth_bias_control = false, // (VK_EXT_depth_bias_control: a D24 kept as D32 biased in D24 units)
          maintenance5 = false,  // (VK_KHR_maintenance5 with A1B5G5R5 sampled and rendered to: NVN's RGB5A1 as is)
@@ -91,7 +91,6 @@ struct Device {
     uint32_t max_workgroup_subgroups = 0;   // (maxComputeWorkgroupSubgroups: a workgroup held to 32 lanes has at most 32 times this)
     VkDriverId driver_id{};
     bool radv_gcn = false;   // (longshot) RADV on a GCN 1-4 card (GFX6-8: RX 400/500, R9 2xx/3xx/Fury): fallback_size_policy.h
-    VendorFixes fixes{};   // (longshot) the vendor and driver workarounds this device needs (vk_vendor.h; vk_main.cpp create_device)
     // (longshot) what create_device learnt of this PC and the defaults it gets by it (device_policy.h); driver is what facts'
     // driver_info points into. Here and not in vk_state.h, which is part of the translator's stamp
     VkPhysicalDeviceDriverProperties driver{};
@@ -112,7 +111,7 @@ struct Device {
     // minImageCount (the Vulkan spec's limit). vk_framegen.cpp's present ahead holds two
     std::atomic<uint32_t> swap_spare{0};
     // (longshot) present_image's frame slots while frame generation runs, as create_swapchain made the chain for frame
-    // generation's sets (present_slots_for: 3, or a slot per frame of two sets where the swapchain does not wait for a refresh)
+    // generation's sets (present_slots_for: 3, or a slot per frame of two sets where the chain is made for two)
     std::atomic<uint32_t> swap_slots{3};
     std::vector<VkImageView> swap_views;   // (longshot) a view of each, for Dear ImGui's overlays (VK_NULL_HANDLE: none)
     VkFormat swap_view_format = VK_FORMAT_UNDEFINED;   // (their format: the UNORM one of an sRGB swapchain when it can be)
@@ -347,6 +346,7 @@ void memory_drop_shadow(uint64_t guest, uint64_t size);   // (a write the captur
 /// (EvilBoyce) the newest submission value whose write-back reaches into [guest, guest + size) (0: none ever); *ever set
 /// when any write-back ever did
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
+bool memory_writeback_ever(uint64_t guest, uint64_t size);   // (longshot) its *ever without a lock: invalidate_quick
 void memory_note_readback(uint64_t guest, uint64_t size);   // (PR 430) a CPU read of GPU results: see memory_rb_refresh
 bool texture_storage_any(uint64_t gpu, uint64_t size);   // (vk_replay.cpp) a texture the game made has its storage there
 bool replay_render_thread_on();   // (vk_replay.cpp) the replay runs on the render thread (RX_VK_ASYNC, Threaded rendering)
@@ -533,6 +533,14 @@ void prepare_guess(size_t out[3]);   // (the three parts' counts from the files,
 /// what is done kept (the program cache, the driver's) and not counted as a start that ended inside them
 void prepare_stop();
 bool prepare_stopped();
+void prepare_compiled();   // (longshot, vk_main.cpp) a driver compile ended: the preparation's watchdog sees the driver answer
+bool prepare_compiling();   // (longshot, vk_draw.cpp) a driver compile is under way: a slow one gets longer before a stop
+/// (longshot, vk_main.cpp) The preparation's watchdog saw the process keep half a CPU or more busy: a compile under way is at
+/// work, not stuck on a lock. False in a game start, which has no watchdog
+bool prepare_compiler_busy();
+/// (longshot, vk_draw.cpp) The driver's compiler takes minutes over one large program while it works (Mesa's Intel driver:
+/// a 32-lane variant was not done after 15 minutes on an Iris Xe): the watchdog waits an hour for a compile at work, not 900 s
+bool prepare_long_compiles();
 /// (longshot, vk_draw.cpp) The pipeline cache is being written out before the game (precompile_warm, a GB and more): every
 /// pipeline is counted by then, and the start-up screen says what it waits on
 bool prepare_saving();

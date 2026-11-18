@@ -19,7 +19,7 @@ ANCHOR = re.compile(r"(?://|#)\s*doc: (\S+?)(?:#([^\s)]+))?(?=[\s)]|$)")
 # (the functions behind design.md's rules, each with the anchor kept just above it: file, the line the function's comment
 # or definition starts with, the anchor's target)
 RULES = "docs/design.md#4-the-lessons-from-mkw-as-rules-here"
-FG_RULES = "docs/design.md#13-frame-generations-presents-at-v-sync-off-as-rules"
+FG_RULES = "docs/design.md#13-frame-generations-presents-as-rules"
 REQUIRED = [
     ("gpu/vk/vk_replay.cpp", "/// A submit on the replay thread: replayed as far", RULES),
     ("gpu/vk/vk_memory.cpp", "// (and the game's pools up to RX_VK_CAPTURE_POOL_MB", RULES),

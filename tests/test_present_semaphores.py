@@ -68,7 +68,7 @@ struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu;uint64_t swapchain_generation=0;
     int instance=1;uint64_t surface=1;bool present_queue_supported=true; } dev;
-struct { int hdr=0; } opts;   // (the Insert menu's HDR row: present_image remakes the swapchain when it changes)
+struct { int hdr=0, framegen=0; } opts;   // (the Insert menu's HDR and Frame generation rows: present_image remakes the swapchain when they change)
 unsigned image_count=4, made=0, fail_at=0;uint64_t serial=1000;
 int query_result=0,data_result=0;uint64_t destroyed_swapchain=0;
 bool idle=false, bad_destroy=false; std::set<uint64_t> live,used;

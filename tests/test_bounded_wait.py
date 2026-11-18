@@ -8,7 +8,8 @@ threads with no bound, and told the start-up screen nothing; precompile_run, RX_
 RX_VK_PRECOMPILE_STALL_S seconds without progress. This checks bounded_wait.h's wait (tests/bounded_wait_test.cpp: done,
 the window closed, builds that finish slowly, builds that never finish, the switch at 0), and its wiring: precompile_at_create
 takes the start-up screen's progress and hands it on, waits through bounded_wait::wait with RX_VK_PRECOMPILE_STALL_S, leaves
-the builds still in the driver to run when it went on (its workers' state on the heap, not freed then), writes the pipeline
+the builds still in the driver to run when it went on (its workers' state on the heap, not freed then), leaves a
+--prepare-shaders run's compile at work to its watchdog as precompile_run does, writes the pipeline
 cache before the title after a long pass as precompile_run does, and precompile_run gives it its progress.
 python -I -B tests/test_bounded_wait.py [--cxx c++]
 """
@@ -42,6 +43,9 @@ def check_sources():
         problems.append("precompile_at_create's bound is not RX_VK_PRECOMPILE_STALL_S, precompile_run's")
     if "progress(" not in at_create:
         problems.append("precompile_at_create never hands the start-up screen its progress")
+    if "LONGSHOT_PREPARE_ONLY" not in at_create or "prepare_compiler_busy()" not in at_create:
+        problems.append("precompile_at_create leaves a --prepare-shaders run's compile at work behind after the stall, where "
+                        "precompile_run leaves it to the preparation's watchdog")
     if ".detach()" not in at_create:
         problems.append("precompile_at_create does not leave its builds still in the driver running when it goes on")
     if "delete " in at_create and "if (!gone_on) delete " not in at_create:

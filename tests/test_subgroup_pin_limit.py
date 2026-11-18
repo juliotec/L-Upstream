@@ -3,7 +3,7 @@
 pin_subgroup (vk_draw.cpp) chains VkPipelineShaderStageRequiredSubgroupSizeCreateInfo with requiredSubgroupSize 32 on the
 stages the GPU can pin. For compute, task and mesh stages VUID-VkPipelineShaderStageCreateInfo-pNext-02756 asks that the
 local workgroup size (x * y * z) be at most requiredSubgroupSize * maxComputeWorkgroupSubgroups, a limit the spec sets no
-minimum for. The fixture compiles pin_subgroup and the compute pipelines' own calls of it, cut from the source, with a
+minimum for. The fixture compiles pin_subgroup and pin_compute's call of it (every game compute pipeline's), cut from the source, with a
 fake device, and checks that a workgroup 32-lane subgroups cannot cover is not pinned, while one they cover still is.
 """
 
@@ -66,7 +66,7 @@ void compute(const char* where, uint32_t x, uint32_t y, uint32_t z, bool pinned,
         q.workgroup = {x, y, z};
         VkComputePipelineCreateInfo ci{};
         ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        call(q, q, ci);
+        call(q, ci);
         CHECK((ci.stage.pNext != nullptr) == pinned);
         if (pinned) CHECK(static_cast<const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo*>(ci.stage.pNext)->requiredSubgroupSize == 32);
         CHECK(((ci.stage.flags & VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT) != 0) == full);
@@ -120,13 +120,13 @@ def main():
     internal = (VK / "vk_internal.h").read_text(encoding="utf-8")
     helper = block(internal, "inline bool pins_32(") + "\n" if "inline bool pins_32(" in internal else ""
     pin = block(draw, "void pin_subgroup(")
-    # (the compute pipelines' calls: compute_pipeline_info's, with its program q, and the precompile's warm_compute, with p)
-    lines = re.findall(r"^[ \t]*pin_subgroup\(ci\.stage, [^\n]*\);[ \t]*$", draw, re.M)
-    assert len(lines) == 2, "the compute pipelines' pin_subgroup calls: %r" % lines
+    # (the compute pipelines' call: pin_compute's, which compute_pipeline_info makes every game compute pipeline through)
+    lines = re.findall(r"^[ \t]*if \(compute_pin_needed\(p\)\) (pin_subgroup\(st, [^\n]*\);)[ \t]*$", draw, re.M)
+    assert len(lines) == 1, "pin_compute's pin_subgroup call: %r" % lines
     assert draw.count("pin_subgroup(si);") == 2, "the graphics and mesh fallback stages' pin_subgroup calls"
-    calls = "".join("void call_%d(Program& q, Program& p, VkComputePipelineCreateInfo& ci) { (void)q; (void)p; %s }\n"
+    calls = "".join("void call_%d(Program& p, VkComputePipelineCreateInfo& ci) { auto& st = ci.stage; %s }\n"
                     % (i, line.strip()) for i, line in enumerate(lines))
-    calls += "using Call = void (*)(Program&, Program&, VkComputePipelineCreateInfo&);\n"
+    calls += "using Call = void (*)(Program&, VkComputePipelineCreateInfo&);\n"
     calls += "const Call calls[] = {%s};\n" % ", ".join("call_%d" % i for i in range(len(lines)))
     fixture = HEAD + helper + pin + "\n" + calls + CASES
     with tempfile.TemporaryDirectory(prefix="longshot-subgroup-pin-") as tmp:

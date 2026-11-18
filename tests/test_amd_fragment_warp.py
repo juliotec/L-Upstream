@@ -30,12 +30,32 @@ SPIRV = VK / "eden" / "shader_recompiler" / "backend" / "spirv"
 def main():
     shader = _with_cache(VK / "vk_shader.cpp")
     profile = shader[shader.index("Shader::Profile make_profile()"):shader.index("Shader::HostTranslateInfo host_info()")]
+    # (the two rules are the device policy's, gpu/vk/device_policy.h, which tests/test_device_policy.py runs on made-up PCs;
+    # make_profile reads them there)
+    policy = (VK / "device_policy.h").read_text(encoding="utf-8")
+    policy = policy[policy.index("inline DevicePolicy device_policy(const DeviceFacts& f) {"):]
+    policy = policy[:policy.index("\n}\n")]
     for needle, why in (
-        ("p.warp_size_potentially_larger_than_guest = dev.subgroup_max > 32",
+        ("p.warp64 = f.subgroup_max > 32;",
+         "an unpinned stage's maximum subgroup width is not told to the translator"),
+        ("p.frag_shuffle_fallback = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;",
+         "AMD's proprietary driver keeps native fragment-stage shuffles"),
+    ):
+        if needle not in policy:
+            raise SystemExit(why)
+    main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
+    for needle, why in (
+        ("pf.subgroup_size = dev.subgroup_size, pf.subgroup_max = dev.subgroup_max;", "the policy is not told the device's lanes"),
+        ("pf.driver_id = dev.driver.driverID;", "the policy is not told the device's driver"),
+    ):
+        if needle not in main_cpp:
+            raise SystemExit(why)
+    for needle, why in (
+        ("p.warp_size_potentially_larger_than_guest = dev.policy.warp64;",
          "an unpinned stage's maximum subgroup width is not told to the translator"),
         ("p.max_subgroup_size = p.warp_size_potentially_larger_than_guest ? dev.subgroup_max : 32",
          "the broadcast fallbacks do not walk the host's upper lanes"),
-        ("p.has_broken_spirv_fragment_shuffle = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY",
+        ("p.has_broken_spirv_fragment_shuffle = dev.policy.frag_shuffle_fallback;",
          "AMD's proprietary driver keeps native fragment-stage shuffles"),
     ):
         if needle not in profile:

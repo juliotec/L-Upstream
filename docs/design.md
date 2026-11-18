@@ -314,7 +314,7 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
 - Measuring on this PC: two runs of the same build vary by 10% and more (other work on the machine); fps differences under that
   need many alternating runs. `chain.py`'s stretches are steadier: they say which part moved.
 
-## 13. Frame generation's presents at V-Sync Off, as rules
+## 13. Frame generation's presents, as rules
 
 Checked 2026-11-16 (Windows 11, RTX 5090, NVIDIA 621.24, 5120x2160 at 165 Hz with G-Sync, DLSS Frame Gen at 3x and 4x,
 PresentMon 2.3.0). Each fault these rules keep away looked like frame generation turned off: the FPS
@@ -327,12 +327,15 @@ rate. `tests/test_framegen_fixed_pace.py` runs the timing functions through a mo
    PresentMon's `DisplayedTime` (the share under 2 ms, its p10 to p90) and, for where a frame waited, `DisplayLatency` against
    `CPUBusy` (the call) and `GPULatency` + `GPUTime` (its GPU work). The method: the measure skill,
    `.claude/skills/measure/SKILL.md`.
-2. **Where the swapchain does not wait for a refresh, a fixed multiplier's set is shown on the game's timeline**
-   (`gpu/vk/vk_framegen.cpp` `fixed_on_timeline`, `fixed_dues`, `pace_lead`), whatever Frame pacing says. An immediate
-   (V-Sync Off) swapchain shows each present at once: a set presented as it came (its made frames and the game's within a
-   millisecond) showed the game's frame and hardly the made ones. Evenly apart (the smoothed frame time over the set) the
-   motion stutters as much as the game's frame times vary; on the game's timeline each frame moves as far as its time. FIFO
-   shows one a refresh and keeps its old path. `RX_VK_FG_TIMELINE=0` gives the old way back, for an A/B.
+2. **A fixed multiplier's set is shown on the game's timeline, in every present mode** (`gpu/vk/vk_framegen.cpp`
+   `fixed_on_timeline`, `fixed_dues`, `pace_lead`), whatever Frame pacing says. An immediate (V-Sync Off) swapchain shows
+   each present at once: a set presented as it came (its made frames and the game's within a millisecond) showed the
+   game's frame and hardly the made ones. Evenly apart (the smoothed frame time over the set) the motion stutters as much
+   as the game's frame times vary; on the game's timeline each frame moves as far as its time. Under FIFO (V-Sync On) a VRR
+   display shows each present when it comes, one a refresh at most: as they came, a set's frames were a refresh apart and
+   its last one waited for the next set (3x at 60 fps on 240 Hz: 4.2, 4.2 and 8.3 ms), so there a frame goes at its time
+   but no sooner than a refresh after the one before was given (`fifo_slot`). `RX_VK_FG_TIMELINE=0` gives the old way
+   back, for an A/B.
 3. **The GPU's delay is fed back only from sets taken as they came** (`pace_delay`, `display_main`'s `as_came`). A set's
    frames are done with the game frame's GPU work, so its times wait for that (`fg.late_ns`). A set whose copies went to the
    GPU late for another reason (no swapchain image free, the display thread busy with the set before) would raise the delay
@@ -342,11 +345,13 @@ rate. `tests/test_framegen_fixed_pace.py` runs the timing functions through a mo
    waits for the copy last made in its slot: with fewer slots than a set's frames, its 4th copy waited for its own first
    copy, and with a slot per frame of one set the next set's copy k waited for the shown set's copy k, each so for all the
    game's work queued before it, while frames of the shown set were due. The slot count is the swapchain's
-   (`dev.swap_slots`), set when it is made for its sets; FIFO and `RX_VK_FG_TIMELINE=0` keep 3. An app may hold at most
+   (`dev.swap_slots`), set when it is made for its sets, in every present mode; `RX_VK_FG_TIMELINE=0` keeps 3. An app may hold at most
    imageCount - minImageCount acquired images (an NVIDIA surface: 8 images, 6 spare): the next set's copies go as images
    come free (`copy_up_to`), never all or none.
 5. **A present waits on the queue it is made on.** On the replay's graphics queue it waits behind the game's next frame (3 to
    12 ms at 5120x2160), and a second queue of the graphics family takes turns with it on the GPU. A compute family's queue
-   runs beside it (`RX_VK_PRESENT_QUEUE=1`, `vk_main.cpp` `create_device`): 0.1% of the frames under 2 ms, on the screen 4.9
-   to 6.9 ms apart at 3x (p10 to p90). It is off by default since Hookshot issue 1161, before the fork (a black screen on an RTX 4090 with NVIDIA's 621
-   driver); turning it on for everyone needs that fault found first.
+   runs beside it (`RX_VK_PRESENT_QUEUE`, `vk_main.cpp` `create_device`): 0.1% of the frames under 2 ms, on the screen 4.9
+   to 6.9 ms apart at 3x (p10 to p90), each present's call to the screen 1.3 ms instead of 6.6. It is on by default
+   with NVIDIA's driver 621.24 and newer on Windows, where it was measured; Hookshot issue 1161, before the fork (an
+   RTX 4090 on NVIDIA's 621.14 had a black screen with it on), was never placed, so older drivers, other drivers and
+   Linux keep the replay's queue until they are measured, and `=0` is the way back.

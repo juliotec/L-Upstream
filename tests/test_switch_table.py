@@ -29,7 +29,6 @@ TYPES = ("bool", "int", "float", "string", "enum")
 #  the program cache's stamp in gpu/vk/vk_shader.cpp hashes every set switch that begins with one)
 PREFIXES = {
     "RX_VK_FOLLOW", "RX_VK_GP_", "RX_VK_MARKERS", "RX_VK_MESH", "RX_VK_MMA", "RX_VK_NAN", "RX_VK_NATIVE", "RX_VK_NETWORK",
-    "RX_VK_SHARED",
 }
 SKIP_DIRS = {"third_party", "tests", "build-linux", "build-windows"}
 

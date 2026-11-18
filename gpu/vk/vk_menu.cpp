@@ -96,8 +96,9 @@ enum MenuTab {
     TAB_AUDIO = 1,
     TAB_GAMEPLAY = 2,
     TAB_CONTROLS = 3,
-    TAB_DEBUG = 4,   // (the OoT debug tools of #785, a tab of their own)
-    TAB_COUNT = 5,
+    TAB_NFC = 4,     // (longshot: the player's NFC tags, held to the game's reader: host/nn_nfp.c)
+    TAB_DEBUG = 5,   // (the OoT debug tools of #785, a tab of their own)
+    TAB_COUNT = 6,
     TAB_MOTION = TAB_COUNT,   // (longshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
     TAB_FPS_DEV = TAB_MOTION + 1,   // (longshot: not a tab either, the FPS counter's Dev lines page, from the Gameplay tab)
@@ -932,6 +933,7 @@ const char* hn_output_device(int, int variant) {
 #endif
 }
 
+const char* tx_pad_menu(int v);
 // (longshot) the Microphone row: Off, the system's default, or one of the host's microphones (host/nn_audio_in.c: the
 // ocarina's input streams), told to the host by its name (host->mic_select) whenever it changes. The chosen one is kept by
 // its name, mic_want, also while it is unplugged: the row then has one more entry for it, "<name> (not connected)", the
@@ -1120,9 +1122,9 @@ const char* hn_framegen(int v, int variant) {
     return b[std::clamp(v, 2, 8)];
 }
 MENU_HINTS(hn_pace, 0,
-           "As soon as it is ready. With V-Sync Off, frame generation's fixed multipliers show each frame at its own time.",
-           "At an even interval: less stutter, at up to one frame of delay. With V-Sync Off, frame generation's fixed "
-           "multipliers show each frame at its own time.")
+           "As soon as it is ready. Frame generation's fixed multipliers show each frame at its own time.",
+           "At an even interval: less stutter, at up to one frame of delay. Frame generation's fixed multipliers show each "
+           "frame at its own time.")
 /// (longshot) Who made the made frames lately (vk_framegen.cpp framegen_maker), with Frame generation on; nullptr: none made.
 /// One name each, "<engine> FG", on the Frame generation by row and the FPS counter alike; "DLSS FG paused" where DLSS FG
 /// showed the game's frames alone (the game's own menus: vk_dlss.cpp dlss_fg_holds)
@@ -1402,6 +1404,8 @@ MENU_HINTS(hn_gyro, 0, "The sticks alone aim.",
 MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the bottom, X at the top, Y on the left.",
            "A at the bottom (action and talk), B on the right, X on the left, Y at the top.",
            "A at the bottom, B on the right; X and Y as on the Switch.",
+           "For a Switch 2 Pro Controller, or any Switch pad: every button its own (the sticks, shoulders, triggers, + and -, the "
+           "D-pad too, whatever was bound before), and the Switch's button icons.",
            "Bindings of your own, from the Controls page.")
 MENU_HINTS(hn_prompts, 0,
            "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
@@ -1477,6 +1481,55 @@ int text_edit(TextField& f, uint32_t in) {
 void text_set(TextField& f, const char* t) {
     snprintf(f.text, sizeof f.text, "%.*s", std::clamp(f.max, 0, (int)sizeof f.text - 1), t ? t : "");
     f.len = f.caret = (int)strlen(f.text);
+}
+// (longshot) the NFC tab: the NFC tags in the player's folder (host/nn_nfp.c: the Longshot Launcher's NFC page puts them there),
+// one chosen and held to the game's reader. The list is the host's, asked again each time the menu opens (refresh_nfc)
+constexpr int kMaxNfc = 256;
+int nfc_choice = 0, nfc_listed = 0;
+std::string nfc_said;   // (what the last tap did, under the row's help)
+bool can_nfc() { return host && host->nfc_count && host->nfc_name && host->nfc_tap && host->nfc_state; }
+const char* tx_nfc(int v) {
+    static char b[160];
+    if (!can_nfc() || !nfc_listed) return "None in your NFC folder";
+    snprintf(b, sizeof b, "%s", host->nfc_name(std::clamp(v, 0, nfc_listed - 1)));
+    return b;
+}
+/* The NFC tag row: what the game's reader is doing now (variant 0: the longest, for the help's height) */
+const char* hn_nfc(int, int variant) {
+    static const char* const waiting = "The game is waiting for an NFC tag: Tap tag holds the chosen one to it.";
+    if (variant > 0) return nullptr;
+    if (variant == 0 || !can_nfc()) return waiting;
+    const int st = host->nfc_state();
+    static int said_for = -1;   // (what a tap said stays until another tag is chosen)
+    if (said_for != nfc_choice) said_for = nfc_choice, nfc_said.clear();
+    if (!nfc_said.empty()) return nfc_said.c_str();
+    if (!nfc_listed) return "Add tag files on the Longshot Launcher's NFC page, or put them in the folder yourself.";
+    if (st & 8) return "The game has read the NFC tag.";
+    if (st & 2) return waiting;
+    if (st & 4) return "An NFC tag is at the reader: the game reads it when it next asks for one.";
+    if (st & 1) return "The game is not asking for an NFC tag now. Open its NFC screen first, or tap one ahead.";
+    return "The game has not started its NFC reader yet.";
+}
+bool is_nfc_tap(const struct Row& r);
+bool is_nfc_remove(const struct Row& r);
+bool is_nfc_scan(const struct Row& r);
+/* The Scan row: what the scan is doing, or did (variant 0: the longest) */
+const char* nfc_scan_says(int variant) {
+    static char b[200];
+    static const char* const looking = "Hold the tag to the controller: on the logo in the middle of a Switch 2 Pro Controller, for up to ten seconds.";
+    if (variant == 0 || !host || !host->nfc_scan) return looking;
+    switch (host->nfc_scan(0)) {
+    case 1: return looking;
+    case 2:
+        snprintf(b, sizeof b, "Saved as \"%s\": it is in the NFC tag row's list now. The launcher's NFC page renames it.",
+                 host->nfc_scan_name ? host->nfc_scan_name() : "");
+        return b;
+    case 3: return "No tag was found in ten seconds. Hold it flat on the controller's logo and scan again.";
+    case 4: return "That tag was read, but it is not a figure's tag: nothing was saved.";
+    case 5: return "No Switch 2 Pro Controller over USB: plug it in, with Steam and any bridge program closed.";
+    case 6: return "The tag could not be read, or its file could not be written. Scan again.";
+    default: return nullptr;
+    }
 }
 
 const char* const kFpsDevLineHelp = "Whether the FPS counter's Dev level shows this line.";   // (the details page's rows)
@@ -1710,7 +1763,7 @@ Row rows[] = {
     {TAB_CONTROLS, "Motion", nullptr, 0, 0, 0, nullptr,   // (longshot: opens the Motion page, the TAB_MOTION rows)
      "Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts."},
     // (longshot) the Controls page's own rows, above its grid (TAB_PAGE: no tab shows them)
-    {TAB_PAGE, "Layout preset", &opts.pad_layout, 0, 3, 1, tx_pad_layout,
+    {TAB_PAGE, "Layout preset", &opts.pad_layout, 0, 4, 1, tx_pad_layout,
      "Which face button is which. Binding one yourself on the Controls page makes it Custom.", hn_pad_layout, false, true},
     {TAB_PAGE, "Button prompts", &opts.prompts, 0, HOS_PROMPT_N, 1, tx_prompts,
      "The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls "
@@ -1728,10 +1781,26 @@ Row rows[] = {
      "Which keys open and close this menu. F1 always does; F1 only leaves Insert free for an overlay. With Esc, Esc opens it "
      "too, as a PC game's pause menu (open, Esc still goes back a page or closes it).",
      nullptr, false, true},
+    {TAB_CONTROLS, "Controller menu button", &opts.pad_menu, 0, 3, 1, tx_pad_menu,
+     "Which of the controller's buttons opens and closes this menu, so that no keyboard is needed: Home, or one of the back "
+     "buttons of a pad that has them (GL and GR on a Switch 2 Pro Controller). None leaves all of them to the game.",
+     nullptr, false, true},
     {TAB_CONTROLS, "Compact menu key", &opts.compact_menu_key, 0, 1, 1, tx_compact_menu_key,
      "Which key switches between the full menu and the compact bar (or opens directly to the compact bar when held "
      "with the menu shortcut).",
      nullptr, false, true},
+    // NFC (longshot): the NFC tags of the player's folder; the two actions hold the chosen one to the game's reader and take it away
+    // (the choice is kept in the options file as any row's, by its place in the list: refresh_nfc keeps it within the list)
+    {TAB_NFC, "NFC tag", &nfc_choice, 0, 0, 1, tx_nfc,
+     "Which of your NFC tags to use: the files of your NFC folder, by their names. The Longshot Launcher's NFC page adds and "
+     "removes them; dumps of your own figures (.bin, or a Flipper Zero's .nfc).", hn_nfc, false, true},
+    {TAB_NFC, "Tap tag", nullptr, 0, 0, 0, nullptr,
+     "Holds the chosen NFC tag to the reader, as tapping the figure on the controller does. It stays there until the game "
+     "has read it."},
+    {TAB_NFC, "Remove tag", nullptr, 0, 0, 0, nullptr, "Takes the NFC tag off the reader."},
+    {TAB_NFC, "Scan tag on controller", nullptr, 0, 0, 0, nullptr,
+     "Reads a tag you own with a Switch 2 Pro Controller's reader (over USB) and saves it in your NFC folder, so it can be "
+     "tapped from this tab from then on. The tag itself is not changed."},
     // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
     // developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
@@ -1993,6 +2062,36 @@ const char* cheat_button_text(int i) {
     return i >= 0 && i < kCheatRows ? buttons[i] : "";
 }
 constexpr int kRows = sizeof rows / sizeof rows[0];
+bool is_nfc_tap(const Row& r) { return r.tab == TAB_NFC && !r.value && !strcmp(r.name, "Tap tag"); }
+bool is_nfc_remove(const Row& r) { return r.tab == TAB_NFC && !r.value && !strcmp(r.name, "Remove tag"); }
+bool is_nfc_scan(const Row& r) { return r.tab == TAB_NFC && !r.value && !strcmp(r.name, "Scan tag on controller"); }
+/// The NFC tags listed again (the menu opened): the row's range is theirs, the choice kept by its name
+void refresh_nfc() {
+    if (!can_nfc()) return;
+    const std::string was = nfc_listed ? host->nfc_name(std::clamp(nfc_choice, 0, nfc_listed - 1)) : "";
+    nfc_listed = std::min(host->nfc_count(), kMaxNfc);
+    nfc_choice = 0;
+    for (int i = 0; i < nfc_listed && !was.empty(); i++)
+        if (was == host->nfc_name(i)) nfc_choice = i;
+    for (Row& r : rows)
+        if (r.value == &nfc_choice) r.hi = std::max(0, nfc_listed - 1);
+    nfc_said.clear();
+}
+void nfc_press(bool tap) {
+    if (!can_nfc()) return;
+    if (!tap) {
+        host->nfc_tap(-1);
+        nfc_said = "The NFC tag is off the reader.";
+    } else if (!nfc_listed) {
+        nfc_said = "There is no tag to tap: add one on the Longshot Launcher's NFC page.";
+    } else if (!host->nfc_tap(nfc_choice)) {
+        nfc_said = std::string("\"") + host->nfc_name(nfc_choice) + "\" is not an NFC tag's dump.";
+    } else {
+        nfc_said = std::string("\"") + host->nfc_name(nfc_choice) + ((host->nfc_state() & 2) || (host->nfc_state() & 8)
+                       ? "\" is at the reader: close the menu and the game reads it."
+                       : "\" is at the reader. The game is not asking for one yet: it reads it when it does.");
+    }
+}
 
 int ultrawide_read = 1;   // (ultrawide= as read: saved again while HOS_OUTPUT_RES holds the Output resolution and the row is as it was)
 /// (longshot) The Aspect ratio and Output resolution rows' ends from the screen's sizes and the player's own (known once the
@@ -2207,11 +2306,33 @@ const char* const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", 
                                            "note_l", "note_r", "note_a", "note_y", "note_x", "walk"};
 bool can_bind() { return host && host->binding && host->bind && host->pad_raw; }
 const char* tx_pad_layout(int v) {
-    static const char* t[] = {"Nintendo (Def)", "Xbox / PC", "Swap Face", "Custom"};
+    static const char* t[] = {"Nintendo (Def)", "Xbox / PC", "Swap Face", "Switch 2 Pro", "Custom"};
+    return t[std::min(std::max(v, 0), 4)];
+}
+// (the Switch's buttons on a Switch pad's own: host/nn_hid.c pad_default, in HOS_SW_*'s order)
+constexpr int kPadOwn[HOS_SW_N] = {HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK,
+                                   HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START,
+                                   HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP, HOS_PAD_RIGHT, HOS_PAD_DOWN};
+const char* tx_pad_menu(int v) {
+    static const char* t[] = {"None", "Home", "Back left (GL)", "Back right (GR)"};
     return t[std::min(std::max(v, 0), 3)];
 }
 void apply_pad_layout(int layout) {
-    if (!can_bind() || layout < 0 || layout > 2) return;
+    if (!can_bind() || layout < 0 || layout > 3) return;
+    if (layout == 3) { // Switch 2 Pro (and any Switch pad): every button the pad's own, and the Switch's button icons
+        // (again while a button is not its own: see below)
+        for (int pass = 0; pass < HOS_SW_N; pass++) {
+            bool done = true;
+            for (int i = 0; i < HOS_SW_N; i++)
+                if (host->binding(HOS_BIND_PAD, i, 0) != kPadOwn[i]) {
+                    host->bind(HOS_BIND_PAD, i, 0, kPadOwn[i]);
+                    done = false;
+                }
+            if (done) break;
+        }
+        opts.prompts = 1;   // (Switch: the Button prompts row)
+        return;
+    }
     static const int face[4] = {HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y};
     static const int want[3][4] = {
         {HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST},   // Nintendo (Default: Bottom=B, Right=A, Top=X, Left=Y)
@@ -2236,10 +2357,16 @@ int detect_pad_layout() {
     const int b = host->binding(HOS_BIND_PAD, HOS_SW_B, 0);
     const int x = host->binding(HOS_BIND_PAD, HOS_SW_X, 0);
     const int y = host->binding(HOS_BIND_PAD, HOS_SW_Y, 0);
-    if (a == HOS_PAD_EAST && b == HOS_PAD_SOUTH && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 0;
+    if (a == HOS_PAD_EAST && b == HOS_PAD_SOUTH && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) {
+        // (the Switch 2 Pro preset: every button the pad's own, with the Switch's icons; else the face buttons' Nintendo,
+        // which is also what the row keeps when it says Nintendo over those same inputs)
+        bool own = opts.prompts == 1 && opts.pad_layout != 0;
+        for (int i = 0; i < HOS_SW_N && own; i++) own = host->binding(HOS_BIND_PAD, i, 0) == kPadOwn[i];
+        return own ? 3 : 0;
+    }
     if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_WEST && y == HOS_PAD_NORTH) return 1;
     if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 2;
-    return 3;
+    return 4;
 }
 // (longshot) the row's choice to the host: off, the default, or a microphone by its name (and its place in the host's list,
 // -1 while it is unplugged: of two with one name, the one chosen). Unplugged, the name is the kept one, cut: the host takes
@@ -2540,12 +2667,30 @@ std::string share_saved;   // (the first sentence: the zip's name, its pipelines
 std::atomic<bool> share_busy{false};   // (the worker is copying and opening: presses wait for it)
 std::atomic<int> share_result{-1};     // (the worker's answer: 1 copied, 2 the issue opened; -1 none waiting)
 /// (menu_tick, each frame) the worker's answer into the help box's line
+/// How the help box names the zip's folder: share_downloads' words for it, in the menu's language, else the folder's own name
+/// alone (no user name on screen). (The help box's lines are put together from pieces, each looked up as it goes in: ui::para
+/// looks the whole line up, which no table has)
+std::string share_folder_name(std::string dir, const std::string& where) {
+    if (!where.empty()) return i18n::tr(where.c_str());
+    while (dir.size() > 1 && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
+    return dir.substr(dir.find_last_of("\\/") + 1);
+}
+/// The help box's first sentence after a save: the zip's name, its pipelines and its folder (share_folder_name)
+std::string share_saved_line(const std::string& name, long long n, const std::string& folder) {
+    return i18n::tr("Saved ") + name + " (" + std::to_string(n) + i18n::tr(" pipelines) in ") + folder + ". ";
+}
+/// The rest of it, once the worker has answered (share_result: 1 copied, 2 the issue opened)
+std::string share_done_line(int r) {
+    return std::string(i18n::tr((r & 1) ? "The report is copied. " : "The report is in the zip. ")) +
+           i18n::tr((r & 2) ? "Issue 14 is open in your browser: attach" : "Open git.magicbean.dev/MagicBeanDev/Longshot/issues/14 and attach") +
+           i18n::tr(" the zip to a comment, then paste the report and say where you played.");
+}
+/// The help box's line when the zip could not be written in that folder (share_folder_name)
+std::string share_not_written_line(const std::string& folder) { return i18n::tr("The zip could not be written in ") + folder + "."; }
 void share_finish() {
     const int r = share_result.exchange(-1);
     if (r < 0) return;
-    share_said = share_saved + ((r & 1) ? "The report is copied. " : "The report is in the zip. ") +
-                 ((r & 2) ? "Issue 14 is open in your browser: attach" : "Open git.magicbean.dev/MagicBeanDev/Longshot/issues/14 and attach") +
-                 " the zip to a comment, then paste the report and say where you played.";
+    share_said = share_saved + share_done_line(r);
     share_busy.store(false);
     menu_refresh = true;
 }
@@ -2883,18 +3028,16 @@ void share_pipeline_list() {
 #endif
     const std::string path = dir + (dir.back() == '/' || dir.back() == '\\' ? "" : sep) + name;
     const bool written = share_write(path, zip);
-    std::string folder = dir;   // (its name alone: no user name on screen)
-    while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) folder.pop_back();
-    folder = folder.substr(folder.find_last_of("\\/") + 1);
-    if (!where.empty()) folder = where;
+    const std::string folder = share_folder_name(dir, where);
     if (!written) {
-        share_said = "The zip could not be written in " + folder + ".", share_value = "Not saved";
+        share_said = share_not_written_line(folder), share_value = "Not saved";
         logf("menu: Save my pipeline list: %s could not be written", name.c_str());
         return;
     }
     share_value = "Saved";
-    share_saved = "Saved " + name + " (" + std::to_string(n) + " pipelines) in " + folder + ". ";
-    logf("menu: Save my pipeline list: %s, %lld pipelines, in %s", name.c_str(), n, folder.c_str());
+    share_saved = share_saved_line(name, n, folder);
+    logf("menu: Save my pipeline list: %s, %lld pipelines, in %s", name.c_str(), n,
+         (where.empty() ? folder : where).c_str());   // (the log in English: where's own words, not the help box's)
     if (env_on("HOS_HEADLESS")) {   // (a run without a window: nothing to show the browser or the folder on)
         share_result.store(0);
         share_finish();
@@ -2903,7 +3046,7 @@ void share_pipeline_list() {
     // (the clipboard, the folder and the browser on a worker of their own: ShellExecuteW and xdg-open can take hundreds of ms, and
     // this is the present thread. Presses are ignored until it is done: share_busy)
     share_busy.store(true);
-    share_said = share_saved + "Opening the issue...";
+    share_said = share_saved + i18n::tr("Opening the issue...");
     try {
         std::thread([lines, path, dir] {
 #ifdef _WIN32
@@ -2965,8 +3108,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.framegen_by && !framegen_by_dlss_offered()) v = (v % 2 + 2) % 2;
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
-        if (v > 2) v = dir > 0 ? 0 : 2;
-        if (v < 0) v = 2;
+        if (v > 3) v = dir > 0 ? 0 : 3;   // (4, Custom, is shown only)
+        if (v < 0) v = 3;
         *r.value = v;
         apply_pad_layout(*r.value);
         *r.value = detect_pad_layout();   // (Custom when the preset could not be had whole)
@@ -3276,7 +3419,7 @@ float scroll_at[TAB_FPS_DEV + 2];   // (the first row shown, eased toward the se
                                    // the Controls page: kControlsSlot)
 constexpr int kControlsSlot = TAB_FPS_DEV + 1;
 int wheel_rows[TAB_FPS_DEV + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
-int scrolled_to[TAB_FPS_DEV + 2] = {-1, -1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
+int scrolled_to[TAB_FPS_DEV + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
 float scroll_want[TAB_FPS_DEV + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
@@ -3858,7 +4001,7 @@ const char* bug_report_hint() {
     return text.c_str();
 }
 
-const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "Debug"};
+const char* const tab_titles[TAB_COUNT] = {"Graphics", "Audio", "Gameplay", "Controls", "NFC", "Debug"};
 inline const char* tab_title(int t) { return t >= 0 && t < TAB_COUNT ? tab_titles[t] : "Settings"; }
 inline bool cheat_is_toggle(int c) { return c == 0 || c == 1 || c == 7; }
 
@@ -3956,6 +4099,8 @@ void draw_options(ui::Ctx& c) {
     const bool mic_help = mic_help_row(selr);
     const FieldRow* field = field_row(selr);   // (longshot: a text field: why Enter did not take it, while it is edited)
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : field && editing == field->field ? edit_why : nullptr;
+    if ((is_nfc_tap(selr) || is_nfc_remove(selr)) && !nfc_said.empty()) hint = nfc_said.c_str();   // (what the press did)
+    if (is_nfc_scan(selr)) hint = nfc_scan_says(-1);
     if (is_share_row(selr) && !share_said.empty()) hint = share_said.c_str();   // (what the last save did)
     if (&selr == &rows[kBugReportRow]) hint = bug_report_hint();   // (the Bug report: where it was saved, or why not)
     const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
@@ -3989,7 +4134,7 @@ void draw_options(ui::Ctx& c) {
             if (const char* says = cheat_confirm(selr.cheat)) prompt_list[prompts_n++] = {ui::kConfirm, says};
             prompt_list[prompts_n++] = {ui::kCompact, "Compact", compact_key_name};
         } else {
-            prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : &selr == &rows[kBugReportRow] || is_share_row(selr) ? "Save" : "Open"};
+            prompt_list[prompts_n++] = {ui::kConfirm, is_nfc_tap(selr) ? "Tap" : is_nfc_remove(selr) ? "Remove" : is_nfc_scan(selr) ? "Scan" : confirms ? (pending == &selr ? "Confirm" : selr.name) : &selr == &rows[kBugReportRow] || is_share_row(selr) ? "Save" : "Open"};
         }
         if (cur_tab == TAB_MOTION || cur_tab == TAB_FPS_DEV) prompt_list[prompts_n++] = {ui::kBack, "Back"};   // (Esc: to Controls, or Gameplay)
         else {
@@ -5480,6 +5625,11 @@ int menu_heart_protection() {
 int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_order_relaxed) : -1; }
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
+int menu_memory_tier() {
+    if (opts.budget > 0) return opts.budget;
+    if (opts.preset > 0 && opts.preset < kAutoPreset) return opts.preset;   // (a file with a preset and memory_budget=0)
+    return auto_choice.tier;
+}
 /// The size the host draws the sun's cascades at (HOS_OPT_SHADOW_RES: 0 the game's 1600, 1 2200, 2 3072): the row's, or for
 /// Auto the one for the card's memory tier, the preset's (opts.budget) or else Auto's own for this PC (auto_choice): the
 /// game's on Minimum and Low (4 and 6 GB, where 113 MB is a lot), 2200 on Balanced (8 GB), 3072 from High (12 GB) up
@@ -5632,7 +5782,8 @@ void menu_option_set(int id, int value) {
 // its own thread: menu_mu keeps them apart from menu_tick (the present's thread) and from menu_option_set (the game's)
 bool bridge_row(int i) { return rows[i].value && !rows[i].heading && rows[i].cheat < 0 && row_shown(i); }
 void bridge_fill(int i, MkwVkSetting* out) {
-    static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "debug", "motion", "gameplay", "controls"};
+    static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "nfc", "debug", "motion", "gameplay",
+                                       "controls"};
     static_assert(sizeof tabs / sizeof tabs[0] == TAB_PAGE + 1, "a name for each MenuTab");
     const Row& r = rows[i];
     *out = MkwVkSetting{};
@@ -5756,7 +5907,7 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
     if (i == kRows) return 0;
     Row& r = rows[i];
     if (row_fixed(r.value)) return bridge_fill(i, out), -1;
-    const int want = std::min(std::max(value, r.lo), r.value == &opts.pad_layout ? std::min(r.hi, 2) : r.hi);   // (3: Custom, shown only)
+    const int want = std::min(std::max(value, r.lo), r.value == &opts.pad_layout ? std::min(r.hi, 3) : r.hi);   // (4: Custom, shown only)
     if (r.value == &opts.output_res && output_choice(want) == want &&
         dm::ratio_name(size_of(output_at(want))) != dm::ratio_name(size_of(output_at(opts.output_res)))) {
         // (a size of another shape: the Aspect ratio moves to it first, as a player would, which takes the Output resolution
@@ -6030,7 +6181,11 @@ void menu_tick() {
         menu_keys::confirm_back(host->binding(HOS_BIND_PAD, HOS_SW_A, 0), host->binding(HOS_BIND_PAD, HOS_SW_B, 0), &pad_confirm,
                                 &pad_back);
     pad_paste = menu_keys::paste(pad_confirm, pad_back);   // (longshot: a text field's paste, on a button neither is on)
-    if (pad(HOS_PAD_GUIDE) || chord_now) press[0] = true;
+    {   // (the controller's own button for the menu: the Controller menu button row)
+        const int menu_pad = opts.pad_menu == 1 ? (int)HOS_PAD_GUIDE : opts.pad_menu == 2 ? (int)HOS_PAD_LPADDLE1
+                           : opts.pad_menu == 3 ? (int)HOS_PAD_RPADDLE1 : -1;
+        if ((menu_pad >= 0 && pad(menu_pad)) || chord_now) press[0] = true;
+    }
     {   // holding an arrow or the D-pad repeats it: after 0.35 s, 12 a second, then 30 a second after 1.5 s held
         static int64_t held_since[5], next_repeat[5];
         const int pads[5] = {0, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT, HOS_PAD_RIGHT};
@@ -6169,6 +6324,7 @@ void menu_tick() {
         if (open_now.load()) refresh_mics();   // (the microphones as they are now)
         if (open_now.load()) refresh_outputs();
         if (open_now.load()) refresh_monitors();
+        if (open_now.load()) refresh_nfc();    // (and the NFC tags of the player's folder)
     }
     if (open_now.load() && debug_warning) {
         if (press[3] || press[4]) debug_warning_choice = 1 - debug_warning_choice, changed = true;
@@ -6494,11 +6650,24 @@ void menu_tick() {
         }
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && is_fps_dev_row(r)) cur_tab = TAB_FPS_DEV, tab_selected[TAB_FPS_DEV] = 0, press[7] = false, changed = true;
+        else if (press[7] && (is_nfc_tap(r) || is_nfc_remove(r))) nfc_press(is_nfc_tap(r)), press[7] = false, changed = true;
+        else if (press[7] && is_nfc_scan(r)) {
+            if (host && host->nfc_scan) host->nfc_scan(1);
+            press[7] = false, changed = true;
+        }
         else if (press[7] && is_share_row(r)) share_pipeline_list(), press[7] = false, changed = true;
         else if (press[7] && is_laptop_row(r)) weak_laptop_apply(), press[7] = false, changed = true;
         else if (press[7] && &r == &rows[kBugReportRow]) bug_report_save(), press[7] = false, changed = true;
         else if (const FieldRow* f = press[7] ? field_row(r) : nullptr) edit_start(*f->field, f->apply), changed = true;   // (longshot)
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = menu_hit::kCtlPrimary, changed = true;
+        {   // (a scan ends by itself: its line drawn again, and the tag it saved in the row's list)
+            static int scan_was = 0;
+            const int scan = host && host->nfc_scan ? host->nfc_scan(0) : 0;
+            if (scan != scan_was) {
+                if (scan == 2) refresh_nfc();
+                scan_was = scan, changed = true;
+            }
+        }
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
             if (press[7]) press[4] = true;
             set_row(r, *r.value + (press[4] ? r.step : -r.step), press[4] ? 1 : -1);
@@ -6550,6 +6719,13 @@ void menu_tick() {
     }
 }
 
+/// (longshot) Once a present: the Rumble strength row changed with the menu open, and the new strength is felt at once, a
+/// short rumble, which also shows that the controller rumbles (Off is silent). Whatever changed it: the keys, the mouse
+void menu_rumble_tick() {
+    static int was = -1;
+    if (was >= 0 && opts.rumble != was && menu_is_open() && host && host->version >= 32 && host->rumble_test) host->rumble_test();
+    was = opts.rumble;
+}
 void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)

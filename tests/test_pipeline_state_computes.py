@@ -261,11 +261,20 @@ def check_source(draw):
         at = draw.index(signature)
         return draw[at:draw.index("\n}\n", at)]
     pre = body_of("void precompile_run(")
-    for line in ('const ComputePlan plan = computes_plan(getenv("RX_VK_PRECOMPILE_COMPUTES"), !env_on("RX_VK_NO_STATE_LIST"));',
+    for line in ('const ComputePlan plan = computes_plan(precompile_computes_which(), !env_on("RX_VK_NO_STATE_LIST"));',
                  "if (!plan.all && !plan.none) wanted.insert(plan.keys.begin(), plan.keys.end());",
                  "}, plan.all, true);"):
         if line not in pre:
             raise SystemExit("precompile_run does not take its compute programs from computes_plan: no `%s`" % line)
+    # (RX_VK_PRECOMPILE_COMPUTES read in one place, which defaults it to "listed" on Mesa's Intel driver alone; every plan
+    # comes from there: precompile_run, the load at create and the preparation's compute warm)
+    which = body_of("const char* precompile_computes_which() {")
+    for line in ('if (const char* e = getenv("RX_VK_PRECOMPILE_COMPUTES")) return e;',
+                 'return dev.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ? "listed" : nullptr;'):
+        if line not in which:
+            raise SystemExit("precompile_computes_which: no `%s`" % line)
+    if draw.count('getenv("RX_VK_PRECOMPILE_COMPUTES")') != 1 or draw.count("computes_plan(precompile_computes_which(),") != 3:
+        raise SystemExit("a compute plan is made from something other than precompile_computes_which")
     if "computes_read()" in pre or "state_record_compute(" in pre or "state_record_compute(" in body_of("void state_list_prepare("):
         raise SystemExit("precompile_run reads the learned list past the plan, or the prepare writes compute records")
     calls = [m.start() for m in re.finditer(r"(?<![\w:])state_record_compute\(", draw)]
@@ -290,6 +299,7 @@ FIXTURE_HEAD = r'''
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -528,6 +538,7 @@ def check_game(tool, draw, cxx):
         block(draw, "std::vector<StateRec> state_list_read("), block(draw, "std::vector<uint64_t> state_list_computes("),
         block(draw, "struct ComputePlan {", True), block(draw, "ComputePlan computes_plan("),
         "std::mutex state_mu;\nFILE* state_file = nullptr;\nstd::unordered_set<uint64_t> state_seen;",
+        block(draw, "static void cut_part_record(") if "static void cut_part_record(" in draw else "",
         block(draw, "void state_open_locked()"), block(draw, "void state_record_compute(uint64_t key)")))
     head, _, tail = FIXTURE_MAIN.partition("@READERS@")
     fixture = FIXTURE_HEAD + readers.replace("@STUBS@", head) + tail
@@ -591,6 +602,7 @@ static bool serial = false, quick_row = false;
 static bool serial_builds_on() { return serial; }
 static bool intel_quick_compute() { return quick_row; }
 static void pin_subgroup(decltype(VkComputePipelineCreateInfo::stage)&, unsigned, unsigned long long) {}
+static void pin_compute(decltype(VkComputePipelineCreateInfo::stage)& st, const Program& p) { pin_subgroup(st, p.workgroup[0], 1ull * p.workgroup[0] * p.workgroup[1] * p.workgroup[2]); }
 static VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
     CHECK(ci->stage.module == 0x2468 && ci->layout == 0x1357);
     if (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) {

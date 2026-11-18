@@ -9,8 +9,10 @@
 // switch, read once by device_policy_env() with one rule for every switch (there). One marked "site" is computed here by
 // the site's rule, for the log and the test, while the site still decides with its own switch read; the step named moves
 // it: 2, the sites whose rule is already a tested header of its own; 3, the sizes; 4, the Intel and AMD rules of the
-// draws; 5, device creation; 6, the shader translation's (vk_shader.cpp, at once: an edit there has every player
-// translate again); 7, the mirrors' family and what is known only after the device is made.
+// draws; 5, device creation; 7, the mirrors' family and what is known only after the device is made. (Step 6, the shader
+// translation's, is done: vk_shader.cpp reads its fields here. That file is in the translator's stamp and this one is
+// not, so a rule changed here reaches the program cache only through the values translator_stamp folds: a field the
+// translation reads must be folded there, and tests/test_device_policy.py checks that each one is.)
 // The sizes that go by the driver's allowance are worked out from the allowance at the start (allowed_at_start); their
 // sites ask the same rule (policy_rule) with the allowance at their own first call, after the renderer has allocated, so
 // a site's number can be lower than the log's.
@@ -21,6 +23,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <vulkan/vulkan_core.h>
@@ -39,7 +42,6 @@
 #include "target_pool.h"
 #include "texture_budget.h"
 #include "threaded_rendering.h"
-#include "vk_vendor.h"
 #include "vram_compact.h"
 
 namespace mkwvk {
@@ -222,7 +224,9 @@ inline bool parse_decimal(const char* text, double hi, double& out) {
 /// The fields a switch can set (device_policy_env), for DevicePolicy::set and the log's mark
 enum class Sw : unsigned {
     astc_on_cpu, batch_submits, compute_builds_serial, pcache_fetch_lock, split_before_draw, ub_snapshot, split_ub_flush,
-    occ_copy, mirrors, fsr4_tune, position_invariant, equal_depth_bias, cap_spare_max, staging_keep, workers, count
+    occ_copy, mirrors, fsr4_tune, position_invariant, equal_depth_bias, cap_spare_max, staging_keep, workers,
+    fetch_bounds, nan_bits, gather_offset,   // (device_policy_fixes_env's three)
+    count
 };
 
 // Each field: what it is, the PCs that get it and why (the site's own comment has the runs), its switch, and who decides
@@ -234,12 +238,31 @@ struct DevicePolicy {
     char switch_notes[320] = "";    // (the switches that set a field, and the values that were ignored, for the log)
     bool set(Sw s) const { return (set_by_switch >> (unsigned)s) & 1u; }
     // ---- one driver's bug ----
-    // The translation's three fixes: vk_vendor.h still makes them (dev.fixes, with their switches), until the stamp's step 6.
-    bool fetch_bounds = false;          // every GPU but NVIDIA's: no zero for an out-of-bounds texel fetch. RX_VK_FETCH_BOUNDS
-    bool nan_bits = false;              // AMD's older Windows compiler (RDNA 1 and 2): OpIsNan wrong. RX_VK_NAN_BITS
-    bool gather_offset = false;         // AMD's, Intel's and the mobile drivers: gathers pick other texels (Eden). RX_VK_GATHER_OFFSET
-    // AMD's Windows driver: fragment subgroup shuffles wrong, a basket drew as a white blob (Lichii #273).
-    // RX_VK_FRAG_SHUFFLE_FALLBACK. Site (vk_shader.cpp make_profile), step 6
+    // The translation's three fixes (they were vk_vendor.h's), chosen from who made the GPU, whose driver it runs and, where
+    // a driver names its compiler, its driverInfo. NVIDIA's driver gets none of them (the GPU every row of the game was
+    // checked on). Each has a switch that forces it on or off on any GPU, to test it where it is not needed, read by
+    // device_policy_fixes_env.
+    // Every GPU but NVIDIA's: out-of-bounds texel fetches answered with zero in the shader (emit_spirv_image.cpp
+    // EmitImageFetch). Vulkan leaves such a fetch undefined without robustImageAccess, which Longshot does not turn on;
+    // NVIDIA's GPUs (the Switch 2's among them) return zero (measured on an RTX 3090: every texture type, past each edge,
+    // the last level and the last sample). The ground fog's shader reads depth at points projected off screen near the
+    // edges, and on AMD (RX 9070) those pixels took the other branch: a pale stepped box at the left, right and top
+    // edges. RX_VK_FETCH_BOUNDS. Read (vk_coopmat.cpp coopmat_init)
+    bool fetch_bounds = false;
+    // AMD's older Windows shader compiler (the driver branch for RDNA 1 and 2, RX 5000 and RX 6000: its driverInfo names
+    // the "AMD proprietary shader compiler" where the RDNA 3 and 4 driver names LLPC; the test of driverInfo is
+    // totk-pc-recomp's vk_caps.c, MIT): isnan(x) as a test of x's bits, not OpIsNan (emit_spirv_floating_point.cpp IsNan).
+    // Players of OoT ports on those cards saw black and white blocks where a NaN test did not hold. The colour outputs'
+    // NaN guard is such a test too. RX_VK_NAN_BITS. Read (coopmat_init)
+    bool nan_bits = false;
+    // AMD's and Intel's drivers and the mobile ones Eden runs on: gathers nudged by 1/512 of a texel, so that the four
+    // texels a gather picks match Maxwell's at texel edges (emit_spirv_image.cpp ImageGatherSubpixelOffset, Eden's, which
+    // Hookshot had never turned on). Eden and Lichii turn it on for these drivers: shadow edges drawn as dashed lines
+    // without it. RX_VK_GATHER_OFFSET. Read (vk_shader.cpp make_profile; in the program cache's stamp)
+    bool gather_offset = false;
+    // AMD's Windows driver: its compiler gets fragment-stage subgroup shuffles wrong, a basket in Link's house drew as a
+    // white blob (Lichii #273); broadcasts and selects there instead. RX_VK_FRAG_SHUFFLE_FALLBACK, read at the site. Read
+    // (vk_shader.cpp make_profile; in the program cache's stamp)
     bool frag_shuffle_fallback = false;
     // Every vendor but NVIDIA: positions invariant, as AMD's and Intel's compilers do not give a depth pass and its colour
     // pass the same position. By the vendor, so NVK goes without them as NVIDIA's own compiler does: whether Mesa's
@@ -273,7 +296,7 @@ struct DevicePolicy {
     // name. RX_VK_MESH_SHADERS, read at the site. Read (create_device, which asks the driver itself: the facts come later)
     int mesh_mode = 0;
     // RADV on GCN 1-4: fallback compute stages over this many phis are not built, as RADV's compiler grew past 25 GB on
-    // them (an RX 580); 0 elsewhere, no limit. RX_VK_FALLBACK_PHI_LIMIT. Site (vk_draw.cpp), step 5
+    // them (an RX 580); Mesa's Intel driver its own (20000); 0 elsewhere, no limit. RX_VK_FALLBACK_PHI_LIMIT. Site (vk_draw.cpp), step 5
     uint32_t fallback_phi_limit = 0;
     // Intel on Windows: one thread at a time in igvk64's compiler, which faulted with two (an Arc A750, issue 496; a UHD).
     // Not where the row's Auto is side by side (intel_side_by_side_auto); the Intel shader compiles row and
@@ -292,13 +315,20 @@ struct DevicePolicy {
     // found, so whether Mesa's driver or a GPU without mesh shaders needs it wants a run. RX_VK_SPLIT_BEFORE_DRAW. Read
     // (vk_replay.cpp part_ends_before_draw)
     bool split_before_draw = false;
-    // AMD's Windows driver on the graphics in Ryzen 7000 and 9000 desktop CPUs (0x164E, 0x13C0): ASTC decoded on the CPU,
-    // as the GPU decoder's one long submission had Windows reset the device (a Ryzen 9 7900X, 7 runs of 8; seen on driver
-    // 26.10.1). RX_VK_ASTC_CPU. Read (vk_texture.cpp astc_on_cpu)
+    // AMD's Windows driver on the graphics in Ryzen 7000 and 9000 desktop CPUs (0x164E, 0x13C0) and the Radeon 860M (0x1114,
+    // #1040): ASTC decoded on the CPU, as the GPU decoder's one long submission had Windows reset the device (a Ryzen 9 7900X,
+    // 7 runs of 8; seen on driver 26.10.1; the 860M lost it on the same Kokiri Forest arrays). RX_VK_ASTC_CPU. Read
+    // (vk_texture.cpp astc_on_cpu)
     bool astc_on_cpu = false;
     // NVIDIA: the Deku Tree web's vertex code b449bcdb69b36a8a has its global loads inlined, as NVIDIA's compiler
-    // substitutes a load's result there (#455). No switch. Site (vk_shader.cpp), step 6
+    // substitutes a load's result there (#455). No switch. Read (vk_shader.cpp translate_into; in the program cache's stamp)
     bool inline_deku_web_loads = false;
+    // Every vendor but NVIDIA: the movie upscaler's networks are left out (the last pass becomes a linear upscale of the
+    // movie), as their multiplies took minutes each for AMD's compiler and the movies ran at 10 fps (issues 26, 38, 43).
+    // The site leaves them out where the multiplies run in software too, on any vendor, which is known only after the
+    // device is made. RX_VK_NETWORK_KEEP names the ones that still run, read at the site. Read (vk_shader.cpp
+    // translate_into; in the program cache's stamp)
+    bool networks_left_out = false;
     // Guest memory tried as dma-bufs: off Windows, and not on NVIDIA's own driver, which refuses the mapping for every
     // pool. RX_VK_NO_DMABUF turns it off. Site (vk_memory.cpp import_dma_buf), step 4
     bool dma_buf_imports = false;
@@ -336,7 +366,8 @@ struct DevicePolicy {
     // and Arrow Lake, 101.9154 on Battlemage, 101.9150 on Panther Lake); elsewhere the compare-exchange loop.
     // RX_VK_NATIVE_FADD, read at the site. Site (create_device, which asks the list itself), step 5
     bool native_float_add = false;
-    // A subgroup can have more than 32 lanes: the graphics stages' long warp path. RX_VK_WARP64. Site (make_profile), step 6
+    // A subgroup can have more than 32 lanes: the long warp path for the stages the GPU does not pin to 32 (the site's
+    // stage profiles). RX_VK_WARP64, read at the site. Read (vk_shader.cpp make_profile; in the program cache's stamp)
     bool warp64 = false;
 
     // ---- measured on one card ----
@@ -454,10 +485,21 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     const bool integrated = f.integrated();
 
     // one driver's bug
-    VendorFacts vf;
-    vf.vendor_id = f.vendor_id, vf.driver_id = f.driver_id, vf.device_type = f.device_type, vf.driver_info = f.driver_info;
-    const VendorFixes vx = vendor_fixes(vf);
-    p.fetch_bounds = vx.fetch_bounds, p.nan_bits = vx.nan_bits, p.gather_offset = vx.gather_offset;
+    p.fetch_bounds = !f.nvidia();
+    p.nan_bits = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY && f.driver_info && std::strstr(f.driver_info, "proprietary shader compiler");
+    switch (f.driver_id) {
+    case VK_DRIVER_ID_AMD_PROPRIETARY:
+    case VK_DRIVER_ID_AMD_OPEN_SOURCE:
+    case VK_DRIVER_ID_MESA_RADV:
+    case VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS:
+    case VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA:
+    case VK_DRIVER_ID_QUALCOMM_PROPRIETARY:
+    case VK_DRIVER_ID_MESA_TURNIP:
+        p.gather_offset = true;
+        break;
+    default:
+        break;
+    }
     p.frag_shuffle_fallback = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
     p.position_invariant = !f.nvidia();
     p.equal_depth_bias = f.intel() ? 64.0f : 0.0f;
@@ -472,7 +514,9 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     // (corrected: AMD's Windows driver, whose hang issue 996 is, and not the vendor, which also held RADV's and AMDVLK's
     // builds to one at a time. To go back: f.amd())
     p.fault_gate_serial = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
-    p.fallback_phi_limit = f.radv_gcn() ? fallback_size::kRadvGcnPhiLimit : 0;
+    // (Mesa's Intel driver has its own limit: its compiler did not finish the 29,000- and 80,000-phi stages, fallback_size_policy.h)
+    p.fallback_phi_limit = f.radv_gcn() ? fallback_size::kRadvGcnPhiLimit
+                           : f.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ? fallback_size::kIntelPhiLimit : 0;
     p.intel_side_by_side_auto = f.windows && f.intel() && intel_side_by_side_measured(f.device_id, f.driver_version);
     p.intel_compile_gate = f.windows && f.intel() && !p.intel_side_by_side_auto;
     // (corrected: Intel's Windows driver, whose compiler issue 496 is, and not the vendor, which also held ANV's compute
@@ -480,8 +524,9 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     p.compute_builds_serial = f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
     p.pcache_fetch_lock = f.windows && f.intel();
     p.split_before_draw = f.intel();
-    p.astc_on_cpu = f.windows && f.amd() && (f.device_id == 0x164E || f.device_id == 0x13C0);
+    p.astc_on_cpu = f.windows && f.amd() && (f.device_id == 0x164E || f.device_id == 0x13C0 || f.device_id == 0x1114);
     p.inline_deku_web_loads = f.nvidia();
+    p.networks_left_out = !f.nvidia();
     p.dma_buf_imports = !f.windows && f.driver_id != VK_DRIVER_ID_NVIDIA_PROPRIETARY;
     p.nv_checkpoints = f.nv_checkpoints_ext;
     p.retired_mode = (int)retired_give_back::mode(false, false, f.windows, f.nvidia());
@@ -611,6 +656,24 @@ template <class Get> void device_policy_env(DevicePolicy& p, const DeviceFacts& 
     if (number(Sw::workers, "RX_VK_WORKERS", 1, 16, n)) p.workers = (unsigned)n;
 }
 
+/// The translation's three fixes' switches over them (RX_VK_FETCH_BOUNDS, RX_VK_NAN_BITS, RX_VK_GATHER_OFFSET), read once
+/// after device_policy_env, with the reading they have had since vk_vendor.h and not yet the one rule above: unset or
+/// empty, the PC's default; a number that is 0, or a word that is no number, off; any other number on (so "on" is off).
+/// get: getenv, or a test's
+template <class Get> void device_policy_fixes_env(DevicePolicy& p, Get get) {
+    const auto over = [&](Sw s, const char* name, bool& v) {
+        const char* e = get(name);
+        if (!e || !*e) return;
+        v = std::atoi(e) != 0;
+        p.set_by_switch |= 1u << (unsigned)s;
+        const size_t n = std::strlen(p.switch_notes);
+        std::snprintf(p.switch_notes + n, sizeof p.switch_notes - n, "%s%s=%.24s", n ? "; " : "", name, e);
+    };
+    over(Sw::fetch_bounds, "RX_VK_FETCH_BOUNDS", p.fetch_bounds);
+    over(Sw::nan_bits, "RX_VK_NAN_BITS", p.nan_bits);
+    over(Sw::gather_offset, "RX_VK_GATHER_OFFSET", p.gather_offset);
+}
+
 /// One line of the block, built in a buffer under 900 characters whatever it is given (a long driverInfo is cut short)
 struct PolicyLine {
     char text[880];
@@ -640,9 +703,8 @@ struct PolicyLine {
 /// The block at the start: the facts, then what this PC gets by them, a * after a value its switch set (the last line names
 /// the switches read and the values ignored). A field a site still decides shows the default: the site's own switch is
 /// not in it. A driver's fix that is on says the driver version it was seen on, beside this driver's, so a report shows a
-/// workaround still applied on a newer driver. x: the translation's three fixes as the run has them (dev.fixes, their
-/// switches read). line: void(const char*), a log line
-template <class Line> void device_policy_log(const DevicePolicy& p, const DeviceFacts& f, const VendorFixes& x, Line line) {
+/// workaround still applied on a newer driver. line: void(const char*), a log line
+template <class Line> void device_policy_log(const DevicePolicy& p, const DeviceFacts& f, Line line) {
     const auto mb = [](uint64_t bytes) { return (unsigned long long)(bytes >> 20); };
     {
         PolicyLine l("facts");
@@ -655,10 +717,12 @@ template <class Line> void device_policy_log(const DevicePolicy& p, const Device
               (unsigned)f.subgroup_size, (unsigned)f.subgroup_max, (unsigned)f.sg32_stages);
         line(l.text);
     }
-    {   // (the first three as the run has them, vk_vendor.h)
+    {
         PolicyLine l("driver fixes");
-        l.add(" on driver version %#x: fetch_bounds=%d nan_bits=%d gather_offset=%d", (unsigned)f.driver_version, (int)x.fetch_bounds,
-              (int)x.nan_bits, (int)x.gather_offset);
+        l.add(" on driver version %#x:", (unsigned)f.driver_version);
+        l.flag("fetch_bounds", p.fetch_bounds, p.set(Sw::fetch_bounds));
+        l.flag("nan_bits", p.nan_bits, p.set(Sw::nan_bits));
+        l.flag("gather_offset", p.gather_offset, p.set(Sw::gather_offset));
         l.flag("frag_shuffle_fallback", p.frag_shuffle_fallback);
         l.flag("position_invariant", p.position_invariant, p.set(Sw::position_invariant));
         l.add(" equal_depth_bias=%g%s", (double)p.equal_depth_bias, p.set(Sw::equal_depth_bias) ? "*" : "");
@@ -674,6 +738,7 @@ template <class Line> void device_policy_log(const DevicePolicy& p, const Device
         l.flag("split_before_draw", p.split_before_draw, p.set(Sw::split_before_draw), "101.9154");
         l.flag("astc_on_cpu", p.astc_on_cpu, p.set(Sw::astc_on_cpu), "26.10.1");
         l.flag("inline_deku_web_loads", p.inline_deku_web_loads);
+        l.flag("networks_left_out", p.networks_left_out);
         l.flag("dma_buf_imports", p.dma_buf_imports);
         l.flag("nv_checkpoints", p.nv_checkpoints);
         l.add(" retired=%s idle_import_high=%d%%", p.retired_mode == 2 ? "after a wait" : p.retired_mode == 1 ? "at once" : "kept",

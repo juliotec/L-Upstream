@@ -63,6 +63,8 @@ FIXTURE = r"""
 #include <mutex>
 #include <vector>
 #include "readback_late.h"
+#include "page_marks.h"   // (wb_ever, which wb_pages_note marks: invalidate_quick)
+using mkwvk::PageMarks;
 constexpr uint64_t kPageShift = 12, kChunkPages = 16, kPages = 64;
 [[maybe_unused]] static bool env_on(const char*) { return false; }   // (nothing the check cuts reads a switch now)
 namespace {

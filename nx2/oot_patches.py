@@ -26,6 +26,10 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   GameDataMgr whether the option was written (f_80a9d1c0) and applies it only then; option.sav's value replaces the
   option without a write, so a saved choice was never applied (issue 430). The call goes through hos_oot_voice_option,
   which also says yes when the option's value is not the one of the update before. The supported build only.
+- The texture data heap's compaction asked for once in a while (host/oot_tex_compact.h): the manager's per-frame step
+  (f_80797240) asks the Compaction thread for a round whenever none runs (its flag bit 1, always set), and each texture a
+  round moved is made again; hos_oot_tex_compact_due says whether it may ask now (HOS_TEX_COMPACT_MS: once a second as
+  shipped, 0 at every frame, the game's own). The round itself is untouched.
 - Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c); a tick whose gates refuse reports no wait, so a dialogue keeps its buttons.
 """
 import collections
@@ -607,6 +611,17 @@ SOLVER_NEW = SOLVER_OLD.replace(
     "    recomp_store32(", "    c->x[1]=hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]);"
     "   /* (nx2/oot_patches.py: solver steps rounded up above 60 fps) */\n    recomp_store32(", 1)
 SOLVER_DECL = "extern uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits);\n"
+# A horse's jump state machine, f_82c59eb0 (s10 its step): while the horse gets ready to jump it sets the blend frames into its
+# JumpReady animation each frame, and with a step under 1 (slow motion at 60 fps) it takes them from last frame's plus the step.
+# Above 60 fps every step is under 1, the blend frames grew each frame, and Epona galloped through fences while her body went
+# over them. Before the branch on its "step < 1" test (fcmp s10, 1.0; b.pl past the slow-motion branch), hos_oot_horse_whole_step
+# sends a step that is the whole frame's (the time object's step, [[slot]]+0x10) past it too (host/oot_high_fps.h).
+HORSE_HEAD = "void f_82c59eb0(Ctx *__restrict A64_NOESC c) {\n"
+HORSE_TEST = "    a64_vset64(c->vreg[9],0x3f800000ULL);\n    { if (!a64_fcmp32(c,c->vreg[10],c->vreg[9])) "   # (its line goes on)
+HORSE_BRANCH = "if (!c->n) { goto L_82c5ae48; }\n"
+HORSE_SKIP = ("    if (hos_oot_horse_whole_step((uint32_t)c->vreg[10][0], " + SOUND_SLOT + " + 2192)) { goto L_82c5ae48; }"
+              "   /* (nx2/oot_patches.py: a horse's jump blend above 60 fps) */\n")
+HORSE_DECL = "extern int hos_oot_horse_whole_step(uint32_t step_bits, uint64_t slot);\n"
 
 
 def _function(s, head_text):
@@ -656,6 +671,36 @@ def patch_bgm_time(s):
     return s, 1
 
 
+# The texture data heap's compaction, asked for once in a while (host/oot_tex_compact.h has why). f_80797240 is the texture data
+# manager's per-frame step: with no round asked for (+776) and its flag bit 1 set (+960, set once at its setup) it asks for one
+# (+776 = 1), and with one asked for it sends the Compaction thread its message. The second test also asks the host.
+TEXC_HEAD = "void f_80797240(Ctx *__restrict A64_NOESC c) {\n"
+TEXC_OLD = ("    c->x[8]=recomp_load8(c,c->x[19] + 960);\n"
+            "if (!((c->x[8] >> 1) & 1)) { goto L_80797288; }\n")
+TEXC_NEW = ("    c->x[8]=recomp_load8(c,c->x[19] + 960);\n"
+            "if (!((c->x[8] >> 1) & 1) || !hos_oot_tex_compact_due()) { goto L_80797288; }"
+            "   /* (nx2/oot_patches.py: the texture heap's compaction once in a while) */\n")
+TEXC_DECL = "extern int hos_oot_tex_compact_due(void);\n"
+
+
+def patch_tex_compact(s):
+    """The texture data manager's request for a compaction round through the host: (s, 1) when its step is in s with it (made
+    now or before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, TEXC_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(TEXC_NEW) == 1:
+        return s, 1
+    if body.count(TEXC_OLD) != 1:
+        return s, 0
+    s = s[:head] + body.replace(TEXC_OLD, TEXC_NEW, 1) + s[end:]
+    if TEXC_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXC_DECL, 1)
+    return s, 1
+
+
 def patch_bgm_flags(s):
     """The music manager's change flags with the ones the gate held back: (s, 1) when its update is in s with them (made now
     or before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
@@ -692,6 +737,28 @@ def patch_solver_steps(s):
     if done and SOLVER_DECL not in s:
         s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
     return s, done
+
+
+def patch_horse_jump(s):
+    """A horse's jump state machine's step test with the whole-frame one before it: (s, 1) when it is in s with it (made now or
+    before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, HORSE_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(HORSE_SKIP + HORSE_BRANCH) == 1:
+        return s, 1
+    if body.count(HORSE_TEST) != 1 or HORSE_SKIP in body:
+        return s, 0
+    line_end = body.find("\n", body.index(HORSE_TEST) + len(HORSE_TEST))
+    if line_end < 0 or not body.startswith(HORSE_BRANCH, line_end + 1):
+        return s, 0
+    body = body[:line_end + 1] + HORSE_SKIP + body[line_end + 1:]
+    s = s[:head] + body + s[end:]
+    if HORSE_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + HORSE_DECL, 1)
+    return s, 1
 
 
 # f_8263e8e0, the steering update: after applying a turn it clamps the saved rate (+36) to the turn's magnitude times
@@ -1115,6 +1182,11 @@ def patch_file(s, name, protect_hearts=False):
     if bgm != out:
         lines.append("oot_patches: the music manager's whole step above 60 fps in " + name)
     out = bgm
+    texc, found = patch_tex_compact(out)
+    counts["texture compaction"] += found
+    if texc != out:
+        lines.append("oot_patches: the texture heap's compaction asked for through the host in " + name)
+    out = texc
     flags, found = patch_bgm_flags(out)
     counts["music manager flags"] += found
     if flags != out:
@@ -1130,6 +1202,11 @@ def patch_file(s, name, protect_hearts=False):
     if turn != out:
         lines.append("oot_patches: the saved steering rate above 60 fps in " + name)
     out = turn
+    horse, found = patch_horse_jump(out)
+    counts["horse jump step"] += found
+    if horse != out:
+        lines.append("oot_patches: a horse's jump blend above 60 fps in " + name)
+    out = horse
     return out, counts, lines
 
 
@@ -1172,10 +1249,14 @@ def report(paths, counts, protect_hearts=False):
         print("oot_patches: WARNING: the sound job was found %d times, not once" % total["sound jobs"])
     if total["music manager time"] != 1:   # (without it, above 60 fps the music manager's timers run at 60 / fps of real time)
         print("oot_patches: WARNING: the music manager's time was found %d times, not once" % total["music manager time"])
+    if total["texture compaction"] != 1:   # (without it HOS_TEX_COMPACT_MS does nothing: the game compacts at every frame)
+        print("oot_patches: WARNING: the texture heap's compaction request was found %d times, not once" % total["texture compaction"])
     if total["music manager flags"] != 1:   # (without it, above 60 fps the battle music can play on after a fight)
         print("oot_patches: WARNING: the music manager's change flags were found %d times, not once" % total["music manager flags"])
     if total["solver sites"] != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
         print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (total["solver sites"], len(SOLVER_HEADS)))
+    if total["horse jump step"] != 1:   # (without it, above 60 fps Epona gallops through the fences she jumps)
+        print("oot_patches: WARNING: the horse's jump step test was found %d times, not once" % total["horse jump step"])
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))

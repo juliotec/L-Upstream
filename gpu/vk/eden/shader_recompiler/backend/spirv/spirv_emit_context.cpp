@@ -1082,16 +1082,13 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     // memory: here a page table (vk_memory.cpp) takes the guest address to its pool's device address.
     const char* const gp_test{getenv("RX_VK_GP_TEST")};   // (1: the addressing model alone, 2: and the table's load, 3 or unset: all of it)
     const int gp_level{gp_test ? atoi(gp_test) : 3};
-    // (the culling; a graphics stage with it hung the renderer at a load. RX_VK_NO_FOLLOW: none of it, as before)
-    static const bool no_follow{env_on("RX_VK_NO_FOLLOW")};
+    // (the culling; a graphics stage with it hung the renderer at a load)
     // (not the task and mesh stages: tried for the foliage, which it did not bring back)
     // (EvilOOT: vertex and fragment stages too, as the fallback only: an access no bound buffer holds read 0 there (Kokiri's
     // pond came out grey, not green). The pointer pass leaves graphics stages as they were, so what was found before still is,
-    // and the menus' text stays. Not where the stage has the render area's push block: a stage has one push block.
-    // RX_VK_FOLLOW_GRAPHICS=0: off)
-    static const bool graphics{!getenv("RX_VK_FOLLOW_GRAPHICS") || atoi(getenv("RX_VK_FOLLOW_GRAPHICS")) != 0};
+    // and the menus' text stays. Not where the stage has the render area's push block: a stage has one push block)
     const bool graphics_stage{stage == Stage::VertexB || stage == Stage::Fragment};
-    const bool follow_pointers{(stage == Stage::Compute || (graphics && graphics_stage && !info.uses_render_area)) && !no_follow};
+    const bool follow_pointers{stage == Stage::Compute || (graphics_stage && !info.uses_render_area)};
     Id ptr_u64{};
     if (follow_pointers) {
         wants_guest_pages = true;
@@ -2443,8 +2440,8 @@ void EmitContext::DefineMesh(const IR::Program& program) {
         mesh_vertex_targets.push_back(target(line, false));
     }
     // (longshot) A component of a generic output no line writes was undefined at the fragment stage (the console's: 0, and 1 for .w,
-    // as the vertex stage's defaults here). The foliage is drawn by mesh programs: neon plants. RX_VK_MESH_NO_DEFAULTS=1: as before
-    if (!env_on("RX_VK_MESH_NO_DEFAULTS")) {
+    // as the vertex stage's defaults here). The foliage is drawn by mesh programs: neon plants
+    {
         std::array<u32, IR::NUM_GENERICS> written{};
         for (const u32 line : mesh_info.vertex_lines) {
             const IR::Attribute attribute{line};

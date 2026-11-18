@@ -40,6 +40,7 @@ def main():
     fixture = f'''#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #define CHECK(x) do {{ if (!(x)) {{ std::fprintf(stderr, "FAIL:%d %s\\n", __LINE__, #x); std::exit(1); }} }} while (0)
 {fn}
 int main() {{
@@ -53,8 +54,14 @@ int main() {{
     cup[0] = 8;
     CHECK(!dyn_same(fp, 2, up, 2, raw, 2, cfp, cup, craw));
     cup[0] = 3;
+    cup[1] = 4 | 1u << 31;   // (the last word, in its last byte: the words are compared whole)
+    CHECK(!dyn_same(fp, 2, up, 2, raw, 2, cfp, cup, craw));
+    cup[1] = 4;
     craw[1] = 7;
     CHECK(!dyn_same(fp, 2, up, 2, raw, 2, cfp, cup, craw));
+    craw[1] = 6;
+    cfp[0] = -0.f, fp[0] = 0.f;   // (the floats by value, as before: -0 is 0)
+    CHECK(dyn_same(fp, 2, up, 2, raw, 2, cfp, cup, craw));
     CHECK(!dyn_same(fp, 0, up, 2, raw, 2, cfp, cup, craw));
     std::printf("PASS: the same dynamic state is not built again\\n");
 }}

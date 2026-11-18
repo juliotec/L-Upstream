@@ -405,6 +405,8 @@ public:
     /// (longshot) a fallback mesh workgroup's slot (task workgroup * threads + its index), read from the task's map in the
     /// entry block (EmitMeshPrologue); invalid without a task program, where the slot is the workgroup id
     Id mesh_fallback_slot{};
+    Id mesh_fallback_epilogue_word{};   ///< (longshot) the fallback epilogue's loop index, a function variable of the entry block
+    Id mesh_fallback_epilogue_line{};   ///< (longshot) the Soa records' line, WriteFallbackLines' inner loop index, as above
     Id mesh_shared_u32{};   ///< pointer type to one workgroup word
     Id mesh_primitive_indices{};
     MeshInfo mesh_info{};

@@ -4,11 +4,13 @@
 #include "vk_paths.h"
 #include "vk_loader.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <new>
 #include <string>
@@ -40,6 +42,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "mesh_mode.h"
 #include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
 #include "vk_fps.h"
+#include "memory_priority.h"
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "longshot_env.h"
 #endif
@@ -231,6 +234,16 @@ bool create_instance() {
         for (const char* want : {"VK_KHR_xlib_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface"})
             if (has_extension(all, want)) exts[n_exts++] = want;
     }
+#endif
+#ifndef _WIN32
+    // (longshot) Mesa's Intel compiler (driconf shader_spilling_rate, read when the driver loads, ignored by the others): when a
+    // program does not fit its registers it spills some and allocates the whole program again, rounds of one at first and then
+    // of (spilled so far / rate). Held to 32 lanes an Iris Xe has 32 registers a lane, and MKW's large compute programs spill
+    // thousands: at Mesa 26.2's default abccf81b45c5eb50, which play dispatches, was not built after 20 minutes and 13 GB, at 2
+    // in 32 s and 1.7 GB; 7a548525c239b91b 531 s and 7.6 GB, at 2 87 s and 4 GB (i9-13900H, 2026-11-14). The programs that do
+    // not spill are built as before; the driver's estimate of those that do moved from 12% better to 53% worse (3 was 165 s for
+    // abccf81b45c5eb50, 4 not built in 8 minutes). A value the player set is kept
+    setenv("shader_spilling_rate", "2", 0);
 #endif
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "mkw-recomp";
@@ -427,6 +440,8 @@ bool create_device() {
     optional(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, dev.vertex_divisor);
     optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev.memory_budget);
+    // (longshot, RX_VK_MEMORY_PRIORITY, off by default: memory_priority.h. The extension is asked for only with the switch on)
+    if (memory_priority::parse(getenv("RX_VK_MEMORY_PRIORITY")).on) optional(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME, dev.memory_priority);
     optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, dev.view_2d_of_3d);
     // (longshot) on by default: with a marker before each draw and dispatch the device has not been lost (five
     // runs); without them it was, every run, shortly after OoT's first gameplay frames (nvlddmkm event 153; the
@@ -475,7 +490,7 @@ bool create_device() {
     q.queueCount = 1;
     q.pQueuePriorities = &priority;
     // (longshot) The presents on a queue of a compute family of their own, beside the replay's (RX_VK_PRESENT_QUEUE=1 / 0: on /
-    // off; on by default with NVIDIA's driver on Windows, where it was measured). On the replay's queue vkQueuePresentKHR blocked
+    // off; on by default with NVIDIA's driver on Windows, below). On the replay's queue vkQueuePresentKHR blocked
     // with dev.present_mu held, ~0.8 ms a present with frame interpolation at 4x and up to 8, and the game's main and presentation
     // threads waited there to submit. A second queue of the graphics family took that lock off the presents, but its presents
     // blocked longer (~2-4 ms: the graphics work of the two queues takes turns on the GPU) and the made frames were shown late
@@ -486,15 +501,31 @@ bool create_device() {
     uint32_t compute_family = UINT32_MAX;
     {
         bool want = false;
+        bool old_nvidia = false;   // (NVIDIA's driver older than 621.24: logged below when the switch is unset)
 #ifdef _WIN32
         VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &dp;
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        want = false;   // (v2.0.9: off by default with the write-back diff until issue 1161's device lost is placed; was:
-        (void)dp;       //  NVIDIA's driver on Windows. RX_VK_PRESENT_QUEUE=1: on)
+        // (On by default with NVIDIA's driver 621.24 and newer on Windows. On the replay's queue a present waits behind the
+        // game's next frame, 3 to 12 ms at 5120x2160: frame generation's frames, each presented at its own time since #1362,
+        // reach the screen together. An RTX 5090 on 621.24, 165 Hz G-Sync, DLSS Frame Gen 3x, V-Sync Off, main 415a8944
+        // against this (PresentMon): frames on the screen under 2 ms after the one before from 33% to 0.1% or less, the sd of
+        // their times on the screen from 4.7 to 1.1-1.3 ms, each present's call to the screen from 6.6 to 1.3 ms. With V-Sync
+        // On (#1442), ~48 fps GPU-bound: the shown frames' animation error from 2.98 to 1.65 ms, the latency from 11.8 to 8.7
+        // ms. Off since v2.0.9 for Hookshot issue 1161, before the fork: an RTX 4090 on NVIDIA's 621.14, whose GPU v2.0.8 lost
+        // in the write-back diff (b784c68a), had a black screen with the present queue alone (4e24bd4d), a fault never placed.
+        // 621.24 ran it in the 12 recorded runs (docs/tested: fg-pacing-*present-queue*, present-queue-default-*) and a
+        // tester's play: from it on, by default. Older drivers, other drivers and Linux keep the replay's queue)
+        constexpr uint32_t kPresentQueueNvidia = (621u << 22) | (24u << 14);   // (NVIDIA's version: major << 22, minor << 14)
+        want = dp.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY && dev.props.driverVersion >= kPresentQueueNvidia;
+        old_nvidia = dp.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY && !want;
 #endif
-        if (const char* e = getenv("RX_VK_PRESENT_QUEUE")) want = atoi(e) != 0;
+        // (the switches' yes/no rule, longshot_env.h: unset or empty, the default above; 0, false, off or no, off; else on)
+        if (const char* e = getenv("RX_VK_PRESENT_QUEUE"); e && *e) want = !env_value_off(e);
+        else if (old_nvidia)
+            logf("vk: presents on the replay's queue: NVIDIA's driver %u.%02u is older than 621.24, where their own queue was "
+                 "measured (RX_VK_PRESENT_QUEUE=1: on)", dev.props.driverVersion >> 22, (dev.props.driverVersion >> 14) & 0xff);
         for (uint32_t i = 0; want && i < n && compute_family == UINT32_MAX; i++)
             if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
                 compute_family = i;
@@ -573,6 +604,8 @@ bool create_device() {
     if (dev.device_fault) *tail = &fault, tail = &fault.pNext;
     VkPhysicalDeviceImage2DViewOf3DFeaturesEXT v2d3d{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT mem_priority{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
+    if (dev.memory_priority) *tail = &mem_priority, tail = &mem_priority.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
     VkPhysicalDeviceDepthBiasControlFeaturesEXT dbc{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT};
@@ -595,6 +628,7 @@ bool create_device() {
     if (module_id && module_idf.shaderModuleIdentifier) module_ids_on();
     descriptor_buffer.descriptorBufferCaptureReplay = VK_FALSE;
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
+    dev.memory_priority = dev.memory_priority && mem_priority.memoryPriority;
     // (VK_EXT_depth_bias_control: on only with the D24 unit a D24 kept as D32 needs, vk_draw.cpp; the rest off)
     dev.depth_bias_control = dev.depth_bias_control && dbc.depthBiasControl &&
                              dbc.leastRepresentableValueForceUnormRepresentation;
@@ -680,21 +714,6 @@ bool create_device() {
     dev.eds3_clamp = dev.dynamic_state3 && eds3.extendedDynamicState3DepthClampEnable;
     dev.eds3_blend = dev.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
                      eds3.extendedDynamicState3ColorBlendEquation && eds3.extendedDynamicState3ColorWriteMask;
-    {   // (longshot) the vendor and driver workarounds this device needs: vk_vendor.h, each forced by its RX_VK_ switch
-        VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-        p2.pNext = &drv;
-        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        VendorFacts facts;
-        facts.vendor_id = p2.properties.vendorID;
-        facts.driver_id = drv.driverID;
-        facts.device_type = p2.properties.deviceType;
-        facts.driver_info = drv.driverInfo;
-        dev.fixes = vendor_fixes(facts);
-        vendor_fixes_env(dev.fixes, [](const char* name) -> const char* { return getenv(name); });
-        logf("vk: vendor fixes for %s (%s): out-of-bounds texel fetches 0 %d, NaN tests by bits %d, gather offset %d",
-             drv.driverName, drv.driverInfo, (int)dev.fixes.fetch_bounds, (int)dev.fixes.nan_bits, (int)dev.fixes.gather_offset);
-    }
     dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
     dev.vk12 = f12;
     dev.vk13 = f13;
@@ -725,6 +744,8 @@ bool create_device() {
         dev.radv_gcn = drv.driverID == VK_DRIVER_ID_MESA_RADV && !f11.storageInputOutput16;
         logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x; RADV on GCN 1-4: %s", sg.subgroupSize, sc.minSubgroupSize,
              sc.maxSubgroupSize, (unsigned)dev.sg32_stages, dev.radv_gcn ? "yes" : "no");
+        if (drv.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA && getenv("shader_spilling_rate"))
+            logf("vk: Mesa's Intel compiler spills at rate %s (driconf shader_spilling_rate: 2 unless set)", getenv("shader_spilling_rate"));
     }
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore) {
         logf("vk: the GPU lacks dynamic rendering, synchronization2 or timeline semaphores");
@@ -827,6 +848,12 @@ bool create_device() {
         dev.policy = device_policy(pf);
         // (and the switches over them, read once, by one rule: device_policy_env)
         device_policy_env(dev.policy, pf, [](const char* name) -> const char* { return getenv(name); });
+        // (longshot) the translation's vendor and driver workarounds (device_policy.h fetch_bounds, nan_bits, gather_offset),
+        // each forced by its RX_VK_ switch
+        device_policy_fixes_env(dev.policy, [](const char* name) -> const char* { return getenv(name); });
+        logf("vk: vendor fixes for %s (%s): out-of-bounds texel fetches 0 %d, NaN tests by bits %d, gather offset %d",
+             dev.driver.driverName, dev.driver.driverInfo, (int)dev.policy.fetch_bounds, (int)dev.policy.nan_bits,
+             (int)dev.policy.gather_offset);
     }
     // (longshot) Intel XeSS's features (vk_xess.cpp), last, into the chain as it will be made: the library sets what it needs in
     // the renderer's structures and adds what it lacks (VK_EXT_mutable_descriptor_type's); nothing without its library, and a
@@ -1089,17 +1116,28 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = dev.surface;
     ci.minImageCount = std::max(caps.minImageCount, 4u);   // (longshot: mailbox with frame interpolation: an image always free)
-    // doc: docs/design.md#13-frame-generations-presents-at-v-sync-off-as-rules (rule 4: two sets' spare images at V-Sync Off)
+    // doc: docs/design.md#13-frame-generations-presents-as-rules (rule 4: two sets' spare images on the timeline)
     // (longshot) A fixed frame generation multiplier's set is presented ahead (vk_framegen.cpp present_ahead_wanted): each
     // of its frames holds an image from the copy to its present, so the set needs as many spare images as it has frames. 3x
     // and 4x ask for that many over the surface's least (an NVIDIA surface: 5 and 6 images); a set the chain cannot hold is
-    // shown one at a time as before. Where the swapchain does not wait for a refresh (V-Sync Off; mailbox) two sets' worth:
+    // shown one at a time as before. Two sets' worth while the sets are on the game's timeline, whatever the present mode:
     // the next set's copies go to the GPU as soon as it comes, while this one is still shown (display_main's take_early; an
     // NVIDIA surface: 6 images at 2x, its most, 8, from 3x up; at 4x, under two sets, the next set's later copies wait for
-    // images). RX_VK_FG_TIMELINE=0 (the sets as before, display_main): one set's
+    // images). Under FIFO with one set's, the copies went to the GPU once the set before was shown, behind the game's next
+    // frame, and the GPU's delay (vk_framegen.cpp pace_delay) grew with its own lateness. RX_VK_FG_TIMELINE=0 (the sets as
+    // before, display_main): one set's. Under FIFO a set with more frames than the chain can ever hold spare (an NVIDIA
+    // surface, 8 images: 7x and 8x) is not presented ahead and goes out as it comes: two sets' images there only deepen
+    // FIFO's queue, two refreshes more delay (the review, 2026-11-17): one set's, as before. (present_image makes the chain
+    // again when the multiplier changes past 4x too)
     static const char* timeline_env = getenv("RX_VK_FG_TIMELINE");
     const bool timeline = !(timeline_env && env_value_off(timeline_env));
-    const uint32_t fg_sets = mode == VK_PRESENT_MODE_FIFO_KHR || !timeline ? 1 : 2;
+    const bool set_too_big = mode == VK_PRESENT_MODE_FIFO_KHR && caps.maxImageCount &&
+                             (uint32_t)std::max(opts.framegen, 0) > caps.maxImageCount - std::min(caps.maxImageCount, caps.minImageCount);
+    // (under FIFO, display_main holds the frames a refresh apart (vk_framegen.cpp fifo_slot), which needs the display's refresh.
+    // With none known (display_refresh_mhz 0) the frames go as they come, and two sets' images would only let FIFO queue more
+    // of them than main's one set did: more delay, nothing gained. One set's there, as before: the review of #1442)
+    const bool fifo_unpaced = mode == VK_PRESENT_MODE_FIFO_KHR && display_refresh_mhz() <= 0;
+    const uint32_t fg_sets = timeline && !set_too_big && !fifo_unpaced ? 2 : 1;
     // (at most kPresentSlotsMax over the least, present_image's frame slots: an image past them would share a slot with
     // the set still shown (docs/design.md section 13, rule 4) and cost video memory for nothing. swapchain_framegen stops at
     // 4, so two sets ask for 8 today; the cap keeps that so if it changes: HumanBean's review of #1362)
@@ -1223,8 +1261,12 @@ std::string skipped_path() { return cache_path("longshot_prepare_skipped"); }
 //   compiling", above) can leave that compile unfinished inside it, and builds behind it then wait for ever (on AMD, any build of
 //   the same program: #1823's dump of issue 996): builds stuck on players' cards of all kinds, AMD and NVIDIA (#2107). Whatever
 //   the cause, a part that needs the stuck driver cannot go on. So when nothing has moved for RX_VK_PREPARE_STALL_S seconds
-//   (300; 0: never stopped. Long: some steps read the caches or
-//   decide the predictions for a while with no count, on a slow disk or CPU too), the run says where it stopped and why, leaves
+//   (300; 0: never stopped. Long: some steps read the caches or decide the predictions for a while with no count, on a slow
+//   disk or CPU too. While a driver compile is under way and the process keeps half a CPU or more busy, the compiler at work,
+//   three times that, and twelve times on Mesa's Intel driver (prepare_long_compiles): on an Iris Xe one variant of
+//   abccf81b45c5eb50, a program MKW dispatches in play, was not done after 15 minutes held to 32 lanes. A compile that uses no
+//   CPU is stuck on a lock, and stops at the ordinary limit on every driver, as before),
+//   the run says where it stopped and why, leaves
 //   longshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
 //   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
 //   unloads the driver, which can wait on the same lock. Before, it waited until make_game.py stopped it after 15 minutes with no
@@ -1250,6 +1292,14 @@ void prepare_moved(int part, size_t done, size_t total) {
     if (part != prepare_seen.part || done != prepare_seen.done || !prepare_seen.moved_ms)
         prepare_seen = {part, done, total, steady_ms()};
 }
+/// (longshot) A driver compile that ended (vk_draw.cpp ComputeTurn): the driver answers, so the watchdog's clock starts again though
+/// the part's count has not moved. The compute warm's count moves when a program's variants are all done, up to 64 of them,
+/// not as each one ends: on an Iris Xe one held to 32 lanes can take minutes, and the watchdog stopped a preparation whose
+/// driver was compiling all along
+void prepare_compiled_seen() {
+    std::lock_guard lk(prepare_seen_mu);
+    if (prepare_seen.moved_ms) prepare_seen.moved_ms = steady_ms();
+}
 /// The run ends now: the log written out, then TerminateProcess, not exit(), which unloads a driver that can still hold workers
 /// (@@done first for a run that finished: the line the game prints after the preparation, host/hos_main.c)
 [[noreturn]] void prepare_end(int code) {
@@ -1263,6 +1313,23 @@ void prepare_moved(int part, size_t done, size_t total) {
     std::_Exit(code);
 }
 std::atomic<int> driver_faults_seen{0};
+/// (longshot) The CPU time this process has used, in ms (-1: the system does not say): a driver compile that is working keeps a CPU
+/// busy, one that is stuck on a lock uses none
+int64_t process_cpu_ms() {
+#ifdef _WIN32
+    FILETIME created, ended, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &ended, &kernel, &user)) return -1;
+    const auto ms = [](const FILETIME& f) { return (int64_t)((((uint64_t)f.dwHighDateTime << 32) | f.dwLowDateTime) / 10000); };
+    return ms(kernel) + ms(user);
+#else
+    timespec t;
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t)) return -1;
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+#endif
+}
+/// (longshot) The watchdog's last look at the CPU: half a CPU or more busy over its window (prepare_compiler_busy, for
+/// precompile_run's own limit)
+std::atomic<bool> prepare_cpu_busy{false};
 void prepare_watchdog() {
     static const int stall_s = getenv("RX_VK_PREPARE_STALL_S") ? atoi(getenv("RX_VK_PREPARE_STALL_S")) : 300;
     // (a status line after this long with no other line; RX_VK_PREPARE_STATUS_S=<s>, for the tests)
@@ -1273,9 +1340,26 @@ void prepare_watchdog() {
                                             "the pipeline cache's save"};
         const int64_t limit_s = stall_s > 0 ? stall_s : 300;   // (the save's lines stop after this, whatever RX_VK_PREPARE_STALL_S)
         const int save_stall_s = stall_s * 2;   // (a risky save's stop: twice the parts', above)
+        const int64_t compile_stall_s = stall_s * 3;   // (a compile with a CPU at work: three times, 900 s by default)
+        const int64_t long_compile_stall_s = stall_s * 12;   // (the same on Mesa's Intel driver: an hour by default)
+        // (the CPU the process used over the last window, 30 s by default: half a CPU or more is a compiler at work)
+        const int64_t busy_window_ms = std::clamp<int64_t>((int64_t)stall_s * 100, 1000, 30000);
+        int64_t cpu_then = process_cpu_ms(), cpu_then_ms = steady_ms();
+        bool cpu_busy = false;
         for (;;) {
             Sleep(1000);
             const int64_t now = steady_ms();
+            if (now - cpu_then_ms >= busy_window_ms) {
+                const int64_t cpu = process_cpu_ms();
+                cpu_busy = cpu >= 0 && cpu_then >= 0 && (cpu - cpu_then) * 2 >= now - cpu_then_ms;
+                cpu_then = cpu, cpu_then_ms = now;
+                prepare_cpu_busy.store(cpu_busy, std::memory_order_relaxed);
+            }
+            // (whether a compile is under way, read before the progress below: a compile that ends moves the progress's time and
+            // then leaves the list (vk_draw.cpp ComputeTurn), so one that ended between the two reads is in the time read here.
+            // Read the other way round, a compile that ended between them left an old time and no compile under way, and a
+            // healthy run was stopped at the short limit)
+            const bool under_way = prepare_compiling();
             PrepareSeen at;
             {
                 std::lock_guard lk(prepare_seen_mu);
@@ -1286,19 +1370,22 @@ void prepare_watchdog() {
             const int faults = driver_faults();
             const bool left = prepare_left_workers();
             const bool risky = faults > 0 || left;   // (the driver may be stuck: the save too can wait for ever)
+            const bool compiling = at.part < 3 && cpu_busy && under_way;   // (a compile at work; one with no CPU is stuck)
+            const int64_t part_stall_s = !compiling ? stall_s : prepare_long_compiles() ? long_compile_stall_s : compile_stall_s;
             // (what it waits on: after a fault in the driver, most likely the driver; else the driver or the disk, a slow one
             // reading the caches)
             const char* waiting_on = faults ? "waiting on the GPU driver, which faulted (above)"
                                      : left ? "waiting on the GPU driver, which still has pipelines it did not finish"
-                                            : "waiting on the GPU driver or the disk";
+                                     : compiling ? "waiting on the GPU driver, which is compiling (a CPU busy)"
+                                                             : "waiting on the GPU driver or the disk";
             if (faults != driver_faults_seen.exchange(faults))
                 logf("vk: preparation: the GPU driver faulted %d time%s so far (above): a driver can stop responding after one, so a "
                      "stop here would be why", faults, faults == 1 ? "" : "s");
-            if (stall_s > 0 && (at.part < 3 ? still >= stall_s : risky && still >= save_stall_s)) {
+            if (stall_s > 0 && (at.part < 3 ? still >= part_stall_s : risky && still >= save_stall_s)) {
                 if (at.part < 3)
-                    logf("vk: preparation: STOPPED: nothing moved for %d s in %s (%zu of %zu): the GPU driver stopped responding%s. "
-                         "The rest is built in play, when first drawn; updating the GPU driver may help", stall_s, what, at.done,
-                         at.total, faults ? " after it faulted (above)" : "");
+                    logf("vk: preparation: STOPPED: nothing moved for %lld s in %s (%zu of %zu): the GPU driver stopped responding%s. "
+                         "The rest is built in play, when first drawn; updating the GPU driver may help", (long long)part_stall_s, what,
+                         at.done, at.total, faults ? " after it faulted (above)" : "");
                 else
                     logf("vk: preparation: STOPPED: %s waited %d s on the GPU driver, %s. The pipelines are made; only this "
                          "file is left out. Updating the GPU driver may help", what, save_stall_s,
@@ -1325,8 +1412,8 @@ void prepare_watchdog() {
                     continue;   // (silent from here: make_game.py's 15 minutes with no line stop a save that never ends)
             } else if (still >= quiet_s) {
                 if (stall_s > 0)
-                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %d s if "
-                         "nothing moves", what, (long long)still, at.done, at.total, waiting_on, stall_s);
+                    logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %lld s if "
+                         "nothing moves", what, (long long)still, at.done, at.total, waiting_on, (long long)part_stall_s);
                 else
                     logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s", what,
                          (long long)still, at.done, at.total, waiting_on);
@@ -1394,6 +1481,7 @@ void prepare_with_screen() {
             prep_skip[1].store(true);
         }
         if (!prepare_stopped()) {
+            if (update) state_list_run();   // (the shipped list's pipelines, as a start with no screen makes them)
             prep_done.store(0), prep_total.store(0);
             prep_stage.store(2);
             precompile_run(prep_progress);
@@ -1775,6 +1863,10 @@ MkwVkRenderer table;
 } // namespace
 /// (longshot) The shaders are being prepared (the start-up screen): the performance summary's "map" then (perf_report.cpp)
 bool shaders_preparing() { return prep_running.load(std::memory_order_relaxed); }
+/// (vk_internal.h: the driver compile that ended, for the watchdog above)
+void prepare_compiled() { prepare_compiled_seen(); }
+/// (vk_internal.h: the CPU at work, as the watchdog above last saw it; false where no watchdog runs, a game start)
+bool prepare_compiler_busy() { return prepare_cpu_busy.load(std::memory_order_relaxed); }
 } // namespace mkwvk
 
 // (longshot) The window is being closed (host/display.c, host/posix/display_sdl.c, before they end the process), or the game quit
@@ -1854,7 +1946,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
          dev.graphics_pipeline_library ? "yes" : "no", dev.maintenance5 ? "yes" : "no");
     logf("vk: driver: %s", driver_text().c_str());   // (the builders' Save my pipeline list reads it: nx2/pipeline_share.py)
     // (what this PC is, what it gets for it, and which of those a switch set: device_policy.h)
-    device_policy_log(dev.policy, dev.facts, dev.fixes, [](const char* line) { logf("%s", line); });
+    device_policy_log(dev.policy, dev.facts, [](const char* line) { logf("%s", line); });
     // (the crash report's facts, as the bug report words them: host/hos_crash_dialog.h reads the last of each)
     logf("report: gpu %s", device_report_text().c_str());
     logf("report: cpu %s", mkwvk::bug_report::cpu_text().c_str());

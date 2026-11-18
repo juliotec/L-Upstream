@@ -15,9 +15,12 @@ rules are read, how to read the log's `vk: policy:` lines, and what to do when a
 - **`device_policy_env(policy, facts, get)`** applies the switches, by one rule (below), and notes which fields a switch
   set (`policy.set(Sw::...)`) and which values it ignored.
 
-The result is `dev.policy` (`gpu/vk/vk_internal.h`). Neither it nor the header may be used in a file of the shader
-translation's stamp (`nx2/translator_files.py`: `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `eden/`, `sirit/`,
-`compat/`): an edit there has every player translate every program again. The check fails if one does.
+The result is `dev.policy` (`gpu/vk/vk_internal.h`). The header is no file of the shader translation's stamp
+(`nx2/translator_files.py`: `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `eden/`, `sirit/`, `compat/`; an edit to one of
+those has every player translate every program again), and of those files only `vk_shader.cpp` reads `dev.policy`. So a
+rule the translation reads, when it is changed in the header, reaches the program cache only through the values
+`translator_stamp` folds: each field `vk_shader.cpp` reads is folded there, itself or as the profile's value made from
+it and its switch, and the check fails for a field that is read and not folded.
 
 ## Which rules are read from it
 
@@ -28,8 +31,15 @@ decides with its own switch read; the step named in the comment moves it.
 Read today: ASTC on the CPU, batched submits, serial compute builds, the pipeline cache's fetch lock, the part split
 before a draw, the uniform snapshot, the uniform updates at each part's end, the occlusion copies, the mirrors, FSR 4's
 tuning, invariant positions, the equal-depth margin, one program's builds at a time, the background workers and the
-preparation's workers in play. The mesh mode's rule for RADV is the header's too, but `create_device` asks the driver
-itself, as the mode is chosen before the facts are whole.
+preparation's workers in play; and the shader translation's: the three vendor fixes that were `vk_vendor.h`'s
+(out-of-bounds fetches, NaN tests on bits, the gather offset), the fragment shuffles' fallback, the long warp path, the
+Deku Tree web's inlined loads and the networks left out. The mesh mode's rule for RADV is the header's too, but
+`create_device` asks the driver itself, as the mode is chosen before the facts are whole.
+
+The translation's switches keep their own reading for now. `RX_VK_FETCH_BOUNDS`, `RX_VK_NAN_BITS` and
+`RX_VK_GATHER_OFFSET` are read by `device_policy_fixes_env` as numbers (0 off, another number on, a word off), not by the
+one rule below; `RX_VK_WARP64` and `RX_VK_FRAG_SHUFFLE_FALLBACK` are read in `make_profile` (a value that starts with 1
+on, any other off), and `RX_VK_NETWORK_KEEP` where the networks are left out.
 
 The sizes that go by the driver's allowance (the spare capture buffers, the staging arenas kept, the damped squeeze, an
 integrated GPU's texture budget) are written once, in `policy_rule`, and their sites call the rule with the allowance at
@@ -37,9 +47,7 @@ their own first use, after the renderer has allocated. The policy's own numbers 
 log's can be higher than what a site gets. A switch for one of them is read by `device_policy_env`, and the site takes
 the field when `policy.set(...)` says so.
 
-Still decided at their sites, by rules the header repeats: everything in `vk_shader.cpp` (the fragment shuffles'
-fallback, the long warp path, the Deku Tree web's inlined loads, the networks left out) and `vk_vendor.h`'s three fixes,
-which `vk_shader.cpp` reads, until the one change that edits the stamp; the rest of device creation (the task + mesh
+Still decided at their sites, by rules the header repeats: the rest of device creation (the task + mesh
 fallback, the float add's extension, the checkpoints, the presenter's queue), chosen before the facts are whole; the
 texture uploads' thread counts, in functions that checks compile with no device; and the rules a tested header of
 their own already holds (the texture and mirror budgets, the blocks at the start, the retired imports, the auto

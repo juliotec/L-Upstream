@@ -55,7 +55,10 @@ struct {
     } vk12;
     bool float_atomic_add = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
-    struct { bool gather_offset = false; } fixes;   // (vk_vendor.h: make_profile reads the gather offset from it)
+    // (device_policy.h, as make_profile reads it: the long warp path where a subgroup can have more than 32 lanes, the
+    // fragment shuffles' fallback on AMD's Windows driver, the gather offset. main() fills the first two by those rules,
+    // which tests/test_device_policy.py holds device_policy() to)
+    struct { bool warp64 = false, frag_shuffle_fallback = false, gather_offset = false; } policy;
 } dev;
 
 using Shader::Stage;
@@ -86,6 +89,8 @@ int main(int argc, char** argv) {
     dev.subgroup_max = number(2);
     dev.sg32_stages = number(3);
     dev.driver_id = number(4);
+    dev.policy.warp64 = dev.subgroup_max > 32;
+    dev.policy.frag_shuffle_fallback = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
     // (storage buffers bound and translated at 16 bytes at least: AMD's 4 made the 8- and 16-byte vector views inexact)
     for (const uint64_t device : {uint64_t{4}, uint64_t{16}, uint64_t{64}}) {
         dev.props.limits.minStorageBufferOffsetAlignment = device;

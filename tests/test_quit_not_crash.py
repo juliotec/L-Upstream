@@ -299,6 +299,8 @@ def check_source(root):
     stopped = block(prepare, "if (prepare_stopped()) {")
     if "warming" in stopped.replace("crash_markers::close", ""):
         problems.append("prepare_run: a stopped preparation settles the stage libraries' file itself (the close's to do)")
+    if "remove(warming.c_str())" in prepare:   # (the compute warm apart too, which a close can stop: #426)
+        problems.append("prepare_run removes the stage libraries' file itself: a close in the compute warm would clear a crash")
     return problems
 
 

@@ -46,13 +46,13 @@ inline bool frag_nan_guard = false;
 inline bool position_invariant = false;
 // (longshot) An out-of-bounds texel fetch answers zero, as NVIDIA's GPUs answer it (measured on an RTX 3090), rather than
 // whatever the host's does (EmitImageFetch). Vulkan leaves it undefined without robustImageAccess; on AMD the ground fog's
-// off-screen depth reads drew a pale box at the screen's edges. Every card but NVIDIA (gpu/vk/vk_vendor.h); RX_VK_FETCH_BOUNDS
+// off-screen depth reads drew a pale box at the screen's edges. Every card but NVIDIA (gpu/vk/device_policy.h); RX_VK_FETCH_BOUNDS
 inline bool fetch_bounds = false;
 // (longshot) and texel buffers' fetches too: only when robustBufferAccess2 is off (the Debug tab's Robust buffers Off, RX_VK_ROBUST=0,
 // or a driver without it), which otherwise answers their out-of-bounds reads with zero already (vk_coopmat.cpp)
 inline bool fetch_bounds_buffers = false;
 // (longshot) isnan tested on the value's bits (IsNan in emit_spirv_floating_point.cpp), not OpIsNan, for AMD's older Windows
-// shader compiler (RX 5000 and RX 6000: gpu/vk/vk_vendor.h); RX_VK_NAN_BITS=0 or 1
+// shader compiler (RX 5000 and RX 6000: gpu/vk/device_policy.h); RX_VK_NAN_BITS=0 or 1
 inline bool nan_bits = false;
 // (longshot) a storage buffer table's entries searched in a loop the driver is asked not to unroll (DefineGlobalMemoryFunctions),
 // not one test an entry written out sixteen times. Mesa inlines every function, DontInline or not: OoT's foliage culling

@@ -66,6 +66,7 @@ struct Info {
 
 namespace fallback_size {
 inline uint32_t spirv_phis(const uint32_t* words, size_t n) { return n ? words[0] : 0; }
+inline uint32_t spirv_calls(const uint32_t*, size_t) { return 0; }
 }
 
 namespace mkwvk {

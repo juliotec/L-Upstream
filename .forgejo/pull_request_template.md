@@ -8,9 +8,36 @@
      Everyone box true (CONTRIBUTING.md, "Ready for review: out of WIP"). Keep this description current, and post a
      comment for each new commit, measurement or test run: CONTRIBUTING.md, "Commits and pull requests". -->
 
+## TL;DR
+
+<!-- The whole PR in two to four plain sentences a player could follow, at most 120 words, for someone who reads
+     nothing else: what was wrong or missing, what this PR changes, the headline result and how it was checked. No file
+     or function names here: they go in What changed.
+     E.g. "At 4K the pause menu's text ran off the right edge, so the last option of each row couldn't be read. This PR
+     makes the menu's text grow with the screen's height. At 4K the widest row is now 302 px narrower and fits, and the
+     menu's frame time is the same; a new test fails on main and passes here, and I read every row in the game." -->
+
+<two to four plain sentences: what was wrong or missing, what this changes, the headline result and how it was checked>
+
+## Breakdown
+
+<!-- The same story as short bullets, one line each, for a reader who wants more than the TL;DR but not yet the
+     sections below: one bullet for each of these seven, in this order. "Nothing" is a fine answer to "What does not
+     change" or "What is still open"; an empty bullet is not.
+     E.g. "- **Who it helps:** anyone who plays at 4K or on any screen taller than 1080p.
+           - **What was wrong:** the menu's font kept its 1080p size, so wide rows ran past the screen's edge." -->
+
+- **Who it helps:** <who gains, in a player's words>
+- **What was wrong:** <the cause, in one plain sentence>
+- **What changes:** <what the game does differently now, in one sentence>
+- **What does not change:** <what stays as it was: defaults, other paths, saves, or "nothing">
+- **How it was checked:** <the tests and runs, with the headline result>
+- **What is still open:** <what was not tested or still has to be, or "nothing">
+- **Risk:** <low, medium or high, and what could go wrong, in one line>
+
 ## Why
 
-<!-- The reason for this PR, first, in plain words a player could follow: what goes wrong or what is missing, and for
+<!-- The reason for this PR, in plain words a player could follow: what goes wrong or what is missing, and for
      whom. Not the implementation. Search the issue tracker (forge.py issue list, or the web page) and link every
      issue that fits: "Fixes #N" closes it on merge, "See #N" links it.
      E.g. "At 4K the pause menu's text runs off the right edge, so the last option of each row can't be read.
