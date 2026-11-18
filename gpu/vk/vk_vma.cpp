@@ -319,6 +319,13 @@ bool create_buffer_cached(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buf
     if (dedicated) ai.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;   // (its own memory object: no part of a 64 MB block left unused)
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &allocation, &info) != VK_SUCCESS) return false;
+    if (mapped && !info.pMappedData) {
+        vmaDestroyBuffer(vma, buffer, allocation);
+        buffer = VK_NULL_HANDLE;
+        allocation = nullptr;
+        *mapped = nullptr;
+        return false;
+    }
     if (mapped) *mapped = info.pMappedData;
     return true;
 }

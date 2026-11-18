@@ -1117,6 +1117,13 @@ uint64_t cur_cap_value = 0;   // (the submission being recorded: what its syncs'
 uint32_t cur_cap_gen = 0;     // (its capture's generation)
 std::atomic<bool> cap_shutting_down{false};     // (set under cap_free_mu when the process starts to exit: after it no worker touches cap_free)
 std::mutex cap_free_mu;   // (the submitting threads take buffers from cap_free, the replay gives them back)
+// The worker owns its reservation until it has published or discarded its buffer.
+int cap_prewarm_busy = 0;   // (cap_free_mu, also the class flags and reserved bytes)
+bool cap_prewarm_class_busy[4]{};
+uint64_t cap_reserved_bytes = 0;
+#ifndef _WIN32
+std::condition_variable cap_workers_done;
+#endif
 uint64_t cap_free_bytes = 0;   // (cap_free_mu)
 // (the spare buffers: 12 and, on a card of 6 GB or less, 32 MB of them; RX_VK_CAP_SPARE_MB=<n>: that many, 0: as before.
 // After a load the retired ones, 40-60 MB each, stayed as spares for good)
@@ -1130,16 +1137,21 @@ uint64_t cap_spare_max() {
     return v;
 }
 void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size, bool from_worker = false) {
-    std::lock_guard lk(cap_free_mu);
-    if (from_worker && cap_shutting_down.load()) return;
-    // (longshot, RX 7800 XT: buffers up to 256 MB are kept for the next capture, not only up to 64 MB: a new one costs ~100 ms of
-    // vkAllocateMemory on AMD's driver)
-    if (cap_free.size() < 12 && size <= (256ull << 20) && cap_free_bytes + size <= std::min<uint64_t>(cap_spare_max(), 768ull << 20)) {
-        cap_free.push_back({buffer, alloc, map, size});
-        cap_free_bytes += size;
-    } else {
-        destroy_buffer(buffer, alloc);
+    {
+        std::lock_guard lk(cap_free_mu);
+        if (from_worker && cap_shutting_down.load()) return;
+        const bool pressure = linux_pressure_shortfall() != 0;
+        const uint64_t limit = std::min<uint64_t>(cap_spare_max(), (pressure ? 32ull : 768ull) << 20);
+        const uint64_t pending = cap_reserved_bytes - (from_worker ? size : 0);
+        const int workers = cap_prewarm_busy - (from_worker ? 1 : 0);
+        if (!(from_worker && pressure) && cap_free.size() + workers < 12 && size <= (256ull << 20) &&
+            cap_free_bytes + size + pending <= limit) {
+            cap_free.push_back({buffer, alloc, map, size});
+            cap_free_bytes += size;
+            return;
+        }
     }
+    destroy_buffer(buffer, alloc);
 }
 void cap_buf_retire(std::map<uint32_t, CapBuf>::iterator it) {
     cap_bytes -= it->second.size;
@@ -1196,11 +1208,15 @@ VkBufferUsageFlags cap_usage() {
         (late_fix_on() || msync_pass_on() ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0);
     return u;
 }
-std::atomic<int> cap_prewarm_busy{0};
-std::atomic<int> cap_prewarm_class_busy[4]{};   // (32, 64, 128 and 192 MB spares being made)
 void cap_exit_note() {
-    std::lock_guard lk(cap_free_mu);   // (a worker inside cap_buf_free finishes first; one after this sees the flag under the same mutex)
+#ifdef _WIN32
+    // ExitProcess has already terminated the DLL's other threads, possibly inside this mutex.
     cap_shutting_down = true;
+#else
+    std::unique_lock lk(cap_free_mu);
+    cap_shutting_down = true;
+    cap_workers_done.wait(lk, [] { return cap_prewarm_busy == 0; });
+#endif
 }
 int cap_prewarm_index(uint64_t size) { return size <= (32ull << 20) ? 0 : size <= (64ull << 20) ? 1 : size <= (128ull << 20) ? 2 : size <= (192ull << 20) ? 3 : -1; }
 void cap_spare_make(uint64_t size, int index) {
@@ -1217,50 +1233,73 @@ void cap_spare_make(uint64_t size, int index) {
         // may be going, and the memory goes with the process)
         cap_buf_free(b, a, m, size, true);
     }
-    cap_prewarm_class_busy[index]--;
-    cap_prewarm_busy--;
+    std::lock_guard lk(cap_free_mu);
+    cap_reserved_bytes -= size;
+    cap_prewarm_class_busy[index] = false;
+    --cap_prewarm_busy;
+#ifndef _WIN32
+    if (!cap_prewarm_busy) cap_workers_done.notify_all();
+#endif
 }
 /// A spare of at least `size` (32, 64 or 128 MB classes only) is there, or one of its class is being made (cap_free_mu held)
 void cap_prewarm_class(uint64_t size) {
     const int index = cap_prewarm_index(size);
-    if (index < 0 || size > cap_spare_max()) return;   // (not the 256 MB class, and not past what spares may hold)
+    if (index < 0 || cap_shutting_down.load() || linux_pressure_shortfall()) return;
     static const uint64_t kCls[4] = {32, 64, 128, 192};
     const uint64_t cls = kCls[index];
     const uint64_t bytes = cls << 20;
     for (const FreeBuf& f : cap_free)
         if (f.size >= bytes) return;
-    if (cap_prewarm_class_busy[index].load() > 0 || cap_prewarm_busy.load() >= 3) return;   // (three at a time: each commits its memory)
+    if (cap_prewarm_class_busy[index] || cap_prewarm_busy >= 3 || cap_free.size() + cap_prewarm_busy >= 12) return;
+    if (cap_free_bytes + cap_reserved_bytes + bytes > std::min<uint64_t>(cap_spare_max(), 768ull << 20)) return;
     static const bool exit_hook = [] { return std::atexit(cap_exit_note) == 0; }();
-    (void)exit_hook;
-    cap_prewarm_busy++;
-    cap_prewarm_class_busy[index]++;
+    if (!exit_hook) return;
+    cap_reserved_bytes += bytes;
+    ++cap_prewarm_busy;
+    cap_prewarm_class_busy[index] = true;
     try {
         std::thread(cap_spare_make, bytes, index).detach();
     } catch (...) {   // (no thread: no spare, the capture goes on)
-        cap_prewarm_class_busy[index]--;
-        cap_prewarm_busy--;
+        cap_prewarm_class_busy[index] = false;
+        --cap_prewarm_busy;
+        cap_reserved_bytes -= bytes;
     }
 }
 bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& map, uint64_t& size) {
-    std::lock_guard lk(cap_free_mu);
-    static bool first = true;
-    if (first) {   // (the first capture: the classes a load asks for)
-        first = false;
-        for (uint64_t c : {32ull << 20, 64ull << 20, 128ull << 20, 192ull << 20}) cap_prewarm_class(c);
-    }
-    size_t best = cap_free.size();
-    for (size_t i = 0; i < cap_free.size(); i++)
-        if (cap_free[i].size >= need && (best == cap_free.size() || cap_free[i].size < cap_free[best].size)) best = i;
-    if (best < cap_free.size()) {
-        buffer = cap_free[best].buffer, alloc = cap_free[best].alloc, map = cap_free[best].map, size = cap_free[best].size;
+    const uint64_t wanted = cap_buf_size(need);
+    auto take_spare = [&](bool any_size) {
+        std::lock_guard lk(cap_free_mu);
+        static bool first = true;
+        if (first) {
+            first = false;
+            for (uint64_t c : {32ull << 20, 64ull << 20, 128ull << 20, 192ull << 20}) cap_prewarm_class(c);
+        }
+        size_t best = cap_free.size();
+        for (size_t i = 0; i < cap_free.size(); ++i) {
+            const uint64_t bytes = cap_free[i].size;
+            // The load's large spare would be tied up for another 24 submissions.
+            if (!any_size && bytes >= (32ull << 20) && bytes > 2 * wanted) continue;
+            if (bytes >= need && (best == cap_free.size() || bytes < cap_free[best].size)) best = i;
+        }
+        if (best == cap_free.size()) return false;
+        const FreeBuf f = cap_free[best];
+        buffer = f.buffer, alloc = f.alloc, map = f.map, size = f.size;
         cap_free_bytes -= size;
         cap_free.erase(cap_free.begin() + (ptrdiff_t)best);
-        return map != nullptr;
-    }
-    size = cap_buf_size(need);
+        if (!any_size && wanted >= (32ull << 20)) cap_prewarm_class(wanted);
+        return true;
+    };
+    // Reuse any suitable buffer immediately on a tight budget, including while Linux is reclaiming RAM.
+    if (take_spare(linux_pressure_shortfall() || cap_spare_max() <= (32ull << 20))) return true;
+    size = wanted;
     map = nullptr;
-    return create_buffer_cached(size, cap_usage(), buffer, alloc, &map,
-                                size >= (16ull << 20) && !env_on("RX_VK_CAP_BLOCKS")) && map;
+    // Retirements can add a suitable spare while the driver is allocating.
+    if (create_buffer_cached(size, cap_usage(), buffer, alloc, &map,
+                             size >= (16ull << 20) && !env_on("RX_VK_CAP_BLOCKS"))) return true;
+    if (take_spare(true)) return true;
+    if (size == need) return false;
+    size = need;
+    return create_buffer_cached(size, cap_usage(), buffer, alloc, &map, false);
 }
 std::vector<std::pair<uint64_t, uint64_t>> cap_ranges;   // (the mirrored pools the captures take, as of the last one)
 std::mutex cap_ranges_mu;
@@ -1294,30 +1333,38 @@ uint64_t eager_captures() {
 void refresh_pool_ranges_locked() {   // (cap_ranges_mu held)
     if (!capture_pool_max()) return;
     const uint32_t g = host->maps_generation();
-    if (g == pool_cap_gen && captures_made - pool_cap_built < 64) return;   // (and every 64: the old ones out)
+    const uint64_t expiry = eager_captures();
+    static bool initialized = false;
+    if (initialized && g == pool_cap_gen && (!expiry || captures_made - pool_cap_built < 64)) return;
+    initialized = true;
     pool_cap_gen = g, pool_cap_built = captures_made;
     static std::vector<std::array<uint64_t, 2>> list(8192);
     const int n = host->gpu_pools(reinterpret_cast<uint64_t(*)[2]>(list.data()), (int)list.size());
     std::vector<std::pair<uint64_t, uint64_t>> v;
     std::unordered_map<uint64_t, uint64_t> seen;
-    seen.reserve((size_t)std::max(n, 0));
+    v.reserve((size_t)std::max(n, 0));
+    if (expiry) seen.reserve((size_t)std::max(n, 0));
     for (int i = 0; i < n; i++) {
         if (!list[i][1] || list[i][1] > capture_pool_max() || list[i][0] >= (1ull << 40)) continue;
-        auto it = pool_first_seen.find(list[i][0]);
-        const uint64_t first = it != pool_first_seen.end() ? it->second : captures_made;
-        seen[list[i][0]] = first;
-        if (!eager_captures() || captures_made - first < eager_captures())
-            v.push_back({list[i][0] & ~4095ull, (list[i][0] + list[i][1] + 4095) & ~4095ull});
+        if (expiry) {
+            const auto it = pool_first_seen.find(list[i][0]);
+            const uint64_t first = it != pool_first_seen.end() ? it->second : captures_made;
+            seen[list[i][0]] = first;
+            if (captures_made - first >= expiry) continue;
+        }
+        v.push_back({list[i][0] & ~4095ull, (list[i][0] + list[i][1] + 4095) & ~4095ull});
     }
-    pool_first_seen.swap(seen);
-    cap_ranges_ver++;
+    if (expiry) pool_first_seen.swap(seen);
     std::sort(v.begin(), v.end());
     std::vector<std::pair<uint64_t, uint64_t>> m;
     for (const auto& r : v) {
         if (!m.empty() && r.first <= m.back().second) m.back().second = std::max(m.back().second, r.second);
         else m.push_back(r);
     }
-    pool_cap_ranges.swap(m);
+    if (m != pool_cap_ranges) {
+        pool_cap_ranges.swap(m);
+        cap_ranges_ver++;
+    }
 }
 bool capture_on() {
     static const bool on = [] {
@@ -1471,22 +1518,29 @@ void late_fix_cpu_read(uint32_t page, VkBuffer buffer, uint8_t* slot);   // (poo
 bool late_defer_any();   // (pools_mu held: RX_VK_LATE_DEFER, below)
 void late_defer_cpu_read(uint32_t page, uint32_t gen, uint32_t slot, VmaAllocation alloc, uint8_t* map);
 namespace {
-/// What a replay read settles without pools_mu: 0 no memory there, 1 read from guest memory and that stands (no capture, or
-/// its one page in none as of the thread's kept answer), 2 its pages are to be looked up in the captures (guest: its address)
-int submitted_read_unlocked(uint64_t gpu, void* dst, uint64_t n, uint64_t& guest) {
-    // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. A page in none keeps
-    // that answer until a stamp or a new capture)
-    if (!host->gpu_read(gpu, dst, n)) return 0;
-    if (!n || !capture_on() || !captures_seen.load(std::memory_order_relaxed)) return 1;
+/// 0: unreadable, 1: already read, 2: look in the capture under pools_mu. For a validated
+/// single physical page, live points to the fallback and the destination has not been touched.
+int submitted_read_unlocked(uint64_t gpu, void* dst, uint64_t n, uint64_t& guest, const uint8_t*& live) {
+    live = nullptr;
+    if (!n || !capture_on() || !captures_seen.load(std::memory_order_relaxed)) return host->gpu_read(gpu, dst, n);
     guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
-    if (!guest) return 1;
-    const uint64_t page0 = guest >> kPageShift, page1 = (guest + n - 1) >> kPageShift;
+    const uint64_t limit = std::min<uint64_t>(host->guest_size(), kPages << kPageShift);
+    if (!guest || guest >= limit || (gpu < (1ull << 40) && n > limit - guest))
+        return host->gpu_read(gpu, dst, n);
+    const uint64_t page0 = guest >> kPageShift;
+    const bool one_page = n <= 4096 - (guest & 4095);
     const uint64_t view = cap_view_gen.load(std::memory_order_acquire);
     const SubmittedPage& submitted_page = submitted_page_for(page0);
-    if (page0 == page1 && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page, submitted_page.pgen,
+    if (one_page && submitted_page_reuse(page0, page_gen(page0), view, submitted_page.page, submitted_page.pgen,
                                                submitted_page.view))
-        return 1;
-    return 2;
+        return host->gpu_read(gpu, dst, n);
+    // The host maps these GPU addresses directly into its fixed guest window. Validate the
+    // address as gpu_read does. Sparse virtual mappings and partial reads keep its normal path.
+    if (one_page && gpu < (1ull << 40) && host->gpu_guest(gpu) == guest) {
+        live = host->guest_base() + guest;
+        return 2;
+    }
+    return host->gpu_read(gpu, dst, n) ? 2 : 0;
 }
 /// (pools_mu held) the pages of that read a capture holds, copied over what guest memory gave: how many
 int64_t submitted_read_locked(uint64_t guest, void* dst, uint64_t n) {
@@ -1511,6 +1565,22 @@ int64_t submitted_read_locked(uint64_t guest, void* dst, uint64_t n) {
     }
     return from;
 }
+// Virtual neighbours can map to unrelated physical pages. The full live read has
+// already succeeded. Only overlay segments whose physical page has a current capture.
+int64_t mapped_submitted_read_locked(uint64_t gpu, uint64_t guest, void* dst, uint64_t n) {
+    if (gpu < (1ull << 40) || n <= 4096 - (gpu & 4095))
+        return submitted_read_locked(guest, dst, n);
+    const uint64_t limit = std::min<uint64_t>(host->guest_size(), kPages << kPageShift);
+    int64_t from = 0;
+    for (uint64_t at = 0; at < n;) {
+        const uint64_t bytes = std::min<uint64_t>(n - at, 4096 - ((gpu + at) & 4095));
+        const uint64_t physical = at ? host->gpu_guest(gpu + at) : guest;
+        if (physical && physical < limit && bytes <= limit - physical)
+            from += submitted_read_locked(physical, static_cast<uint8_t*>(dst) + at, bytes);
+        at += bytes;
+    }
+    return from;
+}
 void submitted_read_counted(int64_t looked_up, int64_t from) {
     static std::atomic<int64_t> reads{0}, pages_from{0};
     pages_from += from;
@@ -1522,13 +1592,15 @@ void submitted_read_counted(int64_t looked_up, int64_t from) {
 }  // namespace
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
     uint64_t guest = 0;
-    const int r = submitted_read_unlocked(gpu, dst, n, guest);
+    const uint8_t* live;
+    const int r = submitted_read_unlocked(gpu, dst, n, guest, live);
     if (r != 2) return r != 0;
     int64_t from = 0;
     {
         std::lock_guard lk(pools_mu);
-        from = submitted_read_locked(guest, dst, n);
+        from = mapped_submitted_read_locked(gpu, guest, dst, n);
     }
+    if (!from && live) std::memcpy(dst, live, n);
     submitted_read_counted(1, from);
     return true;
 }
@@ -1538,19 +1610,31 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
 void memory_read_as_submitted_many(const SubmittedRead* reads, size_t count) {
     constexpr size_t kMost = 64;
     uint64_t guests[kMost];
+    const uint8_t* live[kMost];
     size_t late[kMost], nlate = 0;
     for (size_t i = 0; i < count; i++) {
         if (i >= kMost) {
             memory_read_as_submitted(reads[i].gpu, reads[i].dst, reads[i].n);
             continue;
         }
-        if (submitted_read_unlocked(reads[i].gpu, reads[i].dst, reads[i].n, guests[i]) == 2) late[nlate++] = i;
+        if (submitted_read_unlocked(reads[i].gpu, reads[i].dst, reads[i].n, guests[i], live[i]) == 2) late[nlate++] = i;
     }
     if (!nlate) return;
+    size_t missing = 0;
     int64_t from = 0;
     {
         std::lock_guard lk(pools_mu);
-        for (size_t k = 0; k < nlate; k++) from += submitted_read_locked(guests[late[k]], reads[late[k]].dst, reads[late[k]].n);
+        for (size_t k = 0; k < nlate; k++) {
+            const size_t i = late[k];
+            const auto& read = reads[i];
+            const int64_t captured = mapped_submitted_read_locked(read.gpu, guests[i], read.dst, read.n);
+            if (!captured && live[i]) late[missing++] = i;
+            from += captured;
+        }
+    }
+    for (size_t k = 0; k < missing; k++) {
+        const size_t i = late[k];
+        std::memcpy(reads[i].dst, live[i], reads[i].n);
     }
     submitted_read_counted((int64_t)nlate, from);
 }
@@ -1558,8 +1642,9 @@ void memory_read_as_submitted_many(const SubmittedRead* reads, size_t count) {
 uint64_t memory_capture_view() { return cap_view_gen.load(std::memory_order_acquire); }
 uint32_t memory_page_stamp(uint64_t gpu) {
     const uint64_t guest = gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu);
-    if (!guest) return 0;
-    return page_gen(guest >> kPageShift);
+    const uint64_t page = guest >> kPageShift;
+    if (!guest || page >= kPages || guest >= host->guest_size()) return 0;
+    return page_gen(page);
 }
 
 bool memory_has_shadow(uint64_t guest, uint64_t n) {
@@ -3534,6 +3619,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
         uint64_t lo = 0, hi = 0;
         std::vector<uint64_t> overlapped;
         auto plan = [&](bool spanned) {   // (the range, the imported pools it takes in; spanned: span_game_pools's chunks too)
+            bool touches_neighbour = false;
             lo = want_lo, hi = std::max(want_hi, imp != imported.end() ? imp->second.hi : 0);
             if (spanned && chunk) span_game_pools(lo, hi, chunk);
             for (bool grew = true; grew;) {
@@ -3546,6 +3632,10 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
                         if (import_reach::beyond(live_reach, it->second.lo, lo)) break;   // (none further down reaches lo)
                         continue;
                     }
+                    // A larger span anticipates future bindings. If only that padding reaches a live
+                    // import, keep the neighbour and plan just the chunks this binding needs. A real
+                    // crossing still merges the imports and inherits their GPU-written contents.
+                    if (spanned && (it->second.hi <= want_lo || it->second.lo >= want_hi)) touches_neighbour = true;
                     overlapped.push_back(it->first);
                     if (it->second.lo < lo) lo = it->second.lo, grew = true;
                     if (it->second.hi > hi) hi = it->second.hi, grew = true;
@@ -3560,15 +3650,17 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
                 overlapped.clear();
                 if (imp != imported.end()) overlapped.push_back(imp->first);
             }
+            return touches_neighbour;
         };
-        plan(true);
-        const uint64_t spanned_lo = lo, spanned_hi = hi;
+        const bool prefer_narrow = plan(true);
+        if (prefer_narrow) plan(false);
+        const uint64_t first_lo = lo, first_hi = hi;
         Pool p;
         bool ok = false;
         for (int pass = 0; pass < 2 && !ok; pass++) {
-            if (pass) {   // (a spanned import that failed: the range without the span, as imported before)
-                plan(false);
-                if (lo == spanned_lo && hi == spanned_hi) break;
+            if (pass) {   // Retry the alternate range once if its address or size differs.
+                plan(prefer_narrow);
+                if (lo == first_lo && hi == first_hi) break;
             }
             const auto t0 = std::chrono::steady_clock::now();
             ok = import_pool(lo, hi, p);

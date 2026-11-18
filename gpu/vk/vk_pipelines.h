@@ -40,6 +40,8 @@ VkPipeline compute_pipeline_by_module_id(const Program& p, const uint8_t* id, ui
 /// A pipeline made ahead of its first draw: the draw's lookup takes it (graphics_pipeline). False: that key has one already,
 /// and pl is destroyed
 bool pipeline_keep_ready(uint64_t key, VkPipeline pl);
+/// Remember a noted state whose cache probe the waiting draw can take on first use.
+void pipeline_defer(uint64_t key);
 void program_layout(Program& p);   // (ensure_layout)
 /// The compute program variants this install's play dispatched before (longshot_compute_variants.bin): key, variant
 std::vector<std::pair<uint64_t, uint64_t>> compute_variants_learned();

@@ -22,7 +22,7 @@ The game's whole-buffer decode (hos_zstd_frames for f_8010b380, HOS_NATIVE_ZSTD_
 call, and two frames with a skippable one between: the result is the content's size and the output the original; failures
 give zstd's error code (wrong checksum, too little room, a wrong or missing dictionary, a bad magic, bytes after the frame);
 a DDict made again in place is taken anew; the switch off, a raw dictionary or another format are left to the lifted code,
-writing nothing; nothing is written outside the output room, and all of it is marked; the core is kept. A broken copy (the
+writing nothing; nothing is written outside the output room, and all of it is marked. Large calls hand the core back for the decode, small calls keep it. A broken copy (the
 DDict never passed to libzstd) must fail.
 
 Byte-for-byte equality with the game's own decoder (f_80115c80 run in Unicorn on the game's image) needs the game: checked
@@ -588,7 +588,9 @@ def frames_checks(exe, tmp, quick=False):
         h, changed, unmarked, aways, backs, x0 = calls[0][:6]
         chk(h == 1 and x0 == len(data), "whole %s: handled %d, result %#x" % (name, h, x0))
         chk(mem[DST - BASE:DST - BASE + len(data)] == data, "whole %s: the output is not the original" % name)
-        chk(unmarked == 0 and aways == backs == 0, "whole %s: %d page(s) unmarked, core given up %d" % (name, unmarked, aways))
+        handoff = int(max(room, len(frame)) >= 128 << 10)
+        chk(unmarked == 0 and aways == backs == handoff,
+            "whole %s: %d unmarked pages, %d/%d core handoffs, expected %d" % (name, unmarked, aways, backs, handoff))
         off = run(exe, tmp, [x], mode="0", pre=pre)[1]   # (memory as it was: nothing changes outside the output room)
         chk(mem[:DST - BASE] == off[:DST - BASE] and mem[DST - BASE + room:] == off[DST - BASE + room:],
             "whole %s: memory outside the output room changed" % name)
@@ -607,6 +609,8 @@ def frames_checks(exe, tmp, quick=False):
         h, changed, unmarked, x0 = calls[0][0], calls[0][1], calls[0][2], calls[0][5]
         chk(h == 1 and zerr(x0) == want, "whole %s: handled %d, error %d, wanted %d" % (name, h, zerr(x0), want))
         chk(unmarked == 0, "whole %s: %d page(s) unmarked" % (name, unmarked))
+        handoff = int(max(room, len(frame)) >= 128 << 10)
+        chk(calls[0][3:5] == (handoff, handoff), "whole %s: unbalanced error-path handoff" % name)
         off = run(exe, tmp, [whole(frame, room, dd)], mode="0", pre=pre)[1]   # (nothing written outside the output room)
         chk(mem[:DST - BASE] == off[:DST - BASE] and mem[DST - BASE + room:] == off[DST - BASE + room:],
             "whole %s: memory outside the output room changed" % name)

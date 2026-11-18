@@ -1603,10 +1603,10 @@ static void release_copies(uint64_t lo, uint64_t hi) {
    or calling a recording waited behind it */
 #define SWEEP_EVERY 1024u
 #define SWEEP_SLICE 2688u   /* (65536 / 2688 * 1024: every bucket once in ~25,000 recordings) */
-static void sweep_overwritten_copies(void) {   /* (copy_lock held) */
+static size_t sweep_overwritten_copies(void) {   /* (copy_lock held) */
     static int off = -1;
     if (off < 0) off = env_on("HOS_NVN_NO_SWEEP");
-    if (off || !rec_buckets) return;
+    if (off || !rec_buckets) return 0;
     free_dead_copies();
     const uint64_t after = rx_nvn_pushed() + held_count();
     size_t swept = 0;
@@ -1643,7 +1643,9 @@ static void sweep_overwritten_copies(void) {   /* (copy_lock held) */
         }
     }
     static int logged;
-    if (swept && logged++ < 12) hos_log_at(HOS_LOG_DEBUG, "nvn: %zu copies of recordings whose control memory was reused let go (%zu live)", swept, ncopies);
+    if (!swept || logged == 12) return 0;
+    logged++;
+    return swept;
 }
 NV(nvnCommandBufferAddControlMemory) {
     nvn_cmd *o = CB(P(0));
@@ -1739,12 +1741,24 @@ NV(nvnCommandBufferEndRecording) {
     ncopies++;
     live_handle_add((uint64_t)(uintptr_t)copy);
     static uint64_t made;
-    if (++made % SWEEP_EVERY == 0) sweep_overwritten_copies();
-    if (made % 50000 == 0)
-        hos_log("nvn: %llu recordings made, %zu live copies (%.1f MB), %zu texture copies; %lld command buffers' segments "
-                "(%.1f MB)", (unsigned long long)made, ncopies, copy_bytes / 1048576.0, npins, (long long)seg_count,
-                seg_bytes / 1048576.0);
+    const uint64_t recording = ++made;
+    const size_t swept = recording % SWEEP_EVERY == 0 ? sweep_overwritten_copies() : 0;
+    const int report = recording % 50000 == 0;
+    const size_t live_copies = (report || swept) ? ncopies : 0;
     ReleaseSRWLockExclusive(&copy_lock);
+    if (report || swept) {
+        /* stderr can block for hundreds of milliseconds. Other recorders and guests pinned to
+           this thread's virtual core must be able to run while the line is being written. */
+        const int away = hos_vcore_away();
+        if (swept)
+            hos_log_at(HOS_LOG_DEBUG, "nvn: %zu copies of recordings whose control memory was reused let go (%zu live)", swept, live_copies);
+        if (report)
+            hos_log("nvn: %llu recordings made, %zu live copies (%.1f MB), %zu texture copies; %lld command buffers' segments "
+                    "(%.1f MB)", (unsigned long long)recording, live_copies, __atomic_load_n(&copy_bytes, __ATOMIC_RELAXED) / 1048576.0,
+                    __atomic_load_n(&npins, __ATOMIC_RELAXED), (long long)__atomic_load_n(&seg_count, __ATOMIC_RELAXED),
+                    __atomic_load_n(&seg_bytes, __ATOMIC_RELAXED) / 1048576.0);
+        if (away) hos_vcore_back();
+    }
     if (watch_draw_cmd && watch_draw_cmd == (void *)o && nwatch_handles < 16) {
         watch_handles[nwatch_handles++] = (uint64_t)(uintptr_t)copy;
         watch_draw_cmd = NULL;
@@ -2255,13 +2269,13 @@ static void tex_copy(const nvn_tex **dst, uint64_t t) {
     if (!o->serial) die("recording refers to an uninitialized texture object %#llx", (unsigned long long)t);
     const uint64_t h = pin_hash(o);
     AcquireSRWLockExclusive(&pin_lock);
-    if (npins * 2 >= pin_slots) pins_grow();
+    if (__atomic_load_n(&npins, __ATOMIC_RELAXED) * 2 >= pin_slots) pins_grow();
     size_t s = (size_t)(h >> 20) & (pin_slots - 1);
     while (pins[s] && !pin_same(pins[s], o)) s = (s + 1) & (pin_slots - 1);
     if (!pins[s]) {
         pins[s] = (nvn_tex *)malloc(sizeof(nvn_tex));
         *pins[s] = *o;
-        npins++;
+        __atomic_fetch_add(&npins, 1, __ATOMIC_RELAXED);
     }
     *dst = pins[s];
     ReleaseSRWLockExclusive(&pin_lock);

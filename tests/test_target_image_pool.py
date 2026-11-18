@@ -52,7 +52,8 @@ class TargetImagePoolTests(unittest.TestCase):
         image = block(vma, "bool create_image(const VkImageCreateInfo& ci")
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
         pool = block(vma, "VmaPool target_images_pool()")
-        self.assertIn("pi.blockSize = kImageBlock;", pool)
+        self.assertIn("pi.blockSize = block_size;", pool)
+        self.assertIn("std::min<uint64_t>(kImageBlock, 16ull << 20)", pool)
         self.assertIn("void vma_log_image_blocks()", vma)
 
     def test_the_dead_targets_are_swept_every_present_after_one_unused(self):
@@ -89,15 +90,15 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
         self.assertLess(trim, frame.index("if (!dead_targets::pass_due(frame_no)) {"))   # (every present, not every tenth)
-        self.assertIn("pool_pressed = known && pressure > allowed / 10 * 9;", frame)
+        self.assertIn("pool_pressure = !known ? 0 : (used > allowed / 100 * 97) ? 2 : (pressure > allowed / 10 * 9) ? 1 : 0;", frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")
-        self.assertIn("pool_pressed ? 0 : pool_cap()", trim)
-        self.assertIn("pool_pressed ? 64 : 16", trim)
-        self.assertIn("!target_pool::idle_out(frame_no, v[i].since, idle)", trim)   # (RX_VK_POOL_IDLE, 8 presents: target_pool.h)
+        self.assertIn("(pool_pressure >= 2) ? 0 : (pool_pressure == 1) ? (full_cap / 2) : full_cap", trim)
+        self.assertIn("(pool_pressure > 0) ? 64 : 16", trim)
+        self.assertIn("!target_pool::idle_out(frame_no, oldest.since, idle)", trim)   # (RX_VK_POOL_IDLE, 8 presents: target_pool.h)
         self.assertIn("pool_bytes <= cap", trim)
-        self.assertIn("pool_destroy(v[i]);", trim)
+        self.assertIn("pool_destroy(oldest);", trim)
         destroy = block(self.tex, "void pool_destroy(Pooled& p)")
         self.assertIn("vkDestroyImageView", destroy)
         self.assertIn("destroy_image(p.image, p.allocation);", destroy)

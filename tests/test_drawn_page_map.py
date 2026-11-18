@@ -87,6 +87,7 @@ struct Texture {   // (the fields the code cut out uses, as gpu/vk/vk_texture.h 
     std::vector<Run> runs;
     uint32_t runs_maps_gen = ~0u;
     bool gpu_written = false, only_cleared = false;
+    uint64_t gpu_draw_value = 0;
     uint32_t gpu_gen = 0;
     bool released = false;
     uint32_t release_gen = 0;
@@ -105,6 +106,7 @@ void logf_at(LogLevel, const char*, ...) {}
 void vw_note(Texture&) {}
 void watch_tex(const Texture*, const char*) {}
 void drawn_writeback_note(Texture*) {}
+void note_drawn_storage(Texture*) {}
 struct nvn_tex;
 void reuse_released(const nvn_tex*) {}   // (decoded ASTC used again, gpu/vk/astc_reuse.h: none here)
 

@@ -66,6 +66,10 @@ static int esc_had_capture;
 /* the game's own menus: open while one of their screens runs with the mouse (stamped each frame on the
    game's thread), their clicks */
 static int game_menu_open;
+/* (one of them has the mouse, the Insert menu closed: read on the game's thread, where the mouse's side buttons, which no
+   menu takes, stay their controls'. host/nn_hid.c mouse_buttons_arm, Longshot #1306) */
+static volatile LONG game_menu_mouse;
+int hos_mouse_in_game_menu(void) { return (int)game_menu_mouse; }
 static volatile LONG64 game_menu_seen_ns;
 static HosPointer game_pointer = HOS_POINTER_INIT;
 /* The cursor over the game's window, in play and in the game's menus (not the Insert menu), is shown until the pads or
@@ -306,6 +310,7 @@ static void menus_mouse(HWND w, int insert_open, int game_open) {
     const int was = menu_open || game_menu_open, now = insert_open || game_open, game_was = game_menu_open;
     if ((insert_open && !menu_open) || (game_open && !game_was)) hos_input_clear_toggles();
     menu_open = insert_open, game_menu_open = game_open;
+    InterlockedExchange(&game_menu_mouse, game_open && !insert_open);
     /* (hidden till used; a menu back within a second, a moment between its screens, keeps the cursor as it was) */
     static int64_t game_closed_ns;
     if (!game_open && game_was) game_closed_ns = hos_now_ns();

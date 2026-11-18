@@ -67,6 +67,7 @@ struct Texture {
     uint32_t gpu_gen = 0;     // (the memory generation when the GPU last wrote it: CPU writes after it are taken)
     bool released = false;    // its texture was finalized after the GPU wrote it: CPU writes count again
     uint32_t release_gen = 0;
+    uint64_t gpu_draw_value = 0, gpu_draw_segment = 0;   // (last recording that wrote the image, for byte-exact storage invalidation)
     uint64_t gpu_wrote_seen = 0;   // (the newest finished GPU write into its storage it was uploaded after)
     uint64_t last_written = 0;     // (the frame the GPU last wrote it: a render target, each frame it is used)
     uint64_t first_written = 0;    // (the frame its GPU contents began: written in that frame alone, a table the game baked)
@@ -207,6 +208,7 @@ VkBufferView texel_buffer_view(const nvn_tex* t, const nvn_view* v, bool storage
 void release_texel_buffer_views(VkBuffer buffer);
 /// The texture whose image was rendered for the window (present): t's own, or one rendered at its storage
 Texture* texture_for_present(const nvn_tex* t);
+void texture_complete_writes(uint64_t completed);
 /// Ages the cache by one present; images nothing used for a while go, after the work that last read them
 void texture_frame(uint64_t completed_value);
 void texture_released(const nvn_tex* t);

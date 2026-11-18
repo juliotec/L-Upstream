@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstring>
 #include <exception>
+#include <list>
 #include <map>
 #include <deque>
 #include <memory>
@@ -65,6 +66,7 @@
 #include "commit_room.h"
 #include "linux_pressure.h"
 #include "evict_reason.h"
+#include "gpu_write_history.h"
 #include "wrote_regions.h"
 #include "keep_rendered.h"
 #include "guest_holes.h"
@@ -301,10 +303,12 @@ struct Pooled {
     VkImage image;
     VmaAllocation allocation;
     std::unordered_map<uint64_t, VkImageView> views;
-    uint64_t bytes, since;
+    uint64_t bytes, since, key;
 };
 std::mutex pool_mu;
-std::unordered_map<uint64_t, std::vector<Pooled>> target_pool;   // by pool_key_of
+// Global insertion order makes the oldest eligible victim available in constant time.
+std::list<Pooled> pool_by_age;
+std::unordered_map<uint64_t, std::deque<std::list<Pooled>::iterator>> target_pool;
 uint64_t pool_bytes, pool_n, st_pool_reused, st_pool_made, st_pool_destroyed;
 uint8_t pool_pressure = 0;   // 0: normal, 1: pressed (>90%, halve pool), 2: critical (>97%, flush pool)
 bool compact_on() {   // (longshot: the textures in a pool of their own, compacted: compact_step. On unless RX_VK_COMPACT=0)
@@ -401,10 +405,12 @@ bool pool_take(uint64_t key, VkImage& image, VmaAllocation& allocation, std::uno
     std::lock_guard lk(pool_mu);
     auto it = target_pool.find(key);
     if (it == target_pool.end() || it->second.empty()) return false;
-    Pooled& p = it->second.back();
+    const auto node = it->second.back();
+    Pooled& p = *node;
     image = p.image, allocation = p.allocation, views = std::move(p.views);
     pool_bytes -= std::min(pool_bytes, p.bytes), pool_n--;
     it->second.pop_back();
+    pool_by_age.erase(node);
     if (it->second.empty()) target_pool.erase(it);
     st_pool_reused++;
     return true;
@@ -418,7 +424,8 @@ void pool_destroy(Pooled& p) {
 /// (texture_frame) a dead render target's image the GPU is done with, into the pool
 void pool_put(Dead& d) {
     std::lock_guard lk(pool_mu);
-    target_pool[d.pool_key].push_back(Pooled{d.image, d.allocation, std::move(d.view_map), d.bytes, frame_no});
+    pool_by_age.push_back({d.image, d.allocation, std::move(d.view_map), d.bytes, frame_no, d.pool_key});
+    target_pool[d.pool_key].push_back(std::prev(pool_by_age.end()));
     pool_bytes += d.bytes, pool_n++;
 }
 /// (texture_frame, each present) the pool over its bound, or all of it while VRAM is short, and what waits in it unused for 120
@@ -432,18 +439,17 @@ size_t pool_trim() {
     const uint64_t cap = (pool_pressure >= 2) ? 0 : (pool_pressure == 1) ? (full_cap / 2) : full_cap;
     const size_t most = (pool_pressure > 0) ? 64 : 16;
     size_t n = 0;
-    for (auto it = target_pool.begin(); it != target_pool.end() && n < most;) {
-        auto& v = it->second;
-        for (size_t i = 0; i < v.size() && n < most;) {   // (the oldest of a shape first: the front)
-            if (pool_bytes <= cap && !target_pool::idle_out(frame_no, v[i].since, idle)) {
-                ++i;
-                continue;
-            }
-            pool_destroy(v[i]);
-            pool_bytes -= std::min(pool_bytes, v[i].bytes), pool_n--, n++;
-            v.erase(v.begin() + (ptrdiff_t)i);
-        }
-        it = v.empty() ? target_pool.erase(it) : std::next(it);
+    while (!pool_by_age.empty() && n < most) {
+        Pooled& oldest = pool_by_age.front();
+        if (pool_bytes <= cap && !target_pool::idle_out(frame_no, oldest.since, idle)) break;
+        auto bucket = target_pool.find(oldest.key);
+        bucket->second.pop_front();
+        if (bucket->second.empty()) target_pool.erase(bucket);
+        pool_destroy(oldest);
+        pool_bytes -= oldest.bytes;
+        --pool_n;
+        pool_by_age.pop_front();
+        ++n;
     }
     return n;
 }
@@ -528,10 +534,10 @@ struct Staging {
 };
 uint64_t completed_value = 0;
 // (GPU writes into guest memory by buffers: GPU address -> (end, the submission that wrote it last))
-std::map<uint64_t, std::pair<uint64_t, uint64_t>> gpu_wrote;
+GpuWriteHistory gpu_wrote;
 std::mutex gpu_wrote_mu;
 }  // namespace
-bool gpu_wrote_into(Texture& tex);
+uint64_t gpu_wrote_into(const Texture& tex);
 void helper_thread_start() {
 #ifndef _WIN32
     GetCurrentThreadId();
@@ -606,6 +612,7 @@ Staging staging(uint64_t n, uint64_t align = 256) {
 // ---- the GPU ASTC decoder (Eden's) ----
 struct AstcPush {
     uint32_t block_dims[2], layer_stride, block_size, x_shift, block_height, block_height_mask, native_tiling;
+    uint32_t blocks_x, blocks_y;
 };
 VkDescriptorSetLayout astc_set = VK_NULL_HANDLE;
 VkPipelineLayout astc_layout = VK_NULL_HANDLE;
@@ -1147,16 +1154,14 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     for (uint32_t layer = 0; layer < tex.layers; layer++)
         if (overlaps(dirty, (uint64_t)layer * layer_size + tail0, (uint64_t)(layer + 1) * layer_size)) layers.push_back(layer);
     if (layers.empty()) return true;
-    const bool all = layers.size() == tex.layers;
-    const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
-    // (each layer staged at an aligned pitch: at k * tail, a layer's storage buffer offset could miss
-    // minStorageBufferOffsetAlignment, VUID-VkWriteDescriptorSet-descriptorType-00328)
-    const uint64_t pitch = (tail + align - 1) / align * align;
-    if (pitch > UINT32_MAX) {
-        astc_fail = "its layout";
+    const uint64_t alignment = std::max<uint64_t>(256, dev.props.limits.minStorageBufferOffsetAlignment);
+    if (tail > UINT32_MAX - alignment || layers.size() > UINT64_MAX / (tail + alignment)) {
+        astc_fail = "layer stride too large";
         return false;
     }
-    const Staging s = staging(pitch * layers.size(), std::max<uint64_t>(256, align));
+    const uint64_t stride = (tail + alignment - 1) & ~(alignment - 1);
+    const uint64_t staged = (layers.size() - 1) * stride + tail;
+    const Staging s = staging(staged, alignment);
     if (!s.buffer) {
         astc_fail = "no staging memory for its ASTC blocks";
         return false;
@@ -1165,93 +1170,72 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     for (size_t k = 0; k < layers.size(); k++) {
         const uint64_t at = (uint64_t)layers[k] * layer_size + tail0;
         const uint64_t n = at < total ? std::min(tail, total - at) : 0;
-        if (n) std::memcpy(s.data + k * pitch, guest_bytes(tex.gpu + at, n, scratch), n);
-        if (n < pitch) std::memset(s.data + k * pitch + n, 0, pitch - n);   // (zeros past the guest's bytes, not the staging's old ones)
+        uint8_t* dest = s.data + k * stride;
+        if (n) std::memcpy(dest, guest_bytes(tex.gpu + at, n, scratch), n);
+        if (n < tail) std::memset(dest + n, 0, tail - n);
     }
-    const uint64_t staged = pitch * layers.size();
     flush_mapped_range(s.allocation, s.offset, staged);   // (encoded blocks read by the GPU decoder, not necessarily coherent)
     st_bytes += (int64_t)staged;
     VkCommandBuffer cmd = upload_cmd();
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-    descriptors_disturbed();   // (the next draw or dispatch binds its own pipeline and descriptors again)
-    if (tex.bc) {   // (decoded into the scratch a run of consecutive layers at a time, re-encoded, copied in)
+    const uint64_t limit = dev.props.limits.maxStorageBufferRange;
+    if (tex.bc) {
         if (!bc_scratch_layout(cmd, tex.bc_resized)) {
             astc_fail = "no memory for the BC3 scratch";
             return false;
         }
-        for (uint32_t level = 0; level < tex.levels; level++) {
-            const LevelGeo g = level_geo(tex, level);
-            const uint64_t off = g.offset - tail0;
-            if (g.offset < tail0 || off >= tail || (off % align)) continue;
-            const uint32_t iw = std::max(1u, tex.width >> level), ih = std::max(1u, tex.height >> level);
-            // (longshot-amd: a resized BC3 image: the level decodes at the game's size, g.w x g.h, and is encoded at iw x ih)
-            AstcPush pc{};
-            pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-            pc.layer_stride = (uint32_t)pitch;
-            const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
-            pc.x_shift = 9 + g.tile_h + g.tile_d;
-            pc.block_size = gobs_x << pc.x_shift;
-            pc.block_height = g.tile_h;
-            pc.block_height_mask = (1u << g.tile_h) - 1;
-            pc.native_tiling = 1;
-            // (a run's layers are read at k * pitch from its descriptor's start: no more of them than
-            // maxStorageBufferRange holds, or the later ones are read past the range, VUID-VkWriteDescriptorSet-descriptorType-00333)
-            const uint64_t fit = std::max<uint64_t>(dev.props.limits.maxStorageBufferRange / pitch, 1);
-            for (size_t k0 = 0; k0 < layers.size();) {
-                size_t k1 = k0 + 1;
-                // (one layer a run: with runs of up to kBcLayers, an array's layers past the run's first came out wrong in the
-                // smaller levels, and Hyrule Field's ground, which samples the terrain's material arrays (1365 x 1365 x 90, ASTC
-                // 8x8) at those levels from a distance, had its tiles outlined in dark lines (RX 6600: none with one layer a run,
-                // nor with the arrays kept as RGBA8). RX_VK_BC_LAYERS=<n>: up to n a run, the scratch's layers: bc_layers)
-                const uint32_t run = bc_layers();
-                while (k1 < layers.size() && k1 - k0 < run && k1 - k0 < fit && layers[k1] == layers[k1 - 1] + 1) k1++;
-                const uint32_t n = (uint32_t)(k1 - k0);
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
-                const uint64_t from = k0 * pitch + off;
-                VkDescriptorBufferInfo bi{s.buffer, s.offset + from, std::min<uint64_t>(staged - from, dev.props.limits.maxStorageBufferRange)};
-                VkDescriptorImageInfo ii{VK_NULL_HANDLE, bc_scratch_view, VK_IMAGE_LAYOUT_GENERAL};
-                VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
-                w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                w[0].pBufferInfo = &bi;
-                w[1].dstBinding = 1, w[1].descriptorCount = 1, w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                w[1].pImageInfo = &ii;
-                vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_layout, 0, 2, w);
-                vkCmdPushConstants(cmd, astc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
-                vkCmdDispatch(cmd, (g.tw + 7) / 8, (g.th + 7) / 8, n);
-                if (tex.bc_resized)
-                    bc_encode_resized(cmd, g.w, g.h, iw, ih, n, tex, level, layers[k0]);
-                else
-                    bc_encode_into(cmd, iw, ih, n, tex, level, layers[k0], 0, 0);
-                k0 = k1;
-            }
-        }
-        st_astc++;
-        return true;
     }
-    for (uint32_t level = 0; level < tex.levels; level++) {
+    for (uint32_t level = 0; level < tex.levels; ++level) {
         const LevelGeo g = level_geo(tex, level);
         const uint64_t off = g.offset - tail0;
-        if (g.offset < tail0 || off >= tail || (off % align)) continue;
+        if (off >= tail || !g.swizzled) {
+            astc_fail = "invalid mip range";
+            return false;
+        }
+        const uint64_t bytes = std::min(g.swizzled, tail - off);
+        if (bytes > limit) {
+            astc_fail = "mip exceeds storage buffer limit";
+            return false;
+        }
+        const uint64_t max_layers = std::min<uint64_t>(dev.props.limits.maxComputeWorkGroupCount[2],
+                                                      1 + (limit - bytes) / stride);
+        const bool all = !tex.bc && layers.size() == tex.layers && layers.size() <= max_layers;
+        const bool repack = off % dev.props.limits.minStorageBufferOffsetAlignment != 0 || bytes < g.swizzled;
         AstcPush pc{};
-        pc.block_dims[0] = (uint32_t)tex.block_w, pc.block_dims[1] = (uint32_t)tex.block_h;
-        pc.layer_stride = (uint32_t)pitch;
-        const uint32_t gobs_x = (g.tw * 16 + 63) >> 6;
+        pc.block_dims[0] = tex.block_w;
+        pc.block_dims[1] = tex.block_h;
+        pc.layer_stride = (uint32_t)stride;
+        pc.blocks_x = g.tw;
+        pc.blocks_y = g.th;
         pc.x_shift = 9 + g.tile_h + g.tile_d;
-        pc.block_size = gobs_x << pc.x_shift;
+        pc.block_size = ((g.tw * 16 + 63) >> 6) << pc.x_shift;
         pc.block_height = g.tile_h;
         pc.block_height_mask = (1u << g.tile_h) - 1;
         pc.native_tiling = 1;
-        // (all the layers in one dispatch only while they lie within maxStorageBufferRange: the decoder reads layer z at
-        // z * pitch from the descriptor's start; past it, one dispatch a layer)
-        const bool one = all && pitch * layers.size() <= dev.props.limits.maxStorageBufferRange;
-        for (size_t k = 0; k < (one ? 1 : layers.size()); k++) {
-            const VkImageView view = astc_level_view(&tex, level, one ? ~0u : layers[k]);
+        for (size_t k0 = 0; k0 < layers.size();) {
+            const uint32_t run = tex.bc ? bc_layers() : all ? tex.layers : 1;
+            size_t k1 = k0 + 1;
+            while (!repack && k1 < layers.size() && k1 - k0 < run && k1 - k0 < max_layers &&
+                   layers[k1] == layers[k1 - 1] + 1) ++k1;
+            const uint32_t n = (uint32_t)(k1 - k0);
+            const uint64_t from = k0 * stride + off;
+            VkDescriptorBufferInfo bi{s.buffer, s.offset + from, (n - 1) * stride + bytes};
+            if (repack) {
+                const Staging mip = staging(bytes, alignment);
+                if (!mip.buffer) {
+                    astc_fail = "no aligned staging for mip";
+                    return false;
+                }
+                std::memcpy(mip.data, s.data + from, bytes);
+                flush_mapped_range(mip.allocation, mip.offset, bytes);
+                bi = {mip.buffer, mip.offset, bytes};
+            }
+            const VkImageView view = tex.bc ? bc_scratch_view :
+                astc_level_view(&tex, level, n == tex.layers ? ~0u : layers[k0]);
             if (!view) {
                 astc_fail = "no view of a level";
                 return false;
             }
-            const uint64_t from = (one ? 0 : k * pitch) + off;
-            VkDescriptorBufferInfo bi{s.buffer, s.offset + from, std::min<uint64_t>(staged - from, dev.props.limits.maxStorageBufferRange)};
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
             VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
             w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1260,7 +1244,13 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             w[1].pImageInfo = &ii;
             vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_layout, 0, 2, w);
             vkCmdPushConstants(cmd, astc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
-            vkCmdDispatch(cmd, (g.tw + 7) / 8, (g.th + 7) / 8, one ? tex.layers : 1);
+            vkCmdDispatch(cmd, (g.tw + 7) / 8, (g.th + 7) / 8, n);
+            if (tex.bc) {
+                const uint32_t iw = std::max(1u, tex.width >> level), ih = std::max(1u, tex.height >> level);
+                if (tex.bc_resized) bc_encode_resized(cmd, g.w, g.h, iw, ih, n, tex, level, layers[k0]);
+                else bc_encode_into(cmd, iw, ih, n, tex, level, layers[k0], 0, 0);
+            }
+            k0 = k1;
         }
     }
     st_astc++;
@@ -1351,10 +1341,11 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         if (g.td != 1 || g.tile_d || (g.offset % align) || g.offset >= total) return false;
         // (the shader reads whole GOB-block rows: a level whose last one runs past the storage, which the CPU path
         // reads from a zero-padded copy, would read past the pool and fault the device)
-        if (g.offset + (uint64_t)(tex.layers - 1) * tex.L.layer_size + g.swizzled > total) return false;
-        // (the shader reads layer z at z * layer_size from the level's offset, all layers in one dispatch: past
-        // maxStorageBufferRange the later ones would be read outside the range; the CPU path takes such a texture)
-        if ((uint64_t)(tex.layers - 1) * tex.L.layer_size + g.swizzled > dev.props.limits.maxStorageBufferRange) return false;
+        if (!tex.layers || !g.swizzled || g.swizzled > total - g.offset ||
+            (tex.layers > 1 && tex.L.layer_size > (total - g.offset - g.swizzled) / (tex.layers - 1))) return false;
+        const uint64_t range = (tex.layers - 1ull) * tex.L.layer_size + g.swizzled;
+        if (range > dev.props.limits.maxStorageBufferRange || range > src.size || g.offset > src.size - range ||
+            tex.layers > dev.props.limits.maxComputeWorkGroupCount[2]) return false;
     }
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
@@ -1382,7 +1373,7 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         pc.block_height = g.tile_h;
         pc.block_height_mask = (1u << g.tile_h) - 1;
         pc.native_tiling = 1;
-        VkDescriptorBufferInfo bi{src.buffer, src.offset + g.offset, std::min<uint64_t>(total - g.offset, dev.props.limits.maxStorageBufferRange)};
+        VkDescriptorBufferInfo bi{src.buffer, src.offset + g.offset, (tex.layers - 1ull) * tex.L.layer_size + g.swizzled};
         VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2193,6 +2184,10 @@ void destroy_later(Texture& tex) {
 
 void vw_forget(const Texture& t);   // (below: a destroyed texture leaves the list of GPU-written ones)
 void forget_gpu(Texture* tex) {
+    {
+        std::lock_guard lk(gpu_wrote_mu);
+        gpu_wrote.forget(tex->id, tex->gpu, tex->gpu + tex->guest_size);
+    }
     vw_forget(*tex);
     reuse_drop(*tex);
     auto [a, b] = by_gpu.equal_range(tex->gpu);
@@ -2638,6 +2633,10 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     }
     textures.emplace(key, std::move(tex));
     by_gpu.emplace(p->gpu, p);
+    {
+        std::lock_guard lk(gpu_wrote_mu);
+        gpu_wrote.watch(p->id, p->gpu, p->gpu + p->guest_size);
+    }
     watch_tex(p, "made");
     if (remade_log_on()) {   // (one evicted not long ago, made again)
         std::lock_guard lk(evicted_mu);
@@ -3067,7 +3066,7 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
     static thread_local Ranges dirty;
     // (a buffer the GPU wrote over its storage, done since: all of it again; the tiles of MKW's terrain are filled so
     // and stayed the flat placeholder they were made with)
-    const bool gpu_dirty = tex->uploaded && gpu_wrote_into(*tex);
+    const uint64_t gpu_dirty = tex->uploaded ? gpu_wrote_into(*tex) : 0;
     const bool partial = !gpu_dirty && tex->uploaded && !tex->gpu_written && !tex->released;
     // (a texture the GPU drew and the game finalized: only what the CPU wrote since then. Its memory never got the
     // GPU's texels, and a write before (another variable in the same page) re-uploaded garbage over a drawn LUT:
@@ -3188,6 +3187,7 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         }
     }
     if (up_ok) {
+        if (gpu_dirty) tex->gpu_wrote_seen = gpu_dirty;
         tex->upload_value = rec_value, tex->upload_seg = tl_seg;
         // (its storage joins the submit-time capture: what the game writes into it after a submit is not taken for it)
         // (any size: the capture copies only the pages the CPU wrote, and the big CPU-streamed textures were read as the
@@ -4110,6 +4110,16 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
     return done;
 }
 
+static void note_drawn_storage(Texture* tex) {
+    if (!tex->id || !tex->guest_size) return;
+    const uint64_t end = tex->gpu + tex->guest_size;
+    if (tex->gpu_written && !tex->released && tex->gpu_draw_value == rec_value &&
+        tex->gpu_draw_segment == tl_seg && !wrote_regions::any(tex->gpu, end)) return;
+    std::lock_guard lk(gpu_wrote_mu);
+    gpu_wrote.drew(tex->id, tex->gpu, end, rec_value, tl_seg);
+    tex->gpu_draw_value = rec_value;
+    tex->gpu_draw_segment = tl_seg;
+}
 void texture_written(Texture* tex, const char* why) {
     if (!tex) return;
     if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) {   // (a parallel replay's order broken: see dry_mark_written)
@@ -4129,6 +4139,7 @@ void texture_written(Texture* tex, const char* why) {
         if (logged++ < 20) logf_at(log_debug, "vk: sparse texture %#llx written by the GPU (#%u)", (unsigned long long)tex->gpu, tex->id);
     }
     watch_tex(tex, "written");
+    note_drawn_storage(tex);
     if (!tex->gpu_written || tex->released) tex->first_written = frame_no, drawn_writeback_note(tex);
     // (longshot) A texture in a virtual pool that the GPU writes first is marked uploaded below without the first upload,
     // which notes its pages' mapping (texture_touch): its first check after the game finalized it took all of its storage
@@ -4180,37 +4191,22 @@ void texture_gpu_wrote(uint64_t gpu, uint64_t size) {
     }
     wrote_regions::mark(lo, hi);   // (before the map has it: gpu_wrote_into asks the regions first, without the lock)
     std::lock_guard lk(gpu_wrote_mu);
-    auto it = gpu_wrote.find(lo);
-    if (it != gpu_wrote.end() && it->second.first >= hi) {
-        it->second.second = rec_value;
-        return;
-    }
-    for (auto e = gpu_wrote.lower_bound(lo); e != gpu_wrote.end() && e->first < hi;)   // (ranges it covers)
-        e = e->second.first <= hi ? gpu_wrote.erase(e) : std::next(e);
-    gpu_wrote[lo] = {hi, rec_value};
-    if (gpu_wrote.size() > 65536) gpu_wrote.erase(gpu_wrote.begin());
+    gpu_wrote.record(lo, hi, rec_value, tl_seg);
 }
-/// A finished GPU write into the texture's storage it was not uploaded after (and notes it as seen)
-bool gpu_wrote_into(Texture& tex) {
+/// A completed buffer write into the texture's storage since its last successful upload.
+uint64_t gpu_wrote_into(const Texture& tex) {
     const uint64_t lo = tex.gpu, hi = tex.gpu + std::max<uint64_t>(tex.guest_size, 1);
     // (longshot: nearly every texture is in memory no GPU buffer write ever reached, and each one a submission samples asked
     // here: the lock and the walk were 0.6 % of the replay thread on a Steam Deck. wrote_regions.h)
-    if (!wrote_regions::any(lo, hi)) return false;
+    if (!wrote_regions::any(lo, hi)) return 0;
     std::lock_guard lk(gpu_wrote_mu);
-    if (gpu_wrote.empty()) return false;
-    uint64_t newest = 0;
-    auto it = gpu_wrote.upper_bound(lo);
-    if (it != gpu_wrote.begin()) --it;
-    for (; it != gpu_wrote.end() && it->first < hi; ++it)
-        if (it->second.first > lo && it->second.second <= completed_value && it->second.second > tex.gpu_wrote_seen)
-            newest = std::max(newest, it->second.second);
-    if (!newest) return false;
-    tex.gpu_wrote_seen = newest;
+    const uint64_t newest = gpu_wrote.newest(lo, hi, tex.gpu_written ? tex.id : 0);
+    if (newest <= tex.gpu_wrote_seen) return 0;
     static int logged;
     if (logged++ < 40)
         logf("vk: texture #%u %#llx %ux%u NVN %#x: the GPU wrote its storage (submission %llu): uploaded again", tex.id,
              (unsigned long long)tex.gpu, tex.width, tex.height, tex.nvn_format, (unsigned long long)newest);
-    return true;
+    return newest;
 }
 void texture_watch_prog(uint64_t prog) {
     tl_watch_prog = prog;
@@ -4886,6 +4882,10 @@ bool finalized_obsolete(const Texture& t) {
     for (const auto& r : written) sum += r.second - r.first;
     return sum * 4 >= t.guest_size * 3;
 }
+void texture_complete_writes(uint64_t completed) {
+    std::lock_guard lk(gpu_wrote_mu);
+    gpu_wrote.complete(completed);
+}
 void texture_frame(uint64_t completed) {
     const TraceTimer timed{st_texture_frame_ns};   // (longshot: the frame trace's tex_frame_ms)
     upload_frame_report();
@@ -4900,6 +4900,7 @@ void texture_frame(uint64_t completed) {
                  (long long)st_deferred.load(std::memory_order_relaxed));
     }
     completed_value = completed;
+    texture_complete_writes(completed);
     frame_no++;
     drawn_writeback_frame();
     reuse_retire_frame();

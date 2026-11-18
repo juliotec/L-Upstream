@@ -101,6 +101,7 @@ struct LoadJob {
     uint64_t unit = 0;
     bool compute = false;
     std::vector<uint64_t> keys;
+    std::atomic<bool> draw_waiting{false};
     std::atomic<int> state{0};   // 0 queued, 1 running, 2 done
     std::mutex mu;
     std::condition_variable cv;
@@ -244,10 +245,19 @@ void load_work(LoadJob& job) {
                 }
             } else if (notes != index_notes.end()) {
                 for (const NoteAt& n : notes->second) {
-                    if (n.variant != p->variant || !pipe_note_at(notes_in, n.at, note.get())) continue;
-                    bytes += (int64_t)sizeof(PipeNote);
-                    if (const VkPipeline pl = source.graphics(*p, *note)) census.load_pipes += pipeline_keep_ready(n.key, pl);
-                    else census.load_pipes_cold++;   // (its first draw makes it, as before)
+                    if (n.variant != p->variant) continue;
+                    if (!job.draw_waiting.load(std::memory_order_relaxed)) {
+                        if (!pipe_note_at(notes_in, n.at, note.get())) continue;
+                        bytes += (int64_t)sizeof(PipeNote);
+                        // The draw may have arrived during the disk read.
+                        if (!job.draw_waiting.load(std::memory_order_relaxed)) {
+                            if (const VkPipeline pl = source.graphics(*p, *note)) census.load_pipes += pipeline_keep_ready(n.key, pl);
+                            else census.load_pipes_cold++;
+                            continue;
+                        }
+                    }
+                    pipeline_defer(n.key);
+                    census.load_pipes_deferred++;
                 }
             }
             census.load_programs++;
@@ -462,6 +472,7 @@ void programs_load_wait(uint64_t key) {
     }
     if (!job) return;
     if (job->state.load(std::memory_order_acquire) != 2) {
+        job->draw_waiting.store(true, std::memory_order_relaxed);
         const auto t0 = Clock::now();
         int queued = 0;
         if (job->state.compare_exchange_strong(queued, 1)) {   // (no worker began it: urgent means run here, as jobs_wait does)
@@ -722,11 +733,11 @@ void programs_census_log(const char* when) {
          "ms and %.1f MB read in all); %lld programs (%lld of them compute variants without their code, %lld graphics programs no note names), %lld graphics pipelines (%lld not in a cache), %lld compute pipelines (%lld "
          "not in a cache); a first use ran %lld itself and waited for %lld (%.1f ms); %lld pipelines made at create taken by "
          "draws; %lld create calls with nothing kept for their stages, %lld before the index; units %zu (%zu ready, %zu "
-         "loading), %zu programs alive",
+         "loading), %zu programs alive; %lld noted graphics pipeline probes deferred to first use",
          when, n(c.units_queued), n(c.units_loaded), median, p99, worst, c.load_ns.load() / 1e6, c.load_bytes.load() / 1048576.0,
          n(c.load_programs), n(c.load_light), n(c.load_unlisted), n(c.load_pipes), n(c.load_pipes_cold), n(c.load_computes), n(c.load_computes_cold),
          n(c.units_run_by_draw), n(c.units_waited), c.unit_wait_ns.load() / 1e6, n(c.pipes_taken), n(c.units_nothing),
-         n(c.units_early), units, ready, loading, alive);
+         n(c.units_early), units, ready, loading, alive, n(c.load_pipes_deferred));
     if (ids_on.load(std::memory_order_acquire))
         logf("vk: module identifiers (%s): %zu known, %lld learned in this run; %lld compute pipelines made by them at a create "
              "call, %lld asked that way were in no cache (their code read, as before)",

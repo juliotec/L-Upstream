@@ -1769,14 +1769,16 @@ static void vc_take(HosThread *t, int c) {
     vc_owner[c] = t;
     t->vc_held = c + 1;
     t->vc_last = c + 1;
-    t->vc_kick = 0;
+    __atomic_store_n(&t->vc_kick, 0, __ATOMIC_RELAXED);
     t->vc_starved = 0;
     t->vc_held_at = hos_now_ns(), t->vc_kick_at = 0;
 }
 static void vc_dequeue(HosThread *t) {
     for (int i = 0; i < vc_nq; i++)
         if (vc_queue[i] == t) {
-            vc_queue[i] = vc_queue[--vc_nq];
+            const int last = vc_nq - 1;
+            vc_queue[i] = vc_queue[last];
+            __atomic_store_n(&vc_nq, last, __ATOMIC_RELEASE);
             break;
         }
     t->vc_queued = 0;
@@ -1886,7 +1888,10 @@ static void vc_acquire(HosThread *t) {
     t->vc_by[0] = 0;
     int how = 1;   /* (vc_long_wait: 0 a grant, 1 found free, 2 an escape) */
     t->vc_queued = 1;
-    if (vc_nq < 1024) vc_queue[vc_nq++] = t;
+    if (vc_nq < 1024) {
+        vc_queue[vc_nq] = t;
+        __atomic_store_n(&vc_nq, vc_nq + 1, __ATOMIC_RELEASE);
+    }
     vc_st.waits++;
     for (;;) {
         /* the worst holder worse than t on a core t may use gives it up at its next checkpoint; after
@@ -1909,7 +1914,7 @@ static void vc_acquire(HosThread *t) {
                 if ((m >> k & 1) && h && (!worst || h->priority > worst->priority)) worst = h;
             }
         if (worst && !worst->vc_kick) {
-            worst->vc_kick = worst->priority > t->priority ? 1 : 2;
+            __atomic_store_n(&worst->vc_kick, worst->priority > t->priority ? 1 : 2, __ATOMIC_RELAXED);
             worst->vc_kick_at = hos_now_ns();
             Ctx *rc = worst->run_ctx;   /* (a fiber's context while it runs one) */
             __atomic_store_n(rc ? &rc->poll : &worst->ctx.poll, 1, __ATOMIC_RELAXED);
@@ -1962,19 +1967,25 @@ static void vc_acquire(HosThread *t) {
     vc_stats_locked(hos_now_ns());
     ReleaseSRWLockExclusive(&vc_lock);
 }
-static void vc_release(HosThread *t) {
-    if (!t->vc_held) return;
-    AcquireSRWLockExclusive(&vc_lock);
+static void vc_release_locked(HosThread *t) {
     const int c = t->vc_held - 1;
     vc_owner[c] = NULL;
     t->vc_held = 0;
-    t->vc_kick = 0;
+    __atomic_store_n(&t->vc_kick, 0, __ATOMIC_RELAXED);
     vc_grant(c, t);
+}
+static void vc_release(HosThread *t) {
+    if (!t->vc_held) return;
+    AcquireSRWLockExclusive(&vc_lock);
+    vc_release_locked(t);
     ReleaseSRWLockExclusive(&vc_lock);
 }
 /* gives the core to a waiter allowed on it that is better than t (strict) or as good (a yield), or starved */
 static void vc_yield(HosThread *t, int strict) {
     if (!t->vc_held) return;
+    /* An empty queue has nobody to yield to. A later waiter can still request a checkpoint.
+       A stale kick goes through the lock so it is cleared without losing a newer request. */
+    if (!__atomic_load_n(&vc_nq, __ATOMIC_ACQUIRE) && !__atomic_load_n(&t->vc_kick, __ATOMIC_RELAXED)) return;
     AcquireSRWLockExclusive(&vc_lock);
     const int c = t->vc_held - 1;
     int any = 0;
@@ -1982,15 +1993,18 @@ static void vc_yield(HosThread *t, int strict) {
         HosThread *w = vc_queue[i];
         any = (vc_allowed(w) >> c & 1) && (w->vc_starved || (strict ? w->priority < t->priority : w->priority <= t->priority));
     }
-    t->vc_kick = 0;
-    if (any) vc_st.yields++;
+    __atomic_store_n(&t->vc_kick, 0, __ATOMIC_RELAXED);
+    if (any) {
+        vc_st.yields++;
+        vc_release_locked(t);
+    }
     ReleaseSRWLockExclusive(&vc_lock);
-    if (!any) return;
+    if (any) {
 #ifdef TRACY_ENABLE
-    HT_SCOPE("vcore yield");   /* (the core given to a waiter, at a checkpoint or a yield, and taken again) */
+        HT_SCOPE("vcore yield");
 #endif
-    vc_release(t);
-    vc_acquire(t);
+        vc_acquire(t);
+    }
 }
 /* 1 when the caller is to take a core again after its block (hos_vcore_back): it gave its core up, or it has run without
    one since an escape. An escape lasts until the thread's next block, as every other thread waits for a core after one;
@@ -2024,7 +2038,8 @@ void hos_vcore_back(void) {
    stall dump of a thread spinning in a polled loop shows such older registers for the same reason. */
 void hos_vcore_checkpoint(void) {
     HosThread *t = cur;
-    if (t && t->vc_kick) vc_yield(t, t->vc_kick == 1);
+    const int kick = t ? __atomic_load_n(&t->vc_kick, __ATOMIC_RELAXED) : 0;
+    if (kick) vc_yield(t, kick == 1);
 }
 void hos_vcore_yield(void) {
     HosThread *t = cur;

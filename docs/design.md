@@ -355,10 +355,10 @@ rate. `tests/test_framegen_fixed_pace.py` runs the timing functions through a mo
 5. **A present waits on the queue it is made on.** On the replay's graphics queue it waits behind the game's next frame (3 to
    12 ms at 5120x2160), and a second queue of the graphics family takes turns with it on the GPU. A compute family's queue
    runs beside it (`RX_VK_PRESENT_QUEUE`, `vk_main.cpp` `create_device`): 0.1% of the frames under 2 ms, on the screen 4.9
-   to 6.9 ms apart at 3x (p10 to p90), each present's call to the screen 1.3 ms instead of 6.6. It is on by default
-   with NVIDIA's driver 621.24 and newer on Windows, where it was measured; Hookshot issue 1161, before the fork (an
-   RTX 4090 on NVIDIA's 621.14 had a black screen with it on), was never placed, so older drivers, other drivers and
-   Linux keep the replay's queue until they are measured, and `=0` is the way back.
+   to 6.9 ms apart at 3x (p10 to p90), each present's call to the screen 1.3 ms instead of 6.6 (an RTX 5090). It is off
+   by default on every PC, `=1` turns it on: with frame generation it lost the GPU on a tester's RTX 5080 with NVIDIA's
+   621.24 (crashes at 2x and 3x that stopped with `=0`; #1491, another RTX 5080, looks the same), as it gave an RTX 4090
+   on 621.14 a black screen in Hookshot issue 1161, before the fork. The fault was never placed.
 6. **Under FIFO the made frames do not queue** (`gpu/vk/vk_framegen.cpp` `fifo_catch_up`, `fifo_pick`,
    `gpu/vk/vk_reflex.cpp` `fifo_min_interval_us`). FIFO shows one frame a refresh: when the game's frame rate times the
    multiplier passes the refresh, the frames queue in the sets taken ahead and their refresh slots, the game is held
@@ -370,7 +370,8 @@ rate. `tests/test_framegen_fixed_pace.py` runs the timing functions through a mo
    and 6th), and their copies are not made, so no image is held for them. Past the refresh the screen then shows 160 to
    165 frames a second at 165 Hz, each game frame within a refresh of its time, the game at its own rate (the model in
    `tests/test_framegen_fixed_pace.py`: 3x, 4x and 6x at 33 to 60 game frames a second; in the game, 6x: the game at
-   52 to 55 frames a second and each game frame on screen 46 to 52 ms after its hand-over). At most all but one made frame is left out:
+   52 to 55 frames a second and each game frame on screen 46 to 52 ms after its hand-over; these game runs had the presents
+   on their own queue, then the default with NVIDIA's 621.24, rule 5). At most all but one made frame is left out:
    at 2x the one made frame stays, as a set of one frame is not presented ahead. The GPU's delay is fed back against
    the set's first frame whichever frames are shown: a copy takes as long for any of them, and against the first one
    shown 6x ran the delay down to 0, so its frames came due before their copies and a frame more a set was left out.

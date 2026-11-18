@@ -50,6 +50,9 @@ int hos_mouse_take(int32_t *dx, int32_t *dy) {
     return mouse_captured;
 }
 
+/* (nn_hid.c) the game's menus do not take the mouse here: its capture, and with it its buttons, stay the game's */
+int hos_mouse_in_game_menu(void) { return 0; }
+
 /* (mouse_native.c) motion taken and not used, put back for the next taker (the player camera's) */
 void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dx, dx);

@@ -126,7 +126,12 @@ sealed class Runner
                 using var p = Process.Start(Info(tools, args))!;
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();
-                try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch (Exception) { }
+                // (normal priority, the read, the lift and the compilers with it: below normal, Windows kept the one-process steps
+                // on a hybrid Intel CPU's efficiency cores, an hour and more of the first build with the performance cores idle;
+                // after ProjectReLink 0a74889c and b98adb9e. LONGSHOT_LOW_PRIORITY=1: below normal, as before, for a desktop
+                // that stays quick while the game builds)
+                if (Environment.GetEnvironmentVariable("LONGSHOT_LOW_PRIORITY") == "1")
+                    try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch (Exception) { }
                 while (p.StandardOutput.ReadLine() is { } line)
                 {
                     if (line.StartsWith("@@error ")) error = line[8..];

@@ -35,7 +35,8 @@
    in f_8010b380 does the call with libzstd's own (ZSTD_decompress_usingDDict, the same multi-frame decode: skippable frames skipped,
    frames one after the other) and answers 1, x0 the result: the content size, or zstd's error code as the game's gives it
    (callers test only that it is one). The game's DDict is taken as above; the game's context is not written; the thread
-   keeps its core. A raw dictionary, or a context the game set to another format, runs lifted.
+   gives up its core for buffers of at least one maximum zstd block. Smaller decodes keep it.
+   A raw dictionary, or a context the game set to another format, runs lifted.
 
    What differs from the game's decoder:
      - the up to 32 bytes of output room just past what is decoded: both decoders' fast copies may over-write there (the
@@ -400,9 +401,13 @@ int hos_zstd_frames(Ctx *c) {
         zs_note(!ok ? "a dictionary libzstd does not take as the game's" : "no libzstd context");
         return 0;
     }
+    /* z and d are held exclusively or by reference until the call completes. No guest
+       registers or dictionary-table locks are needed while libzstd fills the output. */
+    const int away = (room >= ZSTD_BLOCKSIZE_MAX || n >= ZSTD_BLOCKSIZE_MAX) && hos_vcore_away();
     const size_t r = d ? ZSTD_decompress_usingDDict(z, GP(dst), room, GP(src), n, d->dd)
                        : ZSTD_decompress_usingDict(z, GP(dst), room, GP(src), n, NULL, 0);
     HOS_WRITTEN(GP(dst), room);   /* (the whole room: libzstd may keep literals in its far end while it decodes) */
+    if (away) hos_vcore_back();
     zs_lock();
     zs_dict_put(d);
     if (zs_nspare < ZS_STREAMS) zs_spare[zs_nspare++] = z, z = NULL;

@@ -167,15 +167,37 @@ void script_fonts(const char* lang) {
                 std::vector<unsigned char> b = reader.read_script(g);
                 if (!b.empty()) merged += std::string(merged.empty() ? "" : ", ") + g, merge(std::move(b), g);
             }
+        static std::vector<std::string> system_merged;   // (Linux's one CJK file serves four scripts: its bytes held once)
         for (const char* sp : f.system) {
             const std::string path = sp ? expand(sp) : "";
             if (path.empty()) continue;
+            if (std::find(system_merged.begin(), system_merged.end(), path) != system_merged.end()) {
+                merged += std::string(merged.empty() ? "" : ", ") + path + " (already merged)";
+                break;
+            }
             std::vector<unsigned char> b;
             if (!game_font::read_file(path, b)) continue;
             merged += std::string(merged.empty() ? "" : ", ") + path, merge(std::move(b), path.c_str());
+            system_merged.push_back(path);
             break;   // (one system font a script)
         }
-        logf("vk: ui: the menu in %s: %s", lang, merged.empty() ? "no font of its letters found (they may show as boxes)" : merged.c_str());
+        logf("vk: ui: the letters of %s: %s", lang, merged.empty() ? "no font of them found (they may show as ?)" : merged.c_str());
+    }
+}
+/// The languages' names the Language rows showed (vk_menu_i18n.h names_shown_since) that the fonts lack a letter of: that
+/// language's fonts merged in as for a menu in it, so an English menu draws 日本語 and Русский rather than ??? (Clarimo has Latin
+/// letters only, Libertinus no CJK). Only a name shown, and only when its letters are missing: a merged font holds its file's
+/// bytes for the process's life
+void name_fonts() {
+    for (const auto& [code, name] : i18n::names_shown_since()) {
+        bool missing = false;
+        for (const char* p = name.c_str(); *p && !missing;) {
+            unsigned c = 0;
+            p += ImTextCharFromUtf8(&c, p, nullptr);
+            for (ImFont* f : {fonts_.body, fonts_.strong})
+                missing |= f && !f->IsGlyphInFont((ImWchar)c);
+        }
+        if (missing) script_fonts(code.c_str());
     }
 }
 
@@ -470,6 +492,7 @@ bool begin(uint32_t w, uint32_t h) {
     io.DeltaTime = last && now > last ? std::min((float)((now - last) / 1e9), 0.25f) : 1.0f / 60.0f;
     last = now;
     script_fonts(i18n::lang_code());   // (the menu's language's letters: merged in once, before the frame)
+    name_fonts();   // (and those of the languages' names last frame's Language rows showed: the frame after, ? until then)
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     bake_some();

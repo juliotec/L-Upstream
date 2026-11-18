@@ -96,7 +96,7 @@ struct ProgramCensus {
     std::atomic<int64_t> units_queued{0}, units_loaded{0}, units_nothing{0};   // (nothing: no kept program for those stages)
     std::atomic<int64_t> units_early{0};        // (create calls before the index was there)
     std::atomic<int64_t> units_run_by_draw{0}, units_waited{0}, unit_wait_ns{0};   // (a first use ran the job itself, or waited)
-    std::atomic<int64_t> load_programs{0}, load_pipes{0}, load_pipes_cold{0}, load_computes{0}, load_computes_cold{0};
+    std::atomic<int64_t> load_programs{0}, load_pipes{0}, load_pipes_cold{0}, load_pipes_deferred{0}, load_computes{0}, load_computes_cold{0};
     std::atomic<int64_t> load_light{0};         // (compute variants read without their code)
     std::atomic<int64_t> load_by_id{0}, load_by_id_cold{0};   // (compute pipelines made by a module identifier; asked, in no cache)
     std::atomic<int64_t> load_unlisted{0};      // (graphics programs loaded that no note names: no pipeline is known for them)

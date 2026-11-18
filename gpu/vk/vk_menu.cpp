@@ -774,6 +774,7 @@ bool row_fixed(const int* value) {
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr)) ||
            (value == &opts.framegen_by && framegen_by_fixed()) ||   // (its line says why)
            (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8")) ||   // (set for the run: vk_texture.cpp reads it first)
+           (value == &opts.present_queue && getenv("RX_VK_PRESENT_QUEUE") && *getenv("RX_VK_PRESENT_QUEUE")) ||   // (create_device's, first)
            (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI")) ||   // (host/hos_wide_ui.c's, first)
            (value == &opts.intel_compiles && getenv("RX_VK_NO_INTEL_SERIAL"));
 }
@@ -1373,6 +1374,12 @@ const char* hn_astc_rgba8(int, int variant) {
     return variant <= 0 && getenv("RX_VK_ASTC_RGBA8") ? "Set by RX_VK_ASTC_RGBA8 (longshot_env.txt or the environment): remove that line to choose here."
                                        : nullptr;
 }
+/// (the Present queue row's line while RX_VK_PRESENT_QUEUE holds it, as RX_VK_ASTC_RGBA8 the ASTC row)
+const char* hn_present_queue(int, int variant) {
+    const char* e = getenv("RX_VK_PRESENT_QUEUE");
+    return variant <= 0 && e && *e ? "Set by RX_VK_PRESENT_QUEUE (longshot_env.txt or the environment): remove that line to choose here."
+                                   : nullptr;
+}
 const char* tx_intel_compiles(int v) { return v == 1 ? "Side by side" : v == 2 ? "One at a time" : "Auto"; }
 /// (the Intel shader compiles row's line: RX_VK_NO_INTEL_SERIAL holds it, as RX_VK_ASTC_RGBA8 the ASTC row)
 const char* hn_intel_compiles(int v, int variant) {
@@ -1872,6 +1879,11 @@ Row rows[] = {
     {TAB_DEBUG, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
      "restart.", hn_robust, true, true},
+    // (longshot) the presents' own queue (vk_main.cpp create_device; RX_VK_PRESENT_QUEUE over it): off by default since #1549,
+    // here so a player can try it without editing a file and say which way the game runs. Read once, at the start
+    {TAB_DEBUG, "Present queue", &opts.present_queue, 0, 1, 1, tx_onoff,
+     "The presents on a GPU queue of their own, beside the game's: frame generation's frames more even with V-Sync Off on some "
+     "cards, the GPU lost with frame generation on others (an RTX 5080). Applies after a restart.", hn_present_queue, true, true},
     {TAB_DEBUG, "ASTC as RGBA8", &opts.astc_rgba8, 0, 1, 1, tx_onoff,
      "Big ASTC textures kept as decoded RGBA8 instead of re-encoded to BC3: a workaround for texture artifacts seen on some AMD "
      "cards (issues 57 and 1006). Takes far more video memory. Applies after restart.", hn_astc_rgba8, true, true},
@@ -5500,6 +5512,8 @@ void menu_init() {
     if (const char* e = getenv("HOS_SKIP_OPENING")) env_override(&opts.skip_opening, !env_value_off(e));
     // (vk_texture.cpp reads RX_VK_ASTC_RGBA8 over the row: the row shows it, fixed (row_fixed), and the ini keeps the player's)
     if (const char* e = getenv("RX_VK_ASTC_RGBA8")) env_override(&opts.astc_rgba8, !env_value_off(e));
+    // (vk_main.cpp create_device reads RX_VK_PRESENT_QUEUE over the Present queue row, an empty value not: the same here)
+    if (const char* e = getenv("RX_VK_PRESENT_QUEUE"); e && *e) env_override(&opts.present_queue, !env_value_off(e));
     if (const char* e = getenv("RX_VK_NO_INTEL_SERIAL")) env_override(&opts.intel_compiles, env_value_off(e) ? 2 : 1);
     if (const char* e = getenv("RX_VK_COMPUTE_QUICK_FIRST")) env_override(&opts.intel_quick, !env_value_off(e));
     if (const char* e = getenv("HOS_OUTPUT_RES")) {

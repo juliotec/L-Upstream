@@ -563,11 +563,13 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   from the scene's depth and motion; below), the default everywhere else; **Built-in FG**, the renderer's own. **Frame pacing** shows frames at an even interval: less stutter, up to one frame of delay. It paces
   the frames that frame generation shows, so it has no effect while Frame generation is Off. A fixed multiplier shows each
   frame at its own time on the game's timeline whether Frame pacing is On or Off (with V-Sync On one a refresh at most;
-  where the window's swapchain holds all of a set's frames at once: up to 6x on an NVIDIA card). With NVIDIA's driver
-  621.24 or newer on Windows the presents have a queue of their own, so no made frame waits behind the game's next frame;
-  if the screen goes black or the GPU is lost with it (Hookshot issue 1161, before the fork: an RTX 4090 on 621.14), put
-  `RX_VK_PRESENT_QUEUE=0` in `longshot_env.txt` and tell us your card and driver. Other drivers can try it with
-  `RX_VK_PRESENT_QUEUE=1`.
+  where the window's swapchain holds all of a set's frames at once: up to 6x on an NVIDIA card). For the most even of those
+  frames, turn on **Present queue** on the Debug tab (or put `RX_VK_PRESENT_QUEUE=1` in `longshot_env.txt`) and restart:
+  the presents then get a queue of their own, and no made frame waits there behind the game's next frame. It is off by
+  default: on some cards it loses the GPU with frame generation on (an RTX 5080 on NVIDIA's 621.24; an RTX 4090 had a
+  black screen, Hookshot issue 1161, before the fork). If the game crashes or the screen goes black with it and you
+  cannot reach the menu, put `RX_VK_PRESENT_QUEUE=0` in `longshot_env.txt` (it overrides the row), then turn the row
+  off and take the line out.
 - **Game frame rate cap** limits the frames the game renders. With a cap of 60 and Frame generation at 2x, the output
   can reach 120 FPS. Choose **Auto** in Frame generation to target the display's refresh rate instead of a fixed multiplier.
   A cap **past 60 is experimental**: the game keeps real time, but some cutscenes and bosses still count frames and can
@@ -576,6 +578,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   Scarecrow's Song keeps the timing of its eight-note recording and playback above 60. Saved songs are not retimed;
   re-record a song after updating if its recorded rhythm was lost.
   Epona jumps fences above 60 as she does at 60 (she had galloped through them, more often the higher the cap).
+  The Shadow Temple's barge carries Link and the enemies on it above 60 as at 60 (above 100 FPS they slid to its back).
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `HOS_FPS_MAX=<61-1000>` sets a cap for one
   run.
@@ -710,6 +713,10 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Robust buffers** (Debug tab, Developer): a read past a buffer's end is dropped instead of stopping the GPU. Auto is
   on, on every card; Off can be faster on some NVIDIA cards.
 - **ASTC as RGBA8** (Debug tab, Developer): the AMD texture workaround below.
+- **Present queue** (Debug tab, Developer): the presents on a GPU queue of their own. Off by default; On makes frame
+  generation's frames more even with V-Sync Off on some cards (an RTX 5090), but lost the GPU on others with frame
+  generation on (an RTX 5080). It applies after a restart; `RX_VK_PRESENT_QUEUE` in `longshot_env.txt` or the environment
+  chooses over it at every start while it is set (the row then shows it and cannot be changed).
 - **Intel shader compiles** (Debug tab, Developer; Intel graphics on Windows only): One at a time lets one thread at a
   time into Intel's shader compiler; Side by side is faster on many cores but can crash in the driver. Auto, the default,
   is side by side on the Arc B-series with driver 101.9154 or newer, where it was measured, and one at a time elsewhere. See
@@ -912,9 +919,10 @@ toggle_a=0
 16 the triggers, -1 none. `key_<button>` is one or two
 [Windows key codes](https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes) in decimal (69 is
 <kbd>E</kbd>, 13 <kbd>Enter</kbd>), 0 none; the mouse's buttons are 1 (left), 2 (right), 4 (middle), 5 and 6 (side
-buttons), and count while the mouse is captured. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls`
-`rs` `left` `up` `right` `down`, for keys only the left stick's and the camera's directions and walking: `move_up`
-`move_down` `move_left` `move_right` `cam_up` `cam_down` `cam_left` `cam_right` `walk`, and the ocarina's five notes,
+buttons), and count while the mouse is captured; the side buttons also in the game's own menus, where the other three
+click. The buttons are `a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `ls` `rs` `left` `up` `right` `down`, for keys
+only the left stick's and the camera's directions and walking: `move_up` `move_down` `move_left` `move_right` `cam_up`
+`cam_down` `cam_left` `cam_right` `walk`, and the ocarina's five notes,
 which also take a `pad_` line: `note_l` `note_r` `note_a` `note_y` `note_x`. A button the file leaves out keeps
 its default. `toggle_<button>=0|1` sets that button's Toggle (0 Off, the default; 1 On). It accepts the Switch
 buttons above except `plus` and `minus`; stick directions, Walk and note rows do not accept it. Other values mean Off.

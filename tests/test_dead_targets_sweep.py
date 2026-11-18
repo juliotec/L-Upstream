@@ -120,7 +120,7 @@ def wiring():
     need('getenv("RX_VK_DEAD_EVERY")' in every and ": 1;" in every, "RX_VK_DEAD_EVERY defaults to 1")
     trim = block(tex, "size_t pool_trim()")
     need('getenv("RX_VK_POOL_IDLE")' in trim and "target_pool::kIdlePresents" in trim, "RX_VK_POOL_IDLE defaults to target_pool.h's")
-    need("!target_pool::idle_out(frame_no, v[i].since, idle)" in trim, "the trim uses target_pool::idle_out")
+    need("!target_pool::idle_out(frame_no, oldest.since, idle)" in trim, "the trim uses target_pool::idle_out")
     return fails
 
 

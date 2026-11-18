@@ -56,7 +56,7 @@ static int64_t now_ns = 1000000000;
 static int64_t hos_now_ns(void) { return now_ns; }
 enum { HOS_CHAIN_WAIT = 1, HOS_CHAIN_WOKE, HOS_CHAIN_SIGNAL, HOS_CHAIN_SLEEP, HOS_CHAIN_AWAKE, HOS_CHAIN_PRESENT };
 #define HOS_CHAIN(kind, key) ((void)(kind), (void)(key))   /* (HOS_CHAIN off: host/hos.h) */
-static int escapes_logged;
+static int escapes_logged, hos_fps_timing;
 static void hos_log(const char *fmt, ...) { if (strstr(fmt, "ran without a core")) escapes_logged++; }
 /* (host/profiling.c: the profiling mode off, so a long wait is no event) */
 static const char *hos_profiling_dir(void) { return 0; }
@@ -74,7 +74,8 @@ static BOOL SleepConditionVariableSRW(PCONDITION_VARIABLE cv, PSRWLOCK lk, DWORD
     return 1;
 }
 static void WakeConditionVariable(PCONDITION_VARIABLE cv) { (void)cv; }
-static void AcquireSRWLockExclusive(PSRWLOCK l) { (void)l; }
+static unsigned locks;
+static void AcquireSRWLockExclusive(PSRWLOCK l) { (void)l; ++locks; }
 static void ReleaseSRWLockExclusive(PSRWLOCK l) { (void)l; }
 @STRUCT@
 static HosThread *cur;
@@ -166,6 +167,13 @@ int main(int argc, char **argv) {
     }
     HosThread h0, h1, t, u;
     thread(&h0, "holder0", 16, 1), thread(&h1, "holder1", 16, 2), thread(&t, "waiter", 16, 3);
+
+    cur = &h0;
+    hos_vcore_back();
+    const unsigned before_yield = locks;
+    hos_vcore_yield();
+    check(locks == before_yield && h0.vc_held, "an uncontended guest yield must keep its core without a scheduler lock");
+    hos_vcore_away();
 
     escape(&t, &h0, &h1);   /* a block of the escaped thread (hos_sleep_ns, hos_thread_wait, the NVN waits, ...) */
     const int away = hos_vcore_away();

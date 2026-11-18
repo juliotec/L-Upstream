@@ -2648,10 +2648,12 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
     if (kept_ready_n.load(std::memory_order_acquire)) {   // (made at its program's create call: ready, as one the precompile built)
         VkPipeline kept = VK_NULL_HANDLE;
+        bool deferred = false;
         {
             std::lock_guard kl(kept_ready_mu);
             if (const auto k = kept_ready.find(key); k != kept_ready.end()) {
                 kept = k->second;
+                deferred = !kept;
                 kept_ready.erase(k);
                 kept_ready_n.store(kept_ready.size(), std::memory_order_release);
             }
@@ -2661,6 +2663,17 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
             e->ready.store(true, std::memory_order_release);
             census.pipes_taken++;
             return remember(e);
+        }
+        // The loader yielded this noted state to first use. Try its cache before queuing a build.
+        if (deferred && dev.vk13.pipelineCreationCacheControl) {
+            bool cold = false;
+            const quick_pipe::Raise asking(ask_start_first);
+            if (const VkPipeline pl = build_graphics(p, s, at, topo, -1, &cold)) {
+                e->pipeline = pl;
+                e->ready.store(true, std::memory_order_release);
+                return remember(e);
+            }
+            census.load_pipes_cold++;
         }
     }
     use_counters.pipes_new++, census.play_pipes_new++;
@@ -5044,7 +5057,7 @@ struct Pass {
     int clears = 0;          // (RX_VK_PASS_TRACE: its clears, and the first program it drew with)
     uint64_t first_prog = 0;
     VkFormat format0 = VK_FORMAT_UNDEFINED;
-    std::vector<const Texture*> sampled;   // (rendered textures its draws sampled: a target among them is a hazard)
+    std::vector<const Texture*> sampled;   // First six distinct samples for pass tracing only.
     uint16_t sampled_targets = 0;          // (colour i bit i, depth bit 8: targets earlier draws sampled)
     uint16_t written = 0;                  // (its targets written so far: colour i bit i, depth bit 8)
 };
@@ -5802,41 +5815,30 @@ void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& 
 /// a pass of its own, after a full barrier (begin_pass makes it), as for the clears above: in one pass the GPU orders
 /// the targets' writes with each other only, not with the draws' texture reads of them. (A draw that samples a target
 /// it writes itself is left as it is.) Returns the targets the draw writes.
-uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, const Targets& at) {
+uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, const Targets& at, uint16_t& samples) {
     Pass& ps = pass();   // (once: the accessor is a call and a thread-local read at each use. The same object for the thread's life: draw_begin_recording resets it in place)
     uint16_t writes = 0;
     for (int i = 0; i < at.n; i++)
         if (at.color[i] && target_write_mask(p, s, i)) writes |= (uint16_t)(1u << i);
     if (at.depth && s.ds.dw) writes |= 1u << 8;
-    {   // (longshot: a draw that samples a target it writes itself reads it undefined in Vulkan (a feedback loop): named, a few times)
-        static std::atomic<int> self_logged{0};
-        if (self_logged.load(std::memory_order_relaxed) < 12)
-            for (const Texture* t : gfx_sampled()) {
-                int k = at.depth == t ? 8 : -1;
-                for (int i = 0; i < at.n && k < 0; i++)
-                    if (at.color[i] == t) k = i;
-                if (k < 0 || !(writes >> k & 1)) continue;
-                if (self_logged.fetch_add(1, std::memory_order_relaxed) < 12)
-                    logf("vk: a draw (program %016llx) samples the %s it writes (%ux%u, %s)", (unsigned long long)p.key,
-                         k == 8 ? "depth target" : "colour target", at.width, at.height,
-                         k == 8 ? "read undefined while depth is written" : "read undefined where it writes");
-                break;
-            }
+    samples = 0;
+    for (const Texture* t : gfx_sampled()) {
+        if (!t) continue;
+        for (int i = 0; i < at.n; ++i)
+            if (at.color[i] == t) samples |= (uint16_t)(1u << i);
+        if (at.depth == t) samples |= 1u << 8;
     }
+    const uint16_t feedback = samples & writes;
+    static std::atomic<int> self_logged{0};
+    if (feedback && self_logged.load(std::memory_order_relaxed) < 12 &&
+        self_logged.fetch_add(1, std::memory_order_relaxed) < 12)
+        logf("vk: a draw (program %016llx) samples targets it writes (mask %#x, %ux%u)",
+             (unsigned long long)p.key, (unsigned)feedback, at.width, at.height);
     if (!ps.open) return writes;
     bool same = ps.depth == at.depth_view && ps.n == at.n && ps.width == at.width && ps.height == at.height;
     for (int i = 0; i < at.n && same; i++) same = ps.color[i] == at.color_view[i];
     if (!same) return writes;   // (other targets: begin_pass ends this pass with a barrier anyway)
-    auto slot_of = [&](const Texture* t) {
-        for (int i = 0; i < at.n; i++)
-            if (at.color[i] == t) return i;
-        return at.depth == t ? 8 : -1;
-    };
-    const char* kind = nullptr;
-    for (const Texture* t : gfx_sampled()) {
-        const int k = slot_of(t);
-        if (k >= 0 && (ps.written >> k & 1) && !(writes >> k & 1)) { kind = "samples a target the pass wrote"; break; }
-    }
+    const char* kind = (samples & ps.written & ~writes) ? "samples a target the pass wrote" : nullptr;
     if (!kind && writes_sampled_target(writes, ps.sampled_targets))
         kind = "writes a target an earlier draw sampled";
     if (!kind) return writes;
@@ -8267,10 +8269,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     static const bool barrier_every = env_on("RX_VK_BARRIER_EVERY_DRAW");   // (an experiment: a pass each)
     if (barrier_every) end_pass(cmd);
     reactive_scene_draw(cmd, p, s, at);
-    uint16_t writes;
+    uint16_t writes, samples;
     {
         FINE_SCOPE(FT_HAZARD);
-        writes = draw_hazards(cmd, p, s, at);
+        writes = draw_hazards(cmd, p, s, at, samples);
     }
     BufferRef mesh_args{};
     uint32_t mesh_args_at = 0;
@@ -8352,15 +8354,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     gprof_run(cmd, p.key);   // (RX_VK_PASS_TIMING=2)
     ps.prog = p.key;
     if (!ps.first_prog) ps.first_prog = p.key;
-    for (const Texture* t : gfx_sampled()) {
-        if (std::find(ps.sampled.begin(), ps.sampled.end(), t) != ps.sampled.end()) continue;
-        ps.sampled.push_back(t);
-        int slot = -1;
-        for (int i = 0; i < at.n; i++)
-            if (at.color[i] == t) { slot = i; break; }
-        if (slot < 0 && at.depth == t) slot = 8;
-        if (slot >= 0) ps.sampled_targets |= (uint16_t)(1u << slot);
+    if (pass_trace_on() && ps.sampled.size() < 6) {
+        for (const Texture* t : gfx_sampled()) {
+            if (!t || std::find(ps.sampled.begin(), ps.sampled.end(), t) != ps.sampled.end()) continue;
+            ps.sampled.push_back(t);
+            if (ps.sampled.size() == 6) break;
+        }
     }
+    ps.sampled_targets |= samples;
     ps.written |= writes;
     if (pl != cb.pipeline) {
         FINE_SCOPE(FT_BINDPL);
@@ -11600,11 +11601,18 @@ VkPipeline compute_pipeline_by_module_id(const Program& p, const uint8_t* id, ui
     ask_start_first = false;
     return made ? pl : VK_NULL_HANDLE;
 }
+void pipeline_defer(uint64_t key) {
+    std::lock_guard lk(kept_ready_mu);
+    kept_ready.try_emplace(key, VK_NULL_HANDLE);
+    kept_ready_n.store(kept_ready.size(), std::memory_order_release);
+}
 bool pipeline_keep_ready(uint64_t key, VkPipeline pl) {
     if (!pl) return false;
     {
         std::lock_guard lk(kept_ready_mu);
-        if (kept_ready.emplace(key, pl).second) {
+        auto [it, inserted] = kept_ready.try_emplace(key, pl);
+        if (inserted || !it->second) {
+            it->second = pl;
             kept_ready_n.store(kept_ready.size(), std::memory_order_release);
             return true;
         }
