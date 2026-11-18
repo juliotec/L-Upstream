@@ -17,8 +17,9 @@ Longshot's side, --hookshot DIR for Hookshot's. Longshot's and Hookshot's saves 
 ($XDG_DATA_HOME/longshot or /hookshot, default ~/.local/share/...). On Windows Longshot's are in the launcher's folder,
 %APPDATA%\\Longshot\\save (the old game folder %USERPROFILE%\\Games\\Longshot\\user\\save is still found, and said), and
 Hookshot's in the game folder's user\\save (default %USERPROFILE%\\Games\\Hookshot). The side being overwritten is copied first to
-<backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/oot-save-backups, Windows:
-%LOCALAPPDATA%\\Longshot\\oot-save-backups; --backup-dir changes it). Close every game first: --force skips that check.
+<backup>/<import or export>-<name>-<YYYYmmdd-HHMMSS> (Linux: $XDG_DATA_HOME/longshot/save-backup, beside the saves, where the
+launcher keeps its backups; Windows: %LOCALAPPDATA%\\Longshot\\oot-save-backups; --backup-dir changes it). Backups an older
+script made on Linux stay in $XDG_DATA_HOME/oot-save-backups. Close every game first: --force skips that check.
 scrub makes a save in the repository (assets/saves) from one slot: its picture made mid-grey and its saved date set
 to 2026-01-01 00:00:00 (there is no player's name in these saves); check-repo-saves checks them all.
 docs/saves-script.md has the rules.
@@ -97,10 +98,14 @@ def data_home():
 
 
 def default_backup_dir():
+    """Where a copy's backup goes: the launcher's backups folder, so the launcher finds the script's backups with its own
+    (LongshotLauncher issue 188). Windows: %LOCALAPPDATA%\\Longshot\\oot-save-backups. Linux: longshot/save-backup in the data
+    folder, beside Longshot's saves, as the launcher since LongshotLauncher#80 (the script used oot-save-backups in the data
+    folder before; the backups made there stay there)."""
     if WINDOWS:
         base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
         return os.path.join(base, "Longshot", "oot-save-backups")
-    return os.path.join(data_home(), "oot-save-backups")
+    return os.path.join(data_home(), "longshot", "save-backup")
 
 
 def folders(program):

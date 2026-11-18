@@ -8,6 +8,10 @@
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef TRACY_ENABLE
+#define HT_WRAP_LOCKS   /* (LONGSHOT_TRACY: this file's locks that have to wait are zones) */
+#include "hos_tracy.h"
+#endif
 
 #define R_OK 0
 /* (mkw-recomp) the region of GetInfo 29/30: 128 GB at 192 GB, between the heap (up from 64 GB) and the address

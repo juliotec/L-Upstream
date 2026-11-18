@@ -112,9 +112,9 @@ thread_local uint64_t rec_value = 0, targets_serial = 0;
 // Global defaults are outside this per-recording allocation contract.
 VkBuffer zero_buffer = reinterpret_cast<VkBuffer>(uintptr_t(99)); VmaAllocation zero_alloc{};
 struct Pass {}; Pass& pass() { static thread_local Pass p; return p; }
-bool work_since_barrier = false, last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false;
-VkPipeline last_pipeline{};
-struct { bool on = false; } vertex_set, last_ib;
+bool work_since_barrier = false;
+struct CmdBound { void reset() {} };   // (vk_draw.cpp's: what the command buffer has bound, forgotten by a new recording)
+CmdBound& bound() { static CmdBound b; return b; }
 void descriptors_disturbed() {}
 std::unordered_map<int, int>& handle_hits() { static thread_local std::unordered_map<int, int> h; return h; }
 struct Program {};

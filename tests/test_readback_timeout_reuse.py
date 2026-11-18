@@ -153,6 +153,11 @@ static std::set<const Texture*> destroyed, written;
 static void destroy_later(Texture& t) { destroyed.insert(&t); }
 static void forget_gpu(Texture*) {}
 static std::map<uint64_t, std::unique_ptr<Texture>> textures;
+// (vk_texture.cpp's list of the rendered textures and what takes a texture out of it before the table lets it go)
+static std::vector<Texture*> rendered_targets;
+template <class Set> static void rendered_forget(const Set& gone) {
+    if (!gone.empty()) std::erase_if(rendered_targets, [&](Texture* t) { return gone.count(t) != 0; });
+}
 
 namespace {
 /* DEAD */

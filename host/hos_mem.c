@@ -10,6 +10,10 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef TRACY_ENABLE
+#define HT_WRAP_LOCKS   /* (LONGSHOT_TRACY: this file's locks that have to wait are zones) */
+#include "hos_tracy.h"
+#endif
 static SRWLOCK lock = SRWLOCK_INIT;
 #define LOCK() AcquireSRWLockExclusive(&lock)
 #define UNLOCK() ReleaseSRWLockExclusive(&lock)

@@ -21,13 +21,41 @@ static volatile LONG nvsync;
 static HANDLE vsync_thread;
 
 static int fps_max(void);   /* (below: HOS_FPS_MAX) */
+/* (longshot) The ticker's wait. hos_sleep_ns under a millisecond yields in a loop until the time (hos_thread.c), so an
+   uncapped ticker (1 ms period) spun a core. This waits on a thread-local high-resolution waitable timer instead, as
+   sleep_ns does for the game's own sleeps; the timer cannot be made: hos_sleep_ns. HOS_VSYNC_YIELD=1: hos_sleep_ns
+   always, as before */
+static void vsync_wait_ns(int64_t ns) {
+    static _Thread_local HANDLE timer;
+    static _Thread_local int tried;
+    if (!tried) {
+        tried = 1;
+        timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (!timer) hos_log("vi: the vsync ticker has no high-resolution timer: it waits by yielding");
+    }
+    if (timer) {
+        LARGE_INTEGER due;
+        due.QuadPart = -(ns / 100 > 0 ? ns / 100 : 1);   /* relative, 100 ns units */
+        if (SetWaitableTimerEx(timer, &due, 0, NULL, NULL, NULL, 0)) {
+            WaitForSingleObject(timer, INFINITE);
+            return;
+        }
+    }
+    hos_sleep_ns(ns);
+}
+static void vsync_sleep(int64_t ns) {
+    static int yield = -1;   /* (read once: only the ticker calls this) */
+    if (yield < 0) yield = env_on("HOS_VSYNC_YIELD");
+    if (yield) hos_sleep_ns(ns);
+    else vsync_wait_ns(ns);
+}
 static DWORD WINAPI vsync_main(void *p) {
     (void)p;
     int64_t next = hos_now_ns() + 1000000000LL / fps_max();
     for (;;) {
         const int64_t period = 1000000000LL / fps_max();   /* (each tick: the menu's cap changes in play) */
         const int64_t now = hos_now_ns();
-        if (next > now) hos_sleep_ns(next - now);
+        if (next > now) vsync_sleep(next - now);
         next += period;
         if (next < hos_now_ns()) next = hos_now_ns() + period;   /* (fell behind: no burst of vsyncs) */
         for (LONG i = 0; i < nvsync; i++) hos_system_event_signal(vsync_events[i]);

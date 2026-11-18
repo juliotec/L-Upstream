@@ -33,6 +33,7 @@ REQUIRED = [
     ("gpu/vk/vk_framegen.cpp", "/// Present ahead (display_main): a set's copies go to the GPU together", FG_RULES),
     ("gpu/vk/vk_replay.cpp", "/// (longshot) The frame slots present_image uses while frame generation runs", FG_RULES),
     ("gpu/vk/vk_main.cpp", "// (longshot) A fixed frame generation multiplier's set is presented ahead", FG_RULES),
+    ("gpu/vk/vk_imgui.cpp", "// (in a window, what a present's copy used is let go this many presents later", FG_RULES),
 ]
 
 

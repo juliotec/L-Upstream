@@ -133,7 +133,16 @@ const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
     }
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "Auto", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
-    return t[v];
+    // (Auto, chosen: who makes its frames now (vk_framegen.cpp framegen_maker, as the FPS counter names it). NVIDIA DLSS FG
+    // makes fixed multipliers only, so they are AMD FSR 3.1's or the built-in one's; none made lately (the game keeps up with
+    // the display): Auto alone)
+    if (v == 1 && opts.framegen == 1) {
+        const FgMaker m = framegen_maker();
+        if (m == FgMaker::Fsr3) return "Auto (FSR 3.1 FG)";
+        if (m == FgMaker::BuiltIn) return "Auto (Built-in FG)";
+    }
+    // (as it runs: a saved value past DLSS FG's top while it makes the frames shows as the top, vk_framegen.h framegen_capped)
+    return t[framegen_capped(v, dlss_fg_most())];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
 const char* tx_fps_level(int v) { return fps_stats::level_name(v); }
@@ -1110,8 +1119,12 @@ MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself co
 MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
 /// Frame generation: how many frames are made for each of the game's
 const char* hn_framegen(int v, int variant) {
-    // (2x: by AMD FSR 3.1 where it runs, from the scene's depth and motion: vk_framegen.cpp. Variant 1 is that text)
-    if (v == 2 && (variant < 0 ? fsr3fi::frames_wanted() != 0 : variant == 1))
+    const int dlss_most = variant < 0 ? dlss_fg_most() : 0;
+    if (variant < 0) v = framegen_capped(v, dlss_most);   // (the value shown: DLSS FG's top for a saved one past it)
+    // (2x: by AMD FSR 3.1 where it makes the frame, from the scene's depth and motion: vk_framegen.cpp. Not while NVIDIA
+    // DLSS FG makes it (dlss_fg_most: chosen, on a temporal Upscaler, its runtime's answer a yes, not given up): FSR 3.1 is
+    // asked then too (fsr3fi::frames_wanted), but only for the sets DLSS-G does not make. Variant 1 is that text)
+    if (v == 2 && (variant < 0 ? dlss_most == 0 && fsr3fi::frames_wanted() != 0 : variant == 1))
         return "One made frame between each two of the game's, by AMD FSR 3.1 from the scene's depth and motion.";
     if (variant > 0) return nullptr;
     if (v <= 0) return "Only the game's own frames: no added delay.";
@@ -1166,7 +1179,7 @@ const char* framegen_skip_text(int why, unsigned most) {
                "The game's own menus have none.";
     case FG_SKIP_REFUSED: return "NGX refused its frames.";
     case FG_SKIP_NOT_BUILT: return "This build has no NVIDIA DLSS (the builder's NVIDIA DLSS tick).";
-    case FG_SKIP_COUNT: return "DLSS Frame Generation makes a fixed 2x to 8x, not Frame generation's Auto.";
+    case FG_SKIP_COUNT: return "DLSS Frame Generation makes a fixed 2x and up, not Frame generation's Auto.";
     default: return nullptr;
     }
 }
@@ -1569,7 +1582,8 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation and latency", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
-     "show artifacts.", hn_framegen, false, true},
+     "show artifacts. With NVIDIA DLSS Frame Generation it goes up to what NVIDIA's runtime makes on this GPU: 6x on an "
+     "RTX 50, 2x on an RTX 40.", hn_framegen, false, true},
     {TAB_GRAPHICS, "Frame generation by", &opts.framegen_by, 0, 2, 1, tx_framegen_by,
      "Who makes the frames at 2x and up. NVIDIA DLSS Frame Generation needs a temporal Upscaler (DLSS, DLAA or FSR) for "
      "the scene's depth and motion. Changes at once.", hn_framegen_by, false, true},
@@ -3106,6 +3120,17 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     }
     // (longshot) Frame generation by where DLSS FG cannot run: FSR 3.1 FG (0; a 2 is the same) and Built-in FG (1)
     if (r.value == &opts.framegen_by && !framegen_by_dlss_offered()) v = (v % 2 + 2) % 2;
+    // (longshot) Frame generation while NVIDIA DLSS FG makes the frames ends at its runtime's most made frames + 1
+    // (vk_framegen.h framegen_capped: 6x on an RTX 50's runtime, 2x on an RTX 40's), as if that were its last value. A saved
+    // value past it shows as that top (tx_framegen), so an arrow (a step from the saved value) steps from the value shown;
+    // past the top it goes round to Off and down from Off to the top, as at 8x. A value set as it is (the control bridge's,
+    // dir 0) is kept as asked: past the top it runs as the top
+    if (r.value == &opts.framegen && dir && v == *r.value + dir * r.step) {
+        const int most = dlss_fg_most(), top = framegen_capped(r.hi, most);
+        if (*r.value >= 2) v = framegen_capped(*r.value, most) + dir * r.step;
+        if (v > top) v = r.lo;
+        else if (v < r.lo) v = top;
+    }
     if (stops_at_ends(r)) v = std::min(std::max(v, r.lo), r.hi);   // (a scale: it stops at its ends)
     if (r.value == &opts.pad_layout) {
         if (v > 3) v = dir > 0 ? 0 : 3;   // (4, Custom, is shown only)
@@ -5937,7 +5962,8 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
         }
         save();
     } else if (want != *r.value) {
-        set_row(r, want, want > *r.value ? 1 : -1);
+        // (Frame generation: the value as asked, dir 0, not an arrow's step from the value shown (set_row: DLSS FG's top))
+        set_row(r, want, r.value == &opts.framegen ? 0 : want > *r.value ? 1 : -1);
     }
     menu_refresh = true;
     bridge_fill(i, out);

@@ -199,7 +199,15 @@ struct Dead {   // (no longer used by anything recorded after `at`: gone once th
     uint64_t value = retired_value();   // (with no window: the timeline value past its last use)
 };
 std::vector<Dead> dead;
-constexpr int64_t kFramesLater = 4;   // (present_image keeps three frames in flight)
+// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 4: what a copy reads lives through the slots)
+// (in a window, what a present's copy used is let go this many presents later. present_image waits for a frame slot's last
+// copy before the overlays record into it, so at present M the copies up to M less its slots are done: 3 slots, and while
+// frame generation's sets are on the game's timeline a slot per frame of two sets, up to kPresentSlotsMax (present_slots_for,
+// #1362); one more as a spare, as the backend's vertex buffers (ii.ImageCount). At 4, frame generation at 3x and up (6 to 8
+// slots, a set's copies on the GPU behind the game's next frame) let the staging buffers and the old atlas go while copies
+// could still read them, the font atlas grown at the start-up screen or new glyphs with the menu open: a likely cause of a
+// tester's lost device on an RTX 5080, not reproduced on an RTX 5090, where a test-only log showed the early let-gos)
+constexpr int64_t kFramesLater = kPresentSlotsMax + 1;
 void reap(bool all) {
     for (size_t i = 0; i < dead.size();) {
         Dead& d = dead[i];
@@ -373,7 +381,7 @@ void update_texture(VkCommandBuffer cmd, ImTextureData* tex) {
     vkCmdCopyBufferToImage(cmd, buf, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, (uint32_t)copies.size(), copies.data());
     layout(cmd, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    dead.push_back({presents, Tex{}, buf, buf_alloc});   // (the staging buffer: let go once this frame is done)
+    dead.push_back({presents, Tex{}, buf, buf_alloc});   // (the staging buffer: let go once the presents in flight are done, kFramesLater)
     tex->SetStatus(ImTextureStatus_OK);
 }
 

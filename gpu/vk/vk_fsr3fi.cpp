@@ -327,6 +327,7 @@ struct State {
     bool first_frame = true;
     uint64_t sequence = 0;               ///< Inputs::sequence of the frame kept as the previous source
     bool native_pq = false;
+    bool hudless = false;                ///< the previous source was a HUD-less colour (Inputs::present)
     float max_luminance = 1.0f;
     bool in_general = false;             ///< the UNDEFINED -> GENERAL barriers have been recorded
 };
@@ -896,8 +897,11 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
     }
 
     const float max_luminance = in.native_pq ? in.max_luminance : 1.0f;
+    // (a frame HUD-less after one with the HUD, or the other way: the previous source is not the same kind of colour)
+    const bool hudless = in.present != VK_NULL_HANDLE;
     const bool reset = in.reset || g.first_frame || in.sequence != g.sequence + 1 ||
-                       g.native_pq != in.native_pq || g.max_luminance != max_luminance;
+                       g.native_pq != in.native_pq || g.max_luminance != max_luminance || g.hudless != hudless;
+    g.hudless = hudless;
     g.first_frame = false;
     if (g.native_pq != in.native_pq || g.max_luminance != max_luminance)
         logf("vk: fsr3fi: captured present %s, SDK luminance maximum %.0f; colour history reset",
@@ -920,7 +924,9 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
     k.reset = reset ? 1 : 0;
     memcpy(k.device_to_view_depth, in.camera.device_to_view_depth, sizeof k.device_to_view_depth);
     k.delta_time = in.frame_time_ms;
-    k.hudless_attached_factor = 0;   // (one colour, with whatever the game drew on it)
+    // (HUD-less: color is the picture before the HUD and in.present the frame on top of it; else one colour, with whatever
+    // the game drew on it)
+    k.hudless_attached_factor = hudless ? 1 : 0;
     k.distortion_field_size[0] = 1, k.distortion_field_size[1] = 1;
     // GetOpticalFlowSize() in the GLSL reads this back as (1 / scale) / block size, so the scale is
     // the reciprocal of the display size and nothing else; it is also what turns a flow vector in
@@ -928,7 +934,8 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
     k.optical_flow_scale[0] = 1.0f / (float)uw, k.optical_flow_scale[1] = 1.0f / (float)uh;
     k.optical_flow_block_size = (int32_t)kOfBlockSize;
     // (no debug view, no debug bar; the HUD kept where it is: marked in the colour's alpha, or else guessed)
-    k.dispatch_flags = keep_static_flag() | (keep_static_flag() && in.hud_mask ? kHudMask : 0u);
+    // (HUD-less: no HUD in either source to keep, and AMD's inpainting lays this frame's over the made one)
+    k.dispatch_flags = hudless ? 0u : keep_static_flag() | (keep_static_flag() && in.hud_mask ? kHudMask : 0u);
     k.max_render_size[0] = rw, k.max_render_size[1] = rh;
     k.optical_flow_half_res_mode = 0;
     k.num_instances = 1;
@@ -1220,10 +1227,11 @@ uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uin
                                  pyramid(10), pyramid(11), pyramid(12), cb, cb_frame_pyramid};
             record_pass(cmd, P_FI_INPAINTING_PYRAMID, res, 17, frame_groups[0], frame_groups[1]);
         }
-        {   // The present backbuffer and the interpolation source are the same image here: this game has
-            // no separate HUD-less colour, so there is nothing to take the HUD from (the patched interpolation keeps
-            // it where it is instead: kKeepStatic).
-            const Resource res[]{tex(g.of_scd_output), tex(g.fi_inpainting_pyramid), color, color,
+        {   // The present backbuffer (binding 2) and the interpolation source (3). HUD-less (Inputs::present): the frame
+            // with its HUD, laid over the made frame where it differs from the source. Else the same image: there is
+            // nothing to take the HUD from (the patched interpolation keeps it where it is instead: kKeepStatic).
+            const Resource present = hudless ? Resource{in.present} : color;
+            const Resource res[]{tex(g.of_scd_output), tex(g.fi_inpainting_pyramid), present, color,
                                  out, cb};
             record_pass(cmd, P_FI_INPAINTING, res, 6, display_x, display_y);
         }

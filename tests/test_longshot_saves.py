@@ -839,6 +839,47 @@ PROGRESS = bytes(range(256)) * 2   # (made up; "PLAYER" at NAME_AT stands for a 
 PROGRESS = PROGRESS[:NAME_AT] + b"PLAYER\0\0" + PROGRESS[NAME_AT + 8:]
 
 
+class BackupFolder(Case):
+    """Where a copy's backup goes with no --backup-dir: the launcher's backups folder (LongshotLauncher issue 188). On Linux
+    that is longshot/save-backup in the data folder, beside the saves; the script's backups from before stay where they are."""
+
+    def run_default(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = oot.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_linux_default_is_the_launchers(self):
+        with mock.patch.object(oot, "WINDOWS", False):
+            self.assertEqual(oot.default_backup_dir(), os.path.join(str(self.data), "longshot", "save-backup"))
+
+    def test_linux_default_without_xdg_data_home(self):
+        env = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(oot, "WINDOWS", False):
+            self.assertEqual(oot.default_backup_dir(),
+                             os.path.join(os.path.expanduser("~"), ".local", "share", "longshot", "save-backup"))
+
+    def test_windows_default_unchanged(self):
+        with mock.patch.object(oot, "WINDOWS", True):
+            self.assertEqual(oot.default_backup_dir(), os.path.join(str(self.localappdata), "Longshot", "oot-save-backups"))
+
+    def test_copy_backs_up_beside_the_saves_and_leaves_old_backups(self):
+        old = self.data / "oot-save-backups" / "import-orchid-20260101-000000"
+        make_save(old, b"OLD", slots=("slot_00",))
+        old_tree = tree(old)
+        before = tree(self.hs)
+        with mock.patch.object(oot, "WINDOWS", False):
+            code, out, err = self.run_default("import", "orchid")
+        self.assertEqual(code, 0, err)
+        new_root = self.data / "longshot" / "save-backup"
+        (backup,) = sorted(new_root.iterdir())
+        self.assertTrue(backup.name.startswith("import-orchid-"))
+        self.assertEqual(tree(backup), before)
+        # (the backups an older script made are left as they were: nothing moved, nothing added beside them)
+        self.assertEqual(sorted(p.name for p in old.parent.iterdir()), [old.name])
+        self.assertEqual(tree(old), old_tree)
+
+
 class RepoSaves(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

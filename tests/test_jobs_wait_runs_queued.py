@@ -58,7 +58,7 @@ def check_source():
     if "queue.erase(it)" not in wait:
         raise SystemExit("jobs_wait runs a queued job without taking it out of the queue: a worker would run it again")
     block = draw[draw.index("void draw(VkCommandBuffer"):]
-    block = block[:block.index("    cur_program = &p;")]
+    block = block[:block.index("    dlss_trace_draw(s, p, d, at);")]
     pipe = block[block.index("if (!pe->ready.load(std::memory_order_acquire))"):]
     if "wait_for(pe->ready)" not in pipe or "jobs_wait(ready)" not in block[block.index("auto wait_for = "):]:
         raise SystemExit("draw()'s pipeline wait no longer goes through jobs_wait, which runs the queued build there")

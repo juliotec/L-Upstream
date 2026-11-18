@@ -1,5 +1,6 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+/* DRAW_KEY */
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -21,6 +22,7 @@
 #include <vector>
 
 namespace fixture {
+using namespace mkwvk;   // (compare_op and the pushed words' functions: draw_key.h)
 enum Cache { None = -1, Owner, Seen, Mine, Failure, Alias, Retire };
 std::atomic<int> fail_cache{None};
 std::atomic<unsigned> allocation_faults{0};

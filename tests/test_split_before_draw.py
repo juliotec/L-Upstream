@@ -2,7 +2,7 @@
 draw (no game/GPU required): maybe_split asks for the end (part_end_wanted) and replay() makes it (split_part) before a
 NOP_DRAW, NOP_DRAW_IDX or NOP_DRAW_INDIRECT that will be recorded, so no cut leaves a part beginning with a mesh draw or a dispatch. On an
 Intel Arc B580 a command buffer that began with mesh draws drew the plain draws after them as exploded triangles (white
-shards while moving). RX_VK_SPLIT_BEFORE_DRAW=0 ends a part after its 120th draw or dispatch, as before.
+shards while moving). RX_VK_SPLIT_BEFORE_DRAW=0 ends a part after its RX_VK_CHUNK-th draw or dispatch, as before.
 
 python -I -B tests/test_split_before_draw.py
 """

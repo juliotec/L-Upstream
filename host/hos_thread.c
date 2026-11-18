@@ -16,6 +16,10 @@
 #include <stdbool.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef TRACY_ENABLE
+#define HT_WRAP_LOCKS   /* (LONGSHOT_TRACY: this file's locks that have to wait are zones) */
+#include "hos_tracy.h"
+#endif
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   /* (older Windows SDKs lack it: Windows 10 1803 and later take it) */
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -491,6 +495,10 @@ static uint64_t wake_chain_key(HosThread *t) { return 1ULL << 62 | (uint64_t)(ui
 void hos_thread_wait(HosThread *t, int64_t timeout_ns, int *timed_out) {
     DWORD ms = timeout_ns < 0 ? INFINITE : (DWORD)((timeout_ns + 999999) / 1000000);
     HOS_CHAIN(HOS_CHAIN_WAIT, wake_chain_key(t));
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "kernel wait");   /* (svc mutexes, condition variables, the address arbiter: host/hos_svc.c) */
+    HT_ZONE_TEXTF(tz, "lr %#llx", (unsigned long long)(hos_ctx() ? hos_ctx()->x[30] : 0));
+#endif
     const int away = hos_vcore_away();
     *timed_out = WaitForSingleObject(t->wake, ms) == WAIT_TIMEOUT;
     if (away) hos_vcore_back();
@@ -524,6 +532,9 @@ Ctx *hos_boot_main_thread(uint64_t stack_size) {
     DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &t->handle, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);   /* a real handle, for the profiler */
     SetThreadDescription(GetCurrentThread(), L"MainThread");   /* (HOS_SAMPLE finds threads by it) */
+#ifdef TRACY_ENABLE
+    HT_THREAD_NAME("MainThread");
+#endif
     hos_thread_pin(t->handle, t->name);
     setup_guest(t);
     t->ctx.x[31] = (t->stack + stack_size) & ~15ULL;
@@ -536,6 +547,9 @@ Ctx *hos_boot_main_thread(uint64_t stack_size) {
 static DWORD WINAPI thread_main(void *p) {
     HosThread *t = (HosThread *)p;
     cur = t;
+#ifdef TRACY_ENABLE
+    HT_THREAD_NAME(t->name);   /* (the guest thread's whole name: the system's keeps 15 characters on Linux) */
+#endif
     Ctx *c = &t->ctx;
     c->x[0] = t->arg;
     c->x[30] = 0;
@@ -608,6 +622,10 @@ void hos_thread_start(HosThread *t) {
 
 void hos_thread_join(HosThread *t) {
     if (!t->handle) return;
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "thread join");
+    HT_ZONE_TEXTF(tz, "%s", t->name);
+#endif
     const int away = hos_vcore_away();
     /* (EvilOOT, 11-07: a freeze after Load, one thread joining another for good: a join of over 10 s says who joins whom, once) */
     if (WaitForSingleObject(t->handle, 10000) == WAIT_TIMEOUT) {
@@ -697,6 +715,9 @@ int64_t hos_spin_ns(void) {
 void hos_thread_set_name(HosThread *t, const char *name) {
     snprintf(t->name, sizeof t->name, "%s", name);
     __atomic_store_n(&t->serial, serial_name(t->name), __ATOMIC_RELAXED);   /* (atomic: SetThreadName may name another thread) */
+#ifdef TRACY_ENABLE
+    if (t == cur) HT_THREAD_NAME(t->name);   /* (another thread's: Tracy shows the system's name, set below) */
+#endif
     if (t->handle) {
         wchar_t w[48];
         MultiByteToWideChar(CP_UTF8, 0, t->name, -1, w, 48);
@@ -1170,10 +1191,18 @@ static int hos_short_sleep_pollers(const char *asked, int threads) {
 /* (virtual cores: a sleep gives the core up, SleepThread(0) offers it to a waiter as good) guest: the game's own sleep */
 static void sleep_away(int64_t ns, int guest) {
     if (ns <= 0) {
+#ifdef TRACY_ENABLE
+        HT_WAIT(yz, "sleep 0 (yield)");
+#endif
         hos_vcore_yield();
         SwitchToThread();
         return;
     }
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "sleep");
+    HT_ZONE_TEXTF(tz, "%s %.3f ms, lr %#llx", guest ? "guest" : "host", ns / 1e6,
+                  (unsigned long long)(guest && hos_ctx() ? hos_ctx()->x[30] : 0));
+#endif
     HOS_CHAIN(HOS_CHAIN_SLEEP, (uint64_t)ns);
     const int away = hos_vcore_away();
     sleep_ns(ns, guest);
@@ -1340,6 +1369,10 @@ HLE(_ZN2nn2os19GetCurrentStackInfoEPmS1_) {
 }
 
 HLE(_ZN2nn2os11YieldThreadEv) {
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "YieldThread");
+    HT_ZONE_TEXTF(tz, "lr %#llx", (unsigned long long)c->x[30]);
+#endif
     hos_vcore_yield();
     SwitchToThread();
 }
@@ -1536,6 +1569,9 @@ typedef struct HosFiber {
     void *host;
     int started, done;
     struct HosFiber *next;
+#ifdef TRACY_ENABLE
+    char tracy_name[32];   /* (LONGSHOT_TRACY: the fiber's row in a capture; Tracy keeps the pointer) */
+#endif
 } HosFiber;
 static SRWLOCK fibers_lock = SRWLOCK_INIT;
 static HosFiber *fibers;
@@ -1595,6 +1631,19 @@ static void fiber_switch(Ctx *from, HosFiber *to) {
     dst->thread = t->ctx.thread;
     if (from->poll) dst->poll = 1;   /* (a pending virtual-core request follows the thread) */
     t->run_ctx = to ? &to->ctx : NULL;
+#ifdef TRACY_ENABLE
+    /* (the zones from here on are the fiber's, or the thread's own again: a fiber's open zones follow it to the thread
+       that runs it next, and Tracy checks each one's begins and ends by itself) */
+    {
+        extern _Thread_local int hos_tracy_calls_open;
+        static volatile LONG told;
+        if (hos_tracy_calls_open && InterlockedIncrement(&told) <= 5)
+            hos_log("tracy: a fiber switch (to %s) with %d game call zones open on %s", to ? to->tracy_name : "the thread's own",
+                    hos_tracy_calls_open, t->name);
+    }
+    if (to) HT_FIBER_ENTER(to->tracy_name);
+    else HT_FIBER_LEAVE();
+#endif
     SwitchToFiber(to ? to->host : t->host_fiber);
     /* back in `from`, maybe on another thread: take that one's identity (fiber_switch's caller set it already) */
 }
@@ -1605,6 +1654,9 @@ HLE(_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi) {
     if (!f) {
         f = (HosFiber *)calloc(1, sizeof *f);
         f->ft = ARG(0);
+#ifdef TRACY_ENABLE
+        snprintf(f->tracy_name, sizeof f->tracy_name, "fiber %llx", (unsigned long long)ARG(0));
+#endif
         AcquireSRWLockExclusive(&fibers_lock);
         f->next = fibers, fibers = f;
         ReleaseSRWLockExclusive(&fibers_lock);
@@ -1826,6 +1878,9 @@ static void vc_acquire(HosThread *t) {
         return;
     }
     const int64_t t0 = hos_now_ns();
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "vcore wait");   /* (a guest thread ready to run, waiting for one of the game's cores) */
+#endif
     HOS_CHAIN(HOS_CHAIN_WAIT, vc_chain_key(t));
     t->vc_since = t0;
     t->vc_by[0] = 0;
@@ -1894,6 +1949,11 @@ static void vc_acquire(HosThread *t) {
         }
     }
     const int64_t waited = hos_now_ns() - t0;
+#ifdef TRACY_ENABLE
+    HT_ZONE_TEXTF(tz, "%s%.47s, priority %d", how == 0 ? "given by " : how == 1 ? "found free" : "ran without one",
+                  how == 0 ? t->vc_by : "", t->priority);
+    HT_ZONE_END(tz);
+#endif
     HOS_CHAIN(HOS_CHAIN_WOKE, vc_chain_key(t));
     vc_st.wait_ns += waited;
     if (waited > vc_st.max_ns) vc_st.max_ns = waited;
@@ -1926,6 +1986,9 @@ static void vc_yield(HosThread *t, int strict) {
     if (any) vc_st.yields++;
     ReleaseSRWLockExclusive(&vc_lock);
     if (!any) return;
+#ifdef TRACY_ENABLE
+    HT_SCOPE("vcore yield");   /* (the core given to a waiter, at a checkpoint or a yield, and taken again) */
+#endif
     vc_release(t);
     vc_acquire(t);
 }
@@ -1971,8 +2034,14 @@ void hos_vcore_yield(void) {
    core is taken again (waiting for a core while holding it could stall the thread that will wake the next waiter),
    so callers see a spurious wake-up and look at their condition again, as they do anyway */
 int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "asleep");   /* (inside a wait's zone: the part of it slept, after its spin; then the core taken again) */
+#endif
     const int away = hos_vcore_away();
     const BOOL r = SleepConditionVariableSRW((PCONDITION_VARIABLE)cv, (PSRWLOCK)lk, ms, 0);
+#ifdef TRACY_ENABLE
+    HT_ZONE_END(tz);
+#endif
     if (away) {
         ReleaseSRWLockExclusive((PSRWLOCK)lk);
         hos_vcore_back();

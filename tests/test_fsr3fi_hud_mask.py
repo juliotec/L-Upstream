@@ -5,11 +5,14 @@ as the pixels the same in both frames, and the minimap, the button prompts' see-
 animated failed the guess: they were moved with the scene, smeared and shaking at every turn of the camera. Now the picture is
 copied right after the upscale (vk_framegen.cpp framegen_hud_before), and at the present what the game drew over it since is
 marked in the interpolation source's alpha (hud_source, shaders/fg_hud.comp), which the patched interpolation reads
-(Inputs::hud_mask; scripts/fsr3_shaders.py FI_PATCHES 3).
+(Inputs::hud_mask; scripts/fsr3_shaders.py FI_PATCHES 3). By default the mask pass also writes the copy itself, cropped as
+the frame, and FSR 3.1 is given that as its HUD-less colour with the frame as presented over it (Inputs::present: AMD's
+HUD-less mode, #1310 after #1464); RX_VK_FSR_FG_HUDLESS=0 gives the marked source instead (not run here: read once).
 
 This check cuts framegen_hud_before, hud_source and fsr3fi_frames out of gpu/vk/vk_framegen.cpp and runs them with spies for
 Vulkan and the FSR 3.1 backend, no GPU and no game:
-  - a picture copied after its upscale this frame: FSR 3.1 is given the marked source (the mask pass's output), hud_mask set;
+  - a picture copied after its upscale this frame: FSR 3.1 is given the HUD-less copy (the mask pass's second output) as
+    its colour and the frame as presented as Inputs::present;
   - the next present with no new copy (a menu, a movie: no gameplay upscale): the frame as it is, the HUD guessed, not last
     frame's picture;
   - the picture destroyed or moved since the copy, or not the presented picture's size: the frame as it is;
@@ -69,7 +72,7 @@ uint64_t next_handle = 0x1000;
 template <class T> T handle() { return (T)(uintptr_t)(next_handle += 0x10); }
 int made_images = 0, made_pipes = 0;
 bool make_pipe(Pipe& p, const uint32_t*, size_t, std::initializer_list<VkDescriptorType> types, uint32_t push) {
-    CHECK(types.size() == 4 && push == 16);
+    CHECK(types.size() == 5 && push == 20);
     p.pipe = handle<VkPipeline>(), p.layout = handle<VkPipelineLayout>(), p.set = handle<VkDescriptorSetLayout>();
     return ++made_pipes, true;
 }
@@ -89,7 +92,7 @@ void vkCmdCopyImage(VkCommandBuffer, VkImage src, VkImageLayout, VkImage dst, Vk
     copies.push_back({src, dst, c->extent.width, c->extent.height});
 }
 // (the mask pass: its pipeline, its bindings, its push constants)
-struct Pass { VkPipeline pipe; std::vector<VkImageView> views; int32_t pc[4]; uint32_t w, h; };
+struct Pass { VkPipeline pipe; std::vector<VkImageView> views; int32_t pc[5]; uint32_t w, h; };
 std::vector<Pass> passes;
 void pass(VkCommandBuffer, const Pipe& p, std::initializer_list<std::pair<VkImageView, VkSampler>> bindings, uint32_t w,
           uint32_t h, const void* push = nullptr, uint32_t push_bytes = 0) {
@@ -135,6 +138,7 @@ struct Inputs {   // (vk_fsr3fi.h's)
     VkFormat color_format = VK_FORMAT_UNDEFINED;
     bool native_pq = false;
     bool hud_mask = false;
+    VkImageView present = VK_NULL_HANDLE;
     float max_luminance = 1.0f;
     uint32_t width = 0, height = 0;
     VkImageView depth = VK_NULL_HANDLE, motion = VK_NULL_HANDLE;
@@ -167,52 +171,61 @@ int main() {
     alive.push_back({picture.gpu, &picture});
     uint64_t sequence = 0;
     const auto present = [&](int cur) {
-        hud_source(cmd, cur, 2560, 1440, 0, 0, 2560, 1440);
+        hud_source(cmd, cur, 2560, 1440, 0, 0, 2560, 1440, false);
         CHECK(fsr3fi_frames(cmd, set, cur, 2560, 1440, ++sequence, false, t, slot, 1) == 1);
         return fsr3fi::given;
     };
 
-    // (a frame of play: the picture copied after its upscale, the HUD drawn over it since: FSR 3.1 is told where it is)
+    // (a frame of play: the picture copied after its upscale, the HUD drawn over it since: FSR 3.1 interpolates the copy and
+    // lays the frame as presented over it)
     framegen_hud_before(cmd, &picture, 0);
     CHECK(copies.size() == 1 && copies[0].src == picture.image && copies[0].w == 2560 && copies[0].h == 1440);
     const VkImage before = copies[0].dst;
     fsr3fi::Inputs in = present(0);
-    CHECK(in.hud_mask);
+    CHECK(in.present == fg.frames[0].view && !in.hud_mask);
     CHECK(copies.size() == 2 && copies[1].src == picture.image && copies[1].dst != before);   // (the picture as presented)
-    CHECK(passes.size() == 1 && passes[0].views.size() == 4 && passes[0].views[0] == fg.frames[0].view);
+    CHECK(passes.size() == 1 && passes[0].views.size() == 5 && passes[0].views[0] == fg.frames[0].view);
     CHECK(passes[0].views[1] != passes[0].views[2] && passes[0].w == 2560 && passes[0].h == 1440);
-    CHECK(in.color == passes[0].views[3] && in.color != fg.frames[0].view && in.color_image != fg.frames[0].image);
+    CHECK(in.color == passes[0].views[4] && in.color != passes[0].views[3] && in.color != fg.frames[0].view &&
+          in.color_image != fg.frames[0].image);
     CHECK(in.color_format == VK_FORMAT_R8G8B8A8_UNORM);
 
     // (the next present, with no upscale since (a menu, a movie): the frame as it is, not last frame's picture)
     in = present(1);
-    CHECK(!in.hud_mask && in.color == fg.frames[1].view && in.color_image == fg.frames[1].image);
+    CHECK(!in.hud_mask && !in.present && in.color == fg.frames[1].view && in.color_image == fg.frames[1].image);
     CHECK(passes.size() == 1);
 
     // (a crop of the picture: the mask's corner in it)
     framegen_hud_before(cmd, &picture, 0);
-    hud_source(cmd, 0, 2560, 1440, 320, 0, 1920, 1440);
-    CHECK(fsr3fi_frames(cmd, set, 0, 1920, 1440, ++sequence, false, t, slot, 1) == 1 && fsr3fi::given.hud_mask);
+    hud_source(cmd, 0, 2560, 1440, 320, 0, 1920, 1440, false);
+    CHECK(fsr3fi_frames(cmd, set, 0, 1920, 1440, ++sequence, false, t, slot, 1) == 1 && fsr3fi::given.present);
     CHECK(passes.size() == 2 && passes[1].pc[0] == 320 && passes[1].pc[1] == 0 && passes[1].pc[2] == 1920 &&
-          passes[1].pc[3] == 1440 && passes[1].w == 1920);
+          passes[1].pc[3] == 1440 && passes[1].pc[4] == 0 && passes[1].w == 1920);
+    CHECK(passes[0].pc[4] == 0);   // (SDR: the copy sRGB-encoded under the HUD, fg_hud.comp hudless_colour)
+
+    // (the native HDR picture: the pass told so, the copy taken as it is under the HUD)
+    framegen_hud_before(cmd, &picture, 0);
+    hud_source(cmd, 1, 2560, 1440, 0, 0, 2560, 1440, true);
+    CHECK(fsr3fi_frames(cmd, set, 1, 2560, 1440, ++sequence, true, t, slot, 1) == 1 && fsr3fi::given.present);
+    CHECK(passes.size() == 3 && passes[2].pc[4] == 1);
 
     // (the picture destroyed since the copy, or moved to another image: nothing to copy from, the HUD guessed)
     framegen_hud_before(cmd, &picture, 0);
     alive.clear();
     const size_t n0 = copies.size();
-    CHECK(!present(0).hud_mask && copies.size() == n0);
+    CHECK(!present(0).present && copies.size() == n0);
     alive.push_back({picture.gpu, &picture});
     framegen_hud_before(cmd, &picture, 0);
     const VkImage moved_from = picture.image;
     picture.image = handle<VkImage>();
-    CHECK(!present(1).hud_mask);
+    CHECK(!present(1).present);
     picture.image = moved_from;
-    CHECK(!present(0).hud_mask);   // (and that copy is not taken up a present later)
+    CHECK(!present(0).present);   // (and that copy is not taken up a present later)
 
     // (a picture not the presented picture's size: no mark)
     framegen_hud_before(cmd, &picture, 0);
-    hud_source(cmd, 1, 3840, 2160, 0, 0, 3840, 2160);
-    CHECK(fsr3fi_frames(cmd, set, 1, 3840, 2160, ++sequence, false, t, slot, 1) == 1 && !fsr3fi::given.hud_mask);
+    hud_source(cmd, 1, 3840, 2160, 0, 0, 3840, 2160, false);
+    CHECK(fsr3fi_frames(cmd, set, 1, 3840, 2160, ++sequence, false, t, slot, 1) == 1 && !fsr3fi::given.present);
 
     // (not the scene's formats: a movie's RGBA8 upscale is not copied; nor anything at another level)
     size_t n = copies.size();
@@ -221,14 +234,14 @@ int main() {
     framegen_hud_before(cmd, &movie, 0);
     framegen_hud_before(cmd, &picture, 1);
     framegen_hud_before(cmd, nullptr, 0);
-    CHECK(copies.size() == n && !present(0).hud_mask);
+    CHECK(copies.size() == n && !present(0).present);
 
     // (PsychoV35's RGBA16F picture is the scene's too)
     Texture hdr = picture;
     hdr.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     alive.push_back({hdr.gpu, &hdr});
     framegen_hud_before(cmd, &hdr, 0);
-    CHECK(copies.size() == n + 1 && present(1).hud_mask);
+    CHECK(copies.size() == n + 1 && present(1).present);
 
     // (FSR 3.1 not asked for, or frame generation off: nothing copied, nothing marked)
     n = copies.size();
@@ -238,7 +251,7 @@ int main() {
     fg_on = false;
     framegen_hud_before(cmd, &picture, 0);
     fg_on = true;
-    CHECK(copies.size() == n && !present(0).hud_mask);
+    CHECK(copies.size() == n && !present(0).present);
     std::puts("fsr3fi hud mask: ok");
     return 0;
 }

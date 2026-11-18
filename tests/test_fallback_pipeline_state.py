@@ -10,7 +10,8 @@ Also replay the production pipeline-bind and vertex-cache decisions for ordinary
 ordinary draws with the same buffers. The Vulkan state lifetime is modeled, not driver-tested.
 
 python -I -B tests/test_fallback_pipeline_state.py --cxx g++ --headers <Vulkan include>
---source <vk_draw.cpp> also runs the same checks against an unfixed or mutated source.
+--source <vk_draw.cpp> also runs the same checks against a mutated source (one that keeps what the command buffer has bound
+in CmdBound, as the fixture does: the structs are cut from it).
 """
 import argparse
 from pathlib import Path
@@ -148,12 +149,16 @@ CACHE = r"""
 // Replay actual cache decisions; buffer resolution and Vulkan calls are authored stand-ins.
 #define FINE_SCOPE(...)
 #define FINE_N(...)
-VkPipeline last_pipeline = VK_NULL_HANDLE;
+// (what the command buffer has bound: vk_draw.cpp's CmdBound and the structs it is made of, as they are there)
 /* LAST_VB */
-LastVb last_vb{};
-bool last_vb_valid = false;
 /* VERTEX_SET */
-VertexSet vertex_set{};
+/* INDEX_BIND */
+/* DYN_STATE */
+/* DYN_CONSTS */
+/* DYN_FAST */
+/* DESC_BOUND */
+/* CMD_BOUND */
+CmdBound bound_state{};
 struct BufferRef {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceSize offset = 0;
@@ -161,6 +166,7 @@ struct BufferRef {
 };
 /* KEPT_VERTEX */
 KeptVertex kept_vb[16]{};
+/* DRAW_KEY */
 /* VERTEX_BIND_REUSE */
 /* VERTEX_SET_SAME */
 /* VERTEX_BIND_RANGE */
@@ -189,6 +195,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers2(VkCommandBuffer, uint32_t fir
 }
 void replay_vertex_binding(const Program& p, VkPipeline pl, const NvnState& s) {
     VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(uintptr_t{1});
+    CmdBound& cb = bound_state;
     /* BIND_PIPELINE */
     if (p.mesh || p.fallback) return; // These draw paths return before ordinary vertex-buffer binding.
     /* BIND_VERTICES */
@@ -304,15 +311,25 @@ def main():
     fixture = fixture.replace("/* VERTEX_INFO */", block(source, "const Shader::Info* vertex_info("))
     fixture = fixture.replace("/* BUILD_GRAPHICS */", block(source, "VkPipeline build_graphics(const Program& p, "
                               "const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, bool* cold) {"))
-    cache = CACHE
+    # (the three vertex predicates are gpu/vk/draw_key.h's, which vk_draw.cpp includes; a --source from before the
+    # header still has them in the file, and they are cut from it as they were)
+    in_header = [m for m in ("bool vertex_bind_reuse(", "bool vertex_set_same(", "void vertex_bind_range(") if m not in source]
+    if in_header and '#include "draw_key.h"' not in source:
+        raise SystemExit("the source neither defines " + in_header[0] + " nor includes draw_key.h")
+    cache = CACHE.replace("/* DRAW_KEY */", '#include "draw_key.h"\n' + "".join("using mkwvk::%s;\n" % m.split()[1][:-1] for m in in_header))
+    # (the bound-state structs; DynFast's sizes are the line before it)
+    at = source.index("constexpr int kDynF")
+    cache = cache.replace("/* DYN_CONSTS */", source[at:source.index("\n", at)])
     for token, marker in [
             ("LAST_VB", "struct LastVb {"), ("VERTEX_SET", "struct VertexSet {"),
             ("KEPT_VERTEX", "struct KeptVertex {"),
+            ("INDEX_BIND", "struct IndexBind {"), ("DYN_STATE", "struct DynState {"), ("DYN_FAST", "struct DynFast {"),
+            ("DESC_BOUND", "struct DescBound {"), ("CMD_BOUND", "struct CmdBound {"),
             ("VERTEX_BIND_REUSE", "bool vertex_bind_reuse("),
             ("VERTEX_SET_SAME", "bool vertex_set_same("),
             ("VERTEX_BIND_RANGE", "void vertex_bind_range("),
-            ("BIND_PIPELINE", "if (pl != last_pipeline) {")]:
-        extracted = block(source, marker) + (";" if marker.startswith("struct ") else "")
+            ("BIND_PIPELINE", "if (pl != cb.pipeline) {")]:
+        extracted = "" if marker in in_header else block(source, marker) + (";" if marker.startswith("struct ") else "")
         cache = cache.replace("/* " + token + " */", extracted)
     start = source.index("    uint64_t vaddr[16]{};")
     end = source.index("    if (g_fine) fine_ns[FT_VERTEX]", start)

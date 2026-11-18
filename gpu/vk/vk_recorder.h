@@ -39,6 +39,9 @@
 // Include through vk_work.h, not by itself: the names below are the wrappers its macros call.
 #pragma once
 
+#ifdef TRACY_ENABLE
+#include "../../host/hos_tracy.h"   // (LONGSHOT_TRACY: the profiler's zones; nothing in any other build)
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -616,6 +619,9 @@ inline void Recorder::loop() {
         if (r == seen && (seen = W.load(std::memory_order_acquire)) == r) {
             if (busy0) busy_ns.fetch_add(now_ns() - busy0, std::memory_order_relaxed), busy0 = 0;
             if (n) packets.fetch_add(n, std::memory_order_relaxed), n = 0;
+#ifdef TRACY_ENABLE
+            HT_WAIT(ht_idle, "recorder idle");   // (LONGSHOT_TRACY: between these the recorder thread runs its packets)
+#endif
             if (!idle(r, seen, last_log)) return;
             continue;
         }

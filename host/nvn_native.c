@@ -26,6 +26,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#ifdef TRACY_ENABLE
+#define HT_WRAP_LOCKS   /* (LONGSHOT_TRACY: this file's locks that have to wait are zones) */
+#include "hos_tracy.h"
+#endif
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
@@ -378,6 +382,10 @@ NV(nvnMemoryPoolGetBufferAddress) {
 NV(nvnMemoryPoolFlushMappedRange) {}   /* CPU writes are seen through write watch */
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */
     if (no_pool(c, "invalidate mapped range")) return;
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "nvnMemoryPoolInvalidateMappedRange");   /* (a readback: may wait for the GPU) */
+    HT_ZONE_TEXTF(tz, "%llu bytes, lr %#llx", (unsigned long long)U64(2), (unsigned long long)c->x[30]);
+#endif
     const nvn_pool *o = (const nvn_pool *)P(0);
     if ((int64_t)U64(1) >= 0) rx_nvn_invalidate(o->gpu + U64(1), U64(2));
 }
@@ -508,6 +516,10 @@ NV(nvnBufferGetMemoryOffset) { RET((uint64_t)((const nvn_buffer *)P(0))->off); }
 NV(nvnBufferGetSize) { RET(((const nvn_buffer *)P(0))->size); }
 NV(nvnBufferFlushMappedRange) {}
 NV(nvnBufferInvalidateMappedRange) {
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "nvnBufferInvalidateMappedRange");   /* (a readback: may wait for the GPU) */
+    HT_ZONE_TEXTF(tz, "%llu bytes, lr %#llx", (unsigned long long)U64(2), (unsigned long long)c->x[30]);
+#endif
     const nvn_buffer *o = (const nvn_buffer *)P(0);
     if (o->pool) rx_nvn_invalidate(POOL(o->pool)->gpu + (uint64_t)o->off + U64(1), U64(2));
 }
@@ -946,6 +958,10 @@ static void texels(Ctx *c, int write, int strided) {
                 (unsigned long long)chain[0], (unsigned long long)chain[1], (unsigned long long)chain[2],
                 (unsigned long long)chain[3], (unsigned long long)chain[4], (unsigned long long)chain[5]);
     }
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "nvn texels");
+    HT_ZONE_TEXTF(tz, "%s", write ? "write" : "read");
+#endif
     if (write) rx_nvn_write_texels(t, level, layer0, r, data, row, img), watch_texels_source(t, data, img);
     else rx_nvn_read_texels(t, level, layer0, r, data, row, img);
 }
@@ -1093,6 +1109,9 @@ static void held_init(void) {
 static void held_flush(void) {
     held_init();
     if (!nheld) return;
+#ifdef TRACY_ENABLE
+    HT_SCOPE("nvn held_flush");
+#endif
     EnterCriticalSection(&held_cs);
     for (LONG i = 0; i < nheld; i++) rx_nvn_submit(held[i].h, held[i].n);
     nheld = 0;
@@ -1135,6 +1154,11 @@ NV(nvnSyncWait) {
     if (rx_nvn_wait(s->fence, 0)) { RET(NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED); return; }
     static int block = -1;   /* HOS_NVN_SYNC_BLOCK=1 (experiment): a poll waits for the GPU */
     if (block < 0) block = env_on("HOS_NVN_SYNC_BLOCK");
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "nvnSyncWait");
+    HT_ZONE_TEXTF(tz, "fence %llu, timeout %.3f ms, lr %#llx", (unsigned long long)s->fence, U64(1) / 1e6,
+                  (unsigned long long)c->x[30]);
+#endif
     const int away = hos_vcore_away();
     const int64_t t0 = hos_now_ns();
     const int ok = rx_nvn_wait(s->fence, block ? ~0ull >> 1 : U64(1));
@@ -1229,6 +1253,10 @@ NV(nvnQueueFinalize) { ((nvn_queue *)P(0))->magic = 0; }
 NV(nvnQueueGetError) { if (P(1)) memset(P(1), 0, sizeof(NVNqueueErrorInfo)); RET(NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR); }
 NV(nvnQueueFlush) { held_flush(); }
 NV(nvnQueueFinish) {
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "nvnQueueFinish");
+    HT_ZONE_TEXTF(tz, "lr %#llx", (unsigned long long)c->x[30]);
+#endif
     held_flush();
     const int away = hos_vcore_away();
     const int64_t t0 = hos_now_ns();
@@ -1676,6 +1704,10 @@ static void watch_handle_called(Ctx *c, uint64_t h, const char *how) {
     }
 }
 NV(nvnCommandBufferEndRecording) {
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "nvnCommandBufferEndRecording");   /* (the recorded commands' copy) */
+    HT_ZONE_TEXTF(tz, "lr %#llx", (unsigned long long)c->x[30]);
+#endif
     nvn_cmd *o = CB(P(0));
     uint8_t *p = cmd_alloc(o, 8);
     put_hdr(p, NOP_END, 8);
@@ -2442,6 +2474,10 @@ NV(nvnQueueSubmitCommands) {
     { void hos_renderer_wait(void); static volatile LONG up; if (!up) { hos_renderer_wait(); up = 1; } }   /* (display.c) */
     nvn_queue *q = (nvn_queue *)P(0);
     const int n = I(1);
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "nvnQueueSubmitCommands");
+    HT_ZONE_TEXTF(tz, "queue %p, %d handles, lr %#llx", (void *)q, n, (unsigned long long)c->x[30]);
+#endif
     uint64_t h[64];
     if (n < 0 || n > 64) die("submit of %d handles", n);
     memcpy(h, PN(2, 8 * (size_t)n), 8 * (size_t)n);
@@ -2563,6 +2599,9 @@ NV(nvnWindowAcquireTexture) {
     nvn_sync *s = (nvn_sync *)P(1);
     *(int *)P(2) = o->active ? o->next++ % o->active : 0;
     {
+#ifdef TRACY_ENABLE
+        HT_WAIT(tz, "nvnWindowAcquireTexture");   /* (the frame's pacing: host/nn_vi.c) */
+#endif
         const int away = hos_vcore_away();
         hos_vi_native_acquire(o->active ? o->active : o->ntex);
         if (away) hos_vcore_back();
@@ -2576,6 +2615,10 @@ NV(nvnQueuePresentTexture) {
     const int i = I(2);
     if (i < 0 || i >= o->ntex) die("present of window texture %d", i);
     HOS_CHAIN(HOS_CHAIN_PRESENT, (uint64_t)i);
+#ifdef TRACY_ENABLE
+    HT_FRAME();   /* (LONGSHOT_TRACY: a frame ends where the game presents) */
+    HT_ZONE(tz, "nvnQueuePresentTexture");
+#endif
     const int trace = hos_vi_present_trace_enabled();
     int64_t phases[4] = {0};
     if (trace) phases[0] = hos_now_ns();

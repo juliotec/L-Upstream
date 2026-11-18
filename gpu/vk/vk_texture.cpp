@@ -35,6 +35,9 @@
 #include <vector>
 
 #include "vk_texture.h"
+#ifdef TRACY_ENABLE
+#include "../../host/hos_tracy.h"   // (LONGSHOT_TRACY: the profiler's zones; nothing in any other build)
+#endif
 #include "vk_menu.h"
 #include "vk_draw.h"
 #include "vk_programs.h"
@@ -235,6 +238,14 @@ struct KeyHash {
 };
 std::unordered_map<Key, std::unique_ptr<Texture>, KeyHash> textures;
 std::unordered_multimap<uint64_t, Texture*> by_gpu;
+// (longshot) The textures a pass has rendered into (first_render_frame set: texture_rendered adds one there, once), for the
+// dead targets' sweep at every present: a few hundred of the table's thousands (5,000 textures in Castle Town's market, which
+// the sweep walked twice a present, 0.33 ms of the render thread, to find the render targets among them). Every erase from
+// `textures` takes its textures out first (rendered_forget): a pointer here is always one the table owns
+std::vector<Texture*> rendered_targets;
+template <class Set> void rendered_forget(const Set& gone) {   // (before the textures in `gone` leave the table)
+    if (!gone.empty()) std::erase_if(rendered_targets, [&](Texture* t) { return gone.count(t) != 0; });
+}
 uint64_t frame_no = 1;
 uint64_t total_bytes = 0;
 
@@ -1117,6 +1128,9 @@ VkImageView astc_level_view(Texture* tex, uint32_t level, uint32_t layer) {
 thread_local const char* astc_fail = nullptr;
 
 bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
+#ifdef TRACY_ENABLE
+    HT_SCOPE("texture upload_astc_gpu");
+#endif
     astc_fail = nullptr;
     if (tex.type != VK_IMAGE_TYPE_2D || tex.samples != VK_SAMPLE_COUNT_1_BIT || !astc_ready()) {
         astc_fail = "not a 2D image the GPU decoder takes";
@@ -1302,6 +1316,9 @@ bool unswizzle_ready() {
 
 /// The whole texture (every level and layer dirty overlaps) unswizzled on the GPU; false: not a texture for it
 bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
+#ifdef TRACY_ENABLE
+    HT_SCOPE("texture upload_unswizzle_gpu");
+#endif
     // (not a sparse image: nothing here binds its blocks, and a store into an unbound one is dropped)
     if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || tex.sparse || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
         is_bc(tex.format) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
@@ -1567,6 +1584,9 @@ bool upload_inner(Texture& tex, const Ranges* dirty);
 thread_local bool ahead_running = false;
 void ahead_learn(const Texture& tex);
 bool upload(Texture& tex, const Ranges* dirty) {
+#ifdef TRACY_ENABLE
+    HT_SCOPE("texture upload");
+#endif
     if (!tex.uploaded && !ahead_running) ahead_learn(tex);
     const auto t0 = std::chrono::steady_clock::now();
     up_route = UP_CPU;
@@ -2241,6 +2261,9 @@ bool low_vram_texture_mips() {
 }
 
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {
+#ifdef TRACY_ENABLE
+    HT_SCOPE("texture create");
+#endif
     PROF_EXACT();   // (texture_get's slow path: PROF_TEXGET samples the rest)
     auto tex = std::make_unique<Texture>();
     Texture& x = *tex;
@@ -4414,7 +4437,7 @@ bool texture_resident(Texture* tex, uint32_t first, uint32_t count) {
 void texture_rendered(Texture* tex) {
     if (!tex) return;
     if (tex->sparse && !tex->first_render_frame) texture_resident(tex, 0, tex->layers);   // (rendered into: all of it)
-    if (!tex->first_render_frame) tex->first_render_frame = frame_no;
+    if (!tex->first_render_frame) tex->first_render_frame = frame_no, rendered_targets.push_back(tex);
     // (its storage's range as the GPU's, once a frame: render targets only. Copies and storage writes registered it
     // too, and a texture made later over such storage (MKW's terrain tiles reuse the slots of a pool) was not uploaded
     // and kept the placeholder it was made with)
@@ -4762,22 +4785,27 @@ uint64_t st_dead_swept, st_dead_swept_bytes;   // (let go by dead_targets_sweep 
 /// pass lets them go: nothing written back (their storage is another target's now), their images to the target pool
 void dead_targets_sweep(uint64_t completed) {
     const uint64_t need = dead_min_unused_presents();
-    std::vector<const Texture*> by_start;
+    // (the rendered textures only, rendered_targets, not the whole table; the list kept from one present to the next; and
+    // nothing sorted at a present where no target is a candidate)
+    static thread_local std::vector<const Texture*> by_start;
+    by_start.clear();
     uint64_t longest = 0;
-    for (auto& kv : textures) {
-        const Texture* t = kv.second.get();
+    bool any = false;
+    const auto candidate = [&](const Texture* tex) {
+        return tex->gpu_written && tex->first_render_frame && tex->guest_size &&
+               dead_targets::candidate(frame_no, tex->last_frame, need, tex->last_value, completed,
+                                       tex->levels == 1 && tex->layers == 1 && tex->depth <= 1);
+    };
+    for (const Texture* t : rendered_targets) {
         if (!t->gpu_written || !t->first_render_frame || !t->guest_size) continue;
         by_start.push_back(t), longest = std::max(longest, t->guest_size);
+        any = any || candidate(t);
     }
-    if (by_start.empty()) return;
+    if (!any) return;
     std::sort(by_start.begin(), by_start.end(), [](const Texture* a, const Texture* b) { return a->gpu < b->gpu; });
     std::unordered_set<Texture*> gone;
-    for (auto& kv : textures) {
-        Texture* tex = kv.second.get();
-        if (!tex->gpu_written || !tex->first_render_frame || !tex->guest_size ||
-            !dead_targets::candidate(frame_no, tex->last_frame, need, tex->last_value, completed,
-                                     tex->levels == 1 && tex->layers == 1 && tex->depth <= 1))
-            continue;
+    for (Texture* tex : rendered_targets) {
+        if (!candidate(tex)) continue;
         const uint64_t lo = tex->gpu, hi = tex->gpu + tex->guest_size;
         auto it = std::lower_bound(by_start.begin(), by_start.end(), lo > longest ? lo - longest : 0,
                                    [](const Texture* t, uint64_t g) { return t->gpu < g; });
@@ -4801,6 +4829,7 @@ void dead_targets_sweep(uint64_t completed) {
         destroy_later(*tex);
         forget_gpu(tex);
     }
+    rendered_forget(gone);
     for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {
         if (gone.erase(it->second.get())) it = textures.erase(it);
         else ++it;
@@ -4829,6 +4858,7 @@ void reuse_retire_frame() {
         gone.insert(t);
     }
     st_reuse_retired += (int64_t)gone.size();
+    rendered_forget(gone);
     for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {
         if (gone.erase(it->second.get())) it = textures.erase(it);
         else ++it;
@@ -5618,6 +5648,7 @@ void texture_frame(uint64_t completed) {
         forget_gpu(tex);
         gone.insert(tex);
     }
+    rendered_forget(gone);
     for (auto it = textures.begin(); it != textures.end() && !gone.empty();) {
         if (gone.erase(it->second.get())) it = textures.erase(it);
         else ++it;

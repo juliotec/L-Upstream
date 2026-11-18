@@ -65,9 +65,9 @@ VkDescriptorPool make_pool() { return handle<VkDescriptorPool>(); }
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice,VkDescriptorPool,VkDescriptorPoolResetFlags) { return VK_SUCCESS; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(VkDevice,VkDescriptorPool,const VkAllocationCallbacks*) {}
 struct Pass {}; Pass& pass() { static Pass p;return p; }
-bool work_since_barrier=false,last_dyn_valid=false,last_desc_valid=false,last_vb_valid=false;
-VkPipeline last_pipeline{};
-struct { bool on=false; } vertex_set,last_ib;
+bool work_since_barrier=false;
+struct CmdBound { void reset() {} };   // (vk_draw.cpp's: what the command buffer has bound, forgotten by a new recording)
+CmdBound& bound() { static CmdBound b; return b; }
 void descriptors_disturbed() {}
 std::unordered_map<int,int>& handle_hits() { static std::unordered_map<int,int> h;return h; }
 struct BankCache { uint64_t at=0; };

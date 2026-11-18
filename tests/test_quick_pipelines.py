@@ -67,7 +67,7 @@ def check_source(draw):
     if 'getenv("RX_VK_TEST_SLOW_MS")' not in slow or "quick_pipe::slow_ms(" not in slow:
         raise SystemExit("RX_VK_TEST_SLOW_MS is not read strictly")
     body = draw[draw.index("void draw(VkCommandBuffer"):]
-    body = body[:body.index("    cur_program = &p;")]
+    body = body[:body.index("    dlss_trace_draw(s, p, d, at);")]
     translation = between(body, "    if (!cp->ready.load(std::memory_order_acquire)) {", "\n    }\n")
     for name in ("quick_pipeline(", "pipe_wait_budget_ms(", "jobs_hurry("):
         if name in translation:

@@ -961,23 +961,24 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
 }
 
 /// (longshot) Frame generation as the swapchain is made for it: the fixed multiplier, 2 to 4 (more takes no more images), or 0
-/// for off and Auto. Its present mode under V-Sync Auto and its spare images follow it; present_image makes the swapchain
-/// again when it changes
-int swapchain_framegen() { return opts.framegen >= 2 ? std::min(opts.framegen, 4) : 0; }
+/// for off and Auto, as it runs (vk_framegen.h framegen_now: at most DLSS FG's top while it makes the frames). Its present
+/// mode under V-Sync Auto and its spare images follow it; present_image makes the swapchain again when it changes
+int swapchain_framegen() { const int framegen = framegen_now(); return framegen >= 2 ? std::min(framegen, 4) : 0; }
 
 /// (longshot) Whether the swapchain is made for NVIDIA DLSS Frame Generation: a fixed multiplier, and DLSS-G making the sets
 /// (vk_dlss.cpp dlss_fg_runs: asked for, on a device it runs on, its runtime making as many frames as the multiplier asks).
 /// V-Sync Auto is FIFO for it, where it was measured; the renderer's own methods and other GPUs keep Auto's mailbox (or
-/// immediate), and so does DLSS-G asked for more frames than its runtime makes, which the renderer's own then makes.
-/// present_image makes the swapchain again when it changes: NGX's answer comes at the first present with a multiplier, so a
-/// swapchain made for DLSS-G before it is made once more without. (The set's made frames are the row's multiplier less 1, up
-/// to 8x: swapchain_framegen stops at 4, for the images)
-bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(opts.framegen - 1); }
+/// immediate). present_image makes the swapchain again when it changes: NGX's answer comes at the start-up screen or the
+/// first present with a multiplier, so a swapchain made for DLSS-G before a no is made once more without. (The set's made
+/// frames are the multiplier as it runs less 1, framegen_now: never more than its runtime makes, since the multiplier stops
+/// at that + 1 while DLSS-G makes the frames. swapchain_framegen stops at 4, for the images)
+bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(framegen_now() - 1); }
 
 void retire_swapchain() {
     if (!dev.swapchain) return;
     device_wait_idle_locked();
     reflex_swapchain_destroyed();
+    fg_latency_swapchain_gone();   // (RX_VK_FG_LATENCY_LOG's waits for its presents)
     swap_views_drop();
     for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
     vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
@@ -1091,12 +1092,13 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     // the refresh grid whenever they come slower than the display (DLSS Frame Gen 3x: ~135 shown on a 165 Hz screen), so evenly
     // timed presents still reached the screen unevenly; FIFO on a VRR display shows each one when it is presented. Only where
     // that was measured (swapchain_dlssg): the renderer's own frame generation and other GPUs keep Auto as it was, also when
-    // DLSS-G is asked for but the renderer's own makes the frames (a multiplier over what its runtime makes, or given up)
+    // DLSS-G is asked for but the renderer's own makes the frames (NGX's no, or given up; a multiplier over what its runtime
+    // makes runs at its most + 1 once NGX has answered, framegen_now)
     const bool fg_fifo = vsync == 0 && swapchain_dlssg();
-    if (fg_fifo) logf("vk: V-Sync Auto with DLSS Frame Generation at %dx: FIFO", swapchain_framegen());
+    if (fg_fifo) logf("vk: V-Sync Auto with DLSS Frame Generation at %dx: FIFO", framegen_now());   // (not the images' 4 at most)
     else if (vsync == 0 && swapchain_framegen() >= 2 && dlss_fg_wanted() && dlss_why() == DLSS_OK)
         logf("vk: V-Sync Auto with frame generation at %dx, its frames the renderer's own (DLSS-G does not make them): Auto's "
-             "mode, as without DLSS-G", opts.framegen);
+             "mode, as without DLSS-G", framegen_now());
     if (vsync != 1) {
         if (!fg_fifo)
             for (auto m : modes)
@@ -1128,11 +1130,12 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     // before, display_main): one set's. Under FIFO a set with more frames than the chain can ever hold spare (an NVIDIA
     // surface, 8 images: 7x and 8x) is not presented ahead and goes out as it comes: two sets' images there only deepen
     // FIFO's queue, two refreshes more delay (the review, 2026-11-17): one set's, as before. (present_image makes the chain
-    // again when the multiplier changes past 4x too)
+    // again when the multiplier changes past 4x too. The multiplier as it runs, framegen_now: a saved 7x or 8x that DLSS FG
+    // makes at 6x is a set of 6)
     static const char* timeline_env = getenv("RX_VK_FG_TIMELINE");
     const bool timeline = !(timeline_env && env_value_off(timeline_env));
     const bool set_too_big = mode == VK_PRESENT_MODE_FIFO_KHR && caps.maxImageCount &&
-                             (uint32_t)std::max(opts.framegen, 0) > caps.maxImageCount - std::min(caps.maxImageCount, caps.minImageCount);
+                             (uint32_t)std::max(framegen_now(), 0) > caps.maxImageCount - std::min(caps.maxImageCount, caps.minImageCount);
     // (under FIFO, display_main holds the frames a refresh apart (vk_framegen.cpp fifo_slot), which needs the display's refresh.
     // With none known (display_refresh_mhz 0) the frames go as they come, and two sets' images would only let FIFO queue more
     // of them than main's one set did: more delay, nothing gained. One set's there, as before: the review of #1442)
@@ -1200,6 +1203,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     }
     reflex_swapchain_info(ci);   // (NVIDIA Reflex: latency mode on)
     VkSwapchainKHR sc;
+    if (dev.swapchain) fg_latency_swapchain_gone();   // (oldSwapchain: RX_VK_FG_LATENCY_LOG's waits on it end first)
     result = vkCreateSwapchainKHR(dev.device, &ci, nullptr, &sc);
     // Passing oldSwapchain retires it even when creation fails. Nothing may acquire from it again.
     retire_swapchain();

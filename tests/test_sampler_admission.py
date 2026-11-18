@@ -30,12 +30,22 @@ def main():
     view_format = "VkSampler sampler_make(int id, bool compare, bool one_level, VkFormat view_format) {" in source
     # The samplers' section up to its first function: what owns the samplers made (the book, sampler_room and the rest)
     head = source[source.index("// ---- samplers (by NVN sampler parameters) ----"):source.index("VkSamplerAddressMode wrap(")]
-    actual = head + "\n".join(block(source, marker) for marker in [
+    # (compare_op and the pushed words' two functions are gpu/vk/draw_key.h's, which vk_draw.cpp includes; a --source from
+    # before the header still has them in vk_draw.cpp, and they are cut from it as they were)
+    key_h = a.source / "gpu/vk/draw_key.h"
+    moved = ("VkCompareOp compare_op(", "void words_append(", "int words_same_store(")
+    if key_h.is_file():
+        key = key_h.read_text(encoding="utf-8")
+        assert '#include "draw_key.h"' in source, "vk_draw.cpp does not include draw_key.h"
+        for marker in moved:
+            assert marker in key and marker not in source, "draw_key.h is not the one place that defines " + marker
+    here = lambda markers: [m for m in markers if m not in moved or m in source]
+    actual = head + "\n".join(block(source, marker) for marker in here([
         "VkSamplerAddressMode wrap(", "uint32_t aniso_override() {", "VkCompareOp compare_op(",
         *(("VkSampler sampler_make(int id, bool compare, bool one_level, VkFormat view_format) {",
            "VkSampler sampler_for(int id, bool compare, bool one_level, VkFormat view_format) {") if view_format else
           ("VkSampler sampler_make(int id, bool compare, bool one_level) {",
-           "VkSampler sampler_for(int id, bool compare, bool one_level) {"))])
+           "VkSampler sampler_for(int id, bool compare, bool one_level) {"))]))
     # Keep standard-container behavior, replacing only the allocator to target an individual cache.
     owner = [
         ("std::unordered_map<SamplerInfo, Made, SamplerInfoHash> made", "FaultMap<SamplerInfo, Made, Owner, SamplerInfoHash> made"),
@@ -56,9 +66,10 @@ def main():
     symbols = sorted(set(re.findall(r"\bNVN_[A-Z0-9_]+", actual)))
     enums = "enum { " + ", ".join(name + "=" + str(i + 1) for i, name in enumerate(symbols)) + " };"
     fixture = (ROOT / "tests/sampler_admission_test.cpp").read_text(encoding="utf-8")
-    descriptors = block(source, "struct Pushed {") + ";\n" + "\n".join(block(source, marker) for marker in [
-        "void words_append(", "int words_same_store(", "bool bind_descriptors("])
+    descriptors = block(source, "struct Pushed {") + ";\n" + "\n".join(block(source, marker) for marker in here([
+        "void words_append(", "int words_same_store(", "bool bind_descriptors("]))
     fixture = fixture.replace("/* DESCRIPTORS */", descriptors)
+    fixture = fixture.replace("/* DRAW_KEY */", '#include "draw_key.h"' if key_h.is_file() else "namespace mkwvk {}")
     fixture = "#define SAMPLER_VIEW_FORMAT %d\n" % view_format + fixture
     fixture = fixture.replace("/* PARAMS */", params).replace("/* ENUMS */", enums).replace("/* ACTUAL */", actual)
     cases = ["healthy", "host-oom", "device-oom", "unknown", "error-output", "generation-retry", "thread-retry",
@@ -76,7 +87,7 @@ def main():
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-include", ENV_ON_H, "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
-                        "-pthread", "-I" + str(a.headers),
+                        "-pthread", "-I" + str(a.headers), "-I" + str(a.source / "gpu/vk"),
                         *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"] if a.sanitize else []),
                         str(cpp), "-o", str(exe)], check=True)
         for route in ["id", "make", "cache-off"]:

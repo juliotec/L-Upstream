@@ -205,7 +205,7 @@ def parallel_emit(emit, order, texts, counters, jobs, run=2000):
 
 # What the emit reads of the lifter besides the bodies of the functions it emits (a64_lift.Lifter.emit_function and the
 # methods it calls): sent once to each new process
-EMIT_TABLES = ("entries", "plt", "jt", "devirt", "after", "no_local", "setjmp_owner", "comments", "names")
+EMIT_TABLES = ("entries", "plt", "jt", "devirt", "after", "no_local", "setjmp_owner", "comments", "names", "entry_hooks")
 _view = None   # (a new process's view: a lifter with the tables only, and its counters)
 
 

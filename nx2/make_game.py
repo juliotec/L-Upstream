@@ -2108,16 +2108,18 @@ def lift_sources():
 
 def lift_key(exefs, work, env, planning=True, paths=None):
     """What the lift's output depends on: the game's code, the translator (lift_sources: the modules the lift imports from nx2/ and
-    the vendored a64-kit, and their other files), the HLE functions host/ defines (hooked in the lift; the rest of host/ is compiled
-    after it, so a change there alone does not lift again), the hot list, the chunk boundaries and the hot pieces, the lift's environment and the
+    the vendored a64-kit, and their other files), the HLE functions and ENTRY_HOOK_SYM hooks host/ defines (hooked
+    in the lift; the rest of host/ is compiled after it, so a change there alone does not lift again), the hot list, the chunk boundaries and the hot pieces, the lift's environment and the
     Python running it. A file the lift never reads may be in it (a new build then lifts again); one it reads must be.
     planning=False: all of it but the two files the lift itself writes for the next one (image/chunks.txt, image/hot_pieces.txt),
     to tell whether anything else it reads changed while it ran. paths: each of the environment's values through it
     (lift_share_key)"""
     import kit  # noqa: F401  (a64-kit on the path, for standalone)
     import standalone
+    import entry_hooks
     h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
     h.update(" ".join(sorted(standalone.implemented())).encode())
+    h.update((" entry hooks: " + " ".join(entry_hooks.hooked_symbols())).encode())   # (spliced in the lift: nx2/entry_hooks.py)
     # (each file named from its own base: the exefs and the work folder may be on another drive than the source, which relpath refuses)
     files = [(exefs, os.path.join(exefs, f)) for f in sorted(os.listdir(exefs))]
     files += [(ROOT, f) for f in lift_sources()]

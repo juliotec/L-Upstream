@@ -73,8 +73,11 @@ Every copy:
 
 - **refuses to start while Longshot, Hookshot or one of the emulators runs**, since a running game can write its save
   again on exit and undo the copy;
-- **backs up the side it overwrites first**, to `oot-save-backups/<import or export>-<name>-<date>-<time>/`: in
-  `~/.local/share` on Linux, in `%LOCALAPPDATA%\Longshot` on Windows. To undo a copy, put the backup's contents back;
+- **backs up the side it overwrites first**, to `<import or export>-<name>-<date>-<time>/` in the launcher's backups
+  folder, so the launcher finds them with its own: `~/.local/share/longshot/save-backup/` on Linux (beside the saves),
+  `%LOCALAPPDATA%\Longshot\oot-save-backups\` on Windows; `--backup-dir` picks another. Before
+  [LongshotLauncher#188](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/issues/188) the script's Linux backups
+  went to `~/.local/share/oot-save-backups/`; those stay there. To undo a copy, put the backup's contents back;
 - replaces the target's `slot_*` folders, `account.sav` and `option.sav`, so a slot that only existed on that side does
   not stay mixed in with the new save;
 - copies the new save into a folder inside the target first and swaps it in only when that copy worked, so a copy that
@@ -167,7 +170,9 @@ its folder.
 | The save is wrong after a copy | Close the game, and put the backup's contents (the folder the script named) back into the save folder |
 | The settings changed | `option.sav` came with the save. Copy again with `--keep-settings`, or restore `option.sav` from the backup |
 
-Backups pile up, one per copy: delete old ones from `oot-save-backups` when you no longer need them.
+Backups pile up, one per copy: delete old ones from the backups folder (`~/.local/share/longshot/save-backup/` on Linux,
+`%LOCALAPPDATA%\Longshot\oot-save-backups\` on Windows; on Linux, older ones in `~/.local/share/oot-save-backups/`) when
+you no longer need them.
 
 ## Saves in the repository
 

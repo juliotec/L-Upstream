@@ -629,6 +629,24 @@ int main() {
         shadow_synced_known();
         CHECK(pool.shadow_known[i >> 6] >> (i & 63) & 1);
     }
+    // (s) the forget's list is searched as it was built: pages out of order and twice in it, a page 4096 pages from a synced
+    // one (the same low 12 bits), and synced pages noted twice. Only the synced pages the list really holds stay unknown
+    {
+        reset();
+        Pool& pool = imported[kLo];
+        std::fill(pool.shadow_known.begin(), pool.shadow_known.end(), 0ull);
+        std::vector<VkBufferCopy> rs{{0, pg * 4096 - kLo, 4 * 4096}, {0, (pg + 1) * 4096 - kLo, 4096}};   // (pg to pg + 3; pg + 1 again)
+        shadow_sync_copy(1, kCapBuf, pool, rs);
+        CHECK(shadow_synced.size() == 5);
+        shadow_forgotten_last = {(uint32_t)pg + 3, (uint32_t)pg + 4096 + 2, 7, (uint32_t)pg + 1, (uint32_t)pg + 3, (uint32_t)pg - 4096};
+        shadow_synced_known();
+        const auto is_known = [&](uint64_t p) {
+            const uint64_t i = p - (kLo >> kPageShift);
+            return (pool.shadow_known[i >> 6] >> (i & 63) & 1) != 0;
+        };
+        CHECK(is_known(pg) && is_known(pg + 2) && !is_known(pg + 1) && !is_known(pg + 3));
+        CHECK(st_lfx.sync_known == 2 && st_lfx.sync_left_unknown == 3 && shadow_synced.empty());
+    }
     std::puts("PASS: late_fix_build's fixes and waits, its stamp blocks, snapshots, their ranges and slots, and a CPU read of a fixed late page");
 }
 '''

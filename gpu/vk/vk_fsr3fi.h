@@ -48,6 +48,10 @@ struct Inputs {
     /// (vk_framegen.cpp hud_source): the interpolation keeps those pixels where they are. False: the alpha is 1, and the HUD
     /// is guessed as the pixels the same in both frames
     bool hud_mask = false;
+    /// (longshot) The frame as presented, the HUD on it, when color is the picture before the HUD (vk_framegen.cpp
+    /// hud_source): AMD's HUD-less mode. The interpolation moves only the scene, and the made frame takes this frame's
+    /// pixels where they differ from color (the SDK's inpainting pass). Null: color is the presented frame itself
+    VkImageView present = VK_NULL_HANDLE;
     float max_luminance = 1.0f; // Nits for PQ; ignored for the existing SDR path.
     uint32_t width = 0, height = 0;
 

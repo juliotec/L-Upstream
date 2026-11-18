@@ -87,11 +87,13 @@ find "$T" -name __pycache__ -prune -exec rm -rf {} +
 # ---- what it starts with: its Python (the tools' download, nx2/make_game.py) ----
 cp -a "$DEPS/python" "$APPDIR/usr/python"
 # ---- the licences of the third-party parts compiled into longshot_vk.so (tests/test_appimage_licenses.py) ----
-mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx"
+mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx" "$T/licenses/fidelityfx-sdk"
 cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
 cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
 cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
 cp third_party/fidelityfx/LICENSE.md third_party/fidelityfx/PROVENANCE.md "$T/licenses/fidelityfx/"   # (with AMD FSR 4)
+# (AMD's FidelityFX SDK shaders, compiled into gpu/vk/shaders' FSR 3.1 headers that every build has: scripts/fsr3_shaders.py)
+cp third_party/fidelityfx-sdk/LICENSE.txt third_party/fidelityfx-sdk/PROVENANCE.md "$T/licenses/fidelityfx-sdk/"
 # ---- end of the licences ----
 
 # ---- the third-party code's objects, compiled here with the build tools every player's build uses (tools.lock's clang,

@@ -14,6 +14,13 @@
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef TRACY_ENABLE
+#define HT_WRAP_LOCKS   /* (LONGSHOT_TRACY: this file's locks that have to wait are zones) */
+#include "hos_tracy.h"
+/* (a blocked guest thread's zone: the object's guest address and the guest caller, which tell the game's waits apart) */
+#define HT_GUEST_TEXT(z, key) HT_ZONE_TEXTF(z, "%#llx, lr %#llx", (unsigned long long)(key), \
+                                            (unsigned long long)(hos_ctx() ? hos_ctx()->x[30] : 0))
+#endif
 
 enum { K_MUTEX = 1, K_COND, K_EVENT, K_SEMA, K_QUEUE, K_RWLOCK, K_MULTIWAIT, K_HOLDER, K_TIMER };
 
@@ -413,6 +420,10 @@ static int mutex_take_owed(Obj *m, HosThread *self) {   /* (the woken waiter the
 static void mutex_give(Obj *m) {   /* (the owner's count already 0) */
     __atomic_exchange_n(&m->owner, (HosThread *)NULL, __ATOMIC_SEQ_CST);
     if (__atomic_load_n(&m->mwait, __ATOMIC_SEQ_CST)) {
+#ifdef TRACY_ENABLE
+        HT_ZONE(tz, "mutex unlock: wake");
+        HT_GUEST_TEXT(tz, m->key);
+#endif
         HOS_CHAIN(HOS_CHAIN_SIGNAL, m->key);
         AcquireSRWLockExclusive(&m->lk);
         ReleaseSRWLockExclusive(&m->lk);
@@ -427,6 +438,10 @@ static void mutex_lock_owed(Obj *m, uint64_t guest, int owed) {
     if (!owed) { mutex_lock(m, guest, NULL); return; }
     HosThread *self = hos_self();
     if (mutex_take_owed(m, self)) { m->count = 1; return; }
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "mutex wait (after a cv)");
+    HT_GUEST_TEXT(tz, m->key);
+#endif
     HOS_CHAIN(HOS_CHAIN_WAIT, m->key);
     AcquireSRWLockExclusive(&m->lk);
     __atomic_add_fetch(&m->mwait, 1, __ATOMIC_SEQ_CST);
@@ -484,6 +499,11 @@ static void mutex_lock(Obj *m, uint64_t guest, Ctx *c) {
     HosThread *holder = __atomic_load_n(&m->owner, __ATOMIC_RELAXED);
     const int64_t t0 = trace_ms && holder ? hos_now_ns() : 0;
     const int chain = hos_chain_on;
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "mutex wait");
+    HT_ZONE_TEXTF(tz, "%#llx, lr %#llx, held by %s", (unsigned long long)m->key, (unsigned long long)(c ? c->x[30] : 0),
+                  holder ? hos_thread_name(holder) : "nobody");
+#endif
     if (chain) hos_chain_note(HOS_CHAIN_WAIT, m->key, c ? c->x[30] : 0);
     AcquireSRWLockExclusive(&m->lk);
     __atomic_add_fetch(&m->mwait, 1, __ATOMIC_SEQ_CST);
@@ -607,6 +627,10 @@ HLE(_ZN2nn2os23SignalConditionVariableEPNS0_21ConditionVariableTypeE) {
     if (watched_cv(ARG(0))) watch_log("signal", watch_mutex(), ARG(0), c, NULL);
     HOS_CHAIN(HOS_CHAIN_SIGNAL, cv->key);
     if (!__atomic_load_n(&cv->cv_waiting, __ATOMIC_SEQ_CST) && !cv_signal_always()) return;
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "cv signal");   /* (one with a waiter) */
+    HT_ZONE_TEXTF(tz, "%#llx, lr %#llx", (unsigned long long)cv->key, (unsigned long long)c->x[30]);
+#endif
     AcquireSRWLockExclusive(&cv->lk);
     cv_reserve(cv);
     cv->gen++;
@@ -628,10 +652,18 @@ HLE(_ZN2nn2os21WaitConditionVariableEPNS0_21ConditionVariableTypeEPNS0_9MutexTyp
     cv_enter(cv, m);
     /* release the guest mutex fully while holding the condvar's lock: a signal cannot slip in between */
     const int count = mutex_release_all(m);
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "cv wait");
+    HT_ZONE_TEXTF(tz, "%#llx, mutex %#llx, lr %#llx", (unsigned long long)cv->key, (unsigned long long)m->key,
+                  (unsigned long long)c->x[30]);
+#endif
     HOS_CHAIN(HOS_CHAIN_WAIT, cv->key);
     while (cv->gen == gen) hos_cv_sleep(&cv->cv, &cv->lk, INFINITE);
     const int owed = cv_leave(cv, m);
     ReleaseSRWLockExclusive(&cv->lk);
+#ifdef TRACY_ENABLE
+    HT_ZONE_END(tz);
+#endif
     HOS_CHAIN(HOS_CHAIN_WOKE, cv->key);
     if (w) watch_log(owed ? "cv woken, owed the mutex" : "cv woken", ARG(1), ARG(0), c, m);
     mutex_lock_owed(m, ARG(1), owed);
@@ -646,6 +678,10 @@ static void event_init(uint64_t key, int signaled, int clear_mode) {
     e->autoclear = clear_mode == 1;   /* EventClearMode_AutoClear = 1, ManualClear = 0 */
 }
 static void event_signal(Obj *e) {
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "event signal");
+    HT_GUEST_TEXT(tz, e->key);
+#endif
     HOS_CHAIN(HOS_CHAIN_SIGNAL, e->key);
     AcquireSRWLockExclusive(&e->lk);
     e->signaled = 1;
@@ -701,6 +737,10 @@ static int event_wait(Obj *e, int64_t timeout_ns, int try_only) {
     int64_t deadline = timeout_ns > 0 ? hos_now_ns() + timeout_ns : 0;
     const int was_set = e->signaled > 0;
     const int chain = !try_only && !was_set && hos_chain_on;
+#ifdef TRACY_ENABLE
+    HT_WAIT_IF(tz, !try_only && !was_set, "event wait");   /* (one not set when asked: spun for, then slept on) */
+    HT_GUEST_TEXT(tz, e->key);
+#endif
     if (chain) hos_chain_note(HOS_CHAIN_WAIT, e->key, 0);
     if (!try_only) spin_until_set(e, &e->signaled);
     int slept = 0;
@@ -929,6 +969,10 @@ static void sema_init(uint64_t key, int initial, int max) {
 }
 static void sema_acquire(Obj *s) {
     const int chain = s->sem <= 0 && hos_chain_on;
+#ifdef TRACY_ENABLE
+    HT_WAIT_IF(tz, s->sem <= 0, "semaphore wait");
+    HT_GUEST_TEXT(tz, s->key);
+#endif
     if (chain) hos_chain_note(HOS_CHAIN_WAIT, s->key, 0);
     spin_until_set(s, &s->sem);
     AcquireSRWLockExclusive(&s->lk);
@@ -938,6 +982,10 @@ static void sema_acquire(Obj *s) {
     if (chain) hos_chain_note(HOS_CHAIN_WOKE, s->key, 0);
 }
 static void sema_release(Obj *s, int n) {
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "semaphore release");
+    HT_GUEST_TEXT(tz, s->key);
+#endif
     HOS_CHAIN(HOS_CHAIN_SIGNAL, s->key);
     AcquireSRWLockExclusive(&s->lk);
     s->sem += n;
@@ -976,6 +1024,10 @@ static void queue_trace(Obj *q, uint64_t v, const char *what) {
 /* mode: 0 send (back), 1 jam (front). try: do not block. Returns 1 if done. */
 static int queue_put(Obj *q, uint64_t v, int jam, int try_only) {
     queue_trace(q, v, jam ? "jam" : "send");
+#ifdef TRACY_ENABLE
+    HT_ZONE(tz, "queue send");
+    HT_GUEST_TEXT(tz, q->key);
+#endif
     HOS_CHAIN(HOS_CHAIN_SIGNAL, q->key);
     AcquireSRWLockExclusive(&q->lk);
     while (q->qlen == q->qcap) {
@@ -1000,6 +1052,10 @@ static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
     int64_t deadline = timeout_ns > 0 ? hos_now_ns() + timeout_ns : 0;
     const int was_set = q->qlen > 0;
     const int chain = timeout_ns != 0 && !was_set && hos_chain_on;
+#ifdef TRACY_ENABLE
+    HT_WAIT_IF(tz, timeout_ns != 0 && !was_set, "queue receive wait");
+    HT_GUEST_TEXT(tz, q->key);
+#endif
     if (chain) hos_chain_note(HOS_CHAIN_WAIT, q->key, 0);
     if (timeout_ns != 0) spin_until_set(q, &q->qlen);
     int slept = 0;
@@ -1188,6 +1244,10 @@ static uint64_t wait_any(uint64_t multiwait, int64_t timeout_ns) {
     Obj *mw = obj(multiwait, K_MULTIWAIT);
     int64_t deadline = timeout_ns > 0 ? hos_now_ns() + timeout_ns : 0;
     const int chain = timeout_ns != 0 && hos_chain_on;   /* (outside mw_lock: the scan's region calls nothing else) */
+#ifdef TRACY_ENABLE
+    HT_WAIT_IF(tz, timeout_ns != 0, "WaitAny");
+    HT_GUEST_TEXT(tz, multiwait);
+#endif
     if (chain) hos_chain_note(HOS_CHAIN_WAIT, multiwait, 0);
     AcquireSRWLockExclusive(&mw_lock);
     InterlockedIncrement(&mw_waiting);
@@ -1285,12 +1345,20 @@ HLE(_ZN2nn2os26TimedWaitConditionVariableEPNS0_21ConditionVariableTypeEPNS0_9Mut
     cv_enter(cv, m);
     const int count = mutex_release_all(m);
     int signaled = 1;
+#ifdef TRACY_ENABLE
+    HT_WAIT(tz, "cv timed wait");
+    HT_ZONE_TEXTF(tz, "%#llx, mutex %#llx, lr %#llx", (unsigned long long)cv->key, (unsigned long long)m->key,
+                  (unsigned long long)c->x[30]);
+#endif
     HOS_CHAIN(HOS_CHAIN_WAIT, cv->key);
     while (cv->gen == gen) {
         if (!wait_until(cv, deadline) || hos_now_ns() >= deadline) { signaled = cv->gen != gen; break; }
     }
     const int owed = cv_leave(cv, m);
     ReleaseSRWLockExclusive(&cv->lk);
+#ifdef TRACY_ENABLE
+    HT_ZONE_END(tz);
+#endif
     HOS_CHAIN(HOS_CHAIN_WOKE, cv->key);
     mutex_lock_owed(m, ARG(1), owed);
     m->count = count;

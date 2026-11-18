@@ -865,9 +865,22 @@ bool dlss_fg_runs(int frames) {
     const Fg& g = fgs();
     if (g.start_failed.load(std::memory_order_relaxed)) return false;
     // (more frames a set than its runtime makes: the renderer's own makes them all (dlss_fg_frames' too_many). Known once
-    // NGX has answered, at the first present with a fixed multiplier; until then it is taken to make them)
+    // NGX has answered, at the start-up screen or the first present with a fixed multiplier; until then it is taken to make
+    // them. The multiplier as it runs stops at that most + 1 from then on (vk_framegen.h framegen_now))
     const unsigned most = g.most_known.load(std::memory_order_relaxed);
     return !most || frames <= (int)most;
+}
+
+// (DLSS-G makes its frames from a temporal Upscaler's depth and motion (dlss_fg_inputs): without one on the Upscaler row
+// (temporal_wanted) the renderer's own or FSR 3.1 makes every set, at the row's multiplier, as when NGX said no or its
+// feature was given up)
+int dlss_fg_most() {
+    if (!fg_asked() || dlss_why() != DLSS_OK || !temporal_wanted()) return 0;
+    const Fg& g = fgs();
+    // (most_known is 0 until NGX's answer, at the start-up screen (dlss_fg_probe) or the first present with a fixed
+    // multiplier)
+    if (g.start_failed.load(std::memory_order_relaxed)) return 0;
+    return (int)g.most_known.load(std::memory_order_relaxed);
 }
 
 void dlss_fg_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all) {
@@ -1008,11 +1021,16 @@ int dlss_fg_frames(VkCommandBuffer cmd, VkImage color, VkImageView color_view, u
     }
     if (!blend) return g.not_blended++, 0;
     if ((unsigned)count > g.most) {
+        // (no temporal Upscaler: nothing to make them from, which is the reason here (the multiplier is the row's then,
+        // dlss_fg_most), not the runtime's most)
+        if (!temporal_wanted()) return g.no_inputs++, skip(FG_SKIP_INPUTS);
         static bool told = false;   // (once a run: the 600-present lines count them)
         if (!told) {
             told = true;
+            // (only before NGX's answer is known to the multiplier (framegen_now), which stops at its runtime's most + 1)
             logf("vk: DLSS Frame Gen (NGX): %d made frames asked, but its runtime makes %u at most (an older %s?): the "
-                 "renderer's own makes them, and V-Sync Auto keeps its mode without DLSS-G", count, g.most, kFgRuntime);
+                 "renderer's own makes this set; Frame generation runs at %ux from the next", count, g.most, kFgRuntime,
+                 g.most + 1);
         }
         fg_skip_most.store(g.most, std::memory_order_relaxed);
         return g.too_many++, skip(FG_SKIP_TOO_MANY);
@@ -1208,6 +1226,7 @@ void dlss_fg_probe() {}
 bool dlss_fg_forced() { return false; }
 bool dlss_fg_holds() { return false; }
 bool dlss_fg_runs(int) { return false; }
+int dlss_fg_most() { return 0; }
 void dlss_fg_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_fg_inputs(VkCommandBuffer, const TemporalFrame&, const float*, const float*, const float*, bool) {}
 int dlss_fg_frames(VkCommandBuffer, VkImage, VkImageView, uint32_t, uint32_t, int, const VkImage*, const VkImageView*, bool,
