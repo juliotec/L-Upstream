@@ -1,0 +1,26 @@
+#version 460
+// A DEPTH24 texture kept as D32_SFLOAT (vk_formats.cpp) copied to a buffer (vk_xfer.cpp copy_b2t): the copy wrote a float
+// a texel; the game reads the Switch's word, the depth as 24-bit unorm in its low bits. Each texel of the region is turned
+// in place into round(clamp(f, 0, 1) * 16777215) (NaN as 0), row by row: the bytes between rows are the game's.
+// glslangValidator -V --target-env vulkan1.3 --vn D32_TO_D24_COMP_SPV -o d32_to_d24_comp_spv.h d32_to_d24.comp
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Words { uint w[]; };
+layout(push_constant) uniform P {
+    uvec2 base;    // (device address of the region's first texel)
+    uint width;    // (texels a row)
+    uint height;   // (rows a layer)
+    uint row;      // (words from one row to the next)
+    uint layer;    // (words from one layer to the next)
+} pc;
+void main() {
+    const uvec3 id = gl_GlobalInvocationID;
+    if (id.x >= pc.width || id.y >= pc.height) return;
+    Words b = Words(pc.base);
+    const uint i = id.z * pc.layer + id.y * pc.row + id.x;
+    const float v = uintBitsToFloat(b.w[i]);
+    const float f = v > 0.0 ? min(v, 1.0) : 0.0;
+    // (round, not + 0.5: in float 16777215.0 + 0.5 rounds to 1 << 24)
+    b.w[i] = min(uint(round(f * 16777215.0)), 0xFFFFFFu);
+}
