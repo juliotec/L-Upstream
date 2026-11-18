@@ -10,6 +10,7 @@ made in the non-sparse path, and x.usage follows what is made so its raw views a
 
 The block of create() between the sparse flags and vkCreateImage is compiled against stubbed Vulkan calls, with no game
 and no GPU: the stubs say which usages the "driver" accepts with the sparse flags, and record what vkCreateImage gets.
+The usage gate of make_view is compiled with it, so each case also checks which raw views the image then gets.
 
 python -I -B tests/test_sparse_bc_usage.py [--cxx g++] [--source ROOT]
 """
@@ -98,6 +99,13 @@ bool make(VkFormat format, VkImageUsageFlags usage, uint32_t layers) {
     return ok;
 }
 
+// (the usage gate of make_view, from vk_texture.cpp: a raw view asks for a usage the image must hold)
+uint64_t view_made(VkImageUsageFlags usage) {
+    const Tex* tex = &x;
+    constexpr uint64_t VK_NULL_HANDLE = 0;
+@GATE@    return 1;
+}
+
 int failures;
 void check(bool ok, const char* label) {
     if (!ok) ++failures;
@@ -112,17 +120,23 @@ int main() {
     check(ok && made == 1 && made_usage == (base | raw) && x.usage == (base | raw),
           "a sparse BC image the driver takes with its raw usage keeps STORAGE and COLOR_ATTACHMENT (and its raw views)");
     check(made_asked, "... and is made with the usage the format query accepted with the sparse flags");
+    check(view_made(VK_IMAGE_USAGE_STORAGE_BIT) && view_made(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+          "... and make_view then makes its raw storage and attachment views");
 
     refused = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     ok = make(VK_FORMAT_BC7_UNORM_BLOCK, base | raw, 64);
     check(ok && made == 1 && made_asked && made_usage == (base | VK_IMAGE_USAGE_STORAGE_BIT) &&
               x.usage == made_usage,
           "a sparse BC image refused with COLOR_ATTACHMENT loses only that bit, and x.usage follows it");
+    check(view_made(VK_IMAGE_USAGE_STORAGE_BIT) && !view_made(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+          "... and make_view still makes its raw storage view, not the attachment one");
 
     refused = raw;
     ok = make(VK_FORMAT_BC7_UNORM_BLOCK, base | raw, 64);
     check(ok && made == 1 && made_asked && made_usage == base && x.usage == base,
           "a sparse BC image refused with both raw usages is made without them, and x.usage follows it");
+    check(!view_made(VK_IMAGE_USAGE_STORAGE_BIT) && !view_made(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+          "... and make_view makes neither raw view");
 
     refused = VK_IMAGE_USAGE_STORAGE_BIT;
     ok = make(VK_FORMAT_R8G8B8A8_UNORM, base | raw, 64);
@@ -151,11 +165,14 @@ def main():
         start = src.index(flag, src.index("Texture* create(const Key& key")) + len(flag)
         make = src.index("vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;\n", start)
         end = src.index("\n", make) + 1
+        gate = src.index("    if (!usage || (usage & tex->usage) != usage) return VK_NULL_HANDLE;\n",
+                         src.index("VkImageView make_view(Texture* tex"))
+        gate_end = src.index("\n", gate) + 1
     except ValueError:
         raise SystemExit("the sparse image is no longer made there in create(): update this test's anchors") from None
     with tempfile.TemporaryDirectory(prefix="sparse-bc-", ignore_cleanup_errors=True) as tmp:
         cpp, exe = Path(tmp) / "test.cpp", Path(tmp) / "test.exe"
-        cpp.write_text(FIXTURE.replace("@BLOCK@", src[start:end]), encoding="utf-8")
+        cpp.write_text(FIXTURE.replace("@BLOCK@", src[start:end]).replace("@GATE@", src[gate:gate_end]), encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Wno-unused-variable", str(cpp), "-o", str(exe)],
                        check=True, timeout=120)
         result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
