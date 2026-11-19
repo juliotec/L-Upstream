@@ -4,26 +4,20 @@ gpu/vk/vk_texture.cpp upload_unswizzle_gpu unswizzles a texture with a compute s
 of its image. A sparse image has no memory in a block until sparse_flush binds it, and a store into an unbound block
 is dropped: those textures must go through the CPU path, which binds their blocks. The function also binds unsw_pipe
 and its push descriptors on the upload command buffer: when a level's view then fails it returns false, the CPU path
-takes over, and the draw state must already know its compute bindings are gone (descriptors_disturbed right after the
-bind, not only at the end). This reads the function from the source and checks both.
+takes over, and the draw state is told its compute bindings are gone right after the bind (descriptors_disturbed, defensive: the
+descriptor cache forgets whatever was pushed there), not only at the end. This reads the function from the source and checks both.
 
 python -I -B tests/test_unswizzle_gpu_guards.py [--source <checkout>]
 """
 import argparse
 from pathlib import Path
 import re
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def main():
