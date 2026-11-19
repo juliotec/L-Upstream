@@ -86,6 +86,7 @@ struct DeviceFacts {
     bool radv_gcn() const { return radv() && !storage_io16; }
     bool deck_apu() const { return gpu_clock::deck_apu(device_name); }
     bool handheld() const { return (steam_deck_env && integrated()) || deck_apu(); }   // (auto_profile's hw.handheld)
+    bool rdna4() const { return amd() && device_name && (std::strstr(device_name, "RX 9") || std::strstr(device_name, "GFX12")); }
 };
 
 // The rules that are a number or a yes from one or two facts, each as its site has it. device_policy() calls them with
@@ -271,10 +272,12 @@ struct DevicePolicy {
     // pass the same position. By the vendor, so NVK goes without them as NVIDIA's own compiler does: whether Mesa's
     // compiler needs them wants a run on NVK. RX_VK_NO_INVARIANT turns them off. Read (vk_coopmat.cpp coopmat_init)
     bool position_invariant = false;
-    // Intel: a colour pass tests EQUAL against what another program wrote, and Intel's compiler does not give the two the
-    // same position to the last bit (holes in the ground); 64 units towards the camera. By the vendor: the site names no
-    // GPU, driver or version, so which of Intel's two compilers it is wants a run. RX_VK_EQ_BIAS=<units>, 0 off. Read
-    // (vk_draw.cpp dynamic_state)
+    // Intel's Windows driver: a colour pass tests EQUAL against what another program wrote, and its compiler does not give
+    // the two the same position to the last bit (holes in the ground, issue 17, Arc B390); 64 units towards the camera.
+    // Not Mesa's: the game's EQUAL holds there (Iris Xe, Mesa 26.2.7: Kakariko, the Death Mountain gate and trail
+    // without a hole), and the margin's LESS_OR_EQUAL passes everything in front, not only the last bits: the terrain
+    // drew over the canyon's rocks on Death Mountain Trail, a flat wall where its depth pass had none. RX_VK_EQ_BIAS=<units>,
+    // 0 off. Read (vk_draw.cpp dynamic_state)
     float equal_depth_bias = 0;
     // AMD but RADV: task and mesh programs built without the driver's optimizer, which hung the GPU (RX 6600, issues 461
     // and 484); on RADV they reset it built without (issue 1000). RX_VK_MESH_OPT. Site (vk_draw.cpp), step 4
@@ -379,8 +382,9 @@ struct DevicePolicy {
     // to 32 lanes and 64-lane waves" until this rule moved here, which RX_VK_NO_SUBGROUP_PIN made true of every 64-lane
     // card and which took Vega (GFX9) for GCN too. RX_VK_BATCH. Read (vk_replay.cpp batch_on)
     bool batch_submits = false;
-    // RADV: the software matrix multiplies' unrolled forms are tried (measured on the Steam Deck); a test shader on the
-    // device then says which is used. RX_VK_MMA_UNROLL. Site (vk_coopmat.cpp), step 7
+    // RADV and AMD RDNA 4 on AMD's Windows driver: the software matrix multiplies' unrolled forms are tried (measured on the
+    // Steam Deck and an RX 9060 XT); a test shader on the device then says which is used. RX_VK_MMA_UNROLL. Site
+    // (vk_coopmat.cpp), step 7
     bool mma_unroll_try = false;
     // Mesa's Intel driver, with dynamic indexing of storage buffer arrays: the tables searched in loops, as Mesa inlines
     // the written-out form (Windows not tried). RX_VK_GM_LOOP. Site (vk_coopmat.cpp table_loop_wanted), step 7
@@ -505,7 +509,7 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     }
     p.frag_shuffle_fallback = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
     p.position_invariant = !f.nvidia();
-    p.equal_depth_bias = f.intel() ? 64.0f : 0.0f;
+    p.equal_depth_bias = f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS ? 64.0f : 0.0f;
     p.mesh_no_optimizer = f.amd() && !f.radv();
     // (corrected: the driver the deadlock is in, RADV, and not "AMD off Windows", which also took AMDVLK. To go back:
     // !f.windows && f.amd(), here and in create_device)
@@ -547,7 +551,7 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     // measured on one card
     // (corrected: GCN by the one definition, radv_gcn. To go back: f.radv() && !(f.sg32_stages == 0 && f.subgroup_size > 32))
     p.batch_submits = f.radv() && !f.radv_gcn();
-    p.mma_unroll_try = f.radv();
+    p.mma_unroll_try = f.radv() || (f.rdna4() && f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY);
     p.global_table_loop = f.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA && f.storage_buffer_array_dynamic_indexing;
     p.occ_copy = f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && f.discrete();
     p.fsr4_tune = f.amd();
@@ -580,7 +584,7 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     }
     p.auto_render_third = integrated && f.cpus_all > 0 && f.cpus_all <= 4;
     p.rtx = f.nvidia() && std::strstr(f.device_name, "RTX");
-    p.rdna4 = f.amd() && (std::strstr(f.device_name, "RX 9") || std::strstr(f.device_name, "GFX12"));
+    p.rdna4 = f.rdna4();
     p.workers = workers(f.cpus_all);
     p.capture_helpers = capture_helpers(f.cpus_all);
     p.texture_threads = texture_threads(f.cpus_all);

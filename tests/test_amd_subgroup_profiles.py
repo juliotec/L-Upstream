@@ -38,6 +38,7 @@ enum VkShaderFloatControlsIndependence { VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_A
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+    uint32_t max_workgroup_subgroups = 32;   // (pins_32: 32-lane subgroups cover the 64 invocations profile_pinned assumes)
     VkShaderStageFlags subgroup_stages = 0xff;   // (make_profile: subgroups in every stage, float modes and 64-bit atomics on)
     struct {
         VkShaderFloatControlsIndependence denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL,
@@ -45,7 +46,6 @@ struct {
         VkBool32 shaderSignedZeroInfNanPreserveFloat16 = 1, shaderSignedZeroInfNanPreserveFloat32 = 1,
                  shaderDenormPreserveFloat32 = 1, shaderDenormFlushToZeroFloat32 = 1;
     } float_controls;
-    uint32_t max_workgroup_subgroups = 32;   // (pins_32: 32-lane subgroups cover the 64 invocations profile_pinned assumes)
     struct {
         bool shaderFloat16 = true;   // (k10: f16 lowered where the GPU has none; here it has)
         // (make_profile: storage image and texel buffer arrays indexed nonuniformly where the GPU can)

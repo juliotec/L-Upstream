@@ -732,6 +732,7 @@ bool create_device() {
         dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
         dev.max_workgroup_subgroups = sc.maxComputeWorkgroupSubgroups;
         dev.subgroup_size = sg.subgroupSize;
+        dev.subgroup_min = sc.minSubgroupSize;
         dev.subgroup_stages = sg.supportedStages;
         fc.pNext = nullptr;
         dev.float_controls = fc;

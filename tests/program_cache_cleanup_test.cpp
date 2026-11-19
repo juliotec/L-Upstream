@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../gpu/vk/fallback_size_policy.h"   // (program_cache_save and _read note each stage's phis)
+#include "../gpu/vk/fallback_lanes.h"         // (and whether it has no subgroup instruction)
 #ifdef _WIN32
 #include <io.h>
 #else

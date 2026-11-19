@@ -800,15 +800,15 @@ uint64_t pages_collected = 0;
 // for the next capture. A submit's capture made on the game's thread in between (capture_scan) found those pages
 // unmarked and left them out, and the work it was taken for read an older capture's copy of them: Kokiri Forest's
 // ground mist gone for a frame in 16 to 89 of 3,600 frames standing there with the render thread replaying jobs as they
-// come (RX_VK_FRAME_GATE=0), where a third of the captures came in that window; with whole frames (the default) the two
+// come (the default), where a third of the captures came in that window; with whole frames (RX_VK_FRAME_GATE=1) the two
 // met while an area loaded (26 and 36 of ~650 captures after a teleport to Kokiri Forest, 0 or 1 of ~700 standing
 // there). The collection holds collect_mu over the window and the capture's scan takes it: a capture that comes then
 // waits for the collection. On an Arc B580, in sessions with four area loads (~110,000 collections each): with whole
-// frames the captures waited ~900 times, 0.25 to 0.32 s in all, the longest 1 and 12 ms (at a load); with
-// RX_VK_FRAME_GATE=0 ~34,000 times, ~2.6 s, the longest ~21 ms at each load. Lock order: collect_mu, then cap_ranges_mu
-// (capture_ranges_merged) and the host's map lock (collect_written's ranges, gpu_ptr). capture_scan takes collect_mu under
-// its capture's order lock (submit_order_mu, sync_order_mu with RX_VK_ASYNC=0, or replay_mu from resume_queue),
-// none of which is taken under collect_mu, and takes no lock under it
+// frames the captures waited ~900 times, 0.25 to 0.32 s in all, the longest 1 and 12 ms (at a load); with jobs
+// replayed as they come ~34,000 times, ~2.6 s, the longest ~21 ms at each load. Lock order: collect_mu, then
+// cap_ranges_mu (capture_ranges_merged) and the host's map lock (collect_written's ranges, gpu_ptr). capture_scan takes
+// collect_mu under its capture's order lock (submit_order_mu, sync_order_mu with RX_VK_ASYNC=0, or replay_mu from
+// resume_queue), none of which is taken under collect_mu, and takes no lock under it
 std::mutex collect_mu;
 
 void stamp_page(uint64_t p, uint64_t g) {

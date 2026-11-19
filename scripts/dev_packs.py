@@ -370,9 +370,10 @@ def renderer_profile(base_work, environ):
 def pack_route(how, environ):
     """What a pack builds: route()'s answer for the changed files, except that a profile switch set for this pack makes it build
     even when no file changed. RX_VK_PGO (gen: a renderer that counts, for recording its profile; or another profile) builds
-    the renderer; RX_PGO (the game's hot pieces) the game. Before, `RX_VK_PGO=gen dev_packs.py pack` of an unchanged tree said
-    "nothing to build" and the pack held the base's ordinary renderer: a recording with it wrote nothing"""
-    if environ.get("RX_PGO"):
+    the renderer; RX_PGO (the game's hot pieces) and LONGSHOT_TRACY (its client is in the game's executable) the game. Before,
+    `RX_VK_PGO=gen dev_packs.py pack` of an unchanged tree said "nothing to build" and the pack held the base's ordinary
+    renderer: a recording with it wrote nothing; `LONGSHOT_TRACY=1` likewise gave a pack with no Tracy in it"""
+    if environ.get("RX_PGO") or environ.get("LONGSHOT_TRACY", "0") not in ("", "0"):
         return "game"
     if environ.get("RX_VK_PGO") and how is None:
         return "renderer"

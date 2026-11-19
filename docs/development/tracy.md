@@ -35,7 +35,10 @@ built by anyone.
 
 ## Capture
 
-The viewer and the capture tool must be Tracy **0.15.0**: the protocol is locked to the version.
+The viewer and the capture tool must be Tracy **0.15.0**: the protocol is locked to the version. Tracy's releases have
+programs for Windows only; on Linux `mise run tracy-tools` builds `tracy-capture` and `tracy-csvexport` 0.15.0 from the
+pinned source into the checkout's `_deps/tracy-0.15.0/bin` (cmake, ninja and a C++ compiler; Tracy's own build fetches the libraries it
+needs).
 
 ```sh
 tracy-capture -a 127.0.0.1 -o run.tracy -s 30      # 30 s into a file; without -s, until Ctrl-C or the game ends

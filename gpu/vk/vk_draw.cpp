@@ -74,6 +74,7 @@
 #include "driver_faults.h"
 #include "driver_cache_env.h"   // (the drivers' own caches as the environment chooses them, Linux)
 #include "fallback_size_policy.h"
+#include "fallback_lanes.h"
 #include "translate_wait.h"
 #include "precompile_save.h"   // (the pipeline cache written before the title after a long precompile)
 #include "bounded_wait.h"   // (the load-at-create start's wait for its builds, bounded by their progress)
@@ -4673,6 +4674,46 @@ VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeli
     compute_described = {};
     return cached_compute(ci, out);
 }
+/// (longshot) A pipeline cache of the caller's own in the game folder's cache/ (vk_fsr4.cpp: AMD FSR 4's unrolled layers). Apart
+/// from the translator's files, which pcache_drop_stale drops when the translator changes (most updates): what goes in it is not
+/// the translator's, and the launcher moves the whole cache/ folder into an update's. Its file's data when this device and
+/// driver can take it (pcache_file_read), else empty; *read: the bytes read, *refused: a file there that was not taken. Not read
+/// (nor saved, below) where the pipeline cache's file is not (RX_VK_PCACHE_LOAD=0 or its rule: pcache_no_save, pcache_init)
+VkPipelineCache own_pipeline_cache(const char* name, size_t* read, bool* refused) {
+    PipelineCacheFile data = pcache_no_save ? PipelineCacheFile{} : pcache_file_read(cache_path(name));
+    *read = data.size(), *refused = data.rejected();
+    VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    ci.initialDataSize = data.size(), ci.pInitialData = data.data();
+    VkPipelineCache cache = VK_NULL_HANDLE;
+    if (vkCreatePipelineCache(dev.device, &ci, nullptr, &cache) == VK_SUCCESS) return cache;
+    *read = 0;   // (data the driver would not take: an empty cache, as for a file of another driver)
+    ci.initialDataSize = 0, ci.pInitialData = nullptr;
+    return vkCreatePipelineCache(dev.device, &ci, nullptr, &cache) == VK_SUCCESS ? cache : VK_NULL_HANDLE;
+}
+/// (longshot) That cache written whole to its file (through a .tmp moved over it, as the play files are) when its data is not the
+/// size last read or written (*saved, updated): a pipeline the driver put in it since, whether it compiled it or took it from its
+/// own disk cache, which an update's folder (another path) does not share. false: it could not be written
+bool own_pipeline_cache_save(VkPipelineCache cache, const char* name, size_t* saved) {
+    if (!cache || pcache_no_save) return true;
+    size_t n = 0;
+    {
+        PcacheFetch fetch(-1, true);
+        if (!fetch.held() || vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS) return false;
+    }
+    if (!n || n == *saved) return true;
+    const size_t wrote = play_file_write(cache, cache_path(name));
+    if (wrote) *saved = wrote;
+    return wrote != 0;
+}
+/// (longshot) A compute pipeline built as shared_compute_pipeline's (the same turn and gates), through the caller's own cache
+VkResult own_cache_compute_pipeline(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* out) {
+    compute_described = {};
+    const ComputeTurn turn(*ci);
+    if (!turn.ok()) return *out = VK_NULL_HANDLE, VK_ERROR_OUT_OF_HOST_MEMORY;   // (stopped while it waited, or refused: not compiled)
+    IntelDriverGate gate(compiles_nothing(ci->flags));
+    if (gate.busy) return intel_gate_busy();
+    return guarded_compute_held(cache, ci, out);
+}
 /// (longshot) The driver faults the pipeline compiles caught so far (guarded_graphics, guarded_compute): the preparation's
 /// watchdog says so (vk_main.cpp). Outside the unnamed namespace: vk_main.cpp links to it
 int driver_faults() { return st_driver_faults.load(std::memory_order_relaxed); }
@@ -5455,14 +5496,15 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     d.dw = !sw().no_depth && depth && s.ds.dw;
     d.dop = compare_op(s.ds.df);
     if (fp) d.dt = true, d.dw = true, d.dop = VK_COMPARE_OP_ALWAYS;
-    {   // (longshot) A colour pass after a depth pass tests EQUAL against what another program wrote. Intel's compiler does not give two
-        // programs the same position to the last bit, and the ground came out in holes: the sky through them, a white forest.
-        // A small margin towards the camera instead. RX_VK_EQ_BIAS=<units>, 0: as the game asks
+    {   // (longshot) A colour pass after a depth pass tests EQUAL against what another program wrote. The compiler of Intel's Windows
+        // driver does not give two programs the same position to the last bit, and the ground came out in holes: the sky through
+        // them, a white forest. A small margin towards the camera instead. It also passes what is in front of the depth pass, which
+        // EQUAL would not: not on Mesa's driver, where EQUAL holds. RX_VK_EQ_BIAS=<units>, 0: as the game asks
         // Not for a draw that blends: the game keeps such a draw (a haze sheet across Death Mountain Trail's entrance, program
         // 701ae221d88b2908) where the depth is exactly its own, and LESS_OR_EQUAL drew the whole sheet over the mountain behind:
         // a flat khaki veil on Intel (Arc 155H). The prepass's colour passes the margin was made for do not blend: some have blending
         // on with ONE, ZERO (the same as off), and those keep the margin (without it, Death Mountain Trail's ground had holes).
-        static const float eq_bias = dev.policy.equal_depth_bias;   // (device_policy.h: 64 on Intel, then the switch)
+        static const float eq_bias = dev.policy.equal_depth_bias;   // (device_policy.h: 64 on Intel's Windows driver, then the switch)
         bool blends = false;
         for (int i = 0; i < at.n && !blends; i++) {
             const nvn_blend_st& b = s.blend[i];
@@ -6492,6 +6534,7 @@ struct StatsMeta {
     uint8_t dispatch;                 // (a compute dispatch: its grid, or its indirect arguments as above)
     uint32_t grid[3];
     uint64_t args_vkbuf, args_vkoff;  // (the Vulkan buffer and offset the arguments were read from)
+    uint64_t codes[4]{};             // native vertex/mesh/compute, fragment, task, header-only keys at recording time
 };
 VkQueryPool stats_pool = VK_NULL_HANDLE;
 // (indirect draws: after the draw, the first 16 bytes of its arguments and its count word as the GPU holds them, 32 bytes a
@@ -6611,6 +6654,19 @@ bool stats_make_pool() {
         qi.pipelineStatistics = base;
     }
     return vkCreateQueryPool(dev.device, &qi, nullptr, &stats_pool) == VK_SUCCESS;
+}
+void stats_code_keys(FILE* f, uint32_t n) {
+    // Keep distinct tuples: a program hash alone is not the recorded native stage identity.
+    std::map<std::array<uint64_t, 7>, uint32_t> groups;
+    for (uint32_t i = 0; i < n; i++) {
+        const StatsMeta& m = stats_meta[i];
+        groups[{m.prog, m.dispatch, m.mesh, m.codes[0], m.codes[1], m.codes[2], m.codes[3]}]++;
+    }
+    fprintf(f, "\n# native code keys: kind program queries | vertex/mesh/compute fragment task header\n");
+    for (const auto& [k, count] : groups)
+        fprintf(f, "code %s %016llx %u | %016llx %016llx %016llx %016llx\n", k[1] ? "comp" : k[2] ? "mesh" : "draw",
+                (unsigned long long)k[0], count, (unsigned long long)k[3], (unsigned long long)k[4],
+                (unsigned long long)k[5], (unsigned long long)k[6]);
 }
 /// (each draw) arms a capture when the trigger file is there; writes the results once the measured frame is long done
 void stats_tick() {
@@ -6735,6 +6791,7 @@ void stats_tick() {
                     (unsigned long long)x.fs, k == 0 ? "RAN, NO PRIMITIVES" : k == 1 ? "primitives, no fragments" : k == 2 ? "no shader work" : "",
                     x.indirect ? (" (indirect)" + x.args).c_str() : "");
         }
+        if (res == VK_SUCCESS) stats_code_keys(f, n);
         // who binds each indirect draw's argument words in this frame: written (W) or only read (r), by which programs
         std::vector<StatsBind> binds;
         {
@@ -6926,23 +6983,24 @@ struct StatsQuery {
     uint32_t index = 0;
     DrawArgs own{};
     const DrawArgs* draw = &own;
-    StatsQuery(VkCommandBuffer c, uint64_t prog, const DrawArgs& d) { begin(c, prog, d, false, nullptr); }
+    StatsQuery(VkCommandBuffer c, const Program& p, const DrawArgs& d) { begin(c, p, d, false, nullptr); }
     /// a compute dispatch: its grid, or its indirect arguments (12 bytes, read back as a draw's)
-    StatsQuery(VkCommandBuffer c, uint64_t prog, uint64_t indirect, uint32_t x, uint32_t y, uint32_t z) {
-        if (stats_dir()) watch_note(prog, indirect);
+    StatsQuery(VkCommandBuffer c, const Program& p, uint64_t indirect, uint32_t x, uint32_t y, uint32_t z) {
+        if (stats_dir()) watch_note(p.key, indirect);
         DrawArgs d{};
         d.indirect = indirect;
         const uint32_t grid[3] = {x, y, z};
-        begin(c, prog, d, true, grid);
+        begin(c, p, d, true, grid);
     }
-    void begin(VkCommandBuffer c, uint64_t prog, const DrawArgs& d, bool dispatch, const uint32_t* grid) {
+    void begin(VkCommandBuffer c, const Program& p, const DrawArgs& d, bool dispatch, const uint32_t* grid) {
         if (!stats_dir() || !stats_pool) return;
         const int64_t at = stats_frame.load(std::memory_order_relaxed);
         if (at < 0 || (int64_t)texture_frame_no() != at || stats_written.load(std::memory_order_relaxed)) return;
         const uint32_t i = stats_used.fetch_add(1);
         if (i >= kStatsQueries) return;
-        stats_meta[i] = {prog, (uint8_t)d.mesh, (uint8_t)(d.indirect != 0), (uint8_t)d.indexed, 0, d.count, d.instances, d.max,
+        stats_meta[i] = {p.key, (uint8_t)d.mesh, (uint8_t)(d.indirect != 0), (uint8_t)d.indexed, 0, d.count, d.instances, d.max,
                          d.stride, d.count_addr, d.indirect, {}, 0, (uint8_t)dispatch, {}, 0, 0};
+        std::memcpy(stats_meta[i].codes, p.codes, sizeof stats_meta[i].codes);
         if (grid) std::memcpy(stats_meta[i].grid, grid, sizeof stats_meta[i].grid);
         if (d.indirect) {
             host->gpu_read(d.indirect, stats_meta[i].guest, dispatch ? 12 : 16);
@@ -7226,6 +7284,7 @@ struct FallbackBuffers {
     VmaAllocation records_mem = nullptr, payload_mem = nullptr;
     uint64_t records_address = 0, payload_address = 0;
     uint64_t records_bytes = 0, payload_bytes = 0;
+    bool warp_counters_cleared = false;   // (mma_layout.h mesh_fallback_shared_warp: its counters past the records, at zero once)
 };
 // (grown pairs stay: a command buffer recorded before the growth may still read them)
 TLS_OBJECT(fallback_buffers, std::vector<FallbackBuffers>)
@@ -7247,8 +7306,14 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
     // (the header, the draw's command, the allocator and the mesh dispatch, and then a fixed area every program takes records
     // from, a primitive's corners at a time: only the primitives the mesh workgroups output, not a slot's worst case each.
     // Slots a primitive could fill were ~650 MB for the floor grass's ~13900 slots; it outputs ~17 MB)
-    const uint64_t records = (uint64_t)(Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS +
-                                        Shader::Backend::SPIRV::MESH_FALLBACK_RECORD_WORDS) * 4;
+    // (and with mma_layout.h mesh_fallback_global_attributes, the attribute regions' pool past them: ~32 MB)
+    // (and with mma_layout.h mesh_fallback_shared_warp or mesh_fallback_global_attributes, their counters past those:
+    // emit_spirv.h WARP_COUNTER_BYTES, where the stages find them at MeshFallbackRecordsBytes())
+    const uint64_t warp_counters = Shader::Backend::SPIRV::MeshFallbackCounters() ? Shader::Backend::SPIRV::WARP_COUNTER_BYTES : 0;
+    const uint64_t records = (Shader::Backend::SPIRV::mesh_fallback_global_attributes
+                                  ? Shader::Backend::SPIRV::MESH_FALLBACK_POOL_OFFSET + Shader::Backend::SPIRV::MESH_FALLBACK_POOL_BYTES
+                                  : (uint64_t)(Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS +
+                                               Shader::Backend::SPIRV::MESH_FALLBACK_RECORD_WORDS) * 4) + warp_counters;
     // (per thread, not per program: one program needing more than this is left out instead of taking the budget)
     if (records > (128ull << 20)) return false;
     // (the map, a slot a started mesh workgroup, and a payload a task workgroup, its threads' meshlets sharing it)
@@ -7263,8 +7328,9 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
     }
     FallbackBuffers f;
     void* mapped = nullptr;
+    // (TRANSFER_SRC: the shared warp's and the pool's counters are copied out of the records, fallback_warp_counters)
     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+                                     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | (warp_counters ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : 0);
     // (only the payload outgrown: the newest pair's records, which every program takes from, go with the bigger payload. Made
     // again, each growth left another 64 MB arena on the thread for the session, that no draw used again)
     const bool shared = !sets.empty() && sets.back().records && sets.back().records_bytes >= records;
@@ -7275,6 +7341,7 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
         const FallbackBuffers& last = sets.back();
         f.records = last.records, f.records_mem = last.records_mem;
         f.records_address = last.records_address, f.records_bytes = last.records_bytes;
+        f.warp_counters_cleared = last.warp_counters_cleared;   // (the shared warp's counters are in those records: not zeroed again)
     } else {
         // (the records' header is the vertex stage's indirect draw and the mesh stage's indirect dispatch)
         if (!create_buffer(records, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
@@ -7393,6 +7460,23 @@ bool fallback_compute_pipelines(Program& p) {
         si.module = st.module;
         si.pName = "main";
         pin_subgroup(si);
+        // (longshot, fallback_lanes.h) a stage whose warp is in workgroup memory (mma_layout.h mesh_fallback_shared_warp) has
+        // no subgroup instruction: it runs at 8 lanes on Mesa's Intel driver, where 32 lanes leave a lane too few registers.
+        // RX_VK_MESH_LANES=8, 16 or 32 (32: as every other stage)
+        static const uint32_t lanes_wanted = [mesa_intel] {
+            const char* e = getenv("RX_VK_MESH_LANES");
+            const uint32_t asked = fallback_lanes::parse_lanes(e);
+            if (e && !asked) logf("vk: RX_VK_MESH_LANES=%s is not 8, 16 or 32: ignored", e);
+            const uint32_t lanes = fallback_lanes::wanted(mesa_intel, asked, dev.subgroup_min, dev.subgroup_max);
+            if (lanes != 32) logf("vk: mesh fallback stages with no subgroup instruction run at %u lanes (RX_VK_MESH_LANES=32: at 32)", lanes);
+            return lanes;
+        }();
+        static const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo lanes_size = [] {
+            VkPipelineShaderStageRequiredSubgroupSizeCreateInfo r{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+            r.requiredSubgroupSize = lanes_wanted;
+            return r;
+        }();
+        if (si.pNext && fallback_lanes::lanes_of(st.lane_free, lanes_wanted) != 32) si.pNext = &lanes_size;
         compute_describe(p, st);
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = si;
@@ -7462,6 +7546,47 @@ bool fallback_pipelines_ready(Program& p) {
     return !p.fallback_compute.empty();
 }
 
+/// (longshot, mma_layout.h mesh_fallback_shared_warp) The shared warp's counters, the words past the records (emit_spirv.h
+/// WARP_COUNTER_*): the waits for other lanes that gave up, after which a ballot or a shuffle may have had a wrong answer, and
+/// with RX_VK_MESH_SHARED_WARP_CHECK the answers compared with the subgroup's and those that differed, and the attribute pool's
+/// waits for a slot that gave up (mma_layout.h mesh_fallback_global_attributes). Copied out after one
+/// fallback draw of a frame in every 600 and logged 30 frames later: each time with the check, otherwise only when more waits
+/// gave up since the last line. Called after the barrier that follows the draw's stages.
+void fallback_warp_counters(VkCommandBuffer cmd, const FallbackBuffers& f) {
+    namespace spirv = Shader::Backend::SPIRV;
+    if (!spirv::MeshFallbackCounters() || !f.warp_counters_cleared) return;
+    thread_local VkBuffer copy = VK_NULL_HANDLE;
+    thread_local VmaAllocation copy_mem = nullptr;
+    thread_local uint32_t* words = nullptr;
+    thread_local uint64_t copied = 0;   // (the frame of the last copy)
+    thread_local bool pending = false;
+    thread_local uint32_t waits_told = 0;
+    thread_local uint32_t pool_waits_told = 0;
+    const uint64_t frame = texture_frame_no();
+    if (pending && frame > copied + 30) {
+        pending = false;
+        invalidate_mapped(copy_mem, spirv::WARP_COUNTER_BYTES);   // (host memory that is cached and not coherent: the GPU's copy)
+        const uint32_t waits = words[spirv::WARP_COUNTER_WAITS / 4];
+        if (spirv::mesh_fallback_shared_warp_check)
+            logf("vk: the shared warp's check: %u answers compared with the subgroup's so far, %u different; %u waits gave up",
+                 words[spirv::WARP_COUNTER_COMPARED / 4], words[spirv::WARP_COUNTER_DIFFERENT / 4], waits);
+        else if (waits != waits_told)
+            logf("vk: the mesh fallback's shared warp: %u waits for other lanes gave up so far, and the ballots and shuffles after "
+                 "them may be wrong (RX_VK_MESH_SHARED_WARP=0: the subgroup's warp)", waits);
+        waits_told = waits;
+        const uint32_t pool_waits = words[spirv::WARP_COUNTER_POOL_WAITS / 4];
+        if (pool_waits != pool_waits_told)
+            logf("vk: the mesh fallback's attribute pool: %u waits for a slot gave up so far, and those workgroups shared a "
+                 "region with another, whose geometry may be wrong (RX_VK_MESH_GLOBAL_ATTRS=0: the regions in workgroup memory)", pool_waits);
+        pool_waits_told = pool_waits;
+    }
+    if (pending || frame % 600 != 300 || frame == copied) return;
+    if (!copy && !create_buffer_cached(spirv::WARP_COUNTER_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT, copy, copy_mem, (void**)&words)) return;
+    const VkBufferCopy region{spirv::MeshFallbackRecordsBytes(), 0, spirv::WARP_COUNTER_BYTES};
+    vkCmdCopyBuffer(cmd, f.records, copy, 1, &region);
+    copied = frame, pending = true;
+}
+
 /// The dispatches of a mesh draw, outside any render pass, and the vertex count its graphics draw then covers.
 bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     if (d.count_addr) {   // (more than one draw in the records: each its own dispatch, not one)
@@ -7500,6 +7625,20 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     vkCmdFillBuffer(cmd, f->records, 4, 4, 1);    // (instanceCount)
     vkCmdFillBuffer(cmd, f->records, 8, 16, 0);   // (firstVertex, firstInstance, the allocator, the dispatch's x)
     vkCmdFillBuffer(cmd, f->records, 24, 8, 1);   // (the dispatch's y and z)
+    // (the attribute regions' pool, mma_layout.h mesh_fallback_global_attributes: its ticket counter at 0 and every slot free for
+    // the first generation. The draw before handed every slot back, but a wait that gave up may not have: each draw starts clean.
+    // Here, between the barrier after the draw before and the one before this draw's stages: after the stages, with no barrier
+    // between, the clear could land while the mesh stage still takes and hands back slots)
+    if (f->records_bytes >= Shader::Backend::SPIRV::MESH_FALLBACK_POOL_OFFSET + Shader::Backend::SPIRV::MESH_FALLBACK_POOL_BYTES)
+        vkCmdFillBuffer(cmd, f->records, Shader::Backend::SPIRV::MESH_FALLBACK_POOL_OFFSET,
+                        Shader::Backend::SPIRV::MESH_FALLBACK_POOL_HEADER_BYTES, 0);
+    // (the shared warp's and the pool's counters past the records, emit_spirv.h WARP_COUNTER_*: at zero once, when the buffer
+    // is first used; from then on they only grow)
+    if (Shader::Backend::SPIRV::MeshFallbackCounters() && !f->warp_counters_cleared &&
+        f->records_bytes >= Shader::Backend::SPIRV::MeshFallbackRecordsBytes() + Shader::Backend::SPIRV::WARP_COUNTER_BYTES) {
+        vkCmdFillBuffer(cmd, f->records, Shader::Backend::SPIRV::MeshFallbackRecordsBytes(), Shader::Backend::SPIRV::WARP_COUNTER_BYTES, 0);
+        f->warp_counters_cleared = true;
+    }
     fallback_draw_records = f->records;
     full_barrier(cmd);
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) return false;
@@ -7542,6 +7681,7 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (!send(stages[0], true)) return false;
     }
     full_barrier(cmd);   // (the records and the draw's command, which the draw reads as indirect arguments)
+    fallback_warp_counters(cmd, *f);
     return true;
 }
 } // namespace
@@ -8534,7 +8674,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                      d.indirect ? " indirect" : "", d.count);
         }
     }
-    StatsQuery stats_query(cmd, p.key, d);   // (EvilOOT, RX_VK_DRAW_STATS)
+    StatsQuery stats_query(cmd, p, d);   // (EvilOOT, RX_VK_DRAW_STATS)
     OccGuard occ(cmd, d);   // (longshot: after stats_query, so it ends first, inside the pass; begun by occ.issue())
     if (stats_frame_now() && stats_prog_wanted(p.key)) {   // (and the wanted programs' buffers: a mesh draw's stages, fragment)
         for (const int stage : {6, 7, 1}) stats_dump_stage(p.key, s, stage);
@@ -11508,7 +11648,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     }
     if (stats_dir()) watch_note_sb(p.key, s);   // (RX_VK_WATCH_SB)
     {
-        StatsQuery stats_query(cmd, p.key, indirect, x, y, z);   // (EvilOOT, RX_VK_DRAW_STATS)
+        StatsQuery stats_query(cmd, p, indirect, x, y, z);   // (EvilOOT, RX_VK_DRAW_STATS)
         {   // (RX_VK_GPU_DUMP=1 with RX_VK_DRAW_STATS_PROGS: the wanted dispatches' storage buffers as the GPU holds them after)
             static const bool gpu_dump_on = env_on("RX_VK_GPU_DUMP");
             if (gpu_dump_on && stats_query.cmd && stats_prog_wanted(p.key)) stats_query.state = &s, stats_query.prog = p.key;

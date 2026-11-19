@@ -77,6 +77,36 @@ description = "Windows-only standalone Vulkan smoke run with screenshots and a g
 shell = "bash -c"
 run = 'powershell -NoProfile -ExecutionPolicy RemoteSigned -File scripts/run-vk.ps1 -Window -Graceful "$@"'
 
+[tasks.tracy-tools]
+description = "tracy-capture and tracy-csvexport 0.15.0 (the game's Tracy client's version), built into _deps/tracy-0.15.0/bin"
+shell = "bash -c"
+run = """
+set -euo pipefail
+# (Tracy's releases have no Linux or macOS programs: built from the pinned source. docs/development/tracy.md)
+tool_dir="$PWD/_deps/tracy-0.15.0"   # (the checkout's, ignored as _deps/ is)
+if [ -x "$tool_dir/bin/tracy-capture" ] && [ -x "$tool_dir/bin/tracy-csvexport" ]; then
+  echo "tracy-tools: $tool_dir/bin (already built)"
+  exit 0
+fi
+for t in cmake ninja c++; do
+  command -v "$t" > /dev/null || { echo "tracy-tools: $t is missing"; exit 2; }
+done
+mkdir -p "$tool_dir/bin"
+if [ ! -d "$tool_dir/src" ]; then
+  curl -fL --retry 3 -o "$tool_dir/tracy.tar.gz" https://github.com/wolfpld/tracy/archive/refs/tags/v0.15.0.tar.gz
+  echo '3d57da54aa67d7875da1e8fecd0bd5957675cef73c27dd52bffb6ab8d290a5e6  '"$tool_dir/tracy.tar.gz" | sha256sum -c --strict
+  mkdir -p "$tool_dir/src.part"
+  tar -xzf "$tool_dir/tracy.tar.gz" -C "$tool_dir/src.part" --strip-components=1
+  mv "$tool_dir/src.part" "$tool_dir/src"
+fi
+for t in capture csvexport; do
+  cmake -S "$tool_dir/src/$t" -B "$tool_dir/build-$t" -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build "$tool_dir/build-$t"
+  cp "$tool_dir/build-$t/tracy-$t" "$tool_dir/bin/"
+done
+echo "tracy-tools: $tool_dir/bin (tracy-capture, tracy-csvexport)"
+"""
+
 [tasks.lint]
 description = "pre-commit on what this branch changed (as CI does) + actionlint"
 shell = "bash -c"

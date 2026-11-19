@@ -37,6 +37,8 @@ struct Stage {
     // again (program_cache_complete_graphics). Here and not in Program, whose size is part of the translator's stamp
     int64_t record_at = 0;
     uint64_t record_size = 0;
+    // (longshot) whether its SPIR-V has nothing that depends on the subgroup it runs in (fallback_lanes.h), noted with the phis
+    mutable bool lane_free = false;
 };
 
 /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's

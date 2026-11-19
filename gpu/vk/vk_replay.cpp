@@ -6513,26 +6513,31 @@ std::deque<Job> q_jobs;
 int q_presents = 0;
 bool q_busy = false;
 uint64_t q_handed = 0, q_done = 0;   // (jobs handed over and done: q_mu)
-// (longshot, the render thread) Whole frames. The render thread starts a frame's jobs when the frame's present has been
-// handed over, not before, and the present is handed over after the main thread's signal for the frame (present(): the
-// signal the frame's work waits for): the game has then written the whole frame. Replaying a frame's first submits while
-// the game was still writing the rest of that frame (the render thread caught up with the game: 0.3-2 % of the presents
-// in the Market) drew the lit scene black for one frame at 5-15 % of those moments, and never at any other time: what the
-// replay reads from the game's memory and state as they are at the replay is whole once the frame is, and in the making
-// before. Measured in the Market with the flash detector and the meter log (which makes the moments frequent): 15 and 15
-// flashes a session without it and with the gate alone (the present still came before the signal), 0 with both. A frame behind, the replay still runs beside the game for the whole frame (the larger of the two, not their
-// sum), and a frame is shown no later than the replay on the submitting thread shows it. What a game's thread waits for
-// goes on at once (gate_upto: a queue finish, a texture read back, a fence of this frame), and so does a job that has
-// waited RX_VK_FRAME_GATE_MS (1000) with no present behind it (a load that submits without presenting; at 100 a game frame
+// (longshot, the render thread) Whole frames, a test: RX_VK_FRAME_GATE=1. The render thread then starts a frame's jobs
+// when the frame's present has been handed over, not before, and the present is handed over after the main thread's
+// signal for the frame (present(): the signal the frame's work waits for): the game has then written the whole frame.
+// They were made because replaying a frame's first submits while the game was still writing the rest of that frame (the
+// render thread caught up with the game: 0.3-2 % of the presents in the Market) drew the lit scene black for one frame
+// at 5-15 % of those moments. Measured in the Market with the flash detector and the meter log (which makes the moments
+// frequent): 15 and 15 flashes a session without them and with the gate alone (the present still came before the
+// signal), 0 with both. Those moments were also where a submit's capture missed the pages the replay's collection was
+// marking again (collect_mu, vk_memory.cpp: a third of the captures with jobs replayed as they come, and Kokiri
+// Forest's ground mist gone for a frame in 16 to 89 of 3,600 frames). With that window closed, jobs replayed as they
+// come (the default) drew no such frame on an Arc B580 in 23,400 frames (Kokiri Forest and the Market standing, four
+// sessions), and a frame no longer waits for its present before its replay starts: 86.95 -> 92.4 fps in Kokiri Forest,
+// 53.6 -> 58.0 in the Market (medians of four sessions each, interleaved with four of whole frames). With whole frames,
+// a frame behind, the replay still runs beside the game for the whole frame (the larger of the two, not their sum), and
+// a frame is shown no later than the replay on the submitting thread shows it. What a game's thread waits for goes on
+// at once (gate_upto: a queue finish, a texture read back, a fence of this frame), and so does a job that has waited
+// RX_VK_FRAME_GATE_MS (1000) with no present behind it (a load that submits without presenting; at 100 a game frame
 // stalled by swapping let its first jobs on, and two such frames flashed in 19,763 presents).
-// RX_VK_FRAME_GATE=0 (a test): jobs replayed as they come, as before.
 uint64_t gate_upto = 0;   // (jobs up to this hand-over number go on without their frame's present: q_mu)
 std::deque<std::pair<uint64_t, uint64_t>> gate_values;   // (the last submits' and presents' fence values and hand-over numbers: q_mu)
 struct {
     std::atomic<int64_t> timeouts, demands, fences;
 } gate_st;
 bool gate_on() {
-    static const bool on = async_on() && !(getenv("RX_VK_FRAME_GATE") && atoi(getenv("RX_VK_FRAME_GATE")) == 0);
+    static const bool on = async_on() && env_on("RX_VK_FRAME_GATE");
     return on;
 }
 std::chrono::milliseconds gate_ms() {
@@ -7252,11 +7257,13 @@ void present(const nvn_tex* t, const int crop[4]) {
         }
         return do_present(t, crop);
     }
-    {   // (the render thread's whole frames, gate_on) The present is handed over after the CPU's signal its frame's work waits
-        // for: the main thread makes that signal when it has written the frame's data, and the presenting thread, its poll
-        // answered at once, came before it at most presents. The frame is whole at its present, which is where the render
-        // thread starts it (gate_ready). At most RX_VK_FRAME_GATE_MS. RX_VK_PRESENT_AFTER_SIGNAL=0 / 1 (a test): off / on whatever the gate
-        static const bool after = env_on_or("RX_VK_PRESENT_AFTER_SIGNAL", gate_on());
+    {   // (the render thread) The present is handed over after the CPU's signal its frame's work waits for: the main
+        // thread makes that signal when it has written the frame's data, and the presenting thread, its poll answered
+        // at once, came before it at most presents. With whole frames (gate_on) the frame is then whole at its present,
+        // which is where the render thread starts it (gate_ready); without them it stays as it was with them, which is
+        // what jobs replayed as they come were measured with. At most RX_VK_FRAME_GATE_MS. RX_VK_PRESENT_AFTER_SIGNAL=0
+        // (a test): handed over at once
+        static const bool after = env_on_or("RX_VK_PRESENT_AFTER_SIGNAL", true);
         // (as long as the gate gives a job: a frame the game takes longer over is waited for too, not started half written)
         static const auto after_ms = std::max(gate_ms(), std::chrono::milliseconds(hold_ms()));
         if (after) {

@@ -585,6 +585,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   re-record a song after updating if its recorded rhythm was lost.
   Epona jumps fences above 60 as she does at 60 (she had galloped through them, more often the higher the cap).
   The Shadow Temple's barge carries Link and the enemies on it above 60 as at 60 (above 100 FPS they slid to its back).
+  Link pulls himself up a ledge above 60 as at 60 (above 60 he rose less, from about 120 FPS short of the lip: he slid back on it,
+  and letting go of forward dropped him to the hang).
   After you play a song, its notes show one at a time with its melody above 60, as at 60.
   **Uncapped** renders as fast as the PC can (the game still keeps real time). A display that waits for its refresh still
   holds the frames to its refresh rate: V-Sync on, or the driver's FIFO mode. `HOS_FPS_MAX=30` or `HOS_FPS_MAX=<61-1000>` sets a cap for one

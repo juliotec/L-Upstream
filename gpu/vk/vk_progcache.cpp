@@ -38,6 +38,7 @@
 #include "fallback_loaded.h"
 #include "start_steps.h"
 #include "fallback_size_policy.h"
+#include "fallback_lanes.h"
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
@@ -373,6 +374,7 @@ void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t
         for (size_t k = 0; k < p.stages.size(); k++) {
             p.stages[k].phis = fallback_size::spirv_phis(spirv[k].data(), spirv[k].size());
             p.stages[k].calls = fallback_size::spirv_calls(spirv[k].data(), spirv[k].size());
+            p.stages[k].lane_free = fallback_lanes::spirv_lane_free(spirv[k].data(), spirv[k].size());
         }
     descriptor_arrays_note(p);   // (its indexed descriptor arrays counted: every translated program passes here, vk_programs.cpp)
     disk_init();
@@ -515,6 +517,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
             st.module = make_module(spirv, key, nullptr);
             st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
             st.calls = fallback_size::spirv_calls(spirv.data(), spirv.size());
+            st.lane_free = fallback_lanes::spirv_lane_free(spirv.data(), spirv.size());
             ok = ok && st.module;
         }
         ok = ok && answers_fit(*p, p->answers);   // (longshot: an answer past the stages or their slots: not this record)
@@ -641,6 +644,7 @@ bool complete_from(Program& p, FILE* in, std::mutex* mu, bool* busy = nullptr) {
     }
     st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
     st.calls = fallback_size::spirv_calls(spirv.data(), spirv.size());
+    st.lane_free = fallback_lanes::spirv_lane_free(spirv.data(), spirv.size());
     module_id_learned(p.key, p.variant, st.module);   // (the next run's load makes its pipeline without this read: vk_programs.h)
     return true;
 }
