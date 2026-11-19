@@ -482,6 +482,7 @@ uint64_t fnv_loop(const uint8_t* b, size_t n, uint64_t h = kFnvOffset) { return 
 /// another device's limit is still the same program key, but its masked bases differ.
 uint64_t g_ssbo_align = 16;
 
+// (every float mode, 64-bit atomic and subgroup stage on: a GPU lacking one stamps "ncap" (translator_stamp) and refuses the bank)
 Shader::Profile make_profile() {   // (live: vk_shader.cpp:476; device properties faked)
     Shader::Profile p{};
     p.supported_spirv = 0x00010600;

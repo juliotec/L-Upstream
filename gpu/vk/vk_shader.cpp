@@ -657,15 +657,36 @@ Shader::Profile make_profile() {
     p.support_uniform_and_storage_buffer_16bit = p.support_storage_buffer_16bit = true;
     p.support_vertex_instance_id = false;
     p.support_float_controls = true;
-    p.support_separate_denorm_behavior = p.support_separate_rounding_mode = true;
-    p.support_fp32_denorm_preserve = p.support_fp32_denorm_flush = true;
-    p.support_fp16_signed_zero_nan_preserve = p.support_fp32_signed_zero_nan_preserve = true;
+    // (the float execution modes the GPU takes, VkPhysicalDeviceFloatControlsProperties: each one declared without it is invalid
+    // SPIR-V, VUID-RuntimeSpirv-shaderSignedZeroInfNanPreserveFloat32-06294 and the denorm ones. With no independence, every float
+    // type must have the same denorm mode (06290): none is declared then)
+    const auto& fc = dev.float_controls;
+    p.support_separate_denorm_behavior = fc.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+    p.support_separate_rounding_mode = fc.roundingModeIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+    const bool denorm_modes = fc.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
+    p.support_fp32_denorm_preserve = denorm_modes && fc.shaderDenormPreserveFloat32 != VK_FALSE;
+    p.support_fp32_denorm_flush = denorm_modes && fc.shaderDenormFlushToZeroFloat32 != VK_FALSE;
+    p.support_fp16_signed_zero_nan_preserve = fc.shaderSignedZeroInfNanPreserveFloat16 != VK_FALSE;
+    p.support_fp32_signed_zero_nan_preserve = fc.shaderSignedZeroInfNanPreserveFloat32 != VK_FALSE;
     p.support_vote = true;
-    p.supported_subgroup_stages = VK_SHADER_STAGE_ALL;
+    // (subgroup operations only in the stages of subgroupSupportedStages, VUID-RuntimeSpirv-None-06343; the translator's stages
+    // are bits by Shader::Stage)
+    p.supported_subgroup_stages = 0;
+    {
+        using Shader::Stage;
+        const struct { Stage stage; VkShaderStageFlags vk; } stages[] = {
+            {Stage::VertexA, VK_SHADER_STAGE_VERTEX_BIT}, {Stage::VertexB, VK_SHADER_STAGE_VERTEX_BIT},
+            {Stage::TessellationControl, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT},
+            {Stage::TessellationEval, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT}, {Stage::Geometry, VK_SHADER_STAGE_GEOMETRY_BIT},
+            {Stage::Fragment, VK_SHADER_STAGE_FRAGMENT_BIT}, {Stage::Compute, VK_SHADER_STAGE_COMPUTE_BIT},
+            {Stage::Task, VK_SHADER_STAGE_TASK_BIT_EXT}, {Stage::Mesh, VK_SHADER_STAGE_MESH_BIT_EXT}};
+        for (const auto& s : stages)
+            if (dev.subgroup_stages & s.vk) p.supported_subgroup_stages |= 1u << static_cast<uint32_t>(s.stage);
+    }
     p.support_viewport_index_layer_non_geometry = true;
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;
-    p.support_int64_atomics = true;
+    p.support_int64_atomics = dev.vk12.shaderBufferInt64Atomics != VK_FALSE;   // (VUID-RuntimeSpirv-None-06278)
     p.support_float32_atomic_add = dev.float_atomic_add;   // (one OpAtomicFAddEXT for a float add, not a compare-exchange loop: vk_main.cpp)
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
@@ -1067,13 +1088,23 @@ const Shader::Profile& profile() {
 /// is the host's there, so the short path for warp ops, as before. The long one in every compute program made their SPIR-V new
 /// and longer: the driver's cache had none of it, and AMD compiled the shaders for hours
 const Shader::Profile& profile_pinned(uint64_t invocations = 64) {
+    // (the mesh fallback's task and mesh programs run as compute shaders: the compute stage's subgroups are theirs)
+    static const auto as_compute = [](Shader::Profile q) {
+        for (const Shader::Stage s : {Shader::Stage::Task, Shader::Stage::Mesh}) {
+            const uint32_t bit = 1u << static_cast<uint32_t>(s);
+            q.supported_subgroup_stages = (dev.subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) ? q.supported_subgroup_stages | bit
+                                                                                             : q.supported_subgroup_stages & ~bit;
+        }
+        return q;
+    };
     static const Shader::Profile p = [] {
         Shader::Profile q = profile();
         q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
-        return q;
+        return as_compute(q);
     }();
+    static const Shader::Profile u = as_compute(profile());
     // (a workgroup 32-lane subgroups cannot cover is not pinned, pins_32: its program takes the long path)
-    return pins_32(VK_SHADER_STAGE_COMPUTE_BIT, invocations) ? p : profile();
+    return pins_32(VK_SHADER_STAGE_COMPUTE_BIT, invocations) ? p : u;
 }
 
 /// The profile of a graphics stage: one the GPU pins to 32 lanes as well (pin_subgroup: RDNA2's and RDNA3's fragment, task
@@ -1390,6 +1421,23 @@ uint64_t translator_stamp() {
                                  (profile().support_storage_texel_buffer_array_nonuniform_indexing ? 0u : 4u)) {
         const uint32_t no_nonuniform[] = {0x6e6e7561u, missing};   // ("nnua", and which)
         add(no_nonuniform, sizeof no_nonuniform);
+    }
+    // (and the float modes, 64-bit atomics and subgroup stages the GPU lacks (make_profile): only when one is missing, so the GPUs
+    // that have them all keep their caches)
+    {
+        const Shader::Profile& p = profile();
+        // (separate denorm behaviour gates only fp16 denorm modes, which the profile never turns on: not counted. Without native
+        // mesh shaders, the fallback translates task and mesh programs with profile_pinned, the compute stage's: not counted)
+        const uint32_t task_mesh = (1u << static_cast<uint32_t>(Shader::Stage::Task)) | (1u << static_cast<uint32_t>(Shader::Stage::Mesh));
+        const uint32_t all_stages = ((1u << static_cast<uint32_t>(Shader::Stage::Mesh) << 1) - 1) & (dev.mesh_shader ? ~0u : ~task_mesh);
+        if (const uint32_t missing = (p.support_fp32_signed_zero_nan_preserve ? 0u : 1u) |
+                                     (p.support_fp16_signed_zero_nan_preserve ? 0u : 2u) | (p.support_fp32_denorm_preserve ? 0u : 4u) |
+                                     (p.support_fp32_denorm_flush ? 0u : 8u) |
+                                     (p.support_int64_atomics ? 0u : 32u) |
+                                     ((p.supported_subgroup_stages & all_stages) == all_stages ? 0u : 64u)) {
+            const uint32_t no_caps[] = {0x6e636170u, missing, p.supported_subgroup_stages};   // ("ncap", and which)
+            add(no_caps, sizeof no_caps);
+        }
     }
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
