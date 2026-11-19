@@ -652,8 +652,7 @@ def check_source():
                           "profile().need_gather_subpixel_offset ? 64u : 0u"),
         "inline_deku_web_loads": ("vrt.inline_global_128_loads = dev.policy.inline_deku_web_loads && vsc->key == kDekuWebVertexCode;",
                                   "dev.policy.inline_deku_web_loads ? 1u : 0u"),
-        "networks_left_out": ("(Shader::Backend::SPIRV::mma_software || (dev.policy.networks_left_out && "
-                              "!(Shader::Backend::SPIRV::mma_wmma16 && Shader::Backend::SPIRV::Wmma16Fits(profile_pinned(), t->program))))",
+        "networks_left_out": ("(Shader::Backend::SPIRV::mma_software || dev.policy.networks_left_out)",
                               "dev.policy.networks_left_out ? 1u : 0u"),
     }
     for path in translator_files.files(str(VK)):

@@ -684,9 +684,6 @@ void PatchMeshInstructions(std::vector<u32>& code, const EmitContext& ctx) {
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings) {
     EmitContext ctx{profile, runtime_info, program, bindings};
     if (program.info.uses_cooperative_matrix && mma_software) DefineSoftwareMatrixFunction(ctx);
-    if (program.info.uses_cooperative_matrix && !mma_software && mma_wmma16 &&
-        !DefineWmma16MatrixFunction(ctx, program))
-        DefineSoftwareMatrixFunction(ctx);   // (the tiles do not fit the shared memory)
     Id main{};
     if (runtime_info.mesh_fallback_vertex) {   // (longshot: the fallback's generated vertex stage, which reads the records)
         const Id void_function{ctx.TypeFunction(ctx.void_id)};

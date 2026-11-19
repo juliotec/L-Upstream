@@ -79,8 +79,5 @@ enum class MeshFallbackLayout : u32 { Aos = 0, Soa = 1 };
     Bindings binding;
     return EmitSPIRV(profile, {}, program, binding);
 }
-// (longshot, AMD RDNA 3/4) whether HMMA_nx2 in the program runs on the WMMA 16x16x16 tiles (mma_layout.h mma_wmma16):
-// every subgroup full and the tiles fit the shared memory of the device. Otherwise EmitSPIRV gives it the software multiply
-[[nodiscard]] bool Wmma16Fits(const Profile& profile, const IR::Program& program);
 
 } // namespace Shader::Backend::SPIRV

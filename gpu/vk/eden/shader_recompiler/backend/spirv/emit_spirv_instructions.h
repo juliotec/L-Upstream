@@ -15,7 +15,6 @@ enum class Attribute : u64;
 enum class Patch : u64;
 class Inst;
 class Value;
-struct Program;
 } // namespace Shader::IR
 
 namespace Shader::Backend::SPIRV {
@@ -639,7 +638,6 @@ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id
 Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane);
 Id EmitMatrixMulAddF16(EmitContext& ctx, Id a, Id b, Id c);
 void DefineSoftwareMatrixFunction(EmitContext& ctx);
-bool DefineWmma16MatrixFunction(EmitContext& ctx, const IR::Program& program);
 Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction);
 Id EmitFSwizzleAdd(EmitContext& ctx, Id op_a, Id op_b, Id swizzle);
 Id EmitDPdxFine(EmitContext& ctx, Id op_a);

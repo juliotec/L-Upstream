@@ -149,9 +149,3 @@ Designed after totk-pc-recomp's runtime/vk_*.c (MIT) and Eden's renderer_vulkan,
 - **Headless**: without a window presents render offscreen; `RX_VK_SHOTS=<dir>` writes every `RX_VK_SHOT_EVERY`-th
   as a PNG. `work/run-vk.ps1` runs it (refuses while Siege runs, stops past `-MaxGB` of working set);
   `work/vksum.py <run>` summarises the log.
-
-## Matrix multiplies on AMD RDNA 3/4 (WMMA 16x16x16)
-
-A program whose tiles pass `maxComputeSharedMemorySize` takes the software multiply. Tested on an RX 9070 XT: works.
-
-- The log says `vk: native matrix multiplies on (WMMA 16x16x16 ...)`, or `WMMA 16x16x16 test: ...` when it fell back.
