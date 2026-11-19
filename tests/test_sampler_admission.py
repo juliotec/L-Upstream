@@ -75,7 +75,7 @@ def main():
     cases = ["healthy", "host-oom", "device-oom", "unknown", "error-output", "generation-retry", "thread-retry",
              "independent", "valid-after-failure", "owner-commit", "seen-commit", "mine-commit", "failure-commit",
              "registration", "shared-thread", "concurrent", "nearest", "linear", "compare", "compare-explicit",
-             "custom-border", "border-format", "standard-border", "reduction", "compare-reduction", "anisotropy",
+             "custom-border", "border-format", "border-format-in-range", "standard-border", "reduction", "compare-reduction", "anisotropy",
              "anisotropy-row", "anisotropy-game", "anisotropy-env-off", "anisotropy-change",
              "anisotropy-no-mips", "anisotropy-nearest-mip", "anisotropy-one-level",
              "upscale-bias", "upscale-bias-plain", "upscale-bias-change",
