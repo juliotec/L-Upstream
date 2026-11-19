@@ -717,6 +717,10 @@ bool create_device() {
         dev.radv_gcn = drv.driverID == VK_DRIVER_ID_MESA_RADV && !f11.storageInputOutput16;
         logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x; RADV on GCN 1-4: %s", sg.subgroupSize, sc.minSubgroupSize,
              sc.maxSubgroupSize, (unsigned)dev.sg32_stages, dev.radv_gcn ? "yes" : "no");
+        logf("vk: shader caps: subgroup stages %#x; denorm independence %d, fp32 denorm preserve %u flush %u, signed zero fp16 %u fp32 %u; "
+             "int64 buffer atomics %u", (unsigned)sg.supportedStages, (int)fc.denormBehaviorIndependence, fc.shaderDenormPreserveFloat32,
+             fc.shaderDenormFlushToZeroFloat32, fc.shaderSignedZeroInfNanPreserveFloat16, fc.shaderSignedZeroInfNanPreserveFloat32,
+             dev.vk12.shaderBufferInt64Atomics);
         if (drv.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA && getenv("shader_spilling_rate"))
             logf("vk: Mesa's Intel compiler spills at rate %s (driconf shader_spilling_rate: 2 unless set)", getenv("shader_spilling_rate"));
     }

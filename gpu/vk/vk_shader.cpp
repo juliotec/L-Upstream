@@ -1426,10 +1426,13 @@ uint64_t translator_stamp() {
     // that have them all keep their caches)
     {
         const Shader::Profile& p = profile();
-        const uint32_t all_stages = (1u << static_cast<uint32_t>(Shader::Stage::Mesh) << 1) - 1;
+        // (separate denorm behaviour gates only fp16 denorm modes, which the profile never turns on: not counted. Without native
+        // mesh shaders, the fallback translates task and mesh programs with profile_pinned, the compute stage's: not counted)
+        const uint32_t task_mesh = (1u << static_cast<uint32_t>(Shader::Stage::Task)) | (1u << static_cast<uint32_t>(Shader::Stage::Mesh));
+        const uint32_t all_stages = ((1u << static_cast<uint32_t>(Shader::Stage::Mesh) << 1) - 1) & (dev.mesh_shader ? ~0u : ~task_mesh);
         if (const uint32_t missing = (p.support_fp32_signed_zero_nan_preserve ? 0u : 1u) |
                                      (p.support_fp16_signed_zero_nan_preserve ? 0u : 2u) | (p.support_fp32_denorm_preserve ? 0u : 4u) |
-                                     (p.support_fp32_denorm_flush ? 0u : 8u) | (p.support_separate_denorm_behavior ? 0u : 16u) |
+                                     (p.support_fp32_denorm_flush ? 0u : 8u) |
                                      (p.support_int64_atomics ? 0u : 32u) |
                                      ((p.supported_subgroup_stages & all_stages) == all_stages ? 0u : 64u)) {
             const uint32_t no_caps[] = {0x6e636170u, missing, p.supported_subgroup_stages};   // ("ncap", and which)

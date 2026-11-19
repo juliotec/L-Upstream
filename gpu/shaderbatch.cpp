@@ -329,7 +329,8 @@ struct Translation {
     Shader::IR::Program program;
 };
 
-// (mirror vk_shader.cpp:456-474 make_profile; min_ssbo_alignment is a device limit, 16 offline)
+// (mirror vk_shader.cpp:456-474 make_profile; min_ssbo_alignment is a device limit, 16 offline. Every float mode, 64-bit
+// atomic and subgroup stage is on here: a GPU lacking one stamps "ncap" (translator_stamp) and refuses what this makes)
 Shader::Profile make_profile() {
     Shader::Profile p{};
     p.supported_spirv = 0x00010600;
