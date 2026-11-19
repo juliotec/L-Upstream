@@ -3280,7 +3280,7 @@ bool sampler_room() {
 /// customBorderColorWithoutFormat feature (required for custom border colours here) allows
 VkFormat border_format(VkFormat view_format) {
     switch (view_format) {
-    case VK_FORMAT_B4G4R4A4_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16: case VK_FORMAT_A1B5G5R5_UNORM_PACK16:
+    case VK_FORMAT_B4G4R4A4_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16: case VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR:
     case VK_FORMAT_B5G5R5A1_UNORM_PACK16: return view_format;
     default: return VK_FORMAT_UNDEFINED;
     }

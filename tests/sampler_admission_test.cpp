@@ -84,6 +84,7 @@ bool sampler_of(int id, nvn_samp_par* p) {
     if (policy == "anisotropy-nearest-mip") p->minf = 0x7E;
     if (policy == "compare-explicit") p->cmp_mode = 1, p->cmp_func = 1;
     if (policy == "custom-border" || policy == "custom-reduction") { p->border[0] = 0.25f; p->border[1] = 0.5f; p->border[2] = 0.75f; p->border[3] = 1; }
+    if (policy == "border-format-in-range") { p->border[0] = 0.25f; p->border[1] = 0.5f; p->border[2] = 0.75f; p->border[3] = 1; }
     if (policy == "border-format") { p->border[0] = 1.5f; p->border[1] = -0.5f; p->border[2] = 0.75f; p->border[3] = 1; }   // (past what a UNORM format holds)
     if (policy == "standard-border") std::fill(std::begin(p->border), std::end(p->border), 1.0f);
     if (policy == "reduction" || policy == "compare-reduction" || policy == "custom-reduction") p->reduction = 1;
@@ -427,7 +428,7 @@ void run(const std::string& test) {
         // a B4G4R4A4, B5G6R5, A1B5G5R5 or B5G5R5A1 view names that format; VUID-VkSamplerCreateInfo-borderColor-04442: its colour
         // then within what the format holds. Other views keep no format, as customBorderColorWithoutFormat allows)
         policy = test;
-        const VkFormat packed[4] = {VK_FORMAT_B4G4R4A4_UNORM_PACK16, VK_FORMAT_B5G6R5_UNORM_PACK16, VK_FORMAT_A1B5G5R5_UNORM_PACK16,
+        const VkFormat packed[4] = {VK_FORMAT_B4G4R4A4_UNORM_PACK16, VK_FORMAT_B5G6R5_UNORM_PACK16, VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR,
                                     VK_FORMAT_B5G5R5A1_UNORM_PACK16};
         const VkSampler plain = get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM); valid(plain);
         assert(live.at(plain).custom && live.at(plain).border_format == VK_FORMAT_UNDEFINED && live.at(plain).border[0] == 1.5f);
@@ -440,6 +441,15 @@ void run(const std::string& test) {
             assert(get(0, false, false, packed[i]) == s && creates == (unsigned)i + 2);
         }
         assert(get(0, false, false, VK_FORMAT_UNDEFINED) == plain && get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM) == plain && creates == 5);
+        return;
+    }
+    if (test == "border-format-in-range") {   // (a colour every format holds: only the format tells the samplers apart)
+        policy = test;
+        const VkSampler plain = get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM); valid(plain);
+        const VkSampler packed = get(0, false, false, VK_FORMAT_B5G6R5_UNORM_PACK16); valid(packed);
+        assert(packed != plain && live.at(packed).border_format == VK_FORMAT_B5G6R5_UNORM_PACK16 && live.at(plain).border_format == VK_FORMAT_UNDEFINED);
+        assert(live.at(packed).border[0] == 0.25f && live.at(packed).border[1] == 0.5f && creates == 2);
+        assert(get(0, false, false, VK_FORMAT_B5G6R5_UNORM_PACK16) == packed && get(0, false, false, VK_FORMAT_R8G8B8A8_UNORM) == plain && creates == 2);
         return;
     }
     policy = test;
