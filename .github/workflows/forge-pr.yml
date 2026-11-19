@@ -10,10 +10,10 @@ on:
         options: [longshot]
         default: longshot
       action:
-        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / status / reviews = on PR number; search = PRs and issues for query; batch = batch.json on branch"
+        description: "push = branch to the magicbean fork only; create = push + open WIP PR; update / comment / ready / wip / status / reviews = on PR number; search = PRs and issues for query; batch = batch.json on branch"
         required: true
         type: choice
-        options: [push, create, update, comment, ready, status, reviews, search, audit, batch]
+        options: [push, create, update, comment, ready, wip, status, reviews, search, audit, batch]
       branch:
         description: "Branch on juliotec/L-Upstream (push, create, update with push)"
         required: false
@@ -78,7 +78,7 @@ jobs:
         run: |
           case "$ACTION" in
             push|create|batch) [ -n "$BRANCH" ] || { echo "branch is required"; exit 1; } ;;
-            update|comment|ready|status|reviews|audit) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
+            update|comment|ready|wip|status|reviews|audit) [ -n "$NUMBER" ] || { echo "number is required"; exit 1; } ;;
             search) [ -n "$QUERY" ] || { echo "query is required"; exit 1; } ;;
           esac
           [ "$ACTION" != create ] || [ -n "$TITLE" ] || { echo "title is required"; exit 1; }
@@ -144,6 +144,7 @@ jobs:
               python3 -I scripts/forge.py "$@" ;;
             comment) python3 -I scripts/forge.py pr comment "$NUMBER" "$COMMENT" ;;
             ready)   python3 -I scripts/forge.py pr ready "$NUMBER" ;;
+            wip)     python3 -I scripts/forge.py pr wip "$NUMBER" ;;
             status)  python3 -I scripts/forge.py pr status "$NUMBER" ;;
           esac
 
