@@ -268,9 +268,11 @@ typedef struct MkwVkHost {
        keep up with the sound, [2] shown late (over 50 ms after the one before), [3] decoding time in ns, [4] decoders that did
        not start (another one took over). Returns the build's version (LONGSHOT_VERSION).
        Version 30: and Link's pose, for the one-second samples: pose = {x, y, z} his world position (game units), then the
-       gameplay camera's {yaw, pitch} (radians), exact (perf_report.h sends them as cells and bins). *has_pose is 1 only
-       when they are current: 0 unless perf_tracking(1) was called, and 0 while Link isn't updating (the title, the file
-       select, a load: nothing set in the last second) or camera zero isn't the gameplay view (a cutscene's) */
+       gameplay camera's {yaw, pitch} (radians: yaw 0 toward +z and pi/2 toward +x, in [-pi, pi]; pitch above 0 looking up, in
+       [-pi/2, pi/2]), exact (perf_report.h sends them as cells and bins). *has_pose is 1 only when they are current: 0 unless
+       perf_tracking(1) was called, 0 while Link isn't updating (the title, the file select, a load: nothing set in the last
+       second), while no map is set (map is empty), while an event plays (a cutscene) and from a change of the map until his
+       next update, or when camera zero isn't the gameplay view */
     const char *(*perf_info)(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose);
     /* Version 27 (longshot): the frame trace's main-thread columns (RX_VK_FRAME_TRACE, gpu/vk/vk_replay.cpp): the game's main
        thread's (sead::MainThread) time so far, in ns: [0] waiting for a virtual core, [1] blocked in a wait or sleep, both

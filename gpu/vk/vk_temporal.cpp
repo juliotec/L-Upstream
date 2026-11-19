@@ -30,7 +30,8 @@
 //    (temporal_pre_bloom; pre_bloom.h has the frame's passes and how the place is learned): on the scene's linear colour, a
 //    feature made for HDR colour with its own exposure, its picture written back into the scene. The bloom, the tone map and
 //    the passes after them then take the anti-aliased scene, and the network's dispatch becomes a copy, as with the Upscaler's
-//    Off at 100%. A frame with no learned place runs it at the network as before. RX_VK_DLSS_PRE_BLOOM=0: at the network always.
+//    Off at 100%. A frame with no learned place runs it at the network as before. Only with the Upscaler's DLAA before the
+//    bloom row on (off by default; RX_VK_DLSS_PRE_BLOOM over it for a run).
 // Anything unexpected (no camera this frame, other sizes, the engine not there or failing) leaves the network to run, the
 // reason in the log when it changes.
 // Unless RX_VK_PSYCHOV35_DLSS=0, also takes Native PsychoV35's RGBA16F input/output with the supported HDR engines
@@ -139,21 +140,21 @@ bool temporal_off() { return opts.dlss == ur::OFF && temporal_mode() == ur::GAME
 bool temporal_full_scale() { return ur::full_scale(temporal_mode()); }
 
 namespace {
-/// (longshot) DLAA before the game's bloom and tone map (temporal_pre_bloom) in this run, the mode being DLAA: unless
-/// RX_VK_DLSS_PRE_BLOOM=0, and not with the parallel replay (RX_VK_PARALLEL=2 and more), whose threads record a frame's
-/// passes out of order. Read once; the first call logs which
+/// (longshot) DLAA before the game's bloom and tone map (temporal_pre_bloom) now, the mode being DLAA: the Upscaler's DLAA
+/// before the bloom row (opts.dlss_pre_bloom, off by default; RX_VK_DLSS_PRE_BLOOM over it for a run, vk_menu.cpp), and not
+/// with the parallel replay (RX_VK_PARALLEL=2 and more), whose threads record a frame's passes out of order. Read at each
+/// call, the row changing at once; a change is logged
 bool pre_bloom_wanted(int mode) {
-    static const bool on = [] {
-        const bool asked = env_switch("RX_VK_DLSS_PRE_BLOOM") != 0;   // (unset: on)
-        const bool parallel = env_switch("RX_VK_PARALLEL") >= 2;
-        logf("vk: upscaler: NVIDIA DLAA %s", !asked    ? "after the game's bloom and tone map (RX_VK_DLSS_PRE_BLOOM=0)"
-                                             : parallel ? "after the game's bloom and tone map: the parallel replay is on "
+    static const bool parallel = env_switch("RX_VK_PARALLEL") >= 2;
+    const bool asked = opts.dlss_pre_bloom != 0;
+    static std::atomic<int> told{-1};
+    const int now = asked ? (parallel ? 2 : 1) : 0;
+    if (told.exchange(now, std::memory_order_relaxed) != now)
+        logf("vk: upscaler: NVIDIA DLAA %s", now == 0 ? "after the game's bloom and tone map (DLAA before the bloom: off)"
+                                             : now == 2 ? "after the game's bloom and tone map: the parallel replay is on "
                                                           "(RX_VK_PARALLEL)"
-                                                        : "before the game's bloom and tone map (RX_VK_DLSS_PRE_BLOOM=0: after "
-                                                          "them)");
-        return asked && !parallel;
-    }();
-    return on && mode == ur::DLAA;
+                                                        : "before the game's bloom and tone map (DLAA before the bloom: on)");
+    return asked && !parallel && mode == ur::DLAA;
 }
 }  // namespace
 
@@ -1682,23 +1683,23 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     return draw_engine(cmd, s, mode, cam, key, false, in, in_view, out, out_view, out_level);
 }
 
-void temporal_pre_bloom(VkCommandBuffer cmd, uint64_t key, const std::vector<const Texture*>& sampled, Texture* const* colors,
+bool temporal_pre_bloom(VkCommandBuffer cmd, uint64_t key, const std::vector<const Texture*>& sampled, Texture* const* colors,
                         int n) {
     State& s = st();
     const uint64_t now = texture_frame_no();
     const Texture* scene = s.pre_scene.load(std::memory_order_relaxed);
-    if (!scene || s.pre_scene_frame.load(std::memory_order_relaxed) != now) return;
+    if (!scene || s.pre_scene_frame.load(std::memory_order_relaxed) != now) return false;
     bool writes = false;
     for (int i = 0; i < n && !writes; i++) writes = colors[i] == scene;
-    if (!writes && std::find(sampled.begin(), sampled.end(), scene) == sampled.end()) return;
+    if (!writes && std::find(sampled.begin(), sampled.end(), scene) == sampled.end()) return false;
     std::lock_guard lk(s.mu);
     if (s.pre_frame != now) s.pre = {}, s.pre_frame = now;
-    if (writes) return s.pre.scene_draw();   // (a draw into the scene, reading it too or not: the scene's own)
-    if (!s.pre.sampler(key, s.pre_trigger)) return;
+    if (writes) return s.pre.scene_draw(), false;   // (a draw into the scene, reading it too or not: the scene's own)
+    if (!s.pre.sampler(key, s.pre_trigger)) return false;
     // (the learned place: DLAA on the scene as it is now, its picture written back before this draw reads it)
     const int mode = temporal_mode();
     const Camera cam = s.cam;
-    const auto not_here = [&](const char* why) { s.pre.ran = false, pre_fail(why); };
+    const auto not_here = [&](const char* why) { return s.pre.ran = false, pre_fail(why); };
     if (!pre_bloom_wanted(mode)) return not_here("DLAA is not the upscaler now");
     if (!cam.valid || cam.frame != now || cam.color != scene) return not_here("not this frame's scene");
     if (!(scene->usage & VK_IMAGE_USAGE_STORAGE_BIT) || !(scene->usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||
@@ -1707,10 +1708,12 @@ void temporal_pre_bloom(VkCommandBuffer cmd, uint64_t key, const std::vector<con
     const VkImageView view = color_view(scene);
     if (!view) return not_here("no view of the scene's colour");
     end_pass(cmd);   // (compute from here: outside the open pass)
-    // (not this frame: the skinned draws stay for the engine at the network)
-    if (!draw_engine(cmd, s, mode, cam, key, true, scene, view, scene, view, 0)) return void(s.pre.ran = false);
+    // (from here commands of its own are recorded, whether DLAA then draws or not: true, and the draw binds all of its
+    // own again, vk_draw.cpp. Not this frame: the skinned draws stay for the engine at the network)
+    if (!draw_engine(cmd, s, mode, cam, key, true, scene, view, scene, view, 0)) return s.pre.ran = false, true;
     s.skins.clear();     // (actor_motion took them: the frame's own)
     full_barrier(cmd);   // (the draw then reads the scene as DLAA wrote it)
+    return true;
 }
 
 } // namespace mkwvk

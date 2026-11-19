@@ -219,7 +219,7 @@ static DWORD WINAPI renderer_main(void *p) {
 /* (longshot) host/display.c's: the game's first work for the GPU waits for the renderer (nvn_native.c), so nothing it submits while
    the shaders are prepared is lost. Without a window the renderer starts on the game's own thread, before this is asked */
 void hos_renderer_wait(void) {
-    { const char *e = getenv("HOS_NO_RENDERER_WAIT"); if (e && atoi(e) != 0) return; }
+    if (env_on("HOS_NO_RENDERER_WAIT")) return;
     if (renderer_up) WaitForSingleObject(renderer_up, INFINITE);
 }
 

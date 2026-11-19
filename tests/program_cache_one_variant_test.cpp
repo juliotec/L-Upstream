@@ -115,6 +115,7 @@ struct { int64_t play_loads = 0, play_load_ns = 0; } census;
 std::atomic<bool> programs_in_play{false};
 void programs_load_wait(uint64_t) {}
 void module_id_learned(uint64_t, uint64_t, VkShaderModule) {}   // (shader module identifiers, vk_programs.cpp: none here)
+void descriptor_arrays_note(const Program&) {}   // (the census of indexed descriptor arrays, vk_programs.cpp: none here)
 // (every byte the loader reads from the cache file)
 size_t bytes_read = 0;
 static size_t counted_fread(void* to, size_t size, size_t n, FILE* f) {

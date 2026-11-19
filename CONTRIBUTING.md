@@ -237,7 +237,7 @@ hot code at `-O1`, about a quarter less compile time; never use it for fps, timi
 
 ### Game-free checks
 
-They need no dump. One command runs them all:
+They need no dump. One command runs the source checks:
 
 ```
 python -I -B tests/run_all.py
@@ -256,6 +256,31 @@ CircleCI on Forgejo (see [docs/ci.md](docs/ci.md)) runs path-filtered game-free 
 `main`. Run `mise run ci:smoke` and `mise run test` locally before you push, and put results in
 the pull request. Forgejo Actions workflows under `.forgejo/workflows/` remain until cutover; they still match what
 CI reproduces.
+
+The optional [Vulkan fixture workflow](.forgejo/workflows/vulkan-fixtures.yml) adds a software-Vulkan lane beside the
+existing [CI workflow](.forgejo/workflows/ci.yml). Setup and labels are described in the
+[Forgejo runner guide](docs/forgejo-runners.md); this job uses its isolated `ubuntu-24.04` environment, needs Node.js 24
+for the pinned checkout action, and installs Mesa's software driver, Vulkan loader/headers/tools and Khronos validation.
+It does not enable Actions or register a runner.
+CircleCI does not run it; start it by hand on Forgejo: *Actions* > *Authored Vulkan fixtures* > *Run workflow*.
+Pull requests and pushes do not start this lane; the local command below remains available without a runner.
+Its first completed Forgejo run is still required before calling this CI coverage. The job has no configured secrets
+or uploads, does not persist checkout credentials, and removes the forge tokens from the fixture command. Forgejo
+does not enforce GitHub's `permissions` key; this is not a substitute for disposable-runner isolation.
+
+The same game-free checks are usable locally now. With a C++ compiler, Vulkan loader/headers, `vulkaninfo`, Mesa's
+lavapipe driver and Khronos validation layer installed, select the single software ICD and run one command
+(use `lvp_icd.x86_64.json` instead on packages with that filename):
+
+```sh
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+  python3 -I -B tests/run_vulkan_fixtures.py --cxx g++ --headers /usr/include --device llvmpipe
+```
+
+It executes five authored write-back cases, one copy-span case and seven offscreen aspect/crop cases. Missing devices,
+skipped cases, missing validation-layer activation and validation errors fail; all thirteen cases are required.
+This is CPU Vulkan execution, not hardware GPU coverage, a swapchain or a game run. The ordinary source checks keep
+their GPU opt-ins/skips for machines without Vulkan.
 
 ### Checks that need your dump or a run
 

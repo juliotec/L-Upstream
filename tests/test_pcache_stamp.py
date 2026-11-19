@@ -53,7 +53,7 @@ def check_source():
         raise SystemExit("vk_draw.cpp: pcache_init() does not note a cache file it refused (another driver's) before it makes the cache")
     run = block(draw, "void precompile_run(")
     drop = "if (pcache_drop_stale() || pcache_file_rejected) remove(precompile_built_path().c_str());"
-    if drop not in run or not run.index("pcache_init();") < run.index(drop) < run.index("if (!precompile_covers_notes()) precompile_warm("):
+    if drop not in run or not run.index("pcache_init();") < run.index(drop) < run.index("const bool warms = !precompile_covers_notes();") < run.index("if (warms) precompile_warm("):
         raise SystemExit("vk_draw.cpp: precompile_run() judges the pipelines' marker before the cache's file is read, or keeps it "
                          "when another driver's file was refused (the noted pipelines compile in play after a driver update)")
 

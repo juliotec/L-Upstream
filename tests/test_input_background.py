@@ -100,7 +100,8 @@ static void player_used(void) {}
         # (walking on the keyboard: the movement keys' tilt, read_input asks for it)
         block(hid, "static int walk_held("), block(hid, "enum { WALK_SPEED_DEFAULT") + ";",
         block(hid, "static int walk_percent("), block(hid, "static void move_keys_stick("),
-        block(hid, "static int flight_jump_shortcut("), read, block(hid, "static void npad_states(")))
+        block(hid, "static int flight_jump_shortcut("), read, block(hid, "static uint64_t stick_buttons("),
+        block(hid, "static void npad_states(")))
     glue = (ROOT / "host/mkw_glue.c").read_text(encoding="utf-8")
     actual += "\n" + "\n".join(block(glue, "uint64_t " + name + "(")
                                   for name in ("hos_title_input", "hos_frame_step_buttons"))

@@ -830,7 +830,7 @@ uint64_t hos_cache_cpus(void) {
     static uint64_t mask = ~0ull;
     if (mask != ~0ull) return mask;
     mask = 0;
-    if (getenv("HOS_CACHE_CORES") && !atoi(getenv("HOS_CACHE_CORES"))) return mask;
+    if (!env_on_or("HOS_CACHE_CORES", 1)) return mask;
     static uint64_t masks[64], sizes[64], cores[256];
     DWORD len = 0;
     int n = 0, ncores = 0;
@@ -1047,7 +1047,7 @@ uint64_t hos_reserved_cpus(void) {
         return mask;
     }
 
-    if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) {
+    if (!env_on_or("HOS_RESERVE_CORE", 1)) {
         hos_log("vk: HOS_RESERVE_CORE=0, no core reserved");
         return mask;
     }
@@ -1057,7 +1057,7 @@ uint64_t hos_reserved_cpus(void) {
        then took 9.8-10.0 ms a frame but the frame rate stayed at 56.9-57.4; with the 8 shared, 10.1-10.5 ms and 59.9 fps.
        HOS_RESERVE_CORE=1: the last core of the fastest kind is kept all the same, as on other CPUs. That is normally a core of
        the other CCD, not the cache core of the 9.8-10.0 ms above, and the game's threads then have all of the cache cores */
-    if (hos_cache_cpus() && !(getenv("HOS_RESERVE_CORE") && atoi(getenv("HOS_RESERVE_CORE")))) return mask;
+    if (hos_cache_cpus() && !env_on("HOS_RESERVE_CORE")) return mask;
     {
         int cores = 0;
         const uint64_t fast = last_fastest_core(&cores);
@@ -1443,7 +1443,7 @@ void hos_sleep_logged(int64_t ns, uint64_t lr) {
 static int present_poll(Ctx *c, int64_t ns) {
     static int on = -1;
     static uint64_t fn_ok, fn_bad;
-    if (on < 0) on = getenv("HOS_PRESENT_POLL") && atoi(getenv("HOS_PRESENT_POLL")) != 0;
+    if (on < 0) on = env_on("HOS_PRESENT_POLL");
     if (!on || c->x[30] != 0x80590520 || ns <= 0 || ns > 20000000) return 0;
     const uint64_t fp = G64(c->x[24]);
     if (fp != fn_ok) {
@@ -1752,8 +1752,7 @@ static struct { int64_t takes, waits, wait_ns, max_ns, escapes, kicks, yields, b
 int hos_vcores_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = getenv("HOS_VCORES");
-        on = e ? atoi(e) != 0 : 1;   /* (mkw-recomp: on unless HOS_VCORES=0; the game's job queues need it) */
+        on = env_on_or("HOS_VCORES", 1);   /* (mkw-recomp: on unless HOS_VCORES=0; the game's job queues need it) */
     }
     return on;
 }

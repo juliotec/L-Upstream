@@ -268,6 +268,11 @@ NV(nvnDeviceSetWindowOriginMode) {
     ((nvn_dev *)P(0))->origin = U32(1);
     hos_log("nvn: window origin %s", U32(1) ? "upper left" : "lower left");
 }
+/* (longshot) what the game set (NVN's default, 0, before it sets one), as the driver answers. Without them a caller got
+   the "not implemented" stub's 0: lower left to a game that set upper left, so code that lays its own drawing over the
+   game's picture by the answer (a mod's overlay) drew it upside down */
+NV(nvnDeviceGetWindowOriginMode) { RET(((const nvn_dev *)P(0))->origin); }
+NV(nvnDeviceGetDepthMode) { RET(((const nvn_dev *)P(0))->depth_mode); }
 NV(nvnDeviceSetDepthMode) {
     ((nvn_dev *)P(0))->depth_mode = U32(1);
     const LONG was = InterlockedExchange(&depth_minus_w, U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
@@ -1124,7 +1129,7 @@ static CRITICAL_SECTION held_cs;
 static int held_ready, hold_on = -1;
 static void held_init(void) {
     if (!held_ready) { InitializeCriticalSection(&held_cs); held_ready = 1; }
-    if (hold_on < 0) { const char *e = getenv("HOS_NVN_HOLD"); hold_on = e && atoi(e) != 0; }   /* (off: see below) */
+    if (hold_on < 0) hold_on = env_on("HOS_NVN_HOLD");   /* (off: see below) */
 }
 static void held_flush(void) {
     held_init();
@@ -1226,7 +1231,7 @@ NV(nvnEventGetValue) {
         int now = nowait;
         if (now < 0) {
             const char *e = getenv("HOS_PRESENT_NOWAIT");
-            now = e ? atoi(e) != 0 : rx_option(HOS_OPT_RENDER_THREAD, -1);
+            now = e ? !env_value_off(e) : rx_option(HOS_OPT_RENDER_THREAD, -1);
             if (now >= 0) nowait = now = now != 0;
         }
         if (now > 0 && (c->x[30] == 0x805904a0 || c->x[30] == 0x80590530)) { RET(1); return; }
@@ -2876,6 +2881,8 @@ static const nvn_impl impls[] = {
     {"nvnDeviceInstallDebugCallback", n_nvnDeviceInstallDebugCallback},
     {"nvnDeviceSetWindowOriginMode", n_nvnDeviceSetWindowOriginMode},
     {"nvnDeviceSetDepthMode", n_nvnDeviceSetDepthMode},
+    {"nvnDeviceGetWindowOriginMode", n_nvnDeviceGetWindowOriginMode},
+    {"nvnDeviceGetDepthMode", n_nvnDeviceGetDepthMode},
     {"nvnDeviceFinalizeCommandHandle", n_nvnDeviceFinalizeCommandHandle},
     {"nvnDeviceGetCurrentTimestampInNanoseconds", n_nvnDeviceGetCurrentTimestampInNanoseconds},
     {"nvnDeviceGetTimestampInNanoseconds", n_nvnDeviceGetTimestampInNanoseconds},

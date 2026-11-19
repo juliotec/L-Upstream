@@ -369,6 +369,27 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 0 && ur::cnn_for_vram(v, device_vram_bytes())) return cnn;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
 }
+/// (longshot) The DLAA before the bloom row (opts.dlss_pre_bloom; vk_temporal.cpp pre_bloom_wanted): RX_VK_DLSS_PRE_BLOOM set
+/// for this run wins over it
+bool pre_bloom_env() {
+    static const char* const e = getenv("RX_VK_DLSS_PRE_BLOOM");
+    return e && *e;
+}
+/// Its line: the value chosen; variant 1: DLSS at a Render resolution below Native (the row waits for DLAA); variant 2: set
+/// for this run by RX_VK_DLSS_PRE_BLOOM
+const char* hn_dlss_pre_bloom(int v, int variant) {
+    static const char* const t[] = {
+        "Off: DLAA smooths the finished picture, after the game's bloom and tone map.",
+        "On: DLAA smooths the 3D before the game's bloom and tone map, so the glow is made from a smooth picture.",
+    };
+    static const char* const not_dlaa = "DLAA only: set the Render resolution to Native. DLSS's other modes draw the 3D smaller "
+                                        "than the picture, which this cannot go back into.";
+    static const char* const env = "Set for this run by RX_VK_DLSS_PRE_BLOOM.";
+    if (variant < 0) variant = pre_bloom_env() ? 2 : upscaler() != ur::DLAA ? 1 : 0;
+    if (variant == 1) return not_dlaa;
+    if (variant == 2) return env;
+    return variant == 0 ? t[std::clamp(v, 0, 1)] : nullptr;
+}
 /// The Game language row (opts.game_lang): language.txt's language, written once the row is left (game_lang_tick); the game
 /// reads it at its start
 const char* tx_game_lang(int v) { return i18n::game_lang_name(v); }
@@ -785,6 +806,7 @@ bool row_fixed(const int* value) {
     return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::render_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr)) ||
+           (value == &opts.dlss_pre_bloom && ur::pre_bloom_fixed(upscaler(), pre_bloom_env())) ||
            (value == &opts.framegen_by && framegen_by_fixed()) ||   // (its line says why)
            (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8")) ||   // (set for the run: vk_texture.cpp reads it first)
            (value == &opts.present_queue && getenv("RX_VK_PRESENT_QUEUE") && *getenv("RX_VK_PRESENT_QUEUE")) ||   // (create_device's, first)
@@ -1597,6 +1619,9 @@ Row rows[] = {
      hn_upscaler},
     {TAB_GRAPHICS, "DLSS model", &opts.dlss_model, 0, ur::kModels - 1, 1, tx_dlss_model,
      "Which of NVIDIA's DLSS networks draws the picture.", hn_dlss_model, false, true},
+    {TAB_GRAPHICS, "DLAA before the bloom", &opts.dlss_pre_bloom, 0, 1, 1, tx_onoff,
+     "Where NVIDIA DLAA smooths the picture: after the game's bloom and tone map, or before them. Changes at once.",
+     hn_dlss_pre_bloom, false, true},
     {TAB_GRAPHICS, "Render resolution", &opts.resolution, 0, ur::kValues - 1, 1, tx_resolution,
      "The share of the output the 3D is drawn at; the Upscaler fills in the rest.", hn_resolution},
     {TAB_GRAPHICS, "Sharpness", &opts.sharpness, 0, 100, 10, tx_percent,
@@ -2239,6 +2264,7 @@ bool row_shown(int i) {
            (!is_laptop_row(rows[i]) || laptop_row()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
+           (v != &opts.dlss_pre_bloom || ur::pre_bloom_shown(dlss_why() == DLSS_OK, upscaler())) &&
            ((v != &opts.hdr_white && v != &opts.hdr_peak && v != &opts.hdr_contrast) || opts.hdr != 0) &&
            (v != &opts.hdr_tonemap || opts.hdr == 2) &&
            // (longshot) who makes the frames only with Frame generation on; the CRT raster only with a CRT filter
@@ -2333,6 +2359,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.fps_cap) return "frame_rate_cap";   // (host/nn_vi.c reads it at the start, then HOS_OPT_FPS_CAP)
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
+    if (r.value == &opts.dlss_pre_bloom) return "dlss_pre_bloom";   // (as RX_VK_DLSS_PRE_BLOOM)
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
     if (r.value == &opts.ultrawide) return "ultrawide";   // (the Aspect ratio row; host/hos_main.c reads it at the start)
     static char k[48];
@@ -5521,7 +5548,7 @@ void menu_init() {
     first_start = !has_options;
     sync_transition_autosave();
     const char* handheld_env = getenv("HOS_HANDHELD");   // (host/nn_applet.c handheld(): the environment over the file's)
-    if (!has_output && !(handheld_env ? atoi(handheld_env) != 0 : opts.handheld != 0)) {
+    if (!has_output && !(handheld_env ? !env_value_off(handheld_env) : opts.handheld != 0)) {
         // (none chosen, a new install: the size host/nn_applet.c took at boot, the game's 2560x1440 or the main screen's where
         // it has fewer pixels (a Steam Deck's 1280x800), hos_output_default. Saved from now on, so the two never part.
         // HOS_OUTPUT_RES, below, is over it, as over a chosen one)
@@ -5546,6 +5573,7 @@ void menu_init() {
     // (the environment over the saved rows, for this run only: env_override, save)
     if (const char* e = getenv("RX_VK_FRAMEGEN_MULT")) env_override(&opts.framegen, std::min(std::max(atoi(e), 2), 8));
     if (const char* e = getenv("RX_VK_PACE")) env_override(&opts.pace, !env_value_off(e));
+    if (const char* e = getenv("RX_VK_DLSS_PRE_BLOOM"); e && *e) env_override(&opts.dlss_pre_bloom, !env_value_off(e));
     if (const char* e = getenv("RX_VK_UPSCALE"))
         for (Row& r : rows)
             if (r.value == &opts.upscale) env_override(r.value, std::min(std::max(atoi(e), r.lo), r.hi));

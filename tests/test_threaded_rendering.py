@@ -416,7 +416,7 @@ def check_sources(s):
     if "if (id == HOS_OPT_RENDER_THREAD) return async_on();" not in block(s["replay"], "t.option = [](int id) -> int {"):
         bad.append("vk_replay.cpp: the option callback no longer answers HOS_OPT_RENDER_THREAD with async_on()")
     poll = block(s["native"], "NV(nvnEventGetValue) {")
-    if "now = e ? atoi(e) != 0 : rx_option(HOS_OPT_RENDER_THREAD, -1);" not in poll or 'getenv("HOS_PRESENT_NOWAIT")' not in poll:
+    if "now = e ? !env_value_off(e) : rx_option(HOS_OPT_RENDER_THREAD, -1);" not in poll or 'getenv("HOS_PRESENT_NOWAIT")' not in poll:
         bad.append("nvn_native.c: the present poll is not HOS_PRESENT_NOWAIT when set, else the renderer's HOS_OPT_RENDER_THREAD")
 
     # (the count: usable_cores beside usable_cpus, by the cores' masks, declared; the facts and the policy count cores too)

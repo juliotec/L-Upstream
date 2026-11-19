@@ -539,6 +539,7 @@ bool invalidate_lost_surface(VkResult result);   // (dev.present_mu held)
 bool replay_start();                          // vk_replay.cpp
 bool precompile_wanted();                     // vk_draw.cpp
 void precompile_run(void (*progress)(size_t done, size_t total));
+void texture_pipelines_warm();                 // (vk_texture.cpp: the ASTC decoder, BC encoders and GPU unswizzle made before the game)
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states = false);
 bool prepare_is_update();
 void prepare_background();
@@ -565,6 +566,7 @@ unsigned prepare_cpus();   // vk_progcache.cpp
 bool segment_heap();       // vk_progcache.cpp (the process heap is the segment heap: nx2/win_manifest.py)
 /// (longshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction
 void driver_cache_log(const char* when);   // vk_draw.cpp
+void driver_env_note();   // vk_draw.cpp: (Linux) the environment the pipelines were built in, for later starts
 /// (longshot) At the start after a preparation, behind the game: a sample of its predicted pipelines asked of the driver without
 /// compiling, "the driver's shader cache kept N of M" (none: this driver keeps nothing the prediction builds)
 void predicted_check();   // vk_draw.cpp

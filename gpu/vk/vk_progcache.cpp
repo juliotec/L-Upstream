@@ -36,6 +36,7 @@
 #include "shader_recompiler/shader_info.h"
 #include "longshot_env.h"
 #include "fallback_loaded.h"
+#include "start_steps.h"
 #include "fallback_size_policy.h"
 #include "vk_paths.h"
 #include "vk_internal.h"
@@ -373,6 +374,7 @@ void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t
             p.stages[k].phis = fallback_size::spirv_phis(spirv[k].data(), spirv[k].size());
             p.stages[k].calls = fallback_size::spirv_calls(spirv[k].data(), spirv[k].size());
         }
+    descriptor_arrays_note(p);   // (its indexed descriptor arrays counted: every translated program passes here, vk_programs.cpp)
     disk_init();
     if (!disk_on || spirv.size() != p.stages.size()) return;
     std::vector<uint8_t> o;
@@ -530,6 +532,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
                      (unsigned long long)key, (long long)d.at, d.size);
             continue;
         }
+        descriptor_arrays_note(*p);   // (and every program read: vk_programs.cpp)
         p->ready.store(true, std::memory_order_release);
         variants.push_back(std::move(p));
         st_cache_hits++;
@@ -602,6 +605,7 @@ std::unique_ptr<Program> program_cache_read_light(FILE* in, std::mutex* mu, uint
     get_info(t, st.info);
     if (t.bad || !answers_fit(*p, p->answers)) return nullptr;
     p->code_at = d.at + (int64_t)code_at, p->code_words = words;
+    descriptor_arrays_note(*p);
     p->ready.store(true, std::memory_order_release);
     return p;
 }
@@ -777,6 +781,18 @@ std::vector<uint64_t> program_cache_compute_keys() {
     for (const auto& kv : disk_records)
         if (!kv.second.empty() && (kv.second[0].kind & 1)) keys.push_back(kv.first);
     return keys;
+}
+size_t program_cache_fallback_steps() {
+    disk_init();
+    // (the records program_cache_load_some(..., fallbacks) would take now, then what is in memory: start_steps::create_steps)
+    std::unordered_map<uint64_t, std::vector<DiskRecord>> taken;
+    if (disk_on) {
+        std::lock_guard lk(disk_mu);
+        for (const auto& kv : disk_records)
+            if (!kv.second.empty() && (kv.second[0].kind & 4)) taken.emplace(kv.first, kv.second);
+    }
+    std::lock_guard lk(shader_mu);
+    return start_steps::create_steps(taken, programs);
 }
 std::string program_cache_path() {
     disk_init();

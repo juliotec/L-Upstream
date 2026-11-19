@@ -30,6 +30,7 @@
 #include "module_ids.h"
 #include "load_default.h"
 #include "vk_programs.h"
+#include "descriptor_array_census.h"
 
 namespace mkwvk {
 
@@ -742,6 +743,39 @@ void programs_census_log(const char* when) {
         logf("vk: module identifiers (%s): %zu known, %lld learned in this run; %lld compute pipelines made by them at a create "
              "call, %lld asked that way were in no cache (their code read, as before)",
              when, ids.size(), n(ids_learned.load()), n(c.load_by_id), n(c.load_by_id_cold));
+}
+
+// ---- (longshot) The indexed descriptor arrays the programs declare (descriptor_array_census.h) ----
+namespace {
+std::mutex array_census_mu;
+ArrayCensus array_census;
+bool array_limits_known = false;
+static_assert(ArrayCensus::kStageBits[0] == VK_SHADER_STAGE_VERTEX_BIT && ArrayCensus::kStageBits[1] == VK_SHADER_STAGE_FRAGMENT_BIT &&
+              ArrayCensus::kStageBits[2] == VK_SHADER_STAGE_COMPUTE_BIT && ArrayCensus::kStageBits[3] == VK_SHADER_STAGE_TASK_BIT_EXT &&
+              ArrayCensus::kStageBits[4] == VK_SHADER_STAGE_MESH_BIT_EXT);
+} // namespace
+
+void descriptor_arrays_note(const Program& p) {
+    std::vector<std::string> lines;
+    {
+        std::lock_guard lk(array_census_mu);
+        if (!array_limits_known) {   // (the device's, made before any program)
+            const VkPhysicalDeviceLimits& l = dev.props.limits;
+            array_census.limits = {l.maxPerStageDescriptorSamplers, l.maxPerStageDescriptorSampledImages, l.maxPerStageDescriptorStorageImages};
+            array_limits_known = true;
+        }
+        for (size_t k = 0; k < p.stages.size(); k++) array_census.note(p.key, (uint32_t)k, p.stages[k].vk_stage, p.stages[k].info, lines);
+    }
+    for (const std::string& line : lines) logf("%s", line.c_str());
+}
+
+void descriptor_arrays_log(const char* when) {
+    std::vector<std::string> lines;
+    {
+        std::lock_guard lk(array_census_mu);
+        lines = array_census.summary(when);
+    }
+    for (const std::string& line : lines) logf("%s", line.c_str());
 }
 
 } // namespace mkwvk

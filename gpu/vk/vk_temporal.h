@@ -71,13 +71,16 @@ int temporal_hidden_mesh_mode();
 /// (longshot, #1370) Whether `depth` is the depth target of the scene the chain has taken in this frame (its camera's)
 bool temporal_scene_depth_is(const Texture* depth);
 
-/// (longshot) NVIDIA DLAA before the game's bloom and tone map (pre_bloom.h has where and why): on by default with DLAA;
-/// RX_VK_DLSS_PRE_BLOOM=0 keeps it at the gameplay upscale, after them, as before. A draw of program key that samples what its
-/// descriptors list (sampled: vk_draw.cpp gfx_sampled) and draws into colors (n of them): the frame's passes for the learning,
+/// (longshot) NVIDIA DLAA before the game's bloom and tone map (pre_bloom.h has where and why): with DLAA and the
+/// Upscaler's DLAA before the bloom row on only (RX_VK_DLSS_PRE_BLOOM over it); off, DLAA stays at the gameplay upscale.
+/// A draw of program key that samples what its descriptors list (sampled: vk_draw.cpp gfx_sampled) and draws into colors
+/// (n of them): the frame's passes for the learning,
 /// and at the learned one DLAA on the scene's linear colour, its picture written back into the scene before that draw reads it
 /// (outside a pass: the open one is ended first). The gameplay upscale then copies its input (temporal_upscale). Without DLAA
-/// or for a draw that neither reads nor writes the scene it costs two atomic loads and a look through the lists
-void temporal_pre_bloom(VkCommandBuffer cmd, uint64_t key, const std::vector<const Texture*>& sampled, Texture* const* colors,
+/// or for a draw that neither reads nor writes the scene it costs two atomic loads and a look through the lists. True: it
+/// recorded commands of its own (the pass ended, DLAA's passes and its actor motion's draws, whether DLAA then drew or not):
+/// the pipeline, viewport, vertex streams and descriptors bound are not the draw's any more (vk_draw.cpp: bound().reset())
+bool temporal_pre_bloom(VkCommandBuffer cmd, uint64_t key, const std::vector<const Texture*>& sampled, Texture* const* colors,
                         int n);
 /// (longshot) The engine takes the scene's linear colour before the tone map (temporal_pre_bloom wanted for this run and
 /// mode): DLSS makes its feature for HDR colour then, with its own exposure (vk_dlss.cpp prepare)

@@ -170,7 +170,7 @@ static void fps_refresh(void) {
         const char *e = getenv("HOS_FPS_MAX");
         env = e ? fps_of(atoi(e)) : 0;
         start = hos_ini_option("frame_rate_cap", 0);
-        movie_pace = !(getenv("HOS_MOVIE_PACE") && !atoi(getenv("HOS_MOVIE_PACE")));   /* (0: the movie pacing off) */
+        movie_pace = env_on_or("HOS_MOVIE_PACE", 1);   /* (0: the movie pacing off) */
     }
     const int i = env ? 0 : rx_option(HOS_OPT_FPS_CAP, start);
     const int row = env ? env : fps_of(i == -1 ? 30 : caps[i >= 0 && i < CAPS ? i : 0]);
@@ -210,7 +210,7 @@ int hos_vi_native_interval(Ctx *c, int requested) {
        as it is ready, 60 at most; the game still reads back its own interval. HOS_GAME_INTERVAL=1, or Game speed Per frame:
        paced to the game's interval, as before */
     static int game_interval = -1;
-    if (game_interval < 0) game_interval = getenv("HOS_GAME_INTERVAL") && atoi(getenv("HOS_GAME_INTERVAL")) != 0;
+    if (game_interval < 0) game_interval = env_on("HOS_GAME_INTERVAL");
     int rx_option(int id, int otherwise);
     const int clamped = requested < 1 ? 1 : requested > 4 ? 4 : requested;
     /* (longshot) 30 has its own display period; interval 2 would pace it to 15.
@@ -344,7 +344,7 @@ uint32_t hos_movie_frames(uint64_t player) {
     uint32_t n = 1;
     memcpy(&secs, &bits, 4);
     AcquireSRWLockExclusive(&lock);
-    if (timed < 0) timed = !(getenv("HOS_FPS_MOVIE") && !atoi(getenv("HOS_FPS_MOVIE")));
+    if (timed < 0) timed = env_on_or("HOS_FPS_MOVIE", 1);
     if (timed) {
         int i = 0;
         while (i < PLACES && carry[i].player != player) i++;
@@ -534,7 +534,7 @@ static void realtime_step(int64_t now) {
        game fast), and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
     static int timed_step = -1;
-    if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
+    if (timed_step < 0) timed_step = env_on_or("HOS_FPS_STEP", 1);
     const int timed = fps_max() != 60 && timed_step && hos_step_probe;
     if (timed) {
         const double secs = sum / count, shortest = 1.0 / (fps_max() > 240 ? fps_max() : 240);

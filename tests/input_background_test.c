@@ -143,6 +143,8 @@ static void packet(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx) {
     npad_states(&context);
     CHECK(context.x[0] == 2);
     expected_sampling++;
+    const int32_t sticks[4] = {lx, ly, rx, 0};
+    buttons |= stick_buttons(sticks);   /* (the sticks' direction bits 16-23: tests/test_stick_buttons.py checks them) */
     for (int i = 0; i < 2; i++) {
         const uint64_t address = 64 + (uint64_t)i * STATE_SIZE;
         CHECK(G64(address) == (uint64_t)(expected_sampling - i));

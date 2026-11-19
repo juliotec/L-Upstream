@@ -4309,16 +4309,15 @@ void invalidate(uint64_t gpu, uint64_t size) {
 /// on it and queued to get one back, for nothing to wait for. On the console the call is a cache operation and the thread
 /// runs on. It takes no lock but memory_note_cpu_read's (wb_learn_mu, a leaf, only with RX_VK_WB_MAX_KB) and never waits,
 /// so holding the core here cannot keep another guest thread from what it waits for. Not with invalidate's diagnostics on
-/// (RX_VK_LOG_INVALIDATE, RX_VK_LOG_READBACK), nor with RX_VK_INVALIDATE_WAIT=1 (every range caught up, as before); ranges
-/// past 512 GB (virtual pools, not followed) always go the slow way. RX_VK_INVALIDATE_QUICK=0: never, as before
+/// (RX_VK_LOG_INVALIDATE, RX_VK_LOG_READBACK); ranges past 512 GB (virtual pools, not followed) always go the slow way.
+/// RX_VK_INVALIDATE_QUICK=0: never, as before
 int invalidate_quick(uint64_t gpu, uint64_t size) {
     static const bool on = [] {
         const char* q = getenv("RX_VK_INVALIDATE_QUICK");
         const char* rb = getenv("RX_VK_LOG_READBACK");
-        const bool v = (!q || atoi(q) != 0) && !env_on("RX_VK_LOG_INVALIDATE") && !env_on("RX_VK_INVALIDATE_WAIT") &&
-                       !(rb && atoll(rb) >= 0);
-        logf("vk: invalidates with nothing to wait for keep their virtual core: %s", v ? "on" : "off (RX_VK_INVALIDATE_QUICK=0, "
-             "RX_VK_INVALIDATE_WAIT or invalidate's logs)");
+        const bool v = (!q || atoi(q) != 0) && !env_on("RX_VK_LOG_INVALIDATE") && !(rb && atoll(rb) >= 0);
+        logf("vk: invalidates with nothing to wait for keep their virtual core: %s",
+             v ? "on" : "off (RX_VK_INVALIDATE_QUICK=0 or invalidate's logs)");
         return v;
     }();
     constexpr uint64_t kFollowed = 1ull << 39;   // (tex_pages' and the marks' window: GPU addresses below 512 GB)
@@ -7257,7 +7256,7 @@ void present(const nvn_tex* t, const int crop[4]) {
         // for: the main thread makes that signal when it has written the frame's data, and the presenting thread, its poll
         // answered at once, came before it at most presents. The frame is whole at its present, which is where the render
         // thread starts it (gate_ready). At most RX_VK_FRAME_GATE_MS. RX_VK_PRESENT_AFTER_SIGNAL=0 / 1 (a test): off / on whatever the gate
-        static const bool after = getenv("RX_VK_PRESENT_AFTER_SIGNAL") ? env_on("RX_VK_PRESENT_AFTER_SIGNAL") : gate_on();
+        static const bool after = env_on_or("RX_VK_PRESENT_AFTER_SIGNAL", gate_on());
         // (as long as the gate gives a job: a frame the game takes longer over is waited for too, not started half written)
         static const auto after_ms = std::max(gate_ms(), std::chrono::milliseconds(hold_ms()));
         if (after) {

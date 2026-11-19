@@ -315,7 +315,8 @@ def main():
     for line in log:
         if "prof: threads in " in line:
             for name, p in re.findall(r" ([^;]+?) (\d+)%;", line.split(":", 2)[-1]):
-                thread_cpu[name.strip()].append(float(p))
+                # (named as the samplers name a thread: its spaces and |s made _, so its CPU % and its samples share a row)
+                thread_cpu[re.sub(r"[ |]", "_", name.strip())].append(float(p))
     gpu_block = []
     for i, line in enumerate(log):
         if "vk: GPU pass timing, " in line:

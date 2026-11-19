@@ -412,10 +412,12 @@ int rx_start(void *hwnd) {
     /* (longshot: Vulkan, the only renderer; RX_BACKEND, which once picked the WebGPU one, is not read) */
     const char *dll = "longshot_vk.dll";
     const MkwVkRenderer *r = load_vulkan(dll);
+    /* (the crash report's renderer: host/hos_crash_dialog.h. Before start(), which prepares the shaders: a crash in there
+       is a crash of this renderer too) */
+    if (r) hos_log("report: renderer Vulkan");
     if (r && r->start(hwnd)) {
         vk = r;
         hos_log("rx: renderer: Vulkan (%s)", dll);
-        hos_log("report: renderer Vulkan");   /* (the crash report's renderer: host/hos_crash_dialog.h) */
         flush_early();
         return 1;
     }

@@ -26,6 +26,7 @@ struct NoteRef {
 /// Every note's reference, read by position (26 KB a note: none is read whole)
 std::vector<NoteRef> pipe_notes_refs();
 std::vector<uint64_t> program_cache_compute_keys();   // (vk_progcache.cpp: the kept compute programs, for the first start's warm)
+size_t program_cache_fallback_steps();   // (vk_progcache.cpp: the load at create's steps, for the first start's bar)
 std::string load_fallback_path();   // (longshot_load_start.txt beside the notes: load_default.h)
 std::string pipe_notes_file();   // (longshot_pipelines.bin's path)
 /// The note at a place pipe_notes_refs gave, checked as every note read is. False: it does not read, or is not sane

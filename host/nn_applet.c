@@ -5,6 +5,9 @@
 #include "hos_paths.h"
 #include "hos_wide_size.h"
 #include "options_path.h"
+#ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/longshot_env.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,7 +119,10 @@ int hos_ini_option(const char *key, int otherwise) {   /* (longshot: the Insert 
 }
 static int handheld(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_HANDHELD") ? atoi(getenv("HOS_HANDHELD")) != 0 : ini_option("handheld_profile", 0) != 0;
+    if (v < 0) {
+        const char *e = getenv("HOS_HANDHELD");
+        v = e ? !env_value_off(e) : ini_option("handheld_profile", 0) != 0;
+    }
     return v;
 }
 /* (longshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: a size, "<width>x<height>",

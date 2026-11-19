@@ -1100,7 +1100,7 @@ const Shader::Profile& profile_pinned(uint64_t invocations = 64) {
     }();
     static const Shader::Profile p = [] {
         Shader::Profile q = c;
-        q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
+        if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
         return q;
     }();
     // (a workgroup 32-lane subgroups cannot cover is not pinned, pins_32: its program takes the long path)

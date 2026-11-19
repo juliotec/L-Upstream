@@ -5,8 +5,8 @@ on, the game counts how its frames went and sends the counts to the team's Grafa
 it (the tick and the relay's address). These are the numbers
 that say where Longshot stutters, plays its movies badly or loses its pacing, sliced by GPU, driver, CPU, OS, kernel,
 renderer and map, each on its own. Each one-second sample also includes Link's X/Y/Z position and the gameplay camera's
-yaw and pitch, as the game sends them: the middle of the 100-unit cell Link is in and of the 45-degree yaw and 30-degree
-pitch bins the view is in (radians), never the exact place.
+yaw and pitch, as the game sends them: Link's place at the nearest 100 units on each axis, and the middle of the 45-degree
+yaw and 30-degree pitch bin the view is in (radians), never the exact place.
 Prometheus metrics carry separate `client` and `version` labels so reports can be grouped by Longshot client and game build.
 
 ## What the player sees
@@ -45,9 +45,12 @@ Five minutes on one map is about 46 KB with all 300 samples; 840 s over 16 maps 
     over budget;
   - movies: pictures shown, dropped and late, decoding time, and decoders that didn't start (dav1d to Media Foundation).
 - **Per-second samples:** the map, Link's world position, camera yaw/pitch, average present and GPU frame times, frame count,
-  and hitches. The game sends the position as the middle of its 100-unit cell, and the angles as the middle of their
-  45-degree yaw and 30-degree pitch bins (`perf_report::bin_middle`, the relay's bins: `floor(value / size)`), so the exact
-  place stays on the PC. A second with no pose (the title, the file select, a load, a cutscene's camera) has no sample. A
+  and hitches. The game sends the position as its nearest multiple of 100 on each axis (`perf_report::cell_of`: the cell
+  the relay files an exact place under, `math.Round(value / 100) * 100`, so the relay's own rounding leaves it where it
+  is), and the angles as the middle of their bins (`yaw_bin_middle`, `pitch_bin_middle`: the relay's bins of 45 degrees from
+  -180 and 30 degrees from -90, with a middle always inside its range of |yaw| up to pi and |pitch| up to pi/2), so the exact
+  place stays on the PC. Yaw is 0 looking toward +z and pi/2 toward +x, as the control bridge's `camera` in radians; pitch is
+  above 0 looking up. A second with no pose (the title and the file select, a load, a cutscene, a pause) has no sample. A
   sample has no player or session ID.
 - **Memory:** VRAM used and allowed, RAM used.
 
@@ -82,8 +85,10 @@ summary carries no ID, so two summaries can't be tied to one player.
     launcher doesn't fill the disk.
   - The map, movies' totals and (while opted in) Link's pose come from the host (`hos_perf_info`, `MkwVkHost::perf_info`, API 30). Movie pictures
     are counted as the game takes them, so a movie still playing at a summary counts too. The host reads the pose from
-    Link's update at most 4 times a second, only from the gameplay camera's view, and gives none once it hasn't been
-    set for a second or Link is back at the title.
+    Link's update at most 4 times a second: the place from Link, the yaw and pitch from the gameplay camera's view, its eye
+    and target (the way the bridge's camera is made), only while that is the gameplay view and no event plays. It gives
+    none once it hasn't been set for a second, while no map is set (the title), or from the map line's change until Link's
+    next update.
 - **The launcher** (LongshotLauncher): it shows the tick and writes `send=1` (and `keep_sent=0`) into the game folder's
   `longshot_perf.ini`, and stamps the relay's address into `longshot_version.txt` when it builds the folder. It does not
   send: `nx2/perf_report.py` is kept as the stand-in relay used by the checks and for local testing.

@@ -196,7 +196,7 @@ read (one rule for the ones that have moved there) and how to read those lines:
 Set `HOS_OOT_TRACE_SAVES=1` to log save requests and report when the transition autosave is suppressed. The trace defaults to off.
 
 The running game reads its switches from the environment or from `longshot_env.txt` beside `image.bin` (one
-`NAME=VALUE` a line, `#` for notes; `HOS_ENV_FILE=<path>` reads that file instead; `HOS_OPTIONS_FILE=<path>`, from the
+`NAME=VALUE` a line, `#` for notes, on a line of their own or after a value and a space; `HOS_ENV_FILE=<path>` reads that file instead; `HOS_OPTIONS_FILE=<path>`, from the
 environment only, does the same for the settings, `longshot_options.ini`, so a scripted run leaves the player's as they are). The environment goes first: a name
 already set when the game starts keeps its value and the file's line for it is left out (the log says so). A switch
 that stands in for a menu row lasts for its run; the options file keeps the player's value (`env_override` in
@@ -218,7 +218,11 @@ and the recommendation) and documents it here. There are several hundred more, m
 experiments: `grep -rnE '(getenv|env_on)\("' host gpu/vk` lists them, and the comment where each is read says what it
 does. An on/off switch ("(set)" below) is on for `1` or any other value, and off when it is unset, empty, `0`, `false`,
 `off` or `no` (`env_on` in `gpu/vk/compat/longshot_env.h`, `kit.env_on` in Python); it used to be that any value turned
-one on, `0` included. A switch that takes a number or a list reads its value as it says.
+one on, `0` included. A switch that is on until it is turned off (`HOS_AUDIO=0`, `HOS_VCORES=0`) reads the same words:
+unset it keeps its default, and `0`, `false`, `off` or `no` turn it off, as does an empty value where the system allows one
+(on Windows an empty value is the same as unset; `HOS_WIDE_UI` empty falls to its menu row) (`env_on_or`); that is every such
+switch of `host/`, while some of `gpu/vk`'s are still read as numbers, where only `0` is off. A switch that takes a number or a
+list reads its value as it says.
 
 `RX_VK_MESH_NOCULL=<prefix,...>` turns off the culling in the task shaders whose native code key starts with one of
 the prefixes. On a Steam Deck, `RX_VK_MESH_NOCULL=2c56dc1006942f74` avoids the same hang without leaving anything out:
@@ -579,7 +583,11 @@ It writes `report.md` into the folder:
   Presentation threads' inclusive time, and where the main thread waits (overall and in stutters).
 - **Stutters:** the slowest frames one by one: their trace columns, what each thread ran in them, where the main thread
   waited, and the virtual-core waits in them.
-- **GPU:** the log's last pass timing block.
+- **GPU:** the log's last pass timing block. Its `by kind` lines name a span by its label's first word. Where task and
+  mesh programs run as compute shaders (`vk: mesh shaders:` says the compute path, as on a Steam Deck), the fills,
+  barriers and dispatches before each fallback draw are kind `fallback` (`fallback prog <key>` among the labels), and an
+  indirect mesh draw's argument conversion with its barriers is kind `meshconv`: neither is counted in `dispatch` or
+  `barrier`, or left as time between the spans.
 
 It also writes the profile for a profiler's own viewer (`scripts/profile_trace.py`, which makes them alone too; both
 viewers read the file in the browser, nothing is uploaded):
@@ -793,7 +801,7 @@ The renderer's memory, every 600 presents in the log (`vk: budget:`, what each p
 | `RX_VK_LATE_DEFER=0/1` | Where the buffer pools have no mirror in VRAM (an integrated GPU, the Steam Deck: `RX_VK_MIRROR` off), the late pages the GPU's fix cannot take (pages the GPU writes in place) are not waited for at the capture's take: nothing on the GPU reads a capture's copy there, so a late page in no texture's own storage is copied again, after its own write-back, by the first CPU read of it (`memory_read_as_submitted`), and the texture shadow lets its stale copy go; a late page in a texture's storage still waits at the take, for the shadow. Unset, it follows `RX_VK_READBACK_EARLY` (on by default here, without mirrors): with the early reads the game writes those pages again while their submission runs, and the take's wait was ~19 ms a frame of the replay; with `RX_VK_READBACK_LATE=newest` alone the wait held the game back from reads that cost more (Kokiri Forest on the Deck LCD: 17.6 and 17.9 fps with it, 16.1 and 15.4 without), and with neither there are almost no late pages. `=0`: every late page waits at the take, as before; `=1`: left to their reads without the early reads too. Off with mirrors and under `RX_VK_PARALLEL` > 1, whatever is given. The log's `vk: late pages left to their reads (600 takes)` line counts the pages, the takes that left some, and the reads that waited (`gpu/vk/vk_memory.cpp`, "the late pages left to their reads"; `tests/test_late_defer.py`) |
 | `RX_VK_MSYNC_PASS=0` | A mirror sync copies the pages a capture holds into the mirror as copy regions again, as before. By default they go through the write-back diff's pass (`shaders/wb_diff.comp`, with the mirror as its own shadow, so a copy): one dispatch a sync, and one for all the pools synced before a parallel replay's segments. A capture's buffer is host memory, and its regions, a page or a few each, were read over PCIe one after another (`msync_pass_add` in `gpu/vk/vk_memory.cpp`; the log's `vk: mirror syncs' pass` line every 600 submissions); a pool's write-back shadow, where it has one, still gets them as copy regions. A GPU without the write-back diff's pipeline (no subgroup votes, or the driver could not make it) keeps the copies; `RX_VK_WB_DIFF=0` leaves the pass on (it uses only the diff's pipeline, and the log says so) |
 | `RX_VK_WB_OBSERVE=1` | Opt-in diagnostics for actual mirror/shadow differences in the write-back diff pass. Reports completed chunks and bytes covered by changed chunks every 600 submissions; does not change copy decisions. See [write-back observations](writeback-observations.md) for interpretation and tests |
-| `RX_VK_DLSS=0/1/2`, `RX_VK_DLSS_PRESET=<letter>`, `RX_VK_DLSS_LOG=1`, `RX_VK_REFLEX`, `RX_VK_REFLEX_LOG=1`, `RX_VK_ANTILAG=0/1` | NVIDIA DLSS and Reflex, and AMD Anti-Lag 2, for one run (`=-` on Reflex or Anti-Lag 2: its extensions not even enabled): the readme's NVIDIA DLSS section. `RX_VK_DLSS_TRACE=<frames>` logs one frame's large draws every that many frames, `RX_VK_DLSS_DEBUG=motion` shows the motion vectors, `=alternate` the game's own upscale every other frame. Actor motion (skinned models' own motion, drawn over the camera's for every temporal upscaler, `gpu/vk/vk_temporal.cpp`): `RX_VK_DLSS_ACTOR_LIVE=1` copies each pose from the game's memory at the upscale as before rather than reading it at the draw (for an A/B), and `RX_VK_DLSS_ACTOR_REACH=<units a second>` (default 60, over at most 1/30 s: 2 units) is how far a copy of a model may move between two frames and still pair with itself by place. Hidden meshes (#1370, `gpu/vk/hidden_mesh.h`): the depth draws of a skinned mesh the game has stopped showing for 3 frames (Link, with the camera pushed into him) are left out; `RX_VK_DLSS_FADED=0` draws them again (for an A/B), `RX_VK_DLSS_FADED_LOG=1` logs the counts of the first frames and why a hidden mesh's draws were drawn (`vk: upscaler: faded:`). DLAA before the bloom (`gpu/vk/pre_bloom.h`): with NVIDIA DLAA, DLSS runs on the scene's linear colour after the frame's last draw into it and before the game's bloom and tone map, with a DLSS feature made for HDR colour, and the game's upscale then only copies (the place is learned from the frame before; a frame without that pass, as the first one in a new area, runs DLSS at the game's upscale); `RX_VK_DLSS_PRE_BLOOM=0` runs DLAA at the game's upscale, after the bloom and the tone map, as before. Off with `RX_VK_PARALLEL=2` and more; DLSS's upscaling modes, FSR and XeSS are not changed |
+| `RX_VK_DLSS=0/1/2`, `RX_VK_DLSS_PRESET=<letter>`, `RX_VK_DLSS_LOG=1`, `RX_VK_REFLEX`, `RX_VK_REFLEX_LOG=1`, `RX_VK_ANTILAG=0/1` | NVIDIA DLSS and Reflex, and AMD Anti-Lag 2, for one run (`=-` on Reflex or Anti-Lag 2: its extensions not even enabled): the readme's NVIDIA DLSS section. `RX_VK_DLSS_TRACE=<frames>` logs one frame's large draws every that many frames, `RX_VK_DLSS_DEBUG=motion` shows the motion vectors, `=alternate` the game's own upscale every other frame. Actor motion (skinned models' own motion, drawn over the camera's for every temporal upscaler, `gpu/vk/vk_temporal.cpp`): `RX_VK_DLSS_ACTOR_LIVE=1` copies each pose from the game's memory at the upscale as before rather than reading it at the draw (for an A/B), and `RX_VK_DLSS_ACTOR_REACH=<units a second>` (default 60, over at most 1/30 s: 2 units) is how far a copy of a model may move between two frames and still pair with itself by place. Hidden meshes (#1370, `gpu/vk/hidden_mesh.h`): the depth draws of a skinned mesh the game has stopped showing for 3 frames (Link, with the camera pushed into him) are left out; `RX_VK_DLSS_FADED=0` draws them again (for an A/B), `RX_VK_DLSS_FADED_LOG=1` logs the counts of the first frames and why a hidden mesh's draws were drawn (`vk: upscaler: faded:`). DLAA before the bloom (`gpu/vk/pre_bloom.h`): with NVIDIA DLAA, DLSS runs on the scene's linear colour after the frame's last draw into it and before the game's bloom and tone map, with a DLSS feature made for HDR colour, and the game's upscale then only copies (the place is learned from the frame before; a frame without that pass, as the first one in a new area, runs DLSS at the game's upscale). It is off by default: the Graphics tab's DLAA before the bloom row turns it on (shown with NVIDIA DLSS, changeable at Render resolution Native (DLAA) only, as DLSS's other modes draw the 3D smaller than the picture), and `RX_VK_DLSS_PRE_BLOOM=1` or `=0` sets it for one run over the row. Before #1672's fix the 3D could draw upside down with it on: where DLAA ran before the tone map, the tone map took the actor motion's upright viewport for the game's upside-down one (`vk_draw.cpp` `draw`: the bound state is reset after DLAA's commands now). Off with `RX_VK_PARALLEL=2` and more; DLSS's upscaling modes, FSR and XeSS are not changed |
 | `RX_VK_FSR4=0/1/2`, `RX_VK_FSR_DIR=<folder>`, `RX_VK_FSR4_HDR=0` | AMD FSR 4 for one run (0 never, 1 FSR 4, 2 its Native AA), and another folder for AMD's DLLs (not from `longshot_env.txt`): the readme's AMD FSR 4 section. `RX_VK_FSR4=1/2` and `RX_VK_DLSS=1/2` go over the Upscaler row, a saved FSR 3.1 too where the engine they ask for runs; `RX_VK_FSR=1` goes over them (one upscaler at a time). The DLSS trace and debug switches above (and `RX_VK_DLSS_JITTER=0`) apply to FSR 4 too, and to FSR 3.1 on the chain, on the frame chain they share. `RX_VK_FSR4_HDR=0`: with HDR on Native, FSR 4 keeps its LDR context and the colour clamped at the paper white, as before (by default it takes the game's HDR colour as linear light while the game presents PQ). `RX_VK_FSR4_TUNE=0`: AMD's passes as AMD made them; by default, on AMD GPUs, the network's layers run 64 lanes wide, the weight tables the layers and the postpass copy into per-thread arrays are read from a tail of the library's storage buffer, and the small layers with weight tables are unrolled, built one at a time in the background (`gpu/vk/fsr4_tune.h`, `vk_fsr4.cpp`); checked bit for bit against AMD's output on an RX 6700 XT with Adrenalin 26.10.1 (other drivers: the same maths, not necessarily the same bits). Where the library binds its buffer without the tail, or destroys it, AMD's own shaders are bound for that context and the log says so (`AMD's own shaders in place of the tuned ones`) |
 | `RX_VK_XESS=0/1/2`, `RX_VK_XESS_DIR=<folder>`, `RX_VK_XESS_HDR=0` | Intel XeSS Super Resolution for one run (0 never, and Intel's library not even loaded; 1 XeSS; 2 its Native AA), and another folder for Intel's `libxess.dll` (not from `longshot_env.txt`, which takes no paths): the readme's Intel XeSS section. Windows only (`gpu/vk/vk_xess.cpp`; Intel makes no XeSS library for Linux, and XeSS Frame Generation and XeLL are Direct3D 12 only). The DLL is looked for in `RX_VK_XESS_DIR`, beside the exe, then in the game folder, loaded at the instance's making (XeSS's instance and device extensions and features are asked of it before the instance and the device are made; one the driver lacks leaves XeSS out with the reason in the log and the Upscaler row's hint, never a failed start), and its functions taken by name: the import library is not linked and the DLL never shipped. `RX_VK_XESS=1/2` goes over the Upscaler row as `RX_VK_FSR4=1/2` does, after `RX_VK_DLSS` and `RX_VK_FSR4` (one upscaler at a time). The DLSS trace and debug switches above (and `RX_VK_DLSS_JITTER=0`) apply to XeSS too, on the frame chain they share. `RX_VK_XESS_HDR=0`: with HDR on Native, XeSS keeps its LDR context and the colour clamped at the paper white (by default it takes the game's HDR colour as linear light, with XeSS's own exposure, while the game presents PQ). The log's `vk: Intel XeSS:` lines say what it loaded, asked for and made |
 | `RX_VK_FSR3_CHAIN=0` | AMD FSR 3.1 upscales with inputs of its own (`vk_fsr3_inputs.cpp`: the camera's motion alone) instead of as an engine of `vk_temporal.cpp`'s chain (the skinned draws' own motion, as DLSS and FSR 4 get it), for comparisons. The log says `vk: fsr3 on the chain: N frames drawn` on the chain, `vk: fsr3 ... with assembled depth and camera motion` without |
@@ -813,6 +821,30 @@ The renderer's memory, every 600 presents in the log (`vk: budget:`, what each p
 | `HOS_TEX_COMPACT_MS=<ms>` | The game's own compaction of its texture data heap (`host/oot_tex_compact.h`, `nx2/oot_patches.py`): its texture manager asks for a round at every frame none runs, and every texture a round moved is finalized and made again, which the renderer meets as a batch of new textures (about 23, 10 MB, every 9 frames standing in Castle Town's market). At least that many milliseconds pass from one round's start to the next: `1000` by default, `0` is the game's own (every frame), `off` never asks. The round itself is the game's, untouched. The log says what was chosen and, every 3,600 asks, how many rounds were let through |
 | `HOS_SHADOW_BUCKET=<step>` | The storage a character's shadow map reserves (`host/shadow_slot.h`). OoT sizes each near character's square depth map anew every frame (384 from far, up to 1920 near) and makes a frame's render targets one after another in a first-fit heap, so a map a few pixels larger moved every target after it to a new address: 15-16 textures made a frame in Castle Town's market with the camera turning. Such a map is answered the storage size and alignment of the next multiple of the step up (384 by default: 768, 1152, 1536, 1920), so the targets after it stay where they are until it crosses a step; the texture keeps its own size. `0`: every texture its own storage, as before |
 | `HOS_FMA_FAST=0` | The correctly rounded FMA in front of suyu's exact bodies off (`nx2/fma_soft.h`; default on). It exists only in a build without FMA3 (an x86-64-v2 build, which `host_march()` makes for a CPU without AVX2: Intel before Haswell, AMD before Excavator): there the guest's FMADD/FMSUB/FNMADD/FNMSUB/FMLA otherwise go to the multi-word exact body, about 180 ns a call. Same values and FPSR either way (`tests/test_fma_soft.py`); `0` is for finding out whether it is the cause of something |
+
+
+#### The driver's own shader cache (Linux)
+
+Each start logs the driver's shader cache twice (`gpu/vk/driver_cache_env.h`):
+
+- `vk: driver shader cache at the start: N MB (...)` is the size of NVIDIA's folder and of each of Mesa's layouts
+  (`mesa_shader_cache`, `mesa_shader_cache_sf`, `mesa_shader_cache_db`) in Mesa's folder: `MESA_SHADER_CACHE_DIR`,
+  else `$XDG_CACHE_HOME`, else `~/.cache`. The count stops after 50,000 files or 250 ms; the size is then "at least".
+- `vk: driver shader cache: Mesa's cache in <folder> (<what chose it>), layout ...; RADV's VRS ...` says which folder this
+  start's driver cache is in and whether RADV's VRS is forced. A variable the host set or dropped itself is named in
+  `LONGSHOT_DRIVER_ENV_SET` (a comma-separated list; not a switch), and this line calls it Longshot's. RADV forces VRS only on
+  gfx10.3 and later GPUs, where it has `VK_KHR_fragment_shading_rate`. It does so when `RADV_FORCE_VRS_CONFIG_FILE` names a
+  file that exists (the Steam Deck's Game Mode sets it for Half Rate Shading), or, without that variable, when
+  `RADV_FORCE_VRS` is other than `1x1`. Forced VRS gives every graphics pipeline another key. Measured on a Steam Deck OLED
+  (RADV, Mesa 26.2.0-devel): with Game Mode's file, empty or `1x1`, the 32,438 noted pipelines compiled at about 20 a second
+  (25-30 minutes) instead of loading in 22 s. The variable naming no file, or Mesa's folder alone, changed nothing.
+
+Each completed build of the noted or predicted pipelines adds its environment (keys and folder) to `cache/longshot_driver_env.txt`,
+which keeps the last 8. The next start compares its own against that list. If no build had its keys, it warns that neither cache
+has its pipelines. If a build had its keys in another folder and the prediction ran, it adds an info line: the predicted
+pipelines are only in the driver's cache, so each is compiled when first drawn. The Builder prepares in the desktop's
+environment and Steam starts the game in its own, so read these lines first when the start from Steam compiles what the
+preparation built.
 
 ### Building
 
@@ -1113,7 +1145,8 @@ python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
 - **`pack`** needs a checkout whose history contains the base's commit (rebase it first). Its commits, its
   uncommitted changes and its untracked files all count.
   - **How it builds:** a change to renderer files alone (`gpu/vk/`, `imgui`, FidelityFX) that the game is not
-    built from builds the renderer alone (`RX_VK_ONLY`, no lift: seconds to minutes). Any other change builds the
+    built from builds the renderer alone (`RX_VK_ONLY`, no lift: seconds to minutes). It compiles `LONGSHOT_JOBS` files at
+    once, or one for every four CPU threads when that is unset. Any other change builds the
     game with `make_game.py` (`LONGSHOT_NO_PREPARE=1`), both modules and the game folder. The renderer files the
     game is built from are found in the checkout: what `host/` includes from `gpu/`, what `build.py` adds to the
     game's dependencies, and what those include.
@@ -1210,7 +1243,9 @@ The rules worth knowing (the script's notes have all of them):
   ignores them). `env` prints PowerShell's `$env:` lines; `vk` builds `longshot_vk.dll` and checks it exports `mkwvk_init`
   (an undefined symbol already fails the link there). The game's files are found in `~\Games` and `~\Games\Longshot` (the
   launcher's builds), else name them (`LONGSHOT_DEV_ROMFS`, `LONGSHOT_DEV_EXEFS`). A drive with little room: point
-  `LONGSHOT_DEV_HOME` and the two stores at one folder on a bigger drive, so the objects stay hard links.
+  `LONGSHOT_DEV_HOME` and the two stores at one folder on a bigger drive, so the objects stay hard links. The queue sees
+  a player there as on Linux: a `longshot.exe` whose environment has no `LONGSHOT_JOB` (read from the process itself, as
+  Linux reads `/proc`) holds timed runs and `--when-idle` jobs, and `status` names it.
 
 ### Build times
 
@@ -1361,8 +1396,10 @@ python -I scripts/pipeline_tour.py compare <new tour dir>/play.bin <old tour dir
 ```
 
 `tour` runs its parts (the opening; the child overworld; the dungeons at both ages; the adult overworld) one after another,
-one game at a time, in a reflinked copy of the game folder (`<game folder>-tour`: on btrfs or XFS, and refused when one is
-there from an earlier tour), at nice 19 (on `--cpus` if given), in games of `--chunk` stops
+one game at a time, in a copy of the game folder (`<game folder>-tour`: reflinked on btrfs or XFS; elsewhere, as on ext4,
+`romfs/` hard-linked, as the game only reads it, and the rest copied, about 11 GB, refused when the drive lacks the room or
+`romfs/` is on another drive, and checked after the tour for any change to `romfs/`; refused when one is there from an
+earlier tour), at nice 19 (on `--cpus` if given), in games of `--chunk` stops
 (8; a fresh game each, as one game's memory only grows), and merges their lists; `--publish` then runs
 `nx2/pipeline_states.py tour` with the GPU and build the bridge reported and the settings and route the runs used
 (`merge` merges any lists). Each game runs under a memory guard (the script's `MEM`, `--mem key=value`): it starts only with

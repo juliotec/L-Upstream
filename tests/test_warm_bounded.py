@@ -39,7 +39,7 @@ def check_source():
         raise SystemExit("precompile_warm does not destroy the pipeline it has just built")
     run = draw[draw.index("void precompile_run(void (*progress)(size_t done, size_t total)) {"):]
     run = run[:run.index("const auto t0 = std::chrono::steady_clock::now();")]
-    if "if (!precompile_covers_notes()) precompile_warm(progress);" not in run:
+    if "const bool warms = !precompile_covers_notes();" not in run or "if (warms) precompile_warm(progress ? start_steps::warm : nullptr);" not in run:
         raise SystemExit("precompile_run does not warm the notes before a load at create")
     # (the marker is the play process's alone: the preparation's own process warms, leaves none, and does not go on to load
     # at create calls or to the keep-everything precompile; and a start that dropped the pipeline cache's files drops the marker)

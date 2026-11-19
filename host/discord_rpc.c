@@ -20,6 +20,9 @@
    SET_ACTIVITY frame by a frame; a Ping is echoed as a Pong. */
 #include "hos_paths.h"   /* (first: windows.h on Windows) */
 #include "options_path.h"
+#ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/longshot_env.h"
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -359,8 +362,7 @@ static void *presence_thread(void *arg) {
 
 /* hos_main.c, once the game starts (not for --prepare-shaders). HOS_DISCORD=0: no thread at all */
 void hos_discord_start(void) {
-    const char *e = getenv("HOS_DISCORD");
-    if (e && !atoi(e)) return;
+    if (!env_on_or("HOS_DISCORD", 1)) return;
 #ifdef _WIN32
     HANDLE t = CreateThread(NULL, 256u << 10, presence_thread, NULL, 0, NULL);
     if (t) CloseHandle(t);

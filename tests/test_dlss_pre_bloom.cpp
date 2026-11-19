@@ -1,4 +1,5 @@
 #include "../gpu/vk/pre_bloom.h"
+#include "../gpu/vk/upscaler_rows.h"
 
 #include <cstdio>
 #include <vector>
@@ -109,6 +110,19 @@ int main() {
         (void)h.sampler(0x77, {});
         const pb::Trigger last = pb::learn(h);
         CHECK("the list's last place: learned", last.valid && last.key == 0x77 && last.place == pb::kSamplers - 1);
+    }
+    // ---- the menu's DLAA before the bloom row (upscaler_rows.h): shown with NVIDIA DLSS where it runs, changeable at DLAA
+    // alone (DLSS's other modes draw the scene smaller than DLSS's picture), fixed while RX_VK_DLSS_PRE_BLOOM sets it ----
+    {
+        namespace ur = mkwvk::upscaler_rows;
+        CHECK("shown: DLAA", ur::pre_bloom_shown(true, ur::DLAA));
+        CHECK("shown: DLSS", ur::pre_bloom_shown(true, ur::DLSS));
+        CHECK("hidden: no DLSS here", !ur::pre_bloom_shown(false, ur::DLAA));
+        for (int u : {ur::GAME, ur::FSR3, ur::FSR4, ur::FSR4_AA, ur::OFF, ur::XESS, ur::XESS_AA})
+            CHECK("hidden: another upscaler", !ur::pre_bloom_shown(true, u));
+        CHECK("changeable: DLAA", !ur::pre_bloom_fixed(ur::DLAA, false));
+        CHECK("fixed: DLSS below Native", ur::pre_bloom_fixed(ur::DLSS, false));
+        CHECK("fixed: the switch set", ur::pre_bloom_fixed(ur::DLAA, true));
     }
     std::puts("pre_bloom: ok");
     return 0;

@@ -62,8 +62,9 @@ const char *hos_version(void) { return LONGSHOT_VERSION; }   /* (discord_rpc.c's
 static SRWLOCK map_lock = SRWLOCK_INIT;
 static char map_now[100];
 /* (Link's pose for the same summary's one-second samples: oot_perf_pose sets it from his update, at most every
-   PERF_POSE_EVERY_NS; one not set for PERF_POSE_STALE_NS is no pose, since Link isn't updating: the title, the file
-   select, a reset, a load) */
+   PERF_POSE_EVERY_NS, and clears it while an event plays; one not set for PERF_POSE_STALE_NS is no pose, since Link isn't
+   updating: the title, the file select, a reset, a load. hos_perf_info gives none while there is no map either, and
+   oot_inventory_refresh clears it where the map line changes: a pose is for the map the sample names) */
 #define PERF_POSE_EVERY_NS 250000000LL
 #define PERF_POSE_STALE_NS 1000000000LL
 static SRWLOCK perf_pose_lock = SRWLOCK_INIT;
@@ -84,7 +85,7 @@ const char *hos_perf_info(char *map, int cap, int64_t movie[5], float pose[5], i
     hos_movie_stats(movie);
     const int64_t now = hos_now_ns();
     AcquireSRWLockShared(&perf_pose_lock);
-    *has_pose = perf_pose_valid && now - perf_pose_ns < PERF_POSE_STALE_NS;
+    *has_pose = cap > 0 && map[0] && perf_pose_valid && now - perf_pose_ns < PERF_POSE_STALE_NS;
     if (*has_pose) memcpy(pose, perf_pose_now, sizeof perf_pose_now);
     ReleaseSRWLockShared(&perf_pose_lock);
     return LONGSHOT_VERSION;
@@ -107,8 +108,7 @@ uint64_t hos_space_end;
 
 #ifdef _WIN32
 static void no_power_throttling(void) {
-    const char *e = getenv("HOS_POWER_THROTTLING");
-    if (e && atoi(e)) return;
+    if (env_on("HOS_POWER_THROTTLING")) return;
     typedef BOOL(WINAPI * SetInfo)(HANDLE, int, LPVOID, DWORD);
     SetInfo set = (SetInfo)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetProcessInformation");
     if (!set) return;
@@ -232,7 +232,7 @@ static int reserve_guest(void) {
                 hos_log("mem: guest memory stays host-pointer imports for the GPU (slow submissions on AMD): "
                         "/dev/udmabuf cannot be opened");
         }
-        if (e ? atoi(e) != 0 : usable) {
+        if (e ? !env_value_off(e) : usable) {
             const int fd = (int)syscall(SYS_memfd_create, "longshot-guest", 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
             if (fd >= 0 && ftruncate(fd, (off_t)GUEST_SPACE) == 0) {
                 fcntl(fd, 1033 /* F_ADD_SEALS */, 0x0002 /* F_SEAL_SHRINK */ | 0x0004 /* F_SEAL_GROW */);
@@ -563,6 +563,15 @@ static void load_longshot_env(void) {
         if (!len || *s == '#' || !strchr(s, '=')) continue;
         char *eq = strchr(s, '=');
         *eq = 0;
+        /* a note after the value ("HOS_AUDIO=0  # mute"): cut at a '#' that follows a space or a tab, and the spaces
+           before it, so the note is not read as part of the value (where 0 once read as off, "0  # mute" would read
+           as on) */
+        for (char *v = eq + 1; *v; v++)
+            if (*v == '#' && v > eq + 1 && (v[-1] == ' ' || v[-1] == 9)) {
+                *v = 0;
+                while (v > eq + 1 && (v[-1] == ' ' || v[-1] == 9)) *--v = 0;
+                break;
+            }
         if (!(other && *other) && !env_line_allowed(s, eq + 1)) {
             fprintf(stderr, "env: longshot_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
             continue;
@@ -772,6 +781,7 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
                 AcquireSRWLockExclusive(&map_lock);   /* (the performance summary's map: hos_perf_info) */
                 snprintf(map_now, sizeof map_now, "%s", line);
                 ReleaseSRWLockExclusive(&map_lock);
+                perf_pose_clear();   /* (the pose is of the map before: the next update of Link's gives this one's) */
             }
         }
     }
@@ -1403,29 +1413,61 @@ static float oot_load_float(Ctx *c, uint64_t addr) {
     return value;
 }
 
+static double oot_load_double(Ctx *c, uint64_t addr) {
+    const uint64_t bits = recomp_load64(c, addr);
+    double value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+/* The nearest float that is no further from 0 than the double (the float nearest to pi is above it, and the relay refuses
+   an angle above pi) */
+static float oot_float_within(double v) {
+    const float f = (float)v;
+    return fabs((double)f) > fabs(v) ? nextafterf(f, 0.0f) : f;
+}
+
+/* The gameplay camera's yaw and pitch in radians, from its view's eye (+96) and target (+120) as the control bridge's camera
+   is (oot_state_tap.c state_camera): yaw 0 toward +z and pi/2 toward +x, in [-pi, pi]; pitch 0 level, positive looking up,
+   in [-pi/2, pi/2]: the range the relay takes (one sample outside it and it refuses the whole summary). Not the fields at
+   +0x1a4 and +0x18c of this view: they read 0.0 all through a game (the angles the mouse turns are on the player's own
+   camera object, another one, whose address changes). 0 when the view has no direction (looking straight up or down, the
+   eye on the target) or a value no place has (a stray read) */
+static int oot_camera_angles(Ctx *c, uint64_t view, float *yaw, float *pitch) {
+    double eye[3], target[3];
+    for (int i = 0; i < 3; i++)
+        eye[i] = oot_load_double(c, view + 96 + (uint64_t)i * 8), target[i] = oot_load_double(c, view + 120 + (uint64_t)i * 8);
+    const double x = target[0] - eye[0], y = target[1] - eye[1], z = target[2] - eye[2];
+    if (!isfinite(x) || !isfinite(y) || !isfinite(z) || !(x * x + z * z > 1e-9)) return 0;
+    *yaw = oot_float_within(atan2(x, z)), *pitch = oot_float_within(atan2(y, hypot(x, z)));
+    return 1;
+}
+
 /* The opt-in performance sample's latest Link position and gameplay camera angles. No game memory is read while unticked,
    and at most every PERF_POSE_EVERY_NS while ticked (the samples take it once a second: not a lock and the camera's
    pointers at every update). Camera zero's view is the gameplay one only while it is that type, as the flight and the free
-   camera check: in a cutscene it can be another object, whose floats at these offsets mean nothing. A value no place or
-   angle has (a stray read) is no pose either */
+   camera check: in a cutscene it can be another object, whose floats mean nothing; and while an event plays there is no
+   pose at all (the flight and the field of view stop for one as well: the event's camera keeps its authored angle, and
+   Link is updated all through it). A value no place or view has (a stray read) is no pose either */
 static void oot_perf_pose(Ctx *c, uint64_t actor) {
     if (!InterlockedCompareExchange(&perf_pose_enabled, 0, 0)) return;
-    static int64_t last;   /* (Link's update's: the game thread) */
+    static int64_t last;   /* (Link's update's, which holds cheats_lock) */
     const int64_t now = hos_now_ns();
     if (now - last < PERF_POSE_EVERY_NS) return;
     last = now;
     const uint64_t view = oot_gameplay_view(c);
-    if (!view || recomp_load64(c, view) != 0x84c18a88ULL) {
+    float pose[5];
+    if (oot_event_playing(c) || !view || recomp_load64(c, view) != 0x84c18a88ULL || !oot_camera_angles(c, view, &pose[3], &pose[4])) {
         perf_pose_clear();
         return;
     }
-    float pose[5] = {oot_load_float(c, actor + 796), oot_load_float(c, actor + 800), oot_load_float(c, actor + 804),
-                     oot_load_float(c, view + 0x1a4), oot_load_float(c, view + 0x18c)};
-    for (int i = 0; i < 5; i++)
-        if (!isfinite(pose[i]) || fabsf(pose[i]) > (i < 3 ? 1e6f : 64.0f)) {
+    for (int i = 0; i < 3; i++) {
+        pose[i] = oot_load_float(c, actor + 796 + (uint64_t)i * 4);
+        if (!isfinite(pose[i]) || fabsf(pose[i]) > 1e6f) {
             perf_pose_clear();
             return;
         }
+    }
     AcquireSRWLockExclusive(&perf_pose_lock);
     memcpy(perf_pose_now, pose, sizeof pose);
     perf_pose_valid = 1, perf_pose_ns = now;

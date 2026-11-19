@@ -32,17 +32,25 @@ def check_sources():
     switches = (vk / "switches.def").read_text(encoding="utf-8")
 
     # (every draw, after its descriptors listed what it samples and before its pass: the hook ends the open pass itself)
-    hook = "temporal_pre_bloom(cmd, p.key, gfx_sampled(), at.color, at.n);"
+    hook = "const bool pre_recorded = temporal_pre_bloom(cmd, p.key, gfx_sampled(), at.color, at.n);"
     assert draw.count(hook) == 1, "vk_draw.cpp: draw() gives each draw to temporal_pre_bloom once"
     assert draw.index("if (!same_desc) gfx_sampled() = draw_sampled();") < draw.index(hook) < \
         draw.index("writes = draw_hazards(cmd, p, s, at"), "draw(): the hook after the descriptors, before the pass"
+    # (#1672: DLAA's passes and its actor motion's draws bind a pipeline, an upright viewport and descriptors of their own:
+    # the draw forgets what it thought bound and binds all of its own again, as after the network's stand-in)
+    after = draw[draw.index(hook):]
+    assert after.index("if (pre_recorded) cb.reset();") < after.index("writes = draw_hazards(cmd, p, s, at"), \
+        "draw(): the bound state reset after DLAA's commands, before the draw sets its own"
+    assert "if (!same_desc || pre_recorded) {" in after, "draw(): its descriptors pushed again after DLAA's commands"
 
-    pre = block(chain, "void temporal_pre_bloom(VkCommandBuffer cmd")
+    pre = block(chain, "bool temporal_pre_bloom(VkCommandBuffer cmd")
     assert "s.pre.scene_draw()" in pre and "s.pre.sampler(key, s.pre_trigger)" in pre, "temporal_pre_bloom: the frame's list"
     assert pre.index("s.pre.sampler(") < pre.index("end_pass(cmd);") < pre.index("draw_engine(cmd, s, mode, cam, key, true,"), \
         "temporal_pre_bloom: the pass ended before DLAA's compute"
     assert "full_barrier(cmd);" in pre[pre.index("draw_engine("):], "temporal_pre_bloom: the draw waits for DLAA's picture"
     assert "s.pre.ran = false" in pre, "temporal_pre_bloom: a failed run leaves the frame to the network"
+    assert "return s.pre.ran = false, true;" in pre and "    return true;\n" in pre, \
+        "temporal_pre_bloom: true once it recorded commands, DLAA drawn or not"
     # (the scene before its tone map is linear: taken as it is, written back as it is, by a feature made for HDR colour)
     engine = block(chain, "bool draw_engine(VkCommandBuffer cmd")
     assert "pre ? s.prep_lin" in engine, "draw_engine: the scene's linear colour taken as it is"
@@ -64,9 +72,18 @@ def check_sources():
     assert "present_native_pq.load(std::memory_order_relaxed) || temporal_hdr_input()" in prepare, \
         "vk_dlss.cpp prepare: an HDR feature for the scene's linear colour"
 
-    assert "SW(RX_VK_DLSS_PRE_BLOOM, kill, bool," in switches, "switches.def: RX_VK_DLSS_PRE_BLOOM's row"
+    assert "SW(RX_VK_DLSS_PRE_BLOOM, player, bool," in switches, "switches.def: RX_VK_DLSS_PRE_BLOOM's row"
     wanted = block(chain, "bool pre_bloom_wanted(int mode)")
-    assert 'env_switch("RX_VK_DLSS_PRE_BLOOM") != 0' in wanted, "pre_bloom_wanted: on unless =0"
+    assert "opts.dlss_pre_bloom != 0" in wanted, "pre_bloom_wanted: the DLAA before the bloom row (off by default)"
+    menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
+    assert '{TAB_GRAPHICS, "DLAA before the bloom", &opts.dlss_pre_bloom, 0, 1, 1, tx_onoff,' in menu, "vk_menu.cpp: the row"
+    assert menu.index('"DLSS model", &opts.dlss_model') < menu.index('"DLAA before the bloom", &opts.dlss_pre_bloom') < \
+        menu.index('"Render resolution", &opts.resolution'), "the row under DLSS model, with the upscaler rows"
+    assert "ur::pre_bloom_shown(dlss_why() == DLSS_OK, upscaler())" in block(menu, "bool row_shown(int i)"), "row_shown"
+    assert "ur::pre_bloom_fixed(upscaler(), pre_bloom_env())" in block(menu, "bool row_fixed(const int* value)"), "row_fixed"
+    assert 'if (r.value == &opts.dlss_pre_bloom) return "dlss_pre_bloom";' in menu, "ini_key: dlss_pre_bloom"
+    assert 'getenv("RX_VK_DLSS_PRE_BLOOM"); e && *e) env_override(&opts.dlss_pre_bloom, !env_value_off(e));' in menu, \
+        "RX_VK_DLSS_PRE_BLOOM over the row for a run"
     assert 'env_switch("RX_VK_PARALLEL") >= 2' in wanted, "pre_bloom_wanted: off with the parallel replay"
     assert "mode == ur::DLAA" in wanted, "pre_bloom_wanted: DLAA only"
 

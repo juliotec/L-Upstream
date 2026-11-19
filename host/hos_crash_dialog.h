@@ -165,6 +165,8 @@ typedef struct HosCrashLog {
     /* (what Report automatically's card says too, from the same lines as build_report (hos_crash_dialog.c): the report: lines, the
        place (the last map, else the shaders' preparation or the title and intro) and the crash in one line) */
     char os[200], cpu[200], renderer[120], place[120], crash[200];
+    /* (the renderer's own `report: gpu` line, the card and its driver (gpu/vk/vk_main.cpp); room for gpu ", " driver too) */
+    char gpu_report[328];
 } HosCrashLog;
 static inline void hos_crash_take(char *dst, size_t cap, const char *from) {
     size_t n = 0;
@@ -317,6 +319,7 @@ static inline void hos_crash_log_line(HosCrashLog *f, const char *line) {
             strncat(f->devices, name + 2, (size_t)(end - name - 2));
         }
     }
+    if ((at = strstr(line, "] report: gpu "))) hos_crash_take(f->gpu_report, sizeof f->gpu_report, at + 14);
     if ((at = strstr(line, "] report: os "))) hos_crash_take(f->os, sizeof f->os, at + 13);
     if ((at = strstr(line, "] report: cpu "))) hos_crash_take(f->cpu, sizeof f->cpu, at + 14);
     if ((at = strstr(line, "] report: renderer "))) hos_crash_take(f->renderer, sizeof f->renderer, at + 19);
@@ -341,6 +344,14 @@ static inline int hos_crash_stage(const HosCrashLog *f) {
 /* (a start that stopped before play for a reason the log names) */
 static inline int hos_crash_start_failed(const HosCrashLog *f) {
     return !f->map && (f->files || f->vulkan || f->window || f->reserve);
+}
+/* The graphics card with its driver, as Report automatically sends it ("NVIDIA GeForce RTX 3090, NVIDIA 580.95.05"): the
+   renderer's own `report: gpu` line, else the device chosen and its `vk: driver:` line joined the same way, else the
+   device's name alone; "" when the log names no device in use */
+static inline void hos_crash_gpu(char *out, size_t cap, const HosCrashLog *f) {
+    if (f->gpu_report[0]) snprintf(out, cap, "%s", f->gpu_report);
+    else if (f->gpu[0] && f->driver[0]) snprintf(out, cap, "%s, %s", f->gpu, f->driver);
+    else snprintf(out, cap, "%s", f->gpu);
 }
 
 /* ---- a pending record (hos_crash_record.c format_record): its "key: value" lines ---- */

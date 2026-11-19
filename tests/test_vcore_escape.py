@@ -26,6 +26,9 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
+
 
 def block(source, marker):
     start = source.index(marker)
@@ -255,7 +258,7 @@ def main():
         folder = Path(temporary)
         (folder / "fixture.cpp").write_text(fixture, encoding="utf-8")
         exe = folder / ("fixture.exe" if os.name == "nt" else "fixture")
-        subprocess.run([compiler, "-std=c++17", "-O1", "-w", str(folder / "fixture.cpp"), "-o", str(exe)], check=True,
+        subprocess.run([compiler, "-std=c++17", "-O1", "-w", "-include", ENV_ON_H, str(folder / "fixture.cpp"), "-o", str(exe)], check=True,
                        timeout=120)
         result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
         print(result.stdout, end="")

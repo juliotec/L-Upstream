@@ -107,6 +107,11 @@ extern ProgramCensus census;
 /// One line of the census (every 600 presents with RX_VK_LOG_PROGRAM_LIFE=1, and when the window closes)
 void programs_census_log(const char* when);
 bool programs_life_on();   // (RX_VK_LOG_PROGRAM_LIFE=1)
+/// (descriptor_array_census.h) A program's stages counted in the census of indexed descriptor arrays, once each, whatever its
+/// variants: where the program cache sees it (vk_progcache.cpp: saved when translated, or read). Those near a limit are named
+void descriptor_arrays_note(const Program& p);
+/// The census of indexed descriptor arrays, by stage, kind and size (after the preparation, and when the window closes)
+void descriptor_arrays_log(const char* when);
 
 // ---- a program's first draw or dispatch (the thread replaying), for the log and the census ----
 enum class NeedProgram : uint8_t { Ready, Loaded, Translated, Failed };

@@ -1910,8 +1910,9 @@ def hot_list_line(hot, environ, root=ROOT):
 
 def game_name(out, work, nup=None):
     """The game's own name and icon (nx2/game_title.py): read from the .nup when there is one and kept in the folder, then, on
-    Windows, made into the exe's icon and the name Windows shows for it (work/longshot_game.res, linked by nx2/build.py). A
-    folder built from an unpacked dump has neither: the game stays "Longshot". Nothing here stops a build"""
+    Windows, the name made into what Windows shows for the exe (work/longshot_game.res, linked by nx2/build.py beside
+    Longshot's own icon, which every exe has). A folder built from an unpacked dump has neither: the game stays "Longshot".
+    Nothing here stops a build"""
     if nup:
         try:
             got = game_title.from_nup(nup)

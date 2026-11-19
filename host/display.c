@@ -464,7 +464,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
            HOS_KEEP_DISPLAY=0: Windows' timeout as before */
         static ULONGLONG last_awake;
         static int keep = -1;
-        if (keep < 0) keep = !getenv("HOS_KEEP_DISPLAY") || atoi(getenv("HOS_KEEP_DISPLAY")) != 0;
+        if (keep < 0) keep = env_on_or("HOS_KEEP_DISPLAY", 1);
         const ULONGLONG now = GetTickCount64();
         if (keep && renderer && now - last_awake >= 30000 && GetForegroundWindow() == w && !IsIconic(w)) {
             last_awake = now;
@@ -684,7 +684,7 @@ static DWORD WINAPI display_main(void *p) {
    shaders were being prepared (80 s on a first start) was lost: that run had no ambient light, black foliage and dark characters. The
    game itself goes on starting as it did: held at the start instead, it left holes in the ground */
 void hos_renderer_wait(void) {
-    { const char *e = getenv("HOS_NO_RENDERER_WAIT"); if (e && atoi(e) != 0) return; }   /* (=0: the wait, as without it) */   /* (a test: the game's first GPU work no longer waits for the renderer, as before lighting-fix) */
+    if (env_on("HOS_NO_RENDERER_WAIT")) return;   /* (=0: the wait, as without it) */   /* (a test: the game's first GPU work no longer waits for the renderer, as before lighting-fix) */
     if (renderer_up) WaitForSingleObject(renderer_up, INFINITE);
 }
 

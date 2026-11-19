@@ -66,8 +66,10 @@ The report is made from what is on disk, never from the crashed process:
 - `longshot_defaults.ini`, and `longshot_version.txt`'s `source=`.
 
 The game logs what the report needs at startup, worded as the Insert menu's Bug report words it: `report: renderer`
-(the back end that started, `host/rx_backend.c`), and from the renderer (`gpu/vk/vk_main.cpp`) `report: gpu`,
-`report: cpu` (with the RAM) and `report: os`.
+(the back end chosen, `host/rx_backend.c`: logged before it starts, so a crash while it prepares the shaders names it),
+and from the renderer (`gpu/vk/vk_main.cpp`) `report: gpu` (the card and its driver), `report: cpu` (with the RAM) and
+`report: os`. The report's `gpu` is the `report: gpu` line; a log without one gives the device chosen and its
+`vk: driver:` line, joined the same way (`hos_crash_gpu`, `host/hos_crash_dialog.h`).
 
 ## Out of memory (Linux)
 

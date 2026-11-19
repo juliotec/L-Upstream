@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # (case, the environment it runs with)
 CASES = (("marks", {}), ("agree-wb", {}), ("agree-vw", {}), ("threads", {}), ("quick", {}),
          ("quick-off", {"RX_VK_INVALIDATE_QUICK": "0"}), ("quick-log", {"RX_VK_LOG_INVALIDATE": "1"}),
-         ("quick-wait", {"RX_VK_INVALIDATE_WAIT": "1"}), ("quick-readback", {"RX_VK_LOG_READBACK": "0"}))
-SWITCHES = ("RX_VK_INVALIDATE_QUICK", "RX_VK_LOG_INVALIDATE", "RX_VK_INVALIDATE_WAIT", "RX_VK_LOG_READBACK")
+         ("quick-readback", {"RX_VK_LOG_READBACK": "0"}))
+SWITCHES = ("RX_VK_INVALIDATE_QUICK", "RX_VK_LOG_INVALIDATE", "RX_VK_LOG_READBACK")
 # invalidate's switches that change nothing when its range has no write-back and no texture: they act inside the branches
 # the look keeps it out of (or, RX_VK_READBACK_OFF_FILE, only skip the texture branch's own early returns)
 INSIDE = {"RX_VK_NO_READBACK_WAIT", "RX_VK_READBACK_NO_CATCHUP", "RX_VK_READBACK_EXACT", "RX_VK_READBACK_PART",
@@ -52,7 +52,7 @@ def checks(memory, texture, replay, backend):
     assert "(memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)" in inv, \
         "invalidate's waits for write-backs are no longer behind `ever`: what does invalidate_quick test now?"
     tex = inv[inv.index("if (!texture_gpu_written_in(gpu, size)) {"):]
-    assert tex.index("if (!replay_behind()) return;") < tex.index("if (!always && !tex_pages_any(gpu, size)) return;") \
+    assert tex.index("if (!replay_behind()) return;") < tex.index("if (!tex_pages_any(gpu, size)) return;") \
         < tex.index("unforced ? sync_settle() : wait_queue_empty();"), \
         "invalidate's texture branch returns differently: what does invalidate_quick test now?"
     assert inv.count("memory_note_cpu_read(") == 1, "invalidate notes the CPU's read differently from invalidate_quick"

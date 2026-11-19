@@ -26,7 +26,9 @@ Read this before opening, updating, reviewing or marking a pull request ready.
 - **Mark it ready yourself once it is ready.** When `pr status <n>` passes and that list holds, run `pr ready <n>` in
   the same session. Runs on hardware you don't have are not needed for it: they are *Must be tested* items. Forgejo showing a WIP PR as not mergeable is not, by itself, a reason to rebase.
 - After each push, measurement or test run, use `pr update` to edit the description and post a short comment saying
-  what changed and why. The description states the PR as it is now; the comments hold its history.
+  what changed and why. The description states the PR as it is now; the comments hold its history. **Then check again
+  whether it is ready**: an update is often what finishes it (the last measurement, the fix-up, the run). If `pr
+  status <n>` passes and the list above holds, `pr ready <n>` now, rather than leaving a finished PR in WIP.
 
 ## Escalate uncertain checklist boxes
 
@@ -47,6 +49,19 @@ including their measurement, switch and tested-configuration requirements. The e
   your own run on this PC. If you could not run it at all, say so and keep the PR WIP until you or the person you work
   for has. If only the fix's own case can't be run by hand, run the rest and say so in *Not testable by hand*. The
   [measure skill](../.claude/skills/measure/SKILL.md) has the steps for numbers against `main`.
+- **Measure every area the change touches, not only the one it is for.** The numbers go where the change has an
+  effect, including the ones it doesn't aim at:
+  - it changes what the game does each frame: in-game fps (average and 1% low) and frame time, in the heavy areas and
+    the area it targets;
+  - it changes the build (the lifter, the translator, compiler flags, the shader or pack steps): the game's build time
+    and size on `main` and with this PR, from a clean build;
+  - it changes loading, caches or startup: the load or first-run time and the cache's size, cold and warm;
+  - it changes memory, images or buffers: RAM and VRAM;
+  - it changes the launcher, a tool or a script: that program's own time, size or output.
+
+  A change to the build's flags is measured in the game too when it changes the code the game runs, and a change to
+  the game's code is measured in the build too when it adds much to what is compiled. Where an area plainly can't be affected, say so in one line
+  of Measurements rather than leave it out.
 
 When the PR needs hardware you do not have, ask the Test Farm on it (`@Beanstalk <what to test, in words>`; a BigBean
 approves the request): [how it works](https://beanstalk.magicbean.dev/how).

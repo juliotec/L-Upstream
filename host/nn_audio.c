@@ -1007,7 +1007,7 @@ static void output_open(void) {
         out_channels = channels;
         dump_done = 1;
     }
-    if (getenv("HOS_AUDIO") && atoi(getenv("HOS_AUDIO")) == 0) {
+    if (!env_on_or("HOS_AUDIO", 1)) {
         hos_audio_output_report(HOS_OUTPUT_UNAVAILABLE | (forced ? HOS_OUTPUT_OVERRIDE : 0));
         return;
     }
@@ -1109,7 +1109,7 @@ static void output_retry_named(void) {
 }
 /* Audio thread only, before mixing: output_open can change the sink's channel count. */
 static void output_route_update(void) {
-    if (getenv("HOS_AUDIO") && atoi(getenv("HOS_AUDIO")) == 0) return;
+    if (!env_on_or("HOS_AUDIO", 1)) return;
     unsigned before = out_generation;
     hos_audio_output_preference(out_wanted, sizeof out_wanted, &out_generation);
     if (before != out_generation) {
