@@ -34,6 +34,11 @@ on:
         type: string
         required: false
         default: ''
+      march:
+        description: the CPU level of the Vulkan back end, RX_MARCH (empty, the default, is nx2/build.py's own)
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -294,6 +299,7 @@ jobs:
         env:
           RX_VK_ONLY: '1'
           RX_RELEASE: '1'
+          RX_MARCH: ${{ inputs.march }}
         run: |
           OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" \
             python -I nx2/build.py --standalone --jobs "$(nproc)"

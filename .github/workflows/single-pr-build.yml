@@ -9,6 +9,11 @@ on:
         description: the fix/* or feat/* branch to merge into longshot-main
         type: string
         required: true
+      march:
+        description: RX_MARCH for the Windows Vulkan back end (x86-64-v3 for measurement DLLs; empty = -march=native, a build check)
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -55,3 +60,4 @@ jobs:
     with:
       tag: ${{ needs.merge.outputs.tag }}
       ref: ${{ needs.merge.outputs.ref }}
+      march: ${{ inputs.march }}
