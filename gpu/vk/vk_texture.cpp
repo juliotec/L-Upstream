@@ -1443,7 +1443,7 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, unsw_pipe);
-    descriptors_disturbed();   // (also when a view fails and the CPU path takes over)
+    descriptors_disturbed();   // (defensive: the cache forgets whatever was pushed here)
     for (uint32_t level = 0; level < tex.levels; level++) {
         const LevelGeo g = level_geo(tex, level);
         bool any = false;
