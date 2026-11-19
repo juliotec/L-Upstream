@@ -1,0 +1,3 @@
+| Date | Build | OS / desktop | GPU / driver | CPU / RAM | Settings | Where | Result |
+|---|---|---|---|---|---|---|---|
+| 2026-11-19 | longshot-main 2f1c0c9c with PR #1033 (ad5ab055), built with RX_MARCH=x86-64-v3 | Windows 11 IoT Enterprise LTSC 24H2 (build 26100.9711), desktop | AMD Radeon RX 9070 XT, AMD Software: Adrenalin Edition 26.10.1 | AMD Ryzen 7 9700X (Zen 5: AVX-512, no AVX512-FP16), 16 GB RAM | 2560x1440, uncapped, V-Sync off, frame generation off | standing still 2 min after a warm-up, 2 runs per side, median fps of present lines with more than 100 draws | run01: PR median 89.2 fps against main 88.35 fps; no cost, within the spread between runs; the fallback did not act on this GPU; no Vulkan validation errors |
