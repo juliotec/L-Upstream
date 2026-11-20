@@ -5,7 +5,7 @@ pipelines for 20 minutes under keys the cache did not have, and grew it by 4.3 M
 shaders' hashes; the code was already there): nothing was written, and the next start had only the driver's own folder. This
 checks precompile_save.h (tests/precompile_save_test.cpp) and the wiring in vk_draw.cpp: precompile_run writes the cache when
 it is due, with the start-up screen's saving state on, as precompile_warm (RX_VK_LOAD=create) does, and both log what the save
-did, which pipeline_cache_save records for each way it ends; and docs/development.md's row.
+did, which pipeline_cache_save records for each way it ends; and the switch's row in gpu/vk/switches.def.
 python -I -B tests/test_precompile_save.py [--cxx c++]
 """
 import argparse
@@ -53,9 +53,9 @@ def check_sources():
     for kind in ("kNoCache", "kOff", "kFetchFailed", "kSame", "kWritten", "kWriteFailed", "kError"):
         if "Outcome::" + kind not in save:
             problems.append("pipeline_cache_save never records " + kind)
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
-    if "`RX_VK_PRECOMPILE_SAVE_S" not in docs:
-        problems.append("docs/development.md does not name RX_VK_PRECOMPILE_SAVE_S")
+    table = (ROOT / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8")
+    if "\nSW(RX_VK_PRECOMPILE_SAVE_S," not in table:
+        problems.append("gpu/vk/switches.def has no row for RX_VK_PRECOMPILE_SAVE_S")
     return problems
 
 

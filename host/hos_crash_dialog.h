@@ -431,11 +431,11 @@ static inline int hos_crash_driver_module(const char *module) {
 /* ---- was it a crash ---- */
 enum { HOS_CRASH_QUIET, HOS_CRASH_SHOW_CRASH, HOS_CRASH_SHOW_UNCLEAN, HOS_CRASH_SHOW_START };
 /* What the helper says once the game has ended. A crash record of the run: it crashed, whatever came before it, a quit
-   included (as the renderer's crash markers count a crash after a quit: PR 498). A start the log says could not go on (its
+   included (as the renderer's crash markers count a crash after a quit). A start the log says could not go on (its
    files, Vulkan, the window, memory) before a save was loaded: that, a quit included (the black window closed). An unclean
    end, the run's marker left with no crash record (killed, out of memory, a handler that could not run): only when the
    player had not asked to quit (a quit never counts, however the process ends after it: a second close of a window that
-   stopped answering while it closes, PR 498) and, on Windows, the exit code is not 0. Anything else (the marker removed:
+   stopped answering while it closes) and, on Windows, the exit code is not 0. Anything else (the marker removed:
    a quit, a return, a restart) says nothing; nor does a run another took the place of (Linux's restart: the same process). */
 static inline int hos_crash_verdict(const HosCrashRecord *r, const HosCrashLog *f, int have_exit, unsigned long exit_code,
                                     int replaced) {
@@ -666,7 +666,7 @@ static inline int hos_crash_show_at_start(const char *name, const char *shown, i
     return t <= now + 300 && now - t <= 86400;
 }
 
-/* ---- Report automatically: the report built and sent here (docs/crash-report-window.md) ---- */
+/* ---- Report automatically: the report built and sent here (docs/dev/reference/crash-window.md) ---- */
 /* Where it goes: crash_reports= (Longshot-api's POST /telemetry/crash) and crash_issue= (the issue the reports are posted on,
    the only place the Sent page's link may go) in the folder's longshot_version.txt, which nx2/make_game.py writes from
    nx2/addresses.ini. A key's value, "" when the stamp has none; 0 then, or when it is not an https:// address on one line */

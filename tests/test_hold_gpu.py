@@ -41,7 +41,8 @@ def need(cond, why):
 
 def check_source():
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
-    docs = (ROOT / "docs/development.md").read_text(encoding="utf-8")
+    row = next((l for l in (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8").splitlines()
+                if l.startswith("SW(RX_VK_HOLD_GPU_MS,")), "")
     need('#include "hold_gpu.h"' in replay, "vk_replay.cpp no longer includes hold_gpu.h")
 
     waiter = block(replay, "struct GpuWaiter {")
@@ -66,7 +67,7 @@ def check_source():
     need('getenv("RX_VK_HOLD_GPU_MS")' in watch, "the bound's switch is read in sync_watch")
     need("(double)hold_ms()" in watch, "the bound is never under hold_ms")
 
-    need("`RX_VK_HOLD_GPU_MS=<ms>`" in docs, "docs/development.md has no row for the hold's switch")
+    need("<ms>" in row, "gpu/vk/switches.def has no row for the hold's switch, or it does not say its value is <ms>")
 
 
 def main():

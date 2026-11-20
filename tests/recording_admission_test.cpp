@@ -50,8 +50,6 @@ template<class T> T handle() { return reinterpret_cast<T>(++serial); }
 bool fail_buffer = false, fail_map = false, fail_pool = false;
 int fail_sets = 0, allocation_calls = 0, invalid_pool_calls = 0, destroys = 0, updates = 0, binds = 0;
 uint64_t largest_request = 0;
-std::mutex par_mutex;
-struct ParLock { std::lock_guard<std::mutex> lock{par_mutex}; };
 namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
 inline void slot_begin(uint64_t) {}
 inline void slot_done() {}

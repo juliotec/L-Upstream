@@ -1142,7 +1142,7 @@ static void report(const Shown *s) {
     free(m), free(made->text), free(made);
 }
 /* ---- Report automatically: the report as Longshot-api's /telemetry/crash takes it, built here from the run's log, shown in
-   full, and posted with the system's curl only when the player presses Send (docs/crash-report-window.md) ---- */
+   full, and posted with the system's curl only when the player presses Send (docs/dev/reference/crash-window.md) ---- */
 static int spawn_exe(const char *exe_path, const char *const *args, int n, int wait_ms, int *code);
 /* (bug-reports/pending/sending-<record><ext>: the report, curl's answer and its headers, removed once the window is done) */
 static int sending_path(const Shown *s, const char *ext, char *out, size_t cap) {
@@ -1225,7 +1225,7 @@ static void put_settings(Buf *b, const Shown *s, char *mic, size_t mic_cap) {
    report): the 150 lines before the crash's first and its own (at most 80). 0 when the log has no crash */
 typedef struct Lines { char **at; int n, cap; } Lines;
 /* (a line's copy, by the name each C runtime links it by: the Windows build for the MSVC target links without oldnames.lib,
-   issue 439, so plain strdup stopped it at "undefined symbol: strdup" after the whole game had been compiled) */
+   so plain strdup would stop it at "undefined symbol: strdup" after the whole game had been compiled) */
 #ifdef _WIN32
 #define line_copy _strdup
 #else

@@ -498,8 +498,11 @@ def source_checks():
     # (of the back end's module, only the crash window: gpu/vk/vk_crash_window.cpp, SDL's renderer, never the renderer itself)
     assert set(re.findall(r"\bmkwvk_\w+", code)) == {"mkwvk_crash_page", "mkwvk_crash_page_fn", "mkwvk_crash_close",
                                                       "mkwvk_crash_close_fn"}, set(re.findall(r"\bmkwvk_\w+", code))
-    for word in ("HOS_CRASH_WATCH", "HOS_CRASH_TEST", "--crash-watch"):
-        assert word in (ROOT / "docs/development.md").read_text(encoding="utf-8"), word + " is documented"
+    switches = (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8")
+    for switch in ("HOS_CRASH_WATCH", "HOS_CRASH_TEST"):
+        assert "\nSW(%s," % switch in switches, switch + " has its row in gpu/vk/switches.def"
+    assert "--crash-watch" in (ROOT / "docs/dev/reference/crash-window.md").read_text(encoding="utf-8"), \
+        "--crash-watch is documented in docs/dev/reference/crash-window.md"
     template = (ROOT / ".forgejo/ISSUE_TEMPLATE/1-game-problem.yml").read_text(encoding="utf-8")
     for field in ("version", "track", "kind", "gpu", "system", "where", "what", "settings", "log"):
         assert re.search(r"^\s+id: " + field + r"$", template, re.M), "the form has the field " + field

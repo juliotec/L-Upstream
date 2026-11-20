@@ -26,13 +26,14 @@ import capstone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import long_paths  # noqa: E402
-long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file)
 import kit
 import nso2  # noqa: F401  (DT_RELR)
 import insn
 import fastvec   # (longshot) TBL/EXT, vector loads, DUP and FMUL by element as single vector instructions
 import oot_patches   # (longshot) the game's patches: asked which functions they change (nx2/guest_locals.py)
 import guest_locals as local_regs   # (longshot) registers and flags as C locals (A64_LOCAL_REGS, A64_LOCAL_FLAGS): nx2/guest_locals.py
+import vecfp   # (longshot) SSE fast paths for the lane-by-lane float forms (A64_VECFP): wraps insn's translate
 import fastfp   # (longshot) fast float regions (A64_FASTFP): its emit_function, under lift_fixes' and poll's wrappers
 import dead_flags   # (longshot) the kit's dead_flags, answered at once for a function that writes no flag
 import walk   # (longshot) the kit's walk, with one shared entry per plain op's word
@@ -53,6 +54,7 @@ import a64_rtgen
 
 insn.install()
 fastvec.install()   # (around the kit's vectorize_fpx, op_text and fpx_header)
+vecfp.install()   # (around insn's translate: the forms main's passes leave lane by lane, behind SSE fast paths)
 fastfp.install()   # (before lift_fixes and poll wrap emit_function: theirs go around this one)
 local_regs.install(oot_patches.touches)   # (around fastfp's emit_function and the kit's localize_regs; the defaults; the patches asked)
 local_regs.install_plain()   # (around those: the functions the patches name keep the kit's context-flag text)

@@ -1,5 +1,5 @@
-"""gpu/vk/menu_i18n.h, the Insert menu's translations: every table's texts are the menu's own (vk_menu.cpp writes each
-English text), every translation keeps its text's printf conversions in order and its leading and trailing spaces (the menu
+"""gpu/vk/menu_i18n.h, the Insert menu's translations: every table's texts are the menu's own (vk_menu.cpp and its modules,
+gpu/vk/menu/, write each English text), every translation keeps its text's printf conversions in order and its leading and trailing spaces (the menu
 joins pieces), and the language list holds what vk_menu_i18n.cpp expects. The controls and Automatic prompt hints
 must remain present in every translated table. No game, no compiler.
 
@@ -7,7 +7,11 @@ Run with: python -I tests/test_menu_i18n.py
 """
 from pathlib import Path
 import re
+import sys
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_sources  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
@@ -39,8 +43,7 @@ def tables():
 class MenuI18nTests(unittest.TestCase):
     def setUp(self):
         self.tables, self.langs = tables()
-        menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
-        self.menu = set(c_strings(menu))
+        self.menu = set(c_strings(menu_sources()))   # (vk_menu.cpp's texts and its modules', gpu/vk/menu/: #1633)
 
     def test_languages(self):
         self.assertEqual(self.langs[0], ("en", "English", "nullptr", "0"))
@@ -109,7 +112,7 @@ class MenuI18nTests(unittest.TestCase):
                 with self.subTest(table=table, text=text):
                     self.assertIn(text, translated)
                     self.assertNotEqual(translated[text], text)
-        source = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
+        source = (VK / "menu" / "audio.cpp").read_text(encoding="utf-8")   # (the Audio module's, #1633)
         self.assertIn('std::string(i18n::tr("Selected output"))', source)
         self.assertIn('+ i18n::tr(" (not connected)")', source)
 

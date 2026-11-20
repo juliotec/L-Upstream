@@ -577,7 +577,7 @@ public:
     /// anything in c1, the program's own constants. Answered once per word (the pass asks per access).
     bool IsCbufStorageBufferPointer(u32 index, u32 offset) override {
         if (index == 1) return false;
-        // (#940: the seed's compute programs, before anything is bound: c0's buffer tables, as play has them)
+        // (the seed's compute programs, before anything is bound: c0's buffer tables, as play has them)
         if (seed_cs_control && stage == Shader::Stage::Compute) return index == 0 && seed_cs_buffer_word(offset);
         const uint64_t key = (uint64_t)index << 32 | offset;
         if (const auto it = pointer_answers.find(key); it != pointer_answers.end()) return it->second;
@@ -710,7 +710,7 @@ Shader::Profile make_profile() {
     p.need_declared_frag_colors = false;
     // (the lanes the broadcast fallbacks walk: all of the host's when a warp may be larger than the guest's)
     p.max_subgroup_size = p.warp_size_potentially_larger_than_guest ? dev.subgroup_max : 32;
-    // (Lichii #273; device_policy.h frag_shuffle_fallback: AMD's Windows driver) fragment-stage subgroup shuffles through
+    // (device_policy.h frag_shuffle_fallback: AMD's Windows driver) fragment-stage subgroup shuffles through
     // broadcasts and selects
     p.has_broken_spirv_fragment_shuffle = dev.policy.frag_shuffle_fallback;
     // (RX_VK_FRAG_SHUFFLE_FALLBACK=0 or 1, a test: the fragment stages' shuffles native or through broadcasts, whatever the
@@ -1253,11 +1253,11 @@ void dump_ir(const Program& p, const char* stage, const Shader::IR::Program& pro
 
 // (longshot) RX_VK_MESH_NOCULL=<task shader code key prefixes,...>, off unless set. OoT's meshlet
 // culling task shader walks every cell of a coarse depth grid its meshlet covers, reading four words a cell from c3 by a
-// dynamic index: on RDNA 2 one draw runs past the kernel's 10 s and the GPU is reset (Longshot issue 817). Its answer is
+// dynamic index: on RDNA 2 one draw runs past the kernel's 10 s and the GPU is reset. Its answer is
 // visible = (result & 1) | (c3[2320] & 4), bit 4 being the game's own "draw everything". That comparison becomes true,
 // and dead code elimination takes the grid walk with it: every meshlet is drawn (the rasterizer clips what is off
 // screen), none is left out; RX_VK_SKIP_CODE left these programs out instead, and their models with them. The Steam
-// Deck plays with RX_VK_MESH_NOCULL=2c56dc1006942f74 (issue 817). A name under RX_VK_MESH, so the program cache starts
+// Deck plays with RX_VK_MESH_NOCULL=2c56dc1006942f74. A name under RX_VK_MESH, so the program cache starts
 // again when it changes.
 bool mesh_nocull_wanted(uint64_t code_key) {
     static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "";
@@ -1467,8 +1467,8 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
         ~ModuleProgram() { module_program = 0; }
     } module_for{p.key};
     try {
-        // (issue 1280: an allocation refused in the translation fails this program, as before the renderer's new_handler,
-        // rather than wait 5 s and stop the game: a bad shader can ask for a size no PC has)
+        // (an allocation refused in the translation fails this program (NewNothrow), rather than wait 5 s in the renderer's
+        // new_handler and stop the game: a bad shader can ask for a size no PC has)
         const NewNothrow nothrow;
         if (driver_faulted_program(p.key)) throw std::runtime_error("the driver faulted on this program before: not asked of it again");
         Shader::Backend::Bindings bindings{};
@@ -1580,7 +1580,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             for (int i = 0; i < 16; i++) vrt.generic_input_types[i] = attribute_type_of(s.vattr[i]);
             vrt.previous_stage_stores.mask.set();
             vrt.convert_depth_mode = host->depth_minus_w() != 0;
-            // Deku Tree web (#455): with DontInline, NVIDIA's compiled vertex shader substitutes the grid-origin
+            // Deku Tree web: with DontInline, NVIDIA's compiled vertex shader substitutes the grid-origin
             // load result for the grid dimensions in the coordinate clamps. The SPIR-V names the right result.
             // (device_policy.h inline_deku_web_loads: NVIDIA)
             constexpr uint64_t kDekuWebVertexCode = 0xb449bcdb69b36a8aull;
@@ -1689,7 +1689,7 @@ std::array<u32, 3> mesh_registers_of(const Code* task, const Code& mesh) {
     // (the control section's topology in GL's numbers: 3 triangles; 1 points, not lines. OoT's four mesh programs with a 1 (the grass
     // drawn into the 2400 x 2400 shadow map around Link) write one index byte per primitive, the primitive count = their vertex
     // count, and a point size. Read as lines, each joined vertex 2i to 2i + 1 of its meshlet: a mesh of long thin dark stripes on
-    // the ground, the water and Link around him, on AMD; Longshot issue 302)
+    // the ground, the water and Link around him, on AMD)
     const uint32_t topology = mesh.topology == 3 ? 4 : mesh.topology == 1 ? 0 : mesh.topology;
     const uint32_t lines = task ? (task->payload_bytes + 127) / 128 : 0;
     // (the larger of the two for both: the control section's pair is not always vertices and primitives in that order. The door's
@@ -1719,8 +1719,8 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         Shader::Optimization::g_nvn2_miss_log_this = !only || !strncmp(hex, only, strlen(only));
     }
     try {
-        // (issue 1280: an allocation refused in the translation fails this program, as before the renderer's new_handler,
-        // rather than wait 5 s and stop the game: a bad shader can ask for a size no PC has)
+        // (an allocation refused in the translation fails this program (NewNothrow), rather than wait 5 s in the renderer's
+        // new_handler and stop the game: a bad shader can ask for a size no PC has)
         const NewNothrow nothrow;
         Shader::Backend::Bindings bindings{};
         std::vector<std::vector<uint32_t>> kept;   // (each stage's SPIR-V, for the program cache: mesh programs were never kept,

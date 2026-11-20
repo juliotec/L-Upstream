@@ -119,10 +119,13 @@ def source_checks():
     for default in ("int volume = 100;", "int mute_background = 0;"):
         if default not in header:
             raise SystemExit("vk_menu.h: out of the box the Audio tab is not 100% and not muted in background")
-    if not re.search(r'\{TAB_AUDIO, "Volume", &opts\.volume, 0, 100, 5, tx_percent,', menu):
-        raise SystemExit("vk_menu.cpp: the Audio tab lost its Volume row (0 to 100%, steps of 5)")
-    if not re.search(r'\{TAB_AUDIO, "Mute in background", &opts\.mute_background, 0, 1, 1, tx_onoff,', menu):
-        raise SystemExit("vk_menu.cpp: the Audio tab lost its Mute in background row")
+    rows = read("gpu", "vk", "menu", "volume.cpp")   # (the rows' module, #1633)
+    if not re.search(r'menu::tab\("audio"\)', rows) or not re.search(
+            r'\.label = "Volume",.*?\.kind = menu::Kind::Slider,\s*\.value = &opts\.volume,\s*\.lo = 0, \.hi = 100,\s*\.step = 5,'
+            r'.*?\.text = menu_text::percent', rows, re.S):
+        raise SystemExit("gpu/vk/menu/volume.cpp: the Audio tab lost its Volume row (0 to 100%, steps of 5)")
+    if not re.search(r'\.label = "Mute in background",.*?\.kind = menu::Kind::Toggle,\s*\.value = &opts\.mute_background,', rows, re.S):
+        raise SystemExit("gpu/vk/menu/volume.cpp: the Audio tab lost its Mute in background row")
     titles = re.search(r"tab_titles\[TAB_COUNT\] = \{([^}]*)\}", menu).group(1)
     if '"Audio"' not in titles:
         raise SystemExit("vk_menu.cpp: the tab strip has no Audio title")

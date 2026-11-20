@@ -11,6 +11,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_model_prelude, menu_model_member, output_engine, unbroken  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -202,8 +206,6 @@ def fixture(source):
     row = re.search(r"struct Row \{.*?\n\};", menu, re.S)
     if not options or not tabs or not row:
         raise SystemExit("the menu's options, tabs, or row definition is missing")
-    outputs_from = menu.index("struct Out {")
-    outputs_to = menu.index("dm::Size size_of(Out o)", outputs_from)
     helpers_from = menu.index("struct EnvOverride {")
     save = definition(menu, "void save")
     init = definition(menu, "void menu_init")
@@ -220,9 +222,9 @@ def fixture(source):
         "/* OPTIONS */": options.group(0),
         "/* TABS */": tabs.group(0),
         "/* ROW */": row.group(0),
-        "/* OUTPUTS */": menu[outputs_from:outputs_to],
+        "/* OUTPUTS */": output_engine(source, "dm::Size size_of(Out o)"),   # (the output module's, #1633)
         "/* INI_KEY */": definition(menu, "const char* ini_key"),
-        "/* SAVE */": menu[helpers_from:menu.index("std::string ini_path() {")] + save,
+        "/* SAVE */": unbroken(menu[helpers_from:menu.index("std::string ini_path() {")]) + save,
         "/* ENV */": env,
     }
     result = FIXTURE
@@ -239,7 +241,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="menu-env-") as tmp:
         src = Path(tmp) / "menu_env.cpp"
         exe = Path(tmp) / ("menu_env.exe" if os.name == "nt" else "menu_env")
-        src.write_text(fixture(args.source), encoding="utf-8")
+        src.write_text(menu_model_prelude(args.source) + fixture(args.source), encoding="utf-8")
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(args.source / "host"), "/I" + str(args.source / "gpu" / "vk" / "compat"), "/I" + str(args.source / "gpu" / "vk"), str(src),
                        "/Fo" + str(Path(tmp) / "menu_env.obj"), "/Fe" + str(exe)]

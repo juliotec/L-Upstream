@@ -441,13 +441,13 @@ class Result:
 
 # (--changed, the dev-loop proposal's D1) the checks that read what changed: most tests name the files they cut code from or run,
 # by path or by name, so a test whose text names a changed file is picked. A change to this runner, or to a shared .py of tests/
-# that is not a test, picks every check. Before a pull request the whole run is still the one that counts (docs/workflow.md)
+# that is not a test, picks every check. Before a pull request the whole run is still the one that counts (docs/dev/developing.md#from-claim-to-merge)
 LONGSHOT_REMOTE = "git.magicbean.dev/magicbeandev/longshot"   # (forge.py's HOST and REPO, as add_remote matches them)
 
 
 def default_base():
     """--changed's base when none is named: main on the remote that points at Longshot (forge.py, from MagicBeanDev/Tooling,
-    adds one as forge unless one already does: CONTRIBUTING.md's git rebase forge/main), else origin/main"""
+    adds one as forge unless one already does: Tooling's docs/forge.md: git rebase forge/main), else origin/main"""
     r = subprocess.run(["git", "-C", ROOT, "remote", "-v"], capture_output=True, text=True)
     for line in (r.stdout if r.returncode == 0 else "").splitlines():
         parts = line.split()
@@ -540,7 +540,7 @@ def unicode_output():
     "replace" decode). Into a pipe (CI's log, an agent's tool, `| more`) Windows' Python writes the ANSI code page,
     cp1252, which has none of them: the run stopped with a UnicodeEncodeError at the first such failure, before the
     table, the summary and --write-times. A pipe gets UTF-8, as -X utf8 would give it; a console keeps its own encoding.
-    Either way a character it cannot show is replaced instead of ending the run (as scripts/team_chat.py does)."""
+    Either way a character it cannot show is replaced instead of ending the run (as Tooling's scripts/team_chat.py does)."""
     for stream in (sys.stdout, sys.stderr):
         if not hasattr(stream, "reconfigure"):   # (a StringIO)
             continue

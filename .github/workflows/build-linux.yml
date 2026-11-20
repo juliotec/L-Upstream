@@ -180,10 +180,22 @@ jobs:
           mkdir -p work && cp -r "$RUNNER_TEMP"/profile/LongshotBuilder/tools/work/. work/
           ls -la work
 
+      # (RenHDrum (host/rumble_renhdrum.c): renhdrum.so from third_party/renhdrum, with scripts/renhdrum.py's pinned Rust,
+      # linked here, against the C library the AppImage is for. The AppImage carries it and a player's build puts it beside
+      # the game. The pinned Rust's parts are kept between runs and checked by their SHA-256 each time)
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/renhdrum-rust
+          key: renhdrum-rust-linux-${{ hashFiles('scripts/renhdrum.py') }}
+      - name: renhdrum.so
+        run: >-
+          python3 -I scripts/renhdrum.py build --target linux --linker gcc --cache "$RUNNER_TEMP/renhdrum-rust"
+          --out "$RUNNER_TEMP/renhdrum/renhdrum.so"
       # (the AppImage, named by the release's version: a release's tag or the nightly's name)
       - name: AppImage
         env:
           LONGSHOT_VERSION: ${{ env.RELEASE_TAG }}
+          RENHDRUM_SO: ${{ runner.temp }}/renhdrum/renhdrum.so
         run: scripts/linux/appimage.sh
 
       # (the Vulkan back end, compiled as a player's build compiles it from the AppImage's sources (nx2/build.py), with the

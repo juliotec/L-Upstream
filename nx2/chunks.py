@@ -25,7 +25,7 @@ import os
 import re
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-import whole_write   # (rewrites written beside and moved over: issue 1197)
+import whole_write   # (rewrites written beside and moved over)
 
 import a64_lift
 import lifted_c

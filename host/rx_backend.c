@@ -3,6 +3,9 @@
    Vulkan device leaves the wgr_* stand-ins in place (host/rx_nowgpu.c, host/posix/linux_stubs.c: once the WebGPU
    renderer's functions, gpu/render, which is built no more), and nothing is drawn (logged). */
 #include "hos.h"
+#ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/longshot_env.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
@@ -235,7 +238,7 @@ extern volatile int hos_fps_timing;
 static void host_fps_timing(int on) { __atomic_store_n(&hos_fps_timing, on != 0, __ATOMIC_RELAXED); }
 int hos_thread_times_of(const char *name, int64_t out[3]);   /* (hos_thread.c) */
 static int host_main_thread_times(int64_t out[3]) { return hos_thread_times_of("sead::MainThread", out); }
-/* (version 28, issue 1280) the renderer's C++ allocations that its new_handler gave up on: the size is not known there */
+/* (version 28) the renderer's C++ allocations that its new_handler gave up on: the size is not known there */
 static void host_out_of_memory(const char *what) { hos_alloc_gave_up(0, what); }
 static void host_slept_ns(int64_t out[2]) {
     out[0] = __atomic_load_n(&hos_poll_slept_ns, __ATOMIC_RELAXED);
@@ -287,6 +290,13 @@ static int host_take_text(int focus, uint32_t *out, int max) {
     return n;
 }
 
+/* (hookshot) the Mods tab: host/mods.c, host/cheats.c */
+int hos_mod_info(int i, const char **name, const char **detail, const char **note, int *enabled);
+void hos_mod_edit(int i, int op);
+uint64_t hos_mods_changed(void);
+int hos_cheat_info(int i, const char **name, const char **mod, const char **note, int *kind, int *on);
+void hos_cheat_set(int i, int on);
+
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
     nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
@@ -302,6 +312,7 @@ static const MkwVkHost vk_host = {
     hos_sdl_rumble_test,
     hos_nfc_count, hos_nfc_name, hos_nfc_tap, hos_nfc_state, hos_nfc_dir, hos_nfc_scan, hos_nfc_scan_name,
     hos_ab_frame,   /* (version 34, longshot: the frame trace's ab_side, host/hos_ab.c) */
+    hos_mod_info, hos_mod_edit, hos_mods_changed, hos_cheat_info, hos_cheat_set,
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -560,9 +571,24 @@ void rx_nvn_program_released(const nvn_prog *p) { vk ? vk->nvn_program_released(
 void rx_nvn_program_created(const nvn_prog *p) {
     if (vk && vk->nvn_program_created) vk->nvn_program_created(p);
 }
+/* (longshot) A texture's texels read or written by the CPU (nvnTextureReadTexels / WriteTexels) wait in the Vulkan back end
+   for the GPU to finish everything submitted before (vk_replay.cpp finish), and that work can itself wait for a signal the
+   game's main thread makes later (seen with the next frame's work held at OoT's frame limiter). The calling thread held its
+   virtual core through that wait, and the main thread's frame needed a worker allowed on that core only: SceneLowPriority's
+   WriteTexels at an area change (and BootupBackgroundWorkThread's at the boot) held core 2 for ~1 s (until the present gave
+   up waiting for the signal, RX_VK_FRAME_GATE_MS), ModuleSystemWorker2 waited for it and the game stood still for that
+   second. The core is given up for the call, as for an invalidate or a remap (below). HOS_TEXELS_KEEP_CORE=1: kept, as
+   before (the switches' one rule: 1, true, yes or on) */
+static int texels_keep_core(void) {
+    static int keep = -1;
+    if (keep < 0) keep = env_on("HOS_TEXELS_KEEP_CORE");
+    return keep;
+}
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img) {
+    const int away = texels_keep_core() ? 0 : hos_vcore_away();
     vk ? vk->nvn_read_texels(t, level, layer0, r, dst, row, img) : wgr_nvn_read_texels(t, level, layer0, r, dst, row, img);
+    if (away) hos_vcore_back();
 }
 void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src,
                          size_t row, size_t img) {
@@ -584,8 +610,10 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
             }
         }
     }
+    const int away = texels_keep_core() ? 0 : hos_vcore_away();   /* (the wait for the GPU: texels_keep_core above) */
     vk ? vk->nvn_write_texels(t, level, layer0, r, src, row, img)
        : wgr_nvn_write_texels(t, level, layer0, r, src, row, img);
+    if (away) hos_vcore_back();
 }
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
     /* (longshot) nothing there it can wait for (the back end's lock-free look: nothing ever written back, no texture the GPU

@@ -207,15 +207,6 @@ int main() {
         require(tables, f'need("{limit}", l.{limit}, ', 'the log line names the limit that turned handle tables off')
     stamp = block(shader, 'uint64_t translator_stamp() {')
     require(stamp, 'if (!handle_tables_on()) {', 'programs translated without handle tables must not share the cache')
-    # The offline copies of host_info: a bank baked offline must be translated as a live run with the same stamp is
-    bake = (root / 'nx2/bake_ds/bake_ds.cpp').read_text(encoding='utf-8')
-    require(block(bake, 'Shader::HostTranslateInfo host_info() {'), 'h.support_handle_table_arrays = g_handle_tables;',
-            'bake_ds translates with handle tables as live does')
-    require(block(bake, 'uint64_t disk_stamp(uint64_t translator_stamp, uint32_t depth) {'), 'if (!g_handle_tables) {',
-            'a bank baked without handle tables carries live\'s "nhtb" word')
-    batch = (root / 'gpu/shaderbatch.cpp').read_text(encoding='utf-8')
-    require(block(batch, 'Shader::HostTranslateInfo make_host() {'), 'h.support_handle_table_arrays = true;',
-            'shaderbatch translates with handle tables as live does')
     pointer = block(draw, 'bool handle_is_storage_pointer(')
     require(pointer, 'if (d.handle_is_pointer_word) return true;', 'a pointer word binds no texture')
     require(draw, 'stage_handles(s, st, d.handle_program, d.count, table.data());', 'the draw binds every entry of a handle table')

@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 34
+#define MKWVK_API_VERSION 35
 enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
 typedef struct MkwVkMonitor {
     char id[512];             /* opaque persistent preference; never a runtime handle or list index */
@@ -55,7 +55,7 @@ enum { HOS_OPT_PROMPTS = 46 };
    temporal upscalers, which take only that scene) */
 enum { HOS_OPT_HDR_TONEMAP = 47 };
 /* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
-/* Walk mode and Walk speed use 49 and 50 (#2345). */
+/* Walk mode and Walk speed use 49 and 50. */
 enum { HOS_OPT_FOV = 51 };
 /* (HOS_OPT_SKIP_OPENING, 52: Gameplay's Skip opening, host/hos_main.c hos_oot_opening. Off. The new-game story movie
    and Navi waking Link. 44 stays reserved for Skip title, 49 and 50 are Walk's, 60 is reserved for the item wheel. A new option id
@@ -84,6 +84,14 @@ enum { HOS_OPT_TRANSITION_AUTOSAVE = 59 };
    as the right stick) read it by its number, as they read 8. The existing option callback: no new member. 59 is the
    transition autosave's and 60 stays the item wheel's.) */
 enum { HOS_OPT_MOUSE_INVERT_X = 61 };
+/* (longshot) Vibration: 0 Auto, 1 Basic, 2 Off (host/vibration.h). Auto plays the best each controller can do (a
+   DualSense on a cable its voice coils through RenHDrum, a Switch controller its own HD rumble, the others their motors),
+   Basic every controller's motors, Off nothing. The strength is option 9, every backend's. 63 and 64: 58 is the render
+   thread's, 59 transition autosave, 60 reserved for the item wheel, 61 mouse invert X; 62, 65 and 66 are free */
+enum { HOS_OPT_VIBRATION = 63 };
+/* (longshot) What plays the controller used last, written back by the host each poll (host/pad_sdl.c): its kind times 16
+   plus what it says (host/vibration.h's VIB_PAD_*, VIB_SAY_*); Test vibration's cell and help read it. */
+enum { HOS_OPT_VIBRATION_STATUS = 64 };
 /* (HOS_OPT_HUD_LAYOUT, 71: Graphics' HUD layout, host/hos_wide_ui.c reads it at each present by its number: on a screen
    that is not 16:9, 0 the HUD's corners at the screen's edges, 1 the HUD in the middle 16:9 as before #95 (on a narrower
    screen fitted to its width, as the menus). HOS_WIDE_UI, when set, stands over it. The existing option callback: no new
@@ -278,7 +286,7 @@ typedef struct MkwVkHost {
        thread's (sead::MainThread) time so far, in ns: [0] waiting for a virtual core, [1] blocked in a wait or sleep, both
        counted while fps_timing is on, [2] its CPU time. 0 before the game names that thread */
     int (*main_thread_times)(int64_t out[3]);
-    /* Version 28 (longshot, issue 1280): a C++ allocation of the renderer's refused for 5 s (its new_handler, gpu/vk/vk_main.cpp
+    /* Version 28 (longshot): a C++ allocation of the renderer's refused for 5 s (its new_handler, gpu/vk/vk_main.cpp
        new_refused, tried again meanwhile): the host's out-of-memory line and notice, waited for, then the game stops, as for the
        host's own allocations (host/mkw_glue.c hos_alloc_gave_up). what names it in the log. Does not return */
     void (*out_of_memory)(const char *what);
@@ -311,9 +319,21 @@ typedef struct MkwVkHost {
     /* (version 34, longshot): the A/B within one run (host/hos_ab.c, HOS_AB), for the frame trace's ab_side column: the side
        of the frame from from_ns to to_ns (the host's clock, now_ns; from_ns 0 when not known): -1 outside the A/B (none set,
        its warm-up), 0 the switch's normal value, 1 the A/B's, 2 or 3 those sides in a transition (a flip inside the frame,
-       or less than 0.3 s before its end), which scripts/ab_summary.py leaves out */
+       or less than 0.3 s before its end), which scripts/perf.py ab leaves out */
     int (*ab_frame)(int64_t from_ns, int64_t to_ns);
+    /* (version 35: 24 is the audio outputs, 25 the microphone test, 26 the performance summary, 27 the frame trace, 28 the renderer's out of memory note, 29 the monitors, 30 the performance sample's tracking, 31 the renderer's quick invalidate, 32 the rumble test, 33 the NFC tags, 34 the A/B within one run) the Mods tab (host/mods.c, host/cheats.c). mod_info: mod i in the list's order, 0 past the end
+       (name: its folder; detail: what it has; note: what of it is not used and why, "" none); mod_edit: op 0 off, 1 on, 2 up a
+       place, 3 down a place, kept at once and applied at the next start; mods_changed: 0 while the order and the switches are
+       the start's, else a number for them (the restart question). cheat_info: cheat i of the mods that were on at the start,
+       0 past the end (kind: MKWVK_CHEAT_*); cheat_set: a data cheat on or off, at once */
+    int (*mod_info)(int i, const char **name, const char **detail, const char **note, int *enabled);
+    void (*mod_edit)(int i, int op);
+    uint64_t (*mods_changed)(void);
+    int (*cheat_info)(int i, const char **name, const char **mod, const char **note, int *kind, int *on);
+    void (*cheat_set)(int i, int on);
 } MkwVkHost;
+/* (version 35) a cheat's kind: a heading (no opcodes), a data cheat (switched), a master cheat (always on), not supported (note) */
+enum { MKWVK_CHEAT_HEADING, MKWVK_CHEAT_DATA, MKWVK_CHEAT_MASTER, MKWVK_CHEAT_UNSUPPORTED };
 
 /* One completed temporal-upscale sample; all zero while inactive. */
 typedef struct MkwVkJitter {
@@ -370,7 +390,7 @@ typedef struct MkwVkRenderer {
     void (*option_set)(int id, int value);
     /* (version 14) one coherent camera-jitter sample, without per-axis queries */
     void (*jitter_sample)(MkwVkJitter *out);
-    /* (version 16, longshot) the control bridge (host/control.c, docs/control.md) */
+    /* (version 16, longshot) the control bridge (host/control.c, docs/dev/reference/control-bridge.md) */
     /* the presents replayed so far, the draws recorded since the start, and the picture's size (the window's swapchain, or
        the offscreen image's) */
     void (*frame_info)(int64_t *presents, int64_t *draws, int *width, int *height);

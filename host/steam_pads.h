@@ -3,8 +3,8 @@
 
    Started from Steam, the game gets SDL_GAMECONTROLLER_IGNORE_DEVICES, which lists Valve's controllers (the Steam
    Controller, the Steam Deck's) and others Steam reads itself, and SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1.
-   SDL then opens only Steam Input's stand-in pad, which has no gyroscope or accelerometer, so Motion controls found no
-   pad (#1897: a Steam Controller on CachyOS, and on Windows). Valve's entries come out of that list, so SDL opens the
+   SDL then opens only Steam Input's stand-in pad, which has no gyroscope or accelerometer, so Motion controls would find no
+   pad. Valve's entries come out of that list, so SDL opens the
    real pad as well, all but the Steam Deck's built-in controls (STEAM_PADS_DECK): SDL's Steam Deck driver resets their
    trackpad and button settings as it opens them, which is not yet tested beside Steam Input in Game Mode, so they stay
    as Steam set them. While a Steam stand-in pad is open, a real Valve pad gives its motion only: its buttons and sticks

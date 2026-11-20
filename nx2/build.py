@@ -42,7 +42,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import long_paths  # noqa: E402
-long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file: #1115)
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file)
 import kit
 import lifted_c
 import rtgen
@@ -60,8 +60,8 @@ NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
-ZSTD_HOST = ("prompts.c", "hos_zstd.c", "oot_heart_containers.c")   # (the host files that use it: a mod's size table; the game's
-# stream decode; the boss heart containers' ids, read from the map files for the Discord status)
+ZSTD_HOST = ("prompts.c", "hos_zstd.c", "zs.c", "oot_heart_containers.c")   # (the host files that use it: a mod's size table; the game's
+# stream decode; the mods' packs; the boss heart containers' ids, read from the map files for the Discord status)
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (LONGSHOT_OBJ_STORE: one store of objects for every work folder, nx2/object_store.py. Its folder for this work folder's compiler
 # and headers, or None)
@@ -328,7 +328,7 @@ COMPDB = "compile_commands.json"
 
 def write_compdb(out, jobs, lifted=None):
     """(the dev-loop proposal's A8) <build>/compile_commands.json, for clangd and clang-tidy: every compile this build runs, with
-    compile_one's compiler and flags. It names the source itself: since #385 compile_one compiles a giant lifted function's
+    compile_one's compiler and flags. It names the source itself: compile_one compiles a giant lifted function's
     file from a temporary copy (split_giants.compile_copy), which is gone by the time an editor reads this. The lifted C
     (lifted: the gen/ folder, about 1.4 GB) is left out, or clangd's background index would read all of it; the host's commands
     still name gen/ and rt64/ for their headers. Point clangd at the file (--compile-commands-dir, or a link to it at the
@@ -563,7 +563,7 @@ def renderer_deps(blob, roots, obj):
 
 
 def ngx_library(sdk, linux):
-    """NVIDIA's NGX library in a LONGSHOT_NGX_SDK folder (scripts/ngx_sdk.py's layout), for this build's platform: libnvsdk_ngx.a
+    """NVIDIA's NGX library in a LONGSHOT_NGX_SDK folder (scripts/fetch.py dlss's layout), for this build's platform: libnvsdk_ngx.a
     on Linux, nvsdk_ngx_s.lib on Windows (the static one, built against Microsoft's static runtime: gpu/vk/vk_ngx_msvc_rt.cpp)"""
     return os.path.join(sdk, "lib", "libnvsdk_ngx.a" if linux else "nvsdk_ngx_s.lib")
 
@@ -571,14 +571,14 @@ def ngx_library(sdk, linux):
 def ngx_sdk(sdk, linux):
     """LONGSHOT_NGX_SDK as the build takes it: the folder when it has this platform's library, else "" (and why, said)"""
     if sdk and not os.path.isfile(ngx_library(sdk, linux)):
-        print("build: LONGSHOT_NGX_SDK=%s has no lib/%s (scripts/ngx_sdk.py --platform %s fetches it): built without NVIDIA "
+        print("build: LONGSHOT_NGX_SDK=%s has no lib/%s (scripts/fetch.py dlss --platform %s fetches it): built without NVIDIA "
               "DLSS" % (sdk, os.path.basename(ngx_library(sdk, linux)), "linux" if linux else "windows"), flush=True)
         return ""
     return sdk
 
 
 # LONGSHOT_NGX_SDK=<folder>: the Vulkan back end with NVIDIA DLSS Super Resolution, from NVIDIA's NGX SDK fetched into that
-# folder by scripts/ngx_sdk.py (its include/ and this platform's lib/; never committed, NVIDIA's license). Off without it.
+# folder by scripts/fetch.py dlss (its include/ and this platform's lib/; never committed, NVIDIA's license). Off without it.
 NGX_SDK = ngx_sdk(os.environ.get("LONGSHOT_NGX_SDK", ""), LINUX)
 # (llvm-mingw: what NVIDIA's library asks of Microsoft's runtime, linked in with it. Not compiled otherwise)
 NGX_MSVC_RT = "vk_ngx_msvc_rt.cpp"
@@ -587,7 +587,7 @@ NGX_MSVC_RT = "vk_ngx_msvc_rt.cpp"
 # it; the camera jitter it needs is in every build: nx2/oot_jitter.py). A Linux build with it compiles the back end from the
 # headers the AppImage carries (FSR_HEADERS, which make_game.py's Linux check looks for before the game is read)
 FSR = os.environ.get("LONGSHOT_FSR", "") == "1"
-# LONGSHOT_TRACY=1 (a developer's build, never a player's: docs/development/tracy.md): the game and the Vulkan back end with
+# LONGSHOT_TRACY=1 (a developer's build, never a player's: docs/dev/reference/profiling.md, Tracy): the game and the Vulkan back end with
 # the Tracy profiler's zones (host/hos_tracy.h) and Tracy's client (third_party/tracy), compiled into the executable alone,
 # which exports its C API; the back end's module calls that one client. It listens on 127.0.0.1 only and announces nothing
 # (TRACY_ONLY_LOCALHOST, TRACY_NO_BROADCAST), records only while a viewer is connected (TRACY_ON_DEMAND), leaves the
@@ -629,13 +629,16 @@ def ngx_link(sdk, mingw):
 
 def vk_sources():
     """The Vulkan back end (longshot_vk.dll, gpu/vk/vk_api.h): Eden's shader recompiler with its SPIR-V back end
-    (gpu/vk/eden), sirit with Eden's mesh shader patch (gpu/vk/sirit) and the back end itself (gpu/vk/*.cpp)"""
+    (gpu/vk/eden), sirit with Eden's mesh shader patch (gpu/vk/sirit) and the back end itself (gpu/vk/*.cpp, and the Insert
+    menu's modules, gpu/vk/menu/*.cpp)"""
     vk = os.path.join(GPU, "vk")
     out = []
     for sub in ("eden", os.path.join("sirit", "src")):
         for d, _, files in os.walk(os.path.join(vk, sub)):
             out += [os.path.join(d, f) for f in files if f.endswith(".cpp")]
     out += [os.path.join(vk, f) for f in os.listdir(vk) if f.endswith(".cpp") and f != NGX_MSVC_RT]
+    menu = os.path.join(vk, "menu")   # (the Insert menu's feature modules, gpu/vk/menu_module.h: #1633)
+    out += [os.path.join(menu, f) for f in os.listdir(menu) if f.endswith(".cpp")] if os.path.isdir(menu) else []
     vc = os.path.join(GPU, "third_party", "suyu", "video_core")
     out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (suyu's unswizzle and ASTC decoder)
     return sorted(out)
@@ -951,7 +954,7 @@ def tree_ws(pid):
     return total
 
 
-# doc: docs/compiler-memory-accounting.md
+# doc: docs/dev/reference/build.md#the-compiler-memory-gate
 def rss_mb(proc):
     """A running compiler's resident memory in MB (0: exited, not known, or not started yet)"""
     if proc is None:
@@ -1011,13 +1014,12 @@ def mem_limit_mb():
 
 
 class MemoryGate:
-    """(issue 418) Compilers started by the memory there is, not only by --jobs: one per CPU thread ran PCs out of memory (the kernel
-    stopped a compiler, or the whole build), and a count low enough for the biggest files and the PC's other programs left most of
+    """Compilers started by the memory there is, not only by --jobs: one per CPU thread runs PCs out of memory (the kernel
+    stops a compiler, or the whole build), and a count low enough for the biggest files and the PC's other programs leaves most of
     the threads idle. A compile starts when the memory free, less what the compilers running may still take on top of what they
-    hold now (mem_need), keeps its own need and LONGSHOT_MEM_RESERVE_GB (default 1.5) free. The floor is make_game's before this:
-    on Windows up to 4 (half the threads on smaller CPUs) always run, as Windows pages rather than fails (issues 502, 503, 511: 1-2
-    compilers on 16 GB PCs took hours); on Linux one (issue 531: Linux stops a compiler that does not fit, and it is compiled again
-    alone). The free memory is read again as compiles start and end, so a game or browser opened during the build makes later
+    hold now (mem_need), keeps its own need and LONGSHOT_MEM_RESERVE_GB (default 1.5) free. The floor: on Windows up to 4 (half
+    the threads on smaller CPUs) always run, as Windows pages rather than fails (1-2 compilers on 16 GB PCs take hours); on Linux
+    one (Linux stops a compiler that does not fit, and it is compiled again alone). The free memory is read again as compiles start and end, so a game or browser opened during the build makes later
     compiles wait. With LONGSHOT_MEM_LIMIT_GB the player chooses instead: a compile starts when the needs of those running and its
     own fit in that, whatever is free, above the same floor"""
 
@@ -1077,8 +1079,8 @@ FFMPEG_LIBS = ("avcodec", "swscale", "swresample", "avutil")
 
 def dav1d_windows():
     """(windows, llvm-mingw) dav1d in the CPM cache (scripts/windows/dav1d.sh): the AV1 movies' decoder (host/dav1d_av1.c,
-    issue 2316), as the CPM cache's FFmpeg has none. None without it, or on the Visual Studio route (a MinGW library):
-    Media Foundation decodes them then, as before"""
+    as the CPM cache's FFmpeg has none. None without it, or on the Visual Studio route (a MinGW library):
+    Media Foundation decodes them then"""
     d = cpm_package("dav1d")
     if LINUX or not toolchain.mingw() or not d:
         return None
@@ -1160,8 +1162,7 @@ MARK_BITMAP = [] if os.environ.get("RX_MARK_BITMAP", "").strip().lower() in ("0"
 # the exact software body on baseline x86-64), single-precision FMA, FRECPS and FRSQRTS are one fused instruction
 # (nx2/suyu_rt_fixes.py) and the bit counts are single instructions. No contraction, so a C expression is rounded as
 # written (the exact bodies and FPX1's proofs assume it). RX_MARCH=x86-64: the old baseline
-# (issue 363: a Xeon E5-2667 v2 (Ivy Bridge, no AVX2) built the game and then stopped at its first AVX2 instruction,
-# 0xc000001d. The game is built on the PC it runs on: a CPU without x86-64-v3's features gets x86-64-v2, or x86-64)
+# (a CPU without AVX2 would build the game and then stop at its first AVX2 instruction, 0xc000001d. The game is built on the PC it runs on: a CPU without x86-64-v3's features gets x86-64-v2, or x86-64)
 from host_cpu import host_march, native_cpu   # (make_game.py asks it too: the AppImage's renderer)
 
 MARCH = os.environ.get("RX_MARCH") or host_march()
@@ -1171,9 +1172,9 @@ if os.environ.get("RX_MARCH"):
 elif MARCH != "x86-64-v3":
     print("build: this CPU has no AVX2: the game is built for %s (a little slower)" % MARCH, flush=True)
 CPU = ["-march=" + MARCH, "-ffp-contract=off"]
-# (issue 182) A CPU with x86-64-v3's features gets the game built for itself, -march=native: what it has beyond v3 (AVX-512 and
+# A CPU with x86-64-v3's features gets the game built for itself, -march=native: what it has beyond v3 (AVX-512 and
 # the rest), and tuned for it (native tunes as well, the Steam Deck's Zen 2 included: no tuning flag of our own). RX_MARCH=x86-64-v3
-# builds as before. native names no CPU, and the object keys are made from the flags, so the CPU clang resolves it to goes into
+# builds for v3 alone. native names no CPU, and the object keys are made from the flags, so the CPU clang resolves it to goes into
 # the flags too (-DLONGSHOT_NATIVE_CPU=<cpu>_<tune>_<features>): another CPU (a new one, the disk in another PC) compiles again
 # instead of linking objects made for instructions it may lack. If clang can't say, the default stays x86-64-v3, and an
 # RX_MARCH=native stops the build.
@@ -1234,7 +1235,7 @@ def light_passes_kb():
 
 
 def light_flags_work(cc):
-    """Whether cc takes LIGHT_FLAGS: one tiny compile. -opt-disable is LLVM 22's, and a Linux system's older clang (README: it
+    """Whether cc takes LIGHT_FLAGS: one tiny compile. -opt-disable is LLVM 22's, and a Linux system's older clang (it
     builds, without the play profile) stops at it, so every light chunk would fail: with such a compiler they keep every pass"""
     try:
         r = subprocess.run([cc, "-x", "c", "-O1", "-Wno-everything", "-S", "-o", "-", "-"] + LIGHT_FLAGS,
@@ -1279,12 +1280,20 @@ def hot_flags(fl):
     return [("-" + os.environ.get("RX_HOT_OPT", "O2")) if f == "-" + OPT else f for f in fl] + split_giants_flags()
 
 
-def source_flags(src, gen, fl, split_fl, hot_fl, deps, bar_kb):
-    """A source's flags: the hot pieces' hot_fl; a lifted chunk's split_fl at -O2 when LONGSHOT_CHUNK_OPT selects it (no light
-    flags), else light or not (lifted_flags); fl for the rest"""
+def a64_rt_flags(fl):
+    """Shared A64 instruction/runtime helpers (a64_rt.c, a64_suyu.c): -O2 by default, or fl's OPT when RX_A64_RT_O2 is off"""
+    rt_o2 = os.environ.get("RX_A64_RT_O2", "1").strip().lower() not in ("", "0", "false", "off", "no")
+    return [("-O2" if rt_o2 else "-" + OPT) if f == "-" + OPT else f for f in fl], rt_o2
+
+
+def source_flags(src, gen, fl, split_fl, hot_fl, deps, bar_kb, a64_rt_fl=None):
+    """A source's flags: the hot pieces' hot_fl; the shared A64 helpers' a64_rt_fl; a lifted chunk's split_fl at -O2 when
+    LONGSHOT_CHUNK_OPT selects it (no light flags), else light or not (lifted_flags); fl for the rest"""
     name = os.path.basename(src)
     if name.startswith("code_hot"):
         return hot_fl
+    if name in ("a64_rt.c", "a64_suyu.c"):
+        return a64_rt_fl if a64_rt_fl is not None else a64_rt_flags(fl)[0]
     if name.startswith("code_") and os.path.dirname(src) == gen:
         return chunk_flags(src, split_fl) or lifted_flags(src, split_fl, deps, bar_kb)
     return fl
@@ -1304,11 +1313,11 @@ def write_info(out):
 
 def flag_text(fl):
     """The flags an object key is named by. Include folders are left out (their headers are in deps). The builder's
-    own folder is <root> (issue 565: versions\\<tag>\\... made every update look new). --sysroot= is <sysroot>: the
+    own folder is <root> (versions\\<tag>\\... would make every update look new). --sysroot= is <sysroot>: the
     AppImage mount is a new /tmp/.mount_... path every start, and that path is not a change in the headers. -MD is left out:
     it writes the depfile beside the object (renderer_deps) and changes nothing in it. -fprofile-instr-use= is <profile>: the
     play profile (RX_PGO, RX_VK_PGO) is in the work folder, and its contents are in the -D..._PROFILE_SHA1 beside it; its path
-    kept another work folder from sharing the hot pieces and the renderer's objects (object_store.py, dev_packs.py)."""
+    kept another work folder from sharing the hot pieces and the renderer's objects (object_store.py, `dev.py packs`)."""
     kept = []
     for f in fl:
         if f.startswith("-I") or f == "-MD":
@@ -1354,7 +1363,7 @@ HASH_SCHEME = 1
 RACY_NS = 2 * 10 ** 9
 HASHES = {}   # (source path -> {"stat": [size, mtime_ns, id], "sha1": the content's, "keys": {kept_part: object key}})
 HASHES_AT = [0]   # (when the record read in was written, in ns: entries for files written after it, less RACY_NS, are not trusted)
-# (hckrman101 on #2702) a record is written under the time its build started, before it stat'd and read any source: the save
+# A record is written under the time its build started, before it stat'd and read any source: the save
 # comes after the whole plan, seconds later, and the 2 s rule is about the stat. And it keeps, for each source this build looked
 # at, only the keys this build asked for: a header's edit added a key to every renderer source, and the file only grew. A source
 # this build did not look at (a renderer-only build's lifted C) keeps its record as it was
@@ -1597,8 +1606,8 @@ DEPFILE_JOBS = {}   # (a back-end or host object -> the folders' blob, the folde
 def rekey_depfiles(jobs):
     """After the compile: each back-end object stamped and cached by the key its own depfile gives (renderer_deps), the only key
     that vouches for it. An object compiled now is stamped DEPFILE_PENDING by compile_one when its planned key came from the last
-    compile's depfile, which may lack a header the new source reads (hckrman101 on #2706: add an include, take it out, edit the
-    header, put it back, and that key named an object built with the old header); one compiled from the folders' blob was cached
+    compile's depfile, which may lack a header the new source reads (add an include, take it out, edit the header, put it
+    back, and that key names an object built with the old header); one compiled from the folders' blob was cached
     by that key too, which covers every header. One stamped otherwise is another build's and is left alone"""
     for cc, src, obj, fl, deps in jobs:
         if obj not in DEPFILE_JOBS or not os.path.exists(obj):
@@ -1690,6 +1699,18 @@ def compile_one(job):
     return src, time.time() - t, None
 
 
+def copy_renhdrum(out, name):
+    """(longshot) RenHDrum beside the game (renhdrum.dll, renhdrum.so on Linux): host/rumble_renhdrum.c loads it by full
+    path from the game's own folder, for the controllers it plays (host/vibration.h). scripts/renhdrum.py build makes it,
+    the Builder and the AppImage carry it in third_party/renhdrum/. Optional: without it every controller keeps its motors
+    or its own HD rumble"""
+    rh = os.path.join(kit.HERE, "..", "third_party", "renhdrum", name)
+    dst = os.path.join(out, name)
+    if os.path.exists(rh) and (not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(rh)):
+        import shutil
+        shutil.copyfile(rh, dst)
+
+
 def main():
     kit.wait_for_quiet('the compile')
     p = argparse.ArgumentParser()
@@ -1720,8 +1741,8 @@ def main():
     tp_stamp = third_party_objects.stamp(cc, toolchain.find("clang++"), target(), THIRD_PARTY_CPU, vulkan_headers())
     tp_deps = b"third-party " + tp_stamp.encode()
     fl = flags(gen, rt64, OPT, True) + (["-DA64_POLL_CTX"] if a.dll else [])   # (the shim's poll takes the context: rtgen.py)
-    # (which Longshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
-    # release name rebuilds them and nothing else)
+    # (which Longshot this is, for the log's first line and the Insert menu: given to host/version.c and gpu/vk/vk_version.cpp
+    # only, two one-line files, so a new version (every source change moves its fingerprint) compiles them and nothing else)
     stamp_def = version.define()
     print("version: %s" % version.describe(), flush=True)
     # (the lifted chunks include only the guest model: the emulator ABI header is a dependency of the shim alone)
@@ -1776,6 +1797,11 @@ def main():
     # (longshot) code_hot.c, the lift's hot functions together (A64_HOT_FUNCS + A64_HOT_CHUNK=1): at RX_HOT_OPT
     # (default O2, so the hot callees inline into their hot callers) and with the giants split, as the lifted chunks are
     hot_fl = hot_flags(fl)
+    # The shared instruction/runtime helpers are small, unlike the cold lifted game chunks. Optimize their bodies
+    # without raising the level of those giant chunks; keep every other semantic flag unchanged.
+    a64_rt_fl, rt_o2 = a64_rt_flags(fl)
+    print("build: shared A64 runtime helpers at %s (RX_A64_RT_O2=0: cold-code level)" %
+          ("O2" if rt_o2 else OPT), flush=True)
     # (longshot) RX_PGO=gen: code_hot.c counts its branches (host/pgo_rt.c writes them; -O1 builds much sooner, and the counters are
     # placed before the optimiser, so a profile from it fits the -O2 build). RX_PGO=<merged .prof>: built with that profile
     if PGO == "gen":
@@ -1799,7 +1825,7 @@ def main():
     for s in srcs:
         name = os.path.basename(s)
         obj = os.path.join(obj_dir, name[:-2] + ".o")
-        sfl = source_flags(s, gen, fl, split_fl, hot_fl, deps, bar_kb)
+        sfl = source_flags(s, gen, fl, split_fl, hot_fl, deps, bar_kb, a64_rt_fl)
         selected = part_mb and name.startswith("code_") and not name.startswith("code_hot") and os.path.dirname(s) == gen \
             and (CHUNK_OPT_O2 == "*" or name in CHUNK_OPT_O2)
         parts = chunk_parts(s, part_mb, split_dir, split_flag) if selected else None
@@ -1828,7 +1854,7 @@ def main():
             return KEPT_STALE
         print("the translation kept from the last build: %d files, their objects cached" % len(KEPT), flush=True)
         PLANNED.update({(j[1], j[2]): KEPT[j[1]][0] for j in jobs if j[1] in KEPT and not os.path.exists(j[1])})
-    # (issue 624) what the game code's object keys are made of, as short fingerprints: two builds' logs side by side say which part
+    # what the game code's object keys are made of, as short fingerprints: two builds' logs side by side say which part
     # changed when an update compiled everything again (the headers, the flags, the profile, or the lifted code itself)
     fp = lambda b: hashlib.sha1(b, usedforsecurity=False).hexdigest()[:10]
     norm = lambda f: flag_text(f).encode()
@@ -1864,7 +1890,7 @@ def main():
                      host_fl + ["-MD", "-I" + os.path.join(OPUS, "include")] +
                      (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
                      (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
-                     ([stamp_def] if os.path.basename(s) == "hos_main.c" else []) +
+                     ([stamp_def] if os.path.basename(s) == "version.c" else []) +
                      (["-I" + ZSTD] if os.path.basename(s) in ZSTD_HOST else []) +
                      (dav1d_fl if os.path.basename(s) in ("nn_video.c", "dav1d_av1.c") else []),
                      renderer_deps(host_blob, host_roots, obj) + extras))
@@ -1937,8 +1963,14 @@ def main():
     # the Vulkan back end, a DLL of its own (the only renderer): CPM cache, LONGSHOT_*_HEADERS, or system includes
     vk_jobs = []
     vk_headers, spirv_headers, vma_headers = vulkan_headers()
-    build_vk = a.standalone and vk_headers and spirv_headers and vma_headers
-    if a.standalone and not build_vk:
+    # (RX_GAME_ONLY=1, a development pack whose change the renderer is not built from (scripts/devtools/packs.py
+    # renderer_untouched): the game alone, the renderer neither compiled nor linked. Never in a player's build)
+    game_only = kit.env_on("RX_GAME_ONLY")
+    if game_only and kit.env_on("RX_VK_ONLY"):
+        print("RX_GAME_ONLY and RX_VK_ONLY both set: nothing would be built", flush=True)
+        return 1
+    build_vk = a.standalone and not game_only and vk_headers and spirv_headers and vma_headers
+    if a.standalone and not game_only and not build_vk:
         # (was silent: the exe linked, the renderer then fell through to a stub, black window)
         missing = [n for n, p in (("Vulkan", vk_headers), ("SPIR-V", spirv_headers), ("VMA", vma_headers)) if not p]
         print("no headers for %s (missing %s). Set RX_CPM to a CPM cache, or LONGSHOT_VULKAN_HEADERS / "
@@ -1959,7 +1991,7 @@ def main():
         fonts_cpp = os.path.join(gen_dir, "ui_fonts.cpp")
         ui_fonts.write(fonts_cpp)
         # (what the shader caches are good for: what translates shaders, not the whole DLL, so a build that changes something else
-        # keeps them: nx2/translator_files.py names it, for scripts/dev_packs.py and the bake tools too)
+        # keeps them: nx2/translator_files.py names it, for `scripts/dev.py packs` too)
         shader_stamp = "-DLONGSHOT_SHADER_STAMP=0x%sull" % translator_files.stamp(vk)
         vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (longshot: the replay is the frame's limit now)
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
@@ -1981,7 +2013,7 @@ def main():
         # (the third-party parts' flags: the same, at THIRD_PARTY_CPU, and without the release's define, which none of them
         # reads, so a set made for players fits a developer's build too)
         tp_vflags = target() + THIRD_PARTY_CPU + [f for f in vflags[len(target()) + len(CPU):] if f != "-DLONGSHOT_RELEASE"]
-        # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
+        # (NVIDIA DLSS, a local build's option: scripts/fetch.py dlss. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DLONGSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
         ngx_deps = tree_headers(os.path.join(NGX_SDK, "include")) if NGX_SDK else b""
@@ -2054,7 +2086,9 @@ def main():
             lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
             obj = os.path.join(obj_dir, "vk_" + name + ".o")
             extras = ((logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
-                      (output_device_deps if os.path.basename(src) == "vk_menu.cpp" else b"") +
+                      # (the playback devices' header, outside vdeps_roots: its users, the menu and its Audio tab's module, #1633)
+                      (output_device_deps if os.path.relpath(src, vk).replace(os.sep, "/") in ("vk_menu.cpp", "menu/audio.cpp")
+                       else b"") +
                       (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
                       (xess_deps if os.path.basename(src) == "vk_xess.cpp" else b"") +
                       (imgui_deps if os.path.basename(src) in imgui_users else b""))
@@ -2063,7 +2097,7 @@ def main():
             vk_jobs.append((cxx, src, obj,
                             (tp_vflags if lib else vflags + vk_pgo_flags) + ([] if lib else ["-MD"]) +
                             ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
-                            ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
+                            ([stamp_def] if os.path.basename(src) == "vk_version.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []) +
@@ -2246,6 +2280,7 @@ def main():
         if sdl and os.path.exists(sdl):
             import shutil
             shutil.copyfile(sdl, os.path.join(out, "libSDL2-2.0.so.0"))
+        copy_renhdrum(out, "renhdrum.so")
     elif a.standalone and not vk_only:
         exe = os.path.join(out, "longshot.exe")   # (+ longshot.map: crash offsets -> f_<guest address>)
         t = time.time()
@@ -2259,8 +2294,10 @@ def main():
                             ["-lbcrypt", "-lmfplat", "-lmfuuid", "-lstrmiids", "-lole32"] if FFMPEG else []) +
                            ([os.path.join(dav1d_windows(), "lib", "libdav1d.a")] if dav1d_windows() else []) +
                            (["-lc++", "-lunwind"] if toolchain.mingw() else []) +   # (llvm-mingw: the C++ parts' runtime, linked in; MSVC's comes by itself)
-                           # (LONGSHOT_TRACY: the client's sockets, and its exported C API's import library for the back end)
-                           (["-lws2_32"] + linker("/implib:" + os.path.join(out, TRACY_IMPLIB)) if TRACY else []),
+                           # (LONGSHOT_TRACY: the client's sockets, the user name it shows the viewer (GetUserNameExA, which
+                           # TracySystem.cpp asks secur32 for only under MSVC), and its exported C API's import library
+                           # for the back end)
+                           (["-lws2_32", "-lsecur32"] + linker("/implib:" + os.path.join(out, TRACY_IMPLIB)) if TRACY else []),
                            exe)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
         if r.returncode:
@@ -2291,6 +2328,7 @@ def main():
         if os.path.exists(sdl3) and (not os.path.exists(sdl3_dst) or os.path.getsize(sdl3_dst) != os.path.getsize(sdl3)):
             import shutil
             shutil.copyfile(sdl3, sdl3_dst)
+        copy_renhdrum(out, "renhdrum.dll")
     if vk_jobs:   # (longshot_vk.dll beside the exe: loaded by host/rx_backend.c)
         vdll = os.path.join(out, VK_LIB)
         vrsp = os.path.join(out, "vk_objs.rsp")

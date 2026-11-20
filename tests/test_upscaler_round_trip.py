@@ -12,6 +12,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_model_prelude, menu_model_member, menu_text, unbroken  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,7 +115,7 @@ const char* hn_dlss_model(int, int) { return ""; }
 const char* tx_preset(int) { return ""; }
 const char* hn_preset(int, int) { return ""; }
 Row rows[] = {/* UPSCALER_ROW */, /* RESOLUTION_ROW */, /* MODEL_ROW */, /* PRESET_ROW */};
-constexpr int kRows = sizeof rows / sizeof rows[0];
+[[maybe_unused]] constexpr int kRows = sizeof rows / sizeof rows[0];   // (#1633: the cut functions take std::size(rows))
 /* OVERRIDES */
 int monitor_pick;
 std::string monitor_want, monitor_saved_name;
@@ -392,7 +396,8 @@ int main(int argc, char** argv) {
 
 
 def fixture(source):
-    menu = (source / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines, #1633: the upscaler rows are gpu/vk/menu/upscaler.cpp's)
+    menu = menu_text(source) if (source / "gpu/vk/menu").is_dir() else (source / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
     header = (source / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
     init = definition(menu, "void menu_init")
     load_at = init.index('    if (FILE* f = fopen(ini_path().c_str(), "r")) {')
@@ -403,7 +408,7 @@ def fixture(source):
         "AUTO_PRESET": header[auto_at:header.index(";", auto_at) + 1],
         "TABS": block(menu, menu.index("enum MenuTab {")) + ";",
         "ROW": block(menu, menu.index("struct Row {")) + ";",
-        "OVERRIDES": menu[menu.index("struct EnvOverride {"):menu.index("std::string ini_path() {")],
+        "OVERRIDES": unbroken(menu[menu.index("struct EnvOverride {"):menu.index("std::string ini_path() {")]),
         "LOAD": init[load_at:init.index("    first_start = !has_options;", load_at)],
         "SCALE": definition(menu, "int twelfths") + "\n" + definition(menu, "void game_size"),
         "TEXT": definition(menu, "const char* tx_resolution") + "\n" + definition(menu, "const char* hn_resolution"),
@@ -432,7 +437,7 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="upscaler-round-trip-") as tmp:
         src, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture.exe"
-        src.write_text(fixture(args.source), encoding="utf-8")
+        src.write_text(menu_model_prelude(args.source) + fixture(args.source), encoding="utf-8")
         include = str((args.source / "gpu/vk").resolve())
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
             command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/I" + include,

@@ -27,6 +27,10 @@ spec = importlib.util.spec_from_file_location("make_game_under_test", SOURCE)
 make_game = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(make_game)
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "nx2"))
+import kit  # noqa: E402,F401
+import a64_lift  # noqa: E402
+
 
 class Prepared(Exception):
     """Stop at the first lift request, before compiling or reading any game."""
@@ -101,6 +105,7 @@ class NupCacheHarness(unittest.TestCase):
     def run_to_lift(self, nup, failure=None, supported=True, include_romfs=True, update=False, folders=None,
                     romfs_files=None, start_files=True, romfs_from=None, overlap=False, replace_package=False):
         self.assert_owned_fixture()
+        real_run = make_game.run
 
         translating = threading.Event()
         reading_assets = threading.Event()
@@ -142,7 +147,12 @@ class NupCacheHarness(unittest.TestCase):
                 translating.set()
                 if overlap:
                     self.assertTrue(reading_assets.wait(5), "translation must run beside the asset reader")
-                raise Prepared
+                # Exercise run's real environment merge, stopping before it can launch anything.
+                with mock.patch.object(make_game.subprocess, "Popen", side_effect=Prepared) as child:
+                    try:
+                        real_run(cmd, env=env, on_line=on_line)
+                    finally:
+                        self.lift_env = child.call_args.kwargs["env"]
             self.fail("Unexpected build subprocess: %r" % cmd)
 
         argv = ["make_game.py", "--work", str(self.work)]
@@ -177,6 +187,8 @@ class NupCacheHarness(unittest.TestCase):
             # vk_profile_for's default root was bound at import; use this authored checkout too.
             stack.enter_context(mock.patch.object(make_game, "vk_profile_for",
                                                   partial(make_game.vk_profile_for, root=make_game.ROOT)))
+            stack.enter_context(mock.patch.object(make_game, "hot_list_for",
+                                                  partial(make_game.hot_list_for, root=make_game.ROOT)))
             stack.enter_context(mock.patch.object(make_game, "lift_key", return_value="test key"))
             if overlap:
                 stack.enter_context(mock.patch.object(make_game, "overlap_package_read", return_value=True))
@@ -233,6 +245,32 @@ class NupCacheTests(NupCacheHarness):
             self.run_to_lift(self.new_nup, overlap=True, replace_package=True)
         for name in (".game", "romfs", ".longshot_exefs", ".longshot_romfs"):
             self.assertFalse((self.out / name).exists(), name)
+
+    def test_default_hot_list_selects_profile_functions(self):
+        clean = {k: v for k, v in os.environ.items() if k not in ("A64_HOT_FUNCS", "LONGSHOT_HOT_LIST")}
+        default = self.root / "checkout" / "work" / "hot_funcs.txt"
+        default.parent.mkdir(parents=True)
+        default.write_text("f_80000000\n")
+        with mock.patch.dict(os.environ, clean, clear=True), self.assertRaises(Prepared):
+            self.run_to_lift(self.new_nup)
+        with mock.patch.dict(os.environ, self.lift_env, clear=True):
+            self.assertEqual(a64_lift.hot_functions(), {"f_80000000"})
+
+    def test_external_hot_list_selects_external_functions(self):
+        (self.work / "hot_funcs.txt").write_text("f_80000000\n")
+        external = self.root / "external hot list.txt"
+        external.write_text("f_80000004\n")
+        with mock.patch.dict(os.environ, {"A64_HOT_FUNCS": str(external)}), self.assertRaises(Prepared):
+            self.run_to_lift(self.new_nup)
+        with mock.patch.dict(os.environ, self.lift_env, clear=True):
+            self.assertEqual(a64_lift.hot_functions(), {"f_80000004"})
+
+    def test_empty_hot_list_override_disables_hot_selection(self):
+        (self.work / "hot_funcs.txt").write_text("f_80000000\n")
+        with mock.patch.dict(os.environ, {"A64_HOT_FUNCS": ""}), self.assertRaises(Prepared):
+            self.run_to_lift(self.new_nup)
+        with mock.patch.dict(os.environ, self.lift_env, clear=True):
+            self.assertEqual(a64_lift.hot_functions(), set())
 
     def test_failed_scratch_exefs_cleanup_stops_before_copy_or_extraction(self):
         scratch = self.work / "exefs"

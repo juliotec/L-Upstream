@@ -29,7 +29,7 @@
    (f_838ceb80 and f_838cfc10, into the solver's +712; 8 a 60 fps frame in the places seen). A step under 1 cuts that short,
    and as the measured step wanders around its mean the count changes from frame to frame (8 x 0.49 is 3, 8 x 0.5 is 4 at 120
    fps); 4 steps a 60 fps frame would be 0 above 240. A moving platform (the stone one under the spikes in the Deku Tree)
-   then slides out from under Link (issue 1798). While the step is under 1 the count is rounded up instead, so a solver step
+   then slides out from under Link. While the step is under 1 the count is rounded up instead, so a solver step
    never covers more time than at 60 fps, give or take 10% (the frame time's jitter, so a steady rate keeps a steady count),
    and it is at least 1 and never under the game's. A step of 1 or more (a frame slower than 60 fps) keeps the game's count.
 
@@ -47,7 +47,7 @@
    moving floor is carried by the floor's velocity, but each module first tests the physics time object's 1/dt (+0x28) and,
    above 100 (a frame under 10 ms: at 60 fps, time slowed below 0.6 of real time), carries the character by a tenth of it.
    Above 100 fps every frame is under 10 ms: on the Shadow Temple's barge Link and the enemies kept a tenth of its velocity and
-   slid to its back (issue 439; the share moved from all to a tenth at 1/dt 100, at any step either side of it). Above a
+   slid to its back (the share moves from all to a tenth at 1/dt 100, at any step either side of it). Above a
    cap of 60, on a frame shorter than a 60 fps one, 1/dt times the frame's step (the game's time object, +0x10: 0.5 at 120 fps)
    is tested instead: the game's test as it would be at 60 fps, so time slowed below 0.6 still takes the tenth. At a cap of
    60, and on a frame of a 60 fps one or longer, the game's own test decides.
@@ -60,7 +60,7 @@
    delivers only part of the move (1.00 at 60, 0.94 at 90, 0.86 at 120, 0.82 at 144, 0.78 at 170, whatever the solver's
    substep count), and the next target starts from where the body ended up, so the shortfall is never made up: the pull-up
    lifted Link 2.5 m instead of 2.8 at 140 fps, and he slid back on the lip until he got over, falling back to the hang when
-   forward was let go (issue 1494). Above a cap of 60, on a frame shorter than a 60 fps one, Link's driven body is given last
+   forward was let go. Above a cap of 60, on a frame shorter than a 60 fps one, Link's driven body is given last
    update's target plus this frame's move instead (its target plus what the physics left of the last one), at most three
    frames' moves more, so it follows the animation's path. A climb starts from the game's own target (the carry needs the
    update before). At a cap of 60 nothing is carried: the body lands on its target there. (The physics' share is tuned in
@@ -83,12 +83,12 @@
    as a job on the game's job workers (f_81b47080, under the job runner f_8016b620), once a frame for each cloth near the camera,
    and each solve steps a 60th: at 240 fps four solves where the console makes one, so the cloth ran four times too fast and cost
    four times the CPU. Near King Zora in Zora's Domain (his robe) that held the frame at about 55 fps under a cap of 240, the
-   main thread waiting for the workers (issue #1485: the solve 45.7 % of the workers' game code there, about 10.5 ms of CPU a
+   main thread waiting for the workers (the solve 45.7 % of the workers' game code there, about 10.5 ms of CPU a
    frame, against 15 % and about 2 ms on the path below). On a frame whose step is under 1, the job solves only when the game
    clock (the double f_80706be0 adds each frame's step to, in 60ths: hos_step_probe + 0xd58) has crossed a whole 60th since the
    frame before (oot_cloth_gate); otherwise it returns at once with its own result, 0, before it saves anything, and the cloth
    keeps its last pose. Every job that sees one clock value makes the same choice, so the cloth of one frame solves or holds
-   together. A clock that went back (a load) solves and starts again. At a step of 1 or more (60 fps and below, #1384's case),
+   together. A clock that went back (a load) solves and starts again. At a step of 1 or more (60 fps and below),
    at a cap of 60 and for a step that is not a number, every frame solves, as the game has it. The solve job calls only the
    cloth's own code, timer scopes (nn::os::GetSystemTick), thread-local lookups and a scratch buffer of its own: no job is
    started or signalled from it and no memory the setup made is freed in it (read from the lift).

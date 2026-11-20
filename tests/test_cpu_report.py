@@ -1,15 +1,16 @@
-"""scripts/cpu_report.py on a synthetic capture: linker maps in lld's format, an all-thread sample file and load.json, no game.
+"""scripts/perf.py cpu on a synthetic capture: linker maps in lld's format, an all-thread sample file and load.json, no game.
 Checks the owner and self views (a driver leaf under the renderer is charged to the renderer in the owner view), the guest
 subsystem map, blocked samples left out of CPU time, the per-thread table, unclassified symbols listed, and the categories'
 own rule order; with a broken variant: a rule set where nothing matches must leave everything unclassified.
 
     python -I -B tests/test_cpu_report.py
 """
-import importlib, json, os, re, subprocess, sys, tempfile
+import importlib, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "cpu_report.py"
+SCRIPT = ROOT / "scripts" / "perf.py"
+PACKAGE = ROOT / "scripts" / "profiling"
 
 EXE_MAP = """ longshot
 
@@ -64,25 +65,27 @@ def run(tmp, cats_text=None, extra=(), candidates=None, guest=True, samples=None
     (maps / "longshot_vk.map").write_text(VK_MAP, encoding="utf-8")
     (maps / "ntdll.dll.map").write_text(NTDLL_MAP, encoding="utf-8")
     (rundir / "all.txt").write_text("\n".join(samples or SAMPLES) + "\n", encoding="utf-8")
+    # (a copy of the tool and its package, whose categories and data files the test replaces; the package's sample file
+    # reader reads both sample formats: #1279)
     scripts = tmp / "scripts"
-    scripts.mkdir(exist_ok=True)
-    (scripts / "cpu_report.py").write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
-    text = cats_text if cats_text is not None else (ROOT / "scripts" / "cpu_categories.py").read_text(encoding="utf-8")
-    (scripts / "cpu_categories.py").write_text(text, encoding="utf-8")
-    # (the sample file reader cpu_report.py imports beside it, both sample formats: #1279)
-    (scripts / "samples.py").write_text((ROOT / "scripts" / "samples.py").read_text(encoding="utf-8"), encoding="utf-8")
+    shutil.rmtree(scripts, ignore_errors=True)
+    shutil.copytree(PACKAGE, scripts / "profiling", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(SCRIPT, scripts / "perf.py")
+    if cats_text is not None:
+        (scripts / "profiling" / "cpu_categories.py").write_text(cats_text, encoding="utf-8")
     # (a local guest map, as a developer would pass it; without it lifted code must be one row)
     (tmp / "guest_map.py").write_text("GUEST_MAP = [(0x80000000, 0x80800000, 'main', 'core', 'test'), "
                                       "(0x80800000, 0x81000000, 'main', 'actors', 'test')]\n", encoding="utf-8")
     if guest:
         extra = ("--guest-map", str(tmp / "guest_map.py")) + tuple(extra)
-    (scripts / "cpu_functions.json").write_text(json.dumps({"draw_one": {"does": "translates one draw"}}), encoding="utf-8")
-    (scripts / "cpu_candidates.json").write_text(json.dumps(candidates or CANDIDATES), encoding="utf-8")
+    (scripts / "profiling" / "cpu_functions.json").write_text(json.dumps({"draw_one": {"does": "translates one draw"}}),
+                                                               encoding="utf-8")
+    (scripts / "profiling" / "cpu_candidates.json").write_text(json.dumps(candidates or CANDIDATES), encoding="utf-8")
     out = tmp / "report.md"
-    r = subprocess.run([sys.executable, "-I", "-B", str(scripts / "cpu_report.py"), str(rundir), "--maps", str(maps), "--out", str(out),
-                        "--fps", "50", "--csv", str(tmp / "csv"), *extra], capture_output=True, text=True, timeout=120)
+    r = subprocess.run([sys.executable, "-I", "-B", str(scripts / "perf.py"), "cpu", str(rundir), "--maps", str(maps), "--out",
+                        str(out), "--fps", "50", "--csv", str(tmp / "csv"), *extra], capture_output=True, text=True, timeout=120)
     if r.returncode:
-        raise SystemExit("cpu_report.py failed:\n" + r.stdout + r.stderr)
+        raise SystemExit("perf.py cpu failed:\n" + r.stdout + r.stderr)
     return out.read_text(encoding="utf-8")
 
 
@@ -136,7 +139,7 @@ def main():
         if not cand0 or "| 0.0 (0.00) |" not in cand0:
             failures.append("CONTROL: a candidate matching nothing should cost nothing: %s" % cand0)
         # (broken variant: rules that match nothing must leave everything unclassified)
-        cats = (ROOT / "scripts" / "cpu_categories.py").read_text(encoding="utf-8")
+        cats = (PACKAGE / "cpu_categories.py").read_text(encoding="utf-8")
         broken = cats.replace("RULES = [", "RULES = [] and [", 1)
         md2 = run(Path(t), broken)
         if not row(md2.split("## By category: who executes it")[0], "**unclassified**") or row(md2, "os/sync"):
@@ -157,7 +160,7 @@ def main():
         if not row(pub.split("## By category: who executes it")[0], "game/lifted"):
             failures.append("without --guest-map lifted code should be the game/lifted category")
     sys.path.insert(0, str(ROOT / "scripts"))
-    rep = importlib.import_module("cpu_report")
+    rep = importlib.import_module("profiling.cpu")
     with tempfile.TemporaryDirectory(prefix="cpu-calls-") as t:   # (HOS_HLE_STATS summaries: the last blocks only; rows end in ";")
         (Path(t) / "game.log").write_text(
             "[hos host] hle: 900 calls of 2 functions in 5 s\n[hos host] hle: 800 _ZN2nn2os9LockMutexEPNS0_9MutexTypeE;\n[hos host] hle: 100 nvnQueueSubmitCommands;\n"
@@ -193,13 +196,13 @@ def main():
             failures.append("measurement filter: %r should %sbe dropped" % (text, "" if measured else "not "))
     if rep.nn_name("imp__ZN2nn2os14WaitLightEventEPNS0_14LightEventTypeE") != "nn::os::WaitLightEvent":
         failures.append("nn_name does not demangle the HLE entry")
-    c = importlib.import_module("cpu_categories")
+    c = importlib.import_module("profiling.cpu_categories")
     for r in c.RULES:
         if len(r) != 4 or not isinstance(r[3], str):
             failures.append("a rule is not (module, object, symbol, category): %r" % (r,))
     if failures:
         raise SystemExit("\n".join(failures))
-    print("PASS cpu_report: owner and self views, guest subsystems, threads, descriptions, unclassified; control caught")
+    print("PASS perf.py cpu: owner and self views, guest subsystems, threads, descriptions, unclassified; control caught")
 
 
 if __name__ == "__main__":

@@ -35,19 +35,23 @@ def main():
     a = p.parse_args()
     vk = ROOT / "gpu" / "vk"
     menu = (vk / "vk_menu.cpp").read_text(encoding="utf-8")
-    row = re.search(r'\{TAB_GAMEPLAY, "FPS counter", &opts\.show_fps, 0, ([^,]+), 1, (\w+),', menu)
+    # (the rows: gpu/vk/menu/fps_counter.cpp, #1633)
+    module = (vk / "menu" / "fps_counter.cpp").read_text(encoding="utf-8")
+    row = re.search(r'\.key = "fps_counter",\s*\.label = "FPS counter",.*?\.value = &opts\.show_fps,\s*\.lo = 0, \.hi = ([^,\n]+),'
+                    r'.*?std::string\((\w+)\(v\)\)', module, re.S)
     need(row, "the Gameplay tab has no FPS counter row on opts.show_fps")
     need(row.group(1).strip() == "fps_stats::kLevels - 1" and row.group(2) == "tx_fps_level",
          "the FPS counter row is not the levels' (0 to fps_stats::kLevels - 1, tx_fps_level)")
-    need("fps_stats::level_name(" in body(menu, "const char* tx_fps_level("), "tx_fps_level does not use fps_stats::level_name")
+    need("fps_stats::level_name(" in body(module, "const char* tx_fps_level("), "tx_fps_level does not use fps_stats::level_name")
     # (the key the row saves under is its name's: fps_counter, as before the levels, so an old file's 1 is FPS)
     need("show_fps" not in body(menu, "const char* ini_key("), "the FPS counter's key was renamed: old options files would not load")
-    hints = body(menu, "MENU_HINTS(hn_fps,")
+    hints = body(module, "MODULE_HINTS(hn_fps,")
     need(hints.count('"') // 2 >= 5, "the FPS counter's hints do not cover every level")
     texts = body(menu, "void fps_texts(")
     for use in ("fs::kDev", "draw_stats(", "draw_stats2(", "texture_stats(", "vram_usage(", "texture_count()", "fps_dev_text"):
         need(use in texts, "fps_texts does not write the Dev level's %s" % use)
-    need(re.search(r'\{TAB_GAMEPLAY, "FPS counter position", &opts\.fps_corner, 0, 3, 1, tx_fps_corner,', menu),
+    need(re.search(r'\.label = "FPS counter position",.*?\.value = &opts\.fps_corner,\s*\.lo = 0, \.hi = 3,.*?tx_fps_corner\(v\)',
+                   module, re.S),
          "the Gameplay tab has no FPS counter position row")
     tick = menu[menu.index("void menu_tick()"):menu.index("void menu_record(")]
     need("fps_level_now.store(" in tick and "fps_texts(" in tick, "menu_tick does not tell vk_fps.cpp the level or write the lines")
@@ -76,7 +80,7 @@ def main():
     need("(::vkx::vkWaitForFences)(dev.device, 1, &copy, VK_TRUE, 0)" in out and out.count("vkWaitForFences") == 1,
          "present_out waits for the copy to time it (only a wait of no time, its state): the Breakdown would change the present")
     need("presenter.copy_done_at" in body(replay, "bool presenter_wait_idle(") and "presenter_wait_idle(lk)" in body(
-        replay, "void present_hand_off(uint32_t index, VkFence done) {"), "the wait for the presenter thread is not split at the end of its wait for the copy")
+        replay, "void present_hand_off(uint32_t index, VkFence done, uint64_t reflex_id) {"), "the wait for the presenter thread is not split at the end of its wait for the copy")
     fps = (vk / "vk_fps.cpp").read_text(encoding="utf-8")
     # (off and FPS: nothing measured; the Breakdown's timers only while it shows)
     pres = body(fps, "void fps_presented()")

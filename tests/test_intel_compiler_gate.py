@@ -14,6 +14,9 @@ python -I -B tests/test_intel_compiler_gate.py
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def block(text, marker, start_at=0):
@@ -51,7 +54,8 @@ def main():
     need("if (!intel_gate_on()) return;" in gate, "the lock is taken where it is off")
     # (an ask that compiles nothing never waits behind a worker's compile: it is answered cold, HumanBean's review of #252)
     need("std::try_to_lock" in gate and "busy = !hold.owns_lock();" in gate, "an ask waits for the lock")
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines: menu_text, #1633)
+    menu = menu_text(ROOT)
     side = block(menu, "bool intel_compiles_side_by_side() {")
     need("return intel_side_by_side_chosen(opts.intel_compiles, dev.props.deviceID, dev.props.driverVersion);" in side,
          "the lock does not read the Intel shader compiles row (its Auto with the GPU and the driver: intel_compiles.h)")
@@ -61,9 +65,14 @@ def main():
          "no Intel shader compiles row")
     shown = block(menu, "bool intel_compiler_row() {")
     need("#ifdef _WIN32" in shown and "dev.props.vendorID == 0x8086" in shown, "the row shows where the lock never holds")
-    need("(v != &opts.intel_compiles || intel_compiler_row())" in block(menu, "bool row_shown(int i) {"),
+    # (the row's own visibility and lock, gpu/vk/menu/intel.cpp: row_shown and row_fixed ask a module's row its shown and
+    # locked)
+    intel = (ROOT / "gpu/vk/menu/intel.cpp").read_text(encoding="utf-8")
+    row = intel[intel.index('.key = "intel_shader_compiles"'):intel.index('.key = "intel_quick_compute_builds"')]
+    need(".shown = MENU_HOOK(intel_compiler_row)" in row and "rows[i].setting->shown()" in block(menu, "bool row_shown(int i) {"),
          "the row is not limited to Intel graphics on Windows")
-    need('(value == &opts.intel_compiles && getenv("RX_VK_NO_INTEL_SERIAL"))' in block(menu, "bool row_fixed(const int* value) {"),
+    need('getenv("RX_VK_NO_INTEL_SERIAL")' in row[row.index(".locked"):row.index(".text")] and
+         "module_locked(value)" in block(menu, "bool row_fixed(const int* value) {"),
          "the row can be changed while RX_VK_NO_INTEL_SERIAL holds it")
     need("std::unique_lock<std::mutex>(mu)" in gate, "the compiler is not entered by one thread")
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")

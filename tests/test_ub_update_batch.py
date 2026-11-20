@@ -95,21 +95,23 @@ void wrote(int pool, uint64_t lo, uint64_t hi) {
     for (const Range& r : pending) if (r.pool == pool && lo < r.hi && r.lo < hi) ++hazards;
     pending.push_back({pool, lo, hi});
 }
-namespace rec {
-void rx_vkCmdPipelineBarrier2(VkCommandBuffer cmd, const VkDependencyInfo* d) {
+}
+namespace vkx {   // (the driver's calls, which vk_work.h's wrappers make after their count: applied as they are recorded)
+using namespace mkwvk;
+void vkCmdPipelineBarrier2(VkCommandBuffer cmd, const VkDependencyInfo* d) {
     if (cmd != cb || d->memoryBarrierCount != 1) { ++bad; return; }
     const auto& b = *d->pMemoryBarriers;
     if ((b.srcStageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) && (b.dstStageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) &&
         (b.srcAccessMask & VK_ACCESS_2_MEMORY_WRITE_BIT) && (b.dstAccessMask & VK_ACCESS_2_MEMORY_WRITE_BIT)) pending.clear();
     ++barriers;
 }
-void rx_vkCmdUpdateBuffer(VkCommandBuffer cmd, VkBuffer target, VkDeviceSize offset, VkDeviceSize n, const void* data) {
+void vkCmdUpdateBuffer(VkCommandBuffer cmd, VkBuffer target, VkDeviceSize offset, VkDeviceSize n, const void* data) {
     const int pool = pool_of(target);
     if (cmd != cb || pool < 0 || !n || n > 65536 || (offset & 3) || (n & 3) || offset + n > kPool) { ++bad; return; }
     wrote(pool, offset, offset + n), ++updates;
     std::memcpy(memory[pool].data() + offset, data, n);
 }
-void rx_vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer target, uint32_t count, const VkBufferCopy* r) {
+void vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer target, uint32_t count, const VkBufferCopy* r) {
     const int pool = pool_of(target), from = src == stream_buffer(0) ? 0 : src == stream_buffer(1) ? 1 : -1;
     if (cmd != cb || pool < 0 || from < 0 || !count) { ++bad; return; }
     copy_regions.push_back(count);
@@ -125,9 +127,8 @@ void rx_vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer target, uint
     }
 }
 }
+namespace mkwvk {
 // ---- what flush_ub_updates and full_barrier use ----
-std::atomic<uint64_t> work_epoch{0};
-std::atomic<bool> par_active{false};
 std::atomic<int64_t> st_barriers_left_out{0}, st_barriers_made{0};
 VkCommandBuffer last_barrier_cmd{};
 uint64_t last_barrier_epoch = 0;
@@ -252,7 +253,14 @@ def main():
     texture_h = (vk / "vk_texture.h").read_text(encoding="utf-8")
     declaration = between(texture_h, "void full_barrier(", "\n")
     work = (vk / "vk_work.h").read_text(encoding="utf-8")
-    note = block(work, "inline void note_work() {")
+    # (vk_work.h's counts: the thread's work_epoch and other_work_since_barrier, declared there, and note_work /
+    # note_other_work; defined here as vk_texture.cpp defines them)
+    note = between(work, "namespace mkwvk {", "} // namespace mkwvk")[len("namespace mkwvk {"):]
+    for want in ("extern thread_local uint64_t work_epoch;", "extern thread_local bool other_work_since_barrier;",
+                 "inline void note_work()", "inline void note_other_work()"):
+        if want not in note:
+            raise SystemExit("FAIL: vk_work.h: not found: " + want)
+    note += "thread_local uint64_t work_epoch = 0;\nthread_local bool other_work_since_barrier = true;\n"
     wrappers = [between(work, "#define " + name + "(", "\n")
                 for name in ("vkCmdPipelineBarrier2", "vkCmdUpdateBuffer", "vkCmdCopyBuffer")]
     prefix = PREFIX.replace("@@BUFFERREF@@", block((vk / "vk_internal.h").read_text(encoding="utf-8"), "struct BufferRef {")) \

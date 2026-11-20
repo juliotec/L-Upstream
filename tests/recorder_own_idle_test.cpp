@@ -27,8 +27,14 @@
 #include "vk_work.h"
 
 namespace mkwvk {
-std::atomic<uint64_t> work_epoch{0};
-std::atomic<bool> par_active{false};
+thread_local uint64_t work_epoch = 0;   // (vk_work.h's counts, as vk_texture.cpp defines them)
+thread_local bool other_work_since_barrier = true;
+bool gprof_glue_on() { return false; }   // (vk_work.h's profiler glue, off as with RX_VK_PASS_TIMING under 3)
+GprofGlue::GprofGlue(VkCommandBuffer c, const char* l) : cmd(c), label(l) {}
+GprofGlue::~GprofGlue() {}
+const char* const call_kind_names[kCallKinds] = {};   // (vk_work.h's call counts, off as without RX_VK_CALL_COUNT)
+std::atomic<uint64_t> call_counts[kCallKinds];
+bool call_count_on() { return false; }
 std::atomic<int> logs_own{0}, logs_idle{0};
 void logf(const char* fmt, ...) {   // (the renderer's log: printed, and the lines this test looks for counted)
     char b[1024];

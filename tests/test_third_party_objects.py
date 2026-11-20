@@ -315,7 +315,7 @@ class Release(unittest.TestCase):
             setup = os.path.join(d, "setup.exe")
             open(setup, "wb").close()
             make_set(objs, {"a" * 40: b"o"})
-            a = mock.MagicMock(out=out, publish=publish, setup=setup, third_party_objects=objs)
+            a = mock.MagicMock(out=out, publish=publish, setup=setup, third_party_objects=objs, renhdrum=None)
             with mock.patch.object(bp, "tracked", lambda *p: []), mock.patch.object(bp, "state_list", lambda tools: 0), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(bp.package(a), 0)

@@ -78,8 +78,10 @@ def glsl_functions(text, names, consts):
 
 def check_grading():
     # (the row: 50 to 200%, 100% (none) out of the box, kept in the options file as hdr_contrast, its name's key)
-    menu = (VK / "vk_menu.cpp").read_text(encoding="utf-8")
-    if not re.search(r'\{TAB_GRAPHICS, "HDR contrast", &opts\.hdr_contrast, 50, 200, 5, tx_percent,', menu) or \
+    menu = (VK / "menu" / "hdr.cpp").read_text(encoding="utf-8")   # (the HDR rows' module, #1633)
+    if not re.search(r'\.key = "hdr_contrast", .label = "HDR contrast",.*?\.value = &opts\.hdr_contrast, \.lo = 50, \.hi = 200, '
+                     r'\.step = 5,.*?\.text = menu_text::percent\}', menu, re.S) or \
+            '"%d%%"' not in (VK / "menu_module.h").read_text(encoding="utf-8") or \
             "int hdr_contrast = 100;" not in (VK / "vk_menu.h").read_text(encoding="utf-8"):
         sys.exit("FAIL: the HDR contrast row is not 50 to 200% in steps of 5, 100% by default")
     text = (SHADERS / "hdr_encode.comp").read_text(encoding="utf-8")

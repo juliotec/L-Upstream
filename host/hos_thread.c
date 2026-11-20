@@ -1247,12 +1247,12 @@ static void sleep_ns(int64_t ns, int guest) {
         int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
 #if !defined(_WIN32)
         /* (longshot) Linux: the game's own sleeps wait on the timer whatever the processors, the host's still yield (1).
-           With #2602, OoT's five idle job workers and sead::MainThread yielded 3.3-3.6 ms a frame each in Hyrule Field
-           (RTX 3090, 7900X, 24 threads), ~9 ms of CPU a frame in all, while one of them waited on a GPU readback. With
-           the timer for all sleeps the frame's CPU fell 44.8 -> 35.4 ms at the same median frame (11.30 / 11.32 ms).
+           Yielding, OoT's five idle job workers and sead::MainThread take 3.3-3.6 ms a frame each in Hyrule Field,
+           ~9 ms of CPU a frame in all, while one of them waits on a GPU readback. With the timer for all sleeps the
+           frame's CPU falls 44.8 -> 35.4 ms at the same median frame.
            The job workers are not on the frame's critical path there (HOS_CHAIN), so their ~0.5 ms later wake costs
            nothing measured; on 4-8 thread CPUs (the Steam Deck: 8) those yields took processors the frame needs.
-           HOS_SHORT_SLEEP_TIMER=0: all yield, as before; =1: all on the timer */
+           HOS_SHORT_SLEEP_TIMER=0: all yield; =1: all on the timer */
         if (!getenv("HOS_SHORT_SLEEP_TIMER")) how = 1;
 #endif
         /* (the line says what was chosen, before any thread has made its timer: where the high-resolution timer cannot
@@ -1733,14 +1733,13 @@ void hos_thread_log_handles(void) {
    once. Guest code with no checkpoint (a spin loop) keeps its core, so a waiter that has waited too long runs anyway
    without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter, HOS_VCORE_ESCAPE_EQ_US
    otherwise (both 2000000: 2 s). An escape runs a thread with no core while the holder still runs on it, so two threads
-   share per-core state (#1929); it is kept only as a deadlock breaker. 250 ms was the default before: on the 25-minute
-   route it escaped 6-8 times a run, at waits that ended by themselves within 1.2 s (0 escapes at 2 s, frame times the
-   same or better). A thread that waits only because better threads keep winning its core (they take it in turns at every
+   share per-core state; it is kept only as a deadlock breaker. 2 s, not less: at 250 ms waits that end by themselves
+   within 1.2 s escape several times a run (none at 2 s, frame times the same or better). A thread that waits only because better threads keep winning its core (they take it in turns at every
    block, or one of them runs on) is starved, not deadlocked, and an escape runs it beside the holder for nothing: once
    it has waited HOS_VCORE_STARVE_US (1000000: 1 s; 0: never) it goes before every other waiter at the next release of a
    core it may use, and asks the worst holder of those cores to give the core up, whatever its priority. It runs a turn,
-   the holders ask for the core back as for any worse thread, and a wait that long ends in a grant, not an escape (#262;
-   the 5 s line counts these grants). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
+   the holders ask for the core back as for any worse thread, and a wait that long ends in a grant, not an escape (the
+   5 s line counts these grants). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
    core a thread holds. */
 #if !defined(__EMSCRIPTEN__)
 static SRWLOCK vc_lock = SRWLOCK_INIT;
@@ -1873,7 +1872,7 @@ static void vc_long_wait(HosThread *t, int64_t waited, int how, unsigned m) {
     if (log)
         hos_log("vcores: %s (priority %d) waited %.1f ms for a core: %s; the cores it may use now:%s", t->name, t->priority,
                 waited / 1e6, by, who);
-    /* (HOS_PROFILE=1: at its time, and when the wait began, for scripts/profile_report.py to put it in its frame) */
+    /* (HOS_PROFILE=1: at its time, and when the wait began, for scripts/perf.py report to put it in its frame) */
     hos_profiling_event("vcore_wait %.1f ms from %lld: %s (priority %d) waited for a core: %s; the cores it may use now:%s",
                         waited / 1e6, (long long)(now - waited), t->name, t->priority, by, who);
 }
@@ -2022,8 +2021,8 @@ static void vc_yield(HosThread *t, int strict) {
 }
 /* 1 when the caller is to take a core again after its block (hos_vcore_back): it gave its core up, or it has run without
    one since an escape. An escape lasts until the thread's next block, as every other thread waits for a core after one;
-   it took none again before, so an escaped thread ran with no core, and the core number of a core another thread held,
-   for the rest of its life (issue 1929) */
+   taking none again, an escaped thread would run with no core, and the core number of a core another thread held,
+   for the rest of its life */
 int hos_vcore_away(void) {
     HosThread *t = cur;
     if (!hos_vcores_on() || !t) return 0;

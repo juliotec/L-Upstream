@@ -18,6 +18,8 @@ from srccut import block
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def function(source, start):
@@ -33,7 +35,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules' rows as table lines, #1633: the frame rows are gpu/vk/menu/framegen.cpp's)
+    menu = menu_text(ROOT) if (ROOT / "gpu" / "vk" / "menu").is_dir() else \
+        (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     # the picture's way, top to bottom: the output, what fills it, the 3D's size and its sharpening (Resolution and
     # upscaling); then the frame rows, Reflex with them (Frame generation and latency); then the window (Screen)
     order = ['"Output resolution", &opts.output_res', '"Upscaler", &opts.dlss', '"DLSS model", &opts.dlss_model',

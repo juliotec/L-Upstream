@@ -67,7 +67,9 @@ void load_work(LoadJob& job) {
     for (const uint64_t key : job.keys) {
         auto p = std::make_unique<Program>();
         p->key = key;
+        size_t built = 0, left = 0;   // (load_work's: whether the program's modules may go once its notes are built)
 #include "load_graphics_notes.inc"
+        (void)built, (void)left;
         job.made.push_back({key, std::move(p)});
     }
     CHECK(bytes == (reads.load() - reads_before) * (int64_t)sizeof(PipeNote));

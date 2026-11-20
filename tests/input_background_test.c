@@ -56,6 +56,7 @@ static char last_log[256];
 static int origin_logs, script_logs;
 static long long logged_origin;
 volatile int64_t hos_hid_last_read;
+volatile uint64_t hos_hid_buttons;   /* (host/cheats.c reads it) */
 volatile int hos_nvn_sync_log_on;
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)stick; *buttons |= bridge_buttons; return bridge_active; }
 static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + address; }

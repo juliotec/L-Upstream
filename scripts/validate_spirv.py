@@ -22,8 +22,11 @@ import subprocess
 import sys
 
 CACHE_MAGIC = 0x31505348   # (gpu/vk/vk_shader.cpp kDiskMagic)
-FALLBACK = 4               # (a record's kind: a task or mesh program run as compute, issue 640)
+FALLBACK = 4               # (a record's kind: a task or mesh program run as compute)
 SPV_MAGIC = b"\x03\x02\x23\x07"
+TARGET_ENV = "vulkan1.3"   # (the Vulkan Longshot asks for)
+MAX_SHARED = 65536         # (maxComputeSharedMemorySize: RDNA1's)
+MAX_INVOCATIONS = 1024     # (maxComputeWorkGroupInvocations: RDNA1's)
 STAGES = {0x1: "vertex", 0x2: "tesscontrol", 0x4: "tesseval", 0x8: "geometry", 0x10: "fragment", 0x20: "compute",
           0x40: "task", 0x80: "mesh"}
 
@@ -121,21 +124,21 @@ def find_tool(name):
     return found
 
 
-def check(job, a, val):
+def check(job, val):
     """The reasons a stage fails ([] when it passes): spirv-val's errors (on stdin), then the device limits"""
     key, nvn, vk, spirv = job
     reasons = []
-    r = subprocess.run([val, "--target-env", a.target_env, *a.val_arg, "-"], input=spirv, capture_output=True)
+    r = subprocess.run([val, "--target-env", TARGET_ENV, "-"], input=spirv, capture_output=True)
     if r.returncode:
         text = (r.stdout + r.stderr).decode("utf-8", "replace").strip()
         reasons.append(("spirv-val", text or "spirv-val exit status %d" % r.returncode))
     local, shared = reflect(spirv)
-    if local and local[0] * local[1] * local[2] > a.max_invocations:
+    if local and local[0] * local[1] * local[2] > MAX_INVOCATIONS:
         reasons.append(("limit", "workgroup %dx%dx%d is %d invocations, over maxComputeWorkGroupInvocations %d"
-                        % (*local, local[0] * local[1] * local[2], a.max_invocations)))
-    if shared > a.max_shared:
+                        % (*local, local[0] * local[1] * local[2], MAX_INVOCATIONS)))
+    if shared > MAX_SHARED:
         reasons.append(("limit", "workgroup memory at least %d bytes, over maxComputeSharedMemorySize %d"
-                        % (shared, a.max_shared)))
+                        % (shared, MAX_SHARED)))
     return reasons, local, shared
 
 
@@ -166,10 +169,6 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="every program, not only the mesh-as-compute ones")
     p.add_argument("--key", action="append", default=[], help="a program key (hex) or its start; may be given again")
     p.add_argument("--out", help="where failing stages are written (default: spirv_failures beside the cache)")
-    p.add_argument("--target-env", default="vulkan1.3", help="spirv-val's target (Longshot asks for Vulkan 1.3)")
-    p.add_argument("--val-arg", action="append", default=[], help="an argument passed on to spirv-val")
-    p.add_argument("--max-shared", type=int, default=65536, help="maxComputeSharedMemorySize (RDNA1: 65536)")
-    p.add_argument("--max-invocations", type=int, default=1024, help="maxComputeWorkGroupInvocations (RDNA1: 1024)")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     a = p.parse_args(argv)
     val, dis = find_tool("spirv-val"), find_tool("spirv-dis")
@@ -202,7 +201,7 @@ def main(argv=None):
             programs += 1
             for nvn, vk, spirv in stages(data):
                 job = (key, nvn, vk, spirv)
-                future = pool.submit(check, job, a, val)
+                future = pool.submit(check, job, val)
                 future.job = job
                 pending.append(future)
                 while len(pending) > 4 * a.jobs:   # (a few batches in flight: --all reads gigabytes)

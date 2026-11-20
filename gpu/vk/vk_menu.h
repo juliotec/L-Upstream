@@ -94,7 +94,8 @@ struct Options {
     int camera_speed = 100;   // (longshot) the right stick's camera turn in percent of the game's, 50 to 400 (host/nn_vi.c, nx2/oot_patches.py: HOS_OPT_CAMERA_SPEED, 48)
     int invert_cam_x = 0; // right-stick camera horizontal inversion: 0 normal, 1 inverted
     int invert_cam_y = 0; // right-stick camera vertical inversion: 0 normal, 1 inverted
-    int rumble = 100;     // the controllers' rumble in percent of the game's: 0 Off, 25 to 150 (host/pad_sdl.c)
+    int rumble = 100;     // Vibration strength: percent of what the game asks for, 25 to 200 (host/pad_sdl.c; rumble_strength=)
+    int vibration = 0;    // (longshot) Vibration: 0 Auto, 1 Basic (the motors), 2 Off (host/vibration.h)
     int stick_dead_zone = 0;  // circular stick cutoff: 0 XInput's 7849 (~24%), 1..5 5% to 30% (host/nn_hid.c)
     int hold_toggle = 0;  // enabled Switch buttons (1 << HOS_SW_*); persisted as toggle_<button>, not one mask entry
     int pad_layout = 0;   // 0 Nintendo (default), 1 Xbox / PC, 2 Swap Face Buttons, 3 Switch 2 Pro (every button the pad's own), 4 Custom
@@ -126,7 +127,7 @@ struct Options {
                           // VRAM budgets: one rule by the card (texture_budget.h, mirror_budget.h)
     int audio_output = 0; // (longshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1, 3 Mono; layout read at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (longshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
-    int debug_tools = 0;   // (longshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
+    int debug_tools = 0;   // (longshot) the Debug tab's tools (flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int volume = 100;     // (longshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (longshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
     int skip_opening = 0;   // (longshot) skip the new-game opening (host/hos_main.c hos_oot_opening: HOS_OPT_SKIP_OPENING, 52). Off
@@ -177,6 +178,7 @@ int menu_memory_tier();
 int menu_shadow_res();   // (Shadow resolution, HOS_OPT_SHADOW_RES: the size drawn, Auto resolved)
 int menu_damage_taken();   // (Damage taken, HOS_OPT_DAMAGE_TAKEN: 1, Normal, while the tools are off)
 int menu_take_cheat_action();
+int menu_vibration_status_option();   // (longshot) what plays the controller used last (HOS_OPT_VIBRATION_STATUS)
 void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)
 /// The game's picture's size (the Output resolution, its crop) and the window's, at each present: the Window scaling filter
 /// row says when it is not needed
@@ -194,5 +196,8 @@ struct StartupView;
 void startup_screen(const StartupView* view);
 /// The start-up screen's fade to black as it ends: 0 none, 1 black (vk_main.cpp prepare_with_screen)
 void startup_fade_to(float f);
+/// (longshot) The Upscaler row's one-time questions (NGX's start among them) asked on a thread of their own, once a run, as the
+/// start-up screen asks them: for a run with no window, whose start-up screen never shows (vk_temporal.cpp temporal_prewarm)
+void upscalers_probe_start();
 
 } // namespace mkwvk

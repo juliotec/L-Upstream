@@ -58,8 +58,8 @@ class AppImageLicences(unittest.TestCase):
             if '"third_party", "%s"' % part in build:
                 self.assertTrue(any(k.startswith(licence) for k in WANT), part)
         # (and AMD's FidelityFX SDK: its shaders are compiled into the SPIR-V headers under gpu/vk/shaders, which the image
-        # carries and every player's longshot_vk.so is built with (scripts/fsr3_shaders.py: FSR 3.1 and its frame generation))
-        compiled_in = (ROOT / "scripts/fsr3_shaders.py").read_text(encoding="utf-8")
+        # carries and every player's longshot_vk.so is built with (scripts/shaders.py fsr3: FSR 3.1 and its frame generation))
+        compiled_in = (ROOT / "scripts/shaders.py").read_text(encoding="utf-8")
         script = (ROOT / "scripts/linux/appimage.sh").read_text(encoding="utf-8")
         if "third_party/fidelityfx-sdk" in compiled_in and "cp -a gpu/vk" in script:
             self.assertTrue(any(k.startswith("licenses/fidelityfx-sdk/") for k in WANT), "fidelityfx-sdk")

@@ -221,14 +221,13 @@ struct Dead {   // (no longer used by anything recorded after `at`: gone once th
     uint64_t value = retired_value();   // (with no window: the timeline value past its last use)
 };
 std::vector<Dead> dead;
-// doc: docs/design.md#13-frame-generations-presents-as-rules (rule 4: what a copy reads lives through the slots)
+// doc: docs/dev/reference/architecture.md#frame-generations-presents (rule 4: what a copy reads lives through the slots)
 // (in a window, what a present's copy used is let go this many presents later. present_image waits for a frame slot's last
 // copy before the overlays record into it, so at present M the copies up to M less its slots are done: 3 slots, and while
-// frame generation's sets are on the game's timeline a slot per frame of two sets, up to kPresentSlotsMax (present_slots_for,
-// #1362); one more as a spare, as the backend's vertex buffers (ii.ImageCount). At 4, frame generation at 3x and up (6 to 8
-// slots, a set's copies on the GPU behind the game's next frame) let the staging buffers and the old atlas go while copies
-// could still read them, the font atlas grown at the start-up screen or new glyphs with the menu open: a likely cause of a
-// tester's lost device on an RTX 5080, not reproduced on an RTX 5090, where a test-only log showed the early let-gos)
+// frame generation's sets are on the game's timeline a slot per frame of two sets, up to kPresentSlotsMax (present_slots_for);
+// one more as a spare, as the backend's vertex buffers (ii.ImageCount). A fixed 4 would, at frame generation 3x and up (6 to 8
+// slots, a set's copies on the GPU behind the game's next frame), let the staging buffers and the old atlas go while copies
+// could still read them (the font atlas grown at the start-up screen or new glyphs with the menu open): a lost device)
 constexpr int64_t kFramesLater = kPresentSlotsMax + 1;
 void reap(bool all) {
     for (size_t i = 0; i < dead.size();) {

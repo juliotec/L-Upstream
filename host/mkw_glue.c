@@ -42,7 +42,7 @@ static int commit_wait(void *p, SIZE_T size) {
     if (InterlockedIncrement(&waits) <= 8) hos_log("mem: commit of %#llx bytes still refused after 5 s at the commit limit", (unsigned long long)size);
     return 0;
 }
-/* (longshot, issue 333) The out-of-memory line and notice, said once for the run, by whichever runs out first: a guest commit
+/* (longshot) The out-of-memory line and notice, said once for the run, by whichever runs out first: a guest commit
    (commit_refused) or the host's own allocation (hos_alloc_failed). oom_state: 0 not said, 1 the notice up (or about to be), 2 said
    and the notice closed (or none: HOS_HEADLESS, or no thread for it). The notice is on a thread of its own. wait 0: the caller
    goes on; wait 1: the caller ends the game next, so it waits until the notice (its own or one already up) is closed, rather
@@ -76,9 +76,9 @@ static void commit_refused(uint64_t lo, uint64_t size, DWORD err) {
     if (err == ERROR_COMMITMENT_LIMIT) hos_out_of_memory(0);   /* (1455: RAM and page file full; the game crashes soon after) */
 }
 
-/* (longshot, issue 333) The host's own allocations that the game cannot go on without (the NVN layer's recording buffers and
-   tables, the video service's): at the commit limit malloc fails as a guest commit does, and the game ended at once with a fatal
-   naming the table ("native NVN: recording handle set"), with no wait and no out-of-memory notice. A failed one is now tried
+/* (longshot) The host's own allocations that the game cannot go on without (the NVN layer's recording buffers and
+   tables, the video service's): at the commit limit malloc fails as a guest commit does, which would end the game at once with
+   a fatal naming the table, with no wait and no out-of-memory notice. A failed one is tried
    again for up to 5 s, as commit_wait does, while the renderer's textures give commit back; past that comes the line, the
    notice (waited for: the game stops right after) and the fatal, which says out of memory. Never NULL. kind: 'm' malloc(size),
    'c' calloc(count, size), 'r' realloc(old, size). An allocation that fails with plenty of commit left is not the limit (a
@@ -117,7 +117,7 @@ void *hos_alloc_failed(int kind, void *old, size_t count, size_t size, const cha
     hos_alloc_gave_up(n, what);
     return NULL;
 }
-/* (issue 1280) An allocation refused for 5 s: past the limit's wait, the line, the notice (waited for) and the fatal, which says
+/* An allocation refused for 5 s: past the limit's wait, the line, the notice (waited for) and the fatal, which says
    out of memory; with over a GB more than it asked for still free, not the limit (a size gone wrong): a fatal that says so, no
    notice. hos_alloc_failed's end, and the renderer's: its new_handler (gpu/vk/vk_main.cpp new_refused) tried its C++
    allocation again for the same 5 s, and it does not know the size: n 0, said with none */
@@ -222,7 +222,7 @@ static LONG CALLBACK commit_on_touch(EXCEPTION_POINTERS *info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* A crash nothing handles: what, where (mkw.exe+offset: nx2/dllmap.py reads mkw.map the same way), and the guest
+/* A crash nothing handles: what, where (mkw.exe+offset: the link map names the function), and the guest
    state of the thread, as of its last call out of lifted code, with its frame chain from x29. */
 static uint64_t peek_guest(uint64_t a) {
     MEMORY_BASIC_INFORMATION mbi;
@@ -299,7 +299,7 @@ void hos_crash_record_prepare(const char *log_path) {
 }
 
 #ifdef _WIN32
-/* (longshot, #383) The x64 stack walks below (the crash report's, HOS_SAMPLE's and HOS_SAMPLE_ALL's) go one frame at a time
+/* (longshot) The x64 stack walks below (the crash report's, HOS_SAMPLE's and HOS_SAMPLE_ALL's) go one frame at a time
    through unwind_step, which reads only the walked thread's own stack. RtlVirtualUnwind reads the frame's saved registers
    and its return address at the stack pointer, or through the frame register when the function has one; a thread stopped
    where its unwind data does not describe the frame (being made or ending, switching stacks, mid-prologue) gave it a
@@ -374,7 +374,7 @@ static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
             (unsigned long long)addr, (unsigned long long)(addr - (uint64_t)A64_MEM), base ? base + 1 : name,
             (unsigned long long)(rip - (uint64_t)mod));
 #ifdef _WIN32
-    {   /* the host stack from the faulting frame (x64 unwind data), as module+offset (nx2/samap.py maps mkw.exe's) */
+    {   /* the host stack from the faulting frame (x64 unwind data), as module+offset (the link map names mkw.exe's) */
         CONTEXT ctx = *info->ContextRecord;
         const StackRange stack = own_stack();
         char hb[1024];
@@ -555,7 +555,7 @@ static DWORD WINAPI prof_thread(void *p) {
 }
 /* HOS_SAMPLE=<thread name> (with HOS_PROFILE_EVERY=<seconds>): that thread's instruction pointer sampled every millisecond;
    every interval the most frequent places, as module+offset of the leaf and of the first frame in mkw.exe under it
-   (what of ours called into wgpu or the system). nx2/samap.py maps the mkw.exe offsets to functions. */
+   (what of ours called into wgpu or the system). The link map names the functions at the mkw.exe offsets. */
 static DWORD WINAPI sample_thread(void *p) {
     const char *want = (const char *)p;
     const DWORD ms = (DWORD)atoi(getenv("HOS_PROFILE_EVERY")) * 1000;
@@ -587,7 +587,7 @@ static DWORD WINAPI sample_thread(void *p) {
     uint32_t total = 0;
     DWORD last = GetTickCount();
     /* HOS_SAMPLE_FILE=<path>: every sample's whole stack too, one line of module+offset frames (leaf first), for
-       an offline profile (work/prof.py maps them to functions with the linker maps) */
+       an offline profile (scripts/perf.py stacks maps them to functions with the linker maps) */
     FILE *stacks = getenv("HOS_SAMPLE_FILE") ? fopen(getenv("HOS_SAMPLE_FILE"), "w") : NULL;
     for (;;) {
         Sleep(1);
@@ -595,7 +595,7 @@ static DWORD WINAPI sample_thread(void *p) {
         CONTEXT ctx = {0};
         ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
         const BOOL got = GetThreadContext(th, &ctx);
-        const StackRange stack = got ? thread_stack(th) : (StackRange){0, 0};   /* (#383: the walk stays on it) */
+        const StackRange stack = got ? thread_stack(th) : (StackRange){0, 0};   /* (the walk stays on it) */
         uint64_t keys[2] = {0, 0};
         char stack_line[1024];
         int stack_len = 0;
@@ -711,7 +711,7 @@ static DWORD WINAPI thread_times_thread(void *p) {
 /* (longshot) HOS_SAMPLE_ALL=<path> (on its own: not HOS_PROFILE_EVERY): while <path>.go exists, every 2 ms every guest thread and the
    renderer's threads (descriptions starting "mkw_vk") are sampled at the same instant: one line per thread,
    "<ms> <name>|<frames>", the frames module+offset leaf first (16 at most). What each thread does while another waits:
-   the frame's critical path (scripts/crit.py) */
+   the frame's critical path (scripts/perf.py threads) */
 /* HOS_WATCH=<file> (diagnostic): when <file> exists (up to 4 guest addresses in hex), CPU data breakpoints on them on
    every guest thread: 4 s on reads and writes, then 4 s on writes; <file>.out gets, by address and the host place of
    the access, how many; then <file> is renamed <file>.done and the next one may come. */
@@ -872,7 +872,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
                                         hos_slow_frames_every_ms(), path);
             } else if (opened) {
                 t0 = hos_now_ns();
-                fprintf(out, "# t0_ns %lld\n", (long long)t0);   /* (the clock of HOS_CHAIN's records: scripts/chain.py) */
+                fprintf(out, "# t0_ns %lld\n", (long long)t0);   /* (the clock of HOS_CHAIN's records: scripts/perf.py chain) */
                 hos_log("prof: all-thread sampling of %d threads into %s", nt, path);
             }
             listed_at = hos_now_ns();
@@ -885,7 +885,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
             CONTEXT ctx = {0};
             ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
             const BOOL got = GetThreadContext(th[i], &ctx);
-            const StackRange stack = got ? thread_stack(th[i]) : (StackRange){0, 0};   /* (#383: the walk stays on it) */
+            const StackRange stack = got ? thread_stack(th[i]) : (StackRange){0, 0};   /* (the walk stays on it) */
             char line[1024];
             int len = snprintf(line, sizeof line, "%ld %s|", ms, tn[i]);
             for (int depth = 0; got && depth < 16 && ctx.Rip && len < (int)sizeof line - 96; depth++) {

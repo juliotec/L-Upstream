@@ -27,7 +27,7 @@
    The default (and HOS_NATIVE_ZSTD=2) keeps the thread's virtual core while libzstd runs. HOS_NATIVE_ZSTD=1 gives it up
    meanwhile (as a sleep does: hos_vcore_away/back), so the game's other threads can have it; on an Arc 155H iGPU that
    froze the game at loads in 7 runs of 10 (the game read no controller for 20 s to 5 min, lr 0x83489670), keeping the core
-   in none of 3, with loading screens no longer (RTX 4070 SUPER tours, docs/tested/2026-11-17-native-zstd-default-*).
+   in none of 3, with loading screens no longer (RTX 4070 SUPER tours).
 
    The game's other zstd path, the resource loaders' whole-buffer decode (the ARes_Loading threads: about a fifth of a core
    while an area loads, more than the stream decode there), is zstd's decompressMultiFrame inlined in f_8010b380 (x0 the

@@ -756,7 +756,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
     xinput_get = XInputGetState;
 #endif
     /* Polling XInput alongside SDL causes double-reads and conflicting button mappings when Steam Input
-       or controller wrappers emulate an XInput controller for a pad SDL is already reading (#1480, #1583).
+       or controller wrappers emulate an XInput controller for a pad SDL is already reading.
        Only poll XInput when SDL has no open controllers, unless HOS_XINPUT=1 is explicitly requested. */
     static int poll_xinput_env = -1;
     if (poll_xinput_env < 0) poll_xinput_env = env_on("HOS_XINPUT");
@@ -847,8 +847,7 @@ static int motion_counts(int front, const char *env, int menu) {
 /* A mouse button counts only while the mouse is captured, and one held when the capture began only after it was let go
    (the click that captures never reaches the game). menu: one of the game's menus has the mouse (host/display.c
    hos_mouse_in_game_menu; Windows). Its left, right and middle buttons are that menu's clicks there; the side buttons
-   are no menu's, so they stay their controls' as a key does: Mouse 4 on A confirmed nothing in the text box's choices
-   (Longshot #1306) */
+   are no menu's, so they stay their controls' as a key does (Mouse 4 on A must confirm in the text box's choices) */
 static int mouse_vk_slot(int vk) {
     return vk == VK_LBUTTON ? 0 : vk == VK_RBUTTON ? 1 : vk == VK_MBUTTON ? 2 : vk == VK_XBUTTON1 ? 3 : vk == VK_XBUTTON2 ? 4 : -1;
 }
@@ -1037,13 +1036,13 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
        used to follow the player's pad (and pressed things in its own menus). */
-    /* (longshot) The player's devices count during a script too (the user plays along in test runs, 2026-11-05):
-       the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press, as before */
+    /* (longshot) The player's devices count during a script too (the user plays along in test runs):
+       the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press */
     static int exclusive = -1;
     if (exclusive < 0) exclusive = env_on("HOS_INPUT_EXCLUSIVE");
     if (exclusive && npresses > 0 && script_elapsed_ms(hos_now_ns()) < script_end_ms + 5000)
         return;
-    /* (longshot, issue 389) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) and the control bridge's are the test's
+    /* (longshot) A scripted press (HOS_INPUT_SCRIPT, HOS_INPUT_LIVE) and the control bridge's are the test's
        own: scripted_input() and hos_control_input() put them in above, so they count with the game's window behind
        another one, and a test run can drive the game on one monitor while the player works in the front window.
        HOS_INPUT_SCRIPT_BACKGROUND=1 used to skip the gate below, which let only the player's devices through: the
@@ -1139,6 +1138,7 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
 
 static void vibration_send(uint64_t handle, uint64_t value);
 volatile int64_t hos_hid_last_read;
+volatile uint64_t hos_hid_buttons;   /* (the buttons the game was last given: HidNpadButton bits) */
 
 /* (longshot) The sticks' direction pseudo-buttons, HidNpadButton_StickLLeft, Up, Right, Down (bits 16-19) and the
    right stick's (20-23), which real hid sets from the axes (y up): past half their travel, as yuzu's TransformToStick
@@ -1189,6 +1189,7 @@ static void npad_states(Ctx *c) {
     }
     if (connected) {
         read_input(&buttons, &taps, stick);
+        hos_hid_buttons = buttons;   /* (cheats.c: the cheats' button conditions) */
         uint64_t axes = 0;
         uint64_t flight = 0;
         int height = 0;
@@ -1266,7 +1267,7 @@ HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_2
 HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
     /* (longshot) OoT asks for two (a Joy-Con pair) but runs its motion path only when three come back: at two its
        third source (the console's own, through JCMS) stays dead, and that branch is what marks motion active for the
-       aim (spluton, issue 112). The count says three; only the handles asked for are written, so a caller's array
+       aim. The count says three; only the handles asked for are written, so a caller's array
        sized for two is never written past (the handles are opaque: GetSixAxisSensorStates does not read them). */
     const int asked = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
     static int logged;
@@ -1335,7 +1336,7 @@ HLE(_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vibrati
    hardware each is an IPC to hid. A device is an LRA on its side of the controller, always mounted and permitted. */
 /* A vibration value for one of the two motors of the pad (handle +2 = device index): the pads that rumble (SDL) get
    the stronger of the two sides' heavy and light motor strengths. (OoT sends both sides the same values.) */
-/* (issue 263) An HD rumble amplitude is not a motor's: OoT asks for 0.02-0.06 for most effects, a few percent of a DualSense's or an
+/* An HD rumble amplitude is not a motor's: OoT asks for 0.02-0.06 for most effects, a few percent of a DualSense's or an
    Xbox pad's motor, nothing you feel. Eden's SDL driver's mapping (Eglantine src/input_common/drivers/sdl_driver.cpp, GPL-3.0):
    (a + a^0.35) / 2, then less for higher frequencies, to give some feel of them */
 static float rumble_motor(float amp, float freq, float start, float width) {
@@ -1379,7 +1380,7 @@ static void vibration_send(uint64_t handle, uint64_t value) {
     memcpy(v, GP(value), sizeof v);
     const int dev = (G32(handle) >> 16) & 1;
     rumble_map(v, amp[dev]);
-    {   /* (longshot, issue 263) what the game asks for: the first values, then a count now and then */
+    {   /* (longshot) what the game asks for: the first values, then a count now and then */
         static long long n, strong;
         static float peak;
         if (v[0] > peak) peak = v[0];
@@ -1390,6 +1391,10 @@ static void vibration_send(uint64_t handle, uint64_t value) {
     }
     void hos_sdl_rumble_hd(int side, const float value[4]);   /* pad_sdl.c: the value as it is, for HD rumble */
     hos_sdl_rumble_hd(dev, v);
+    /* (longshot) the same four values, as they are, to RenHDrum's backends (host/rumble_renhdrum.c): they keep the
+       bands apart, which rumble_map above has just flattened for the motors */
+    void rh_push(int side, const float value[4]);
+    rh_push(dev, v);
     void hos_sdl_rumble(float low, float high);   /* pad_sdl.c */
     hos_sdl_rumble(amp[0][0] > amp[1][0] ? amp[0][0] : amp[1][0], amp[0][1] > amp[1][1] ? amp[0][1] : amp[1][1]);
 }

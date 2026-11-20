@@ -15,7 +15,7 @@
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
 
-/* (longshot, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
+/* (longshot) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
    Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, and on Windows each file call goes through
    its wide function: the path converted from the game's UTF-8 strings and, when it is
    long and absolute, given the extended-length prefix \\?\ (with its / made \ and a doubled separator made one), which
@@ -38,8 +38,8 @@ static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
     if (extended) {
         /* (under the prefix Windows takes a path as it is: a / is no separator, and a doubled one is an invalid name
            (ERROR_INVALID_NAME), where a short path has both tidied. The game doubles one itself, in its streamed
-           voices' "Voice/Resource//Stream/...": in a game folder long enough their files were "not found" and the
-           cutscenes silent, Longshot #1298. So here every / is a \, and a run of them one) */
+           voices' "Voice/Resource//Stream/...": in a game folder long enough their files would be "not found" and the
+           cutscenes silent. So here every / is a \, and a run of them one) */
         wchar_t *d = w + at;
         for (const wchar_t *q = w + at; *q; q++) {
             const wchar_t c = *q == L'/' ? L'\\' : *q;
@@ -375,9 +375,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     const char *g = gstr(ARG(1));
     /* (mkw-recomp 16bc3bc: the host's file calls block, so the virtual core goes to another thread meanwhile, as
        Horizon would run another while this one waits for the file system. OoT's ARes loaders held it up to 250 ms.)
-       (longshot, #1929) From before host_path: the first open of a button-prompt file builds it there (prompts.c,
-       251-357 ms on Linux), and other threads that open it meanwhile wait in there for the build; with the core held
-       through that, four threads waiting for the core ran without one within 50 ms */
+       (longshot) From before host_path: the first open of a button-prompt file builds it there (prompts.c,
+       ~300 ms on Linux), and other threads that open it meanwhile wait in there for the build; with the core held
+       through that, threads waiting for the core would run without one */
     const int away = hos_vcore_away();
     if (!host_path(g, path, sizeof path, &writable)) {
         if (away) hos_vcore_back();

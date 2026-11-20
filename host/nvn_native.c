@@ -500,9 +500,8 @@ NV(nvnBufferInitialize) {
     RET(1);
 }
 NV(nvnBufferFinalize) { memset(P(0), 0, sizeof(nvn_buffer)); }
-/* (longshot, issue 287) A buffer with no memory pool, mapped: the game filled 0x3d0 bytes at what it got back, 0, and crashed
-   on a scene change (Hyrule Castle / Castle Town / Hyrule Field, Kakariko day to night; thread OptimizeChangeBanc, right after
-   "flags of no memory pool"). Zeroed scratch memory in the game's address space instead, as large as the biggest asked for
+/* (longshot) A buffer with no memory pool, mapped: the game fills 0x3d0 bytes at what it gets back, and 0 crashes it on a
+   scene change (thread OptimizeChangeBanc, right after "flags of no memory pool"). Zeroed scratch memory in the game's address space instead, as large as the biggest asked for
    (never freed: it comes rarely), and who asked, once. */
 static uint64_t scratch_map(uint64_t size, uint64_t lr) {
     static SRWLOCK lock = SRWLOCK_INIT;
@@ -571,8 +570,8 @@ NV(nvnSamplerPoolRegisterSampler) { rx_nvn_register_sampler(I(1), &((const nvn_s
 
 /* ---- textures ---- */
 /* (longshot) A texture builder of no address: a scratch one instead, said once. The game passed 0 after a long freeze (the
-   ocarina note sheet's first build, combat in Hyrule Field) and nvnTextureBuilderSetSwizzle read A64_MEM + 0x5c (issue 500);
-   a builder set up wrongly is a missing texture, not a crash. As PR 510 for memory pools. */
+   ocarina note sheet's first build, combat in Hyrule Field) and nvnTextureBuilderSetSwizzle read A64_MEM + 0x5c;
+   a builder set up wrongly is a missing texture, not a crash. As for memory pools. */
 static nvn_tex_builder *tb_or_scratch(void *p, uint64_t lr) {
     static nvn_tex_builder scratch;
     if (p) return (nvn_tex_builder *)p;
@@ -643,8 +642,8 @@ NV(nvnTextureBuilderGetPackagedTextureData) { RET(CTB(P(0))->pkg_data); }
 static int storage_class(const nvn_texdesc *d) { return d->target == NVN_TEXTURE_TARGET_BUFFER ? 0 : 1; }
 NV(nvnTextureBuilderGetStorageClass) { RET(storage_class(&CTB(P(0))->d)); }
 NV(nvnTextureBuilderGetFlags) { RET((uint32_t)CTB(P(0))->d.flags); }
-/* (longshot, issues 284 and 287) A size or alignment asked of no builder: the game passed 0 here while a scene loaded (thread
-   OptimizeChangeBanc, entering Castle Town), and the format read at +4 of it crashed the game. Size 0 then, and who asked, once */
+/* (longshot) A size or alignment asked of no builder: the game passes 0 here while a scene loaded (thread
+   OptimizeChangeBanc, entering Castle Town), and the format read at +4 of it would crash the game. Size 0 then, and who asked, once */
 static int no_builder(Ctx *c, const char *what) {
     if (c->x[0]) return 0;
     static int told;
@@ -1059,7 +1058,7 @@ NV(nvnProgramFinalize) {
     ((nvn_prog *)P(0))->magic = 0;
 }
 /* HOS_SHADER_DUMP=<dir> (mkw-recomp, debugging): each stage's code (from its GPU address, up to 64 KiB while mapped)
-   and control section (0x800 bytes) as <code address>.code / .ctl, for gpu/shadertool */
+   and control section (0x800 bytes) as <code address>.code / .ctl, for offline inspection */
 static void dump_stage(uint64_t code, uint64_t ctl) {
     static const char *dir = (const char *)-1;
     if (dir == (const char *)-1) dir = getenv("HOS_SHADER_DUMP");
@@ -1216,12 +1215,10 @@ NV(nvnEventGetValue) {
            while this one is replayed, as far as the window's textures and the replay's queue let it */
         /* (longshot) RX_VK_ASYNC=1 (any value but 0), the render thread (gpu/vk/vk_replay.cpp async_on): the same, as its
            rule. The event is signalled by the GPU at the end of the frame's work, so the poll held the game until the replay
-           it had just handed over was recorded and run: 20 of a 37 ms frame asleep here on the older replay thread, which
-           polled (profiled; removed). Answered at once, the
+           it had just handed over was recorded and run (20 of a 37 ms frame asleep here). Answered at once, the
            presenting thread goes on to its present, where the render thread holds it while the present before is not
-           replayed (RX_VK_PRESENTS_AHEAD), and holds the present itself until the main thread's signal for the frame. The
-           idea of answering the poll from the present's hand-over is Hookshot PR 2910's (rx_release_due):
-           https://git.notrexed.dev/Hookshot/Hookshot/pulls/2910. HOS_PRESENT_NOWAIT=0 with the render thread (a test): polled, as before */
+           replayed (RX_VK_PRESENTS_AHEAD), and holds the present itself until the main thread's signal for the frame
+           (rx_release_due). HOS_PRESENT_NOWAIT=0 with the render thread (a test): polled */
         /* (longshot) whether the render thread runs is the renderer's to say, once (HOS_OPT_RENDER_THREAD: vk_replay.cpp
            async_on), not RX_VK_ASYNC read here: the Insert menu's Threaded rendering turns it on too, with the switch
            unset, and the poll must then be answered exactly as with RX_VK_ASYNC=1. Kept once the renderer has answered

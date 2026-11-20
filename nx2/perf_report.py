@@ -14,7 +14,7 @@ the game left in the game folder's perf_pending/.
   - Turning the tick off deletes what is waiting, and what perf_sent/ kept: the player said no.
   - Polite by default: the summaries go over one connection, at most LONGSHOT_PERF_MAX_SENDS (12) a start, and a relay that
     answers busy (429 or 5xx) is left alone until the time it names (Retry-After), else an hour, doubled each time it is
-    busy again up to a day (perf_pending/.next). The switches: docs/performance-statistics.md, "Switches".
+    busy again up to a day (perf_pending/.next). The switches: docs/dev/reference/profiling.md, "Performance statistics".
 
 python -I nx2/perf_report.py <game folder>            what would be sent, sends nothing
 python -I nx2/perf_report.py <game folder> --send     sends it (what the launchers start: start_sending)
@@ -45,7 +45,7 @@ VERSION_FILE = "longshot_version.txt"
 LOGS = [os.path.join(d, name) for d in ("logs", "") for name in ["longshot_log.txt"] + ["longshot_log.%d.txt" % k for k in range(1, 5)]]
 MAX_PENDING = 48   # (the newest kept when the launcher hasn't been back for long: older ones go unsent)
 MAX_BODY = 60 * 1024   # (the relay's limit is 64 KiB: a bigger one is refused there anyway)
-# A release's version (docs/versioning.md), as the crash report has it (host/hos_crash_dialog.h)
+# A release's version (docs/dev/reference/releases.md), as the crash report has it (host/hos_crash_dialog.h)
 RELEASE_VERSION = re.compile(r"^v?\d+\.\d+\.\d+(?:-rc\.\d+)?$|^nightly-\d+-[0-9a-f]{8}$")
 FIRST_LINE = re.compile(r"\blongshot (\S+)(?: \(source ([0-9a-f]+)\))?")
 NEXT = ".next"   # (in perf_pending/: when the relay may be asked again after it answered busy, and the wait it took)

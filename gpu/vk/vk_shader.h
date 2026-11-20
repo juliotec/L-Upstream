@@ -163,6 +163,15 @@ bool program_cache_complete_graphics(const Program& p);
 /// (longshot) Lets go of the VkShaderModules of ready programs whose pipelines are built and whose stages can be remade from
 /// longshot_programs.bin (or are compute stages that need no another pipeline); returns how many modules were destroyed
 size_t program_cache_drop_modules();
+/// (longshot) A graphics program the load at create just read (vk_programs.cpp load_work), every noted pipeline of its variant built
+/// from the caches: its vertex and fragment modules let go now, as program_cache_drop_modules lets a precompiled one's go, where
+/// every stage can be remade from longshot_programs.bin (program_cache_complete_graphics, on the worker that builds a new state
+/// variant in play). Not a fallback program's, not one already let go under another program. Returns the modules destroyed
+size_t program_cache_drop_loaded(Program& p);
+/// (longshot) Whether the load at create lets its programs' modules go (RX_VK_DROP_LOADED_MODULES: 1 on, 0 off; on by default)
+bool drop_loaded_modules_on();
+/// (longshot) Modules made again for programs whose modules were let go (program_cache_complete_graphics), for the log
+int64_t program_cache_remade();
 /// (longshot) precompile_run built p's noted graphics pipelines before the title: program_cache_drop_modules may let its graphics
 /// modules go (an un-noted program or variant keeps them for its first draw in play)
 void program_cache_note_built(const Program& p);

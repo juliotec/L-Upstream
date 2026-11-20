@@ -913,7 +913,8 @@ struct Dropped {
 std::mutex mu;
 std::unordered_set<KeyVariant, KeyVariantHash> built;   // (precompile_run built their noted graphics pipelines)
 std::unordered_map<KeyVariant, Dropped, KeyVariantHash> dropped;
-std::atomic<bool> any{false};   // (set by program_cache_drop_modules: until then, and on Windows, nothing here is looked up)
+std::atomic<bool> any{false};   // (set by program_cache_drop_modules or _drop_loaded: until then nothing here is looked up)
+std::atomic<int64_t> remade{0};   // (programs whose modules program_cache_complete_graphics made again)
 }   // namespace module_remake
 
 void program_cache_note_built(const Program& p) {
@@ -1000,7 +1001,36 @@ bool program_cache_complete_graphics(const Program& prog) {
         else vkDestroyShaderModule(dev.device, made[i], nullptr);
     }
     module_remake::dropped.erase(it);
+    module_remake::remade.fetch_add(1, std::memory_order_relaxed);
     return true;
+}
+
+bool drop_loaded_modules_on() {
+    static const bool on = env_on_or("RX_VK_DROP_LOADED_MODULES", 1);   // (longshot_env.h: 0/off/false/no keeps them)
+    return on;
+}
+
+int64_t program_cache_remade() { return module_remake::remade.load(std::memory_order_relaxed); }
+
+size_t program_cache_drop_loaded(Program& p) {
+    if (p.compute || p.failed || p.fallback || p.stages.empty()) return 0;
+    for (const Stage& st : p.stages)
+        if (st.module && (!st.code_words || !st.record_size || !st.code_at)) return 0;   // (not remade from the file: kept)
+    const module_remake::KeyVariant kv{p.key, p.variant};
+    std::lock_guard rk(module_remake::mu);
+    if (const auto it = module_remake::dropped.find(kv); it != module_remake::dropped.end() && it->second.program != &p)
+        return 0;   // (one program let go by key and variant: another of the same ones keeps its modules)
+    // (before the first module goes: a pipeline build asks the table from here on)
+    module_remake::any.store(true, std::memory_order_release);
+    size_t n = 0;
+    for (Stage& st : p.stages) {
+        if (!st.module) continue;
+        vkDestroyShaderModule(dev.device, st.module, nullptr);
+        st.module = VK_NULL_HANDLE;
+        n++;
+    }
+    if (n) module_remake::dropped[kv] = module_remake::Dropped{&p, false};
+    return n;
 }
 
 size_t program_cache_drop_modules() {
@@ -1164,11 +1194,12 @@ unsigned usable_cpus() {
     return n < 64 ? std::clamp(n, 1u, all) : all;
 }
 /// (longshot) The physical cores among the logical processors the process may run on: Threaded rendering's Auto count
-/// (threaded_rendering.h, whose tiers were measured by cores: on 4 cores the recorder thread made a third of the frames long,
-/// 18 Nov). GetLogicalProcessorInformation's cores, one mask each of its logical processors (on Linux host/posix's, from sysfs
-/// core_id and physical_package_id), each counted once when any of its logical processors is in the affinity mask
-/// (threaded::cores_of), so a Steam Deck's 4 cores and 8 threads count 4. The affinity mask not read: every core. The cores
-/// not read (the call fails, or no core is in the mask): usable_cpus, the logical count, as before. Never more than that
+/// (threaded_rendering.h, whose Auto was measured by cores: on 4 cores the old recorder thread made a third of the frames
+/// long, 18 Nov). GetLogicalProcessorInformation's cores, one mask each of its logical processors (on Linux host/posix's,
+/// from sysfs core_id and physical_package_id), each counted once when any of its logical processors is in the affinity
+/// mask (threaded::cores_of), so a Steam Deck's 4 cores and 8 threads count 4. The affinity mask not read: every core. The
+/// cores not read (the call fails, or no core is in the mask): usable_cpus, the logical count, as before. Never more than
+/// that
 unsigned usable_cores() {
     DWORD_PTR proc = 0, sys = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) proc = ~(DWORD_PTR)0;

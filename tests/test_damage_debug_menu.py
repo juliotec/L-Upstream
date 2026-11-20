@@ -10,6 +10,9 @@ import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def block(text, marker):
@@ -26,14 +29,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    # (vk_menu.cpp and its modules, their rows as table lines: menu_text, #1633)
+    menu = menu_text(ROOT)
     header = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
-    table = block(menu, "Row rows[] = {")
+    table = block(menu, "Row rows[] = {") + block(menu, "Row module_rows[] = {")
     entries = re.findall(r'\{TAB_DEBUG,[^{}]*\}', table)
     assert len(entries) >= 18
     assert '{TAB_GAMEPLAY, "Damage taken"' not in table
     assert sum('"Damage taken"' in entry for entry in entries) == 1
     source = '#include <atomic>\n#include <cassert>\n#include <cstring>\n#include <iterator>\n'
+    source += 'namespace menu { struct Setting; }   // (Row.setting: a module\'s row, #1633)\n'
     source += block(header, "struct Options {") + ';\nOptions opts;\n'
     source += block(menu, "enum MenuTab {") + ';\n'
     source += block(menu, "struct Row {") + ';\n'
@@ -60,7 +65,7 @@ bool upscaler_shown(int n) { return n > 1; }
 bool model_shown(bool available) { return available; }
 }
 '''
-    for name in ("bool cheats_on(", "bool is_laptop_row(", "bool row_shown(", "int tab_row_count(", "int tab_row_to_global(",
+    for name in ("bool cheats_on(", "bool row_shown(", "int tab_row_count(", "int tab_row_to_global(",
                  "int menu_damage_taken("):
         source += block(menu, name) + '\n'
     source += re.search(r"std::atomic<bool> transition_autosave_enabled\{[^}]+\};", menu).group() + '\n'

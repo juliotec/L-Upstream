@@ -16,7 +16,7 @@
 // The sizes that go by the driver's allowance are worked out from the allowance at the start (allowed_at_start); their
 // sites ask the same rule (policy_rule) with the allowance at their own first call, after the renderer has allocated, so
 // a site's number can be lower than the log's.
-// docs/development/device-policy.md is the guide.
+// docs/dev/reference/architecture.md, "Device policy", is the guide.
 #pragma once
 
 #include <algorithm>
@@ -265,7 +265,7 @@ struct DevicePolicy {
     // without it. RX_VK_GATHER_OFFSET. Read (vk_shader.cpp make_profile; in the program cache's stamp)
     bool gather_offset = false;
     // AMD's Windows driver: its compiler gets fragment-stage subgroup shuffles wrong, a basket in Link's house drew as a
-    // white blob (Lichii #273); broadcasts and selects there instead. RX_VK_FRAG_SHUFFLE_FALLBACK, read at the site. Read
+    // white blob; broadcasts and selects there instead. RX_VK_FRAG_SHUFFLE_FALLBACK, read at the site. Read
     // (vk_shader.cpp make_profile; in the program cache's stamp)
     bool frag_shuffle_fallback = false;
     // Every vendor but NVIDIA: positions invariant, as AMD's and Intel's compilers do not give a depth pass and its colour
@@ -279,38 +279,36 @@ struct DevicePolicy {
     // drew over the canyon's rocks on Death Mountain Trail, a flat wall where its depth pass had none. RX_VK_EQ_BIAS=<units>,
     // 0 off. Read (vk_draw.cpp dynamic_state)
     float equal_depth_bias = 0;
-    // AMD but RADV: task and mesh programs built without the driver's optimizer, which hung the GPU (RX 6600, issues 461
-    // and 484); on RADV they reset it built without (issue 1000). RX_VK_MESH_OPT. Site (vk_draw.cpp), step 4
+    // AMD but RADV: task and mesh programs built without the driver's optimizer, which hangs the GPU; on RADV they
+    // reset it built without. RX_VK_MESH_OPT. Site (vk_draw.cpp), step 4
     bool mesh_no_optimizer = false;
     // AMD with the task + mesh fallback (Navi 21-23 on Windows): a graphics build the compiler rejected is tried again
     // without its optimizer. No switch. Site (vk_draw.cpp), step 4
     bool amd_retry_no_optimizer = false;
     // AMD's Windows driver: the cloth program 5fa56485a6b07619 built without the optimizer, which left its colour pipeline
-    // pending (issues 461, 1540). No switch. Site (vk_draw.cpp, which asks the driver again), step 4
+    // pending. No switch. Site (vk_draw.cpp, which asks the driver again), step 4
     bool amd_cloth_no_optimizer = false;
     // AMD's Windows driver: one program's builds go to it one at a time, so a second waits outside it and not behind a
-    // faulted one (Hookshot issue 996, that driver's hang). It asked the vendor until this rule moved here, which held
-    // RADV's and AMDVLK's builds too. RX_VK_DRIVER_FAULTS=2 on any GPU, read at the site. Read (vk_draw.cpp)
+    // faulted one (that driver's hang). By the driver, not the vendor: RADV's and AMDVLK's builds are not held.
+    // RX_VK_DRIVER_FAULTS=2 on any GPU, read at the site. Read (vk_draw.cpp)
     bool fault_gate_serial = false;
     // AMD's Windows driver on Navi 21 to 23 (mesh_mode.h's list): task + mesh draws through the compute fallback, as the
     // native path timed out (Hookshot 996; seen on driver 0x800161, and no later driver is known to end it). Where the
     // card has mesh shaders and buffer device addresses. RX_VK_TASK_MESH_FALLBACK. Site (vk_main.cpp create_device), step 5
     bool task_mesh_fallback = false;
     // 0 Automatic is native where the card has mesh shaders, 2 Compute: RADV, whose native task and mesh path deadlocks
-    // its gfx and compute rings (issue 2245: RX 6800, RX 6600 XT, Steam Deck OLED, Ally X; no Mesa version is known to end
-    // it). It asked for AMD off Windows until this rule moved here, which took AMDVLK too, a driver the issue does not
-    // name. RX_VK_MESH_SHADERS, read at the site. Read (create_device, which asks the driver itself: the facts come later)
+    // its gfx and compute rings (Navi 2x and the RDNA3 APUs; no Mesa version is known to end it). By the driver, not
+    // AMD off Windows: AMDVLK does not show it. RX_VK_MESH_SHADERS, read at the site. Read (create_device, which asks the driver itself: the facts come later)
     int mesh_mode = 0;
     // RADV on GCN 1-4: fallback compute stages over this many phis are not built, as RADV's compiler grew past 25 GB on
     // them (an RX 580); Mesa's Intel driver its own (20000); 0 elsewhere, no limit. RX_VK_FALLBACK_PHI_LIMIT. Site (vk_draw.cpp), step 5
     uint32_t fallback_phi_limit = 0;
-    // Intel on Windows: one thread at a time in igvk64's compiler, which faulted with two (an Arc A750, issue 496; a UHD).
+    // Intel on Windows: one thread at a time in igvk64's compiler, which faults with two.
     // Not where the row's Auto is side by side (intel_side_by_side_auto); the Intel shader compiles row and
     // RX_VK_NO_INTEL_SERIAL open it. Site (vk_internal.h intel_gate_on), step 4
     bool intel_compile_gate = false;
-    // Intel's Windows driver: compute pipelines built one at a time on a thread of their own, as igvk64 froze the PC with
-    // four at once (an Arc A750, issue 496). It asked the vendor until this rule moved here, which held Mesa's driver
-    // too. RX_VK_COMPUTE_SERIAL. Read (vk_draw.cpp serial_builds_on)
+    // Intel's Windows driver: compute pipelines built one at a time on a thread of their own, as igvk64 can freeze the PC
+    // with four at once. By the driver, not the vendor: Mesa's driver is not held. RX_VK_COMPUTE_SERIAL. Read (vk_draw.cpp serial_builds_on)
     bool compute_builds_serial = false;
     // Intel's Windows driver: builds held off while a pipeline cache's data is fetched, as igvk64 faulted in the fetch
     // beside them (Hookshot 999, an Arc 140V; seen on driver 101.9175). RX_VK_PCACHE_FETCH_LOCK. Read (vk_draw.cpp
@@ -321,13 +319,13 @@ struct DevicePolicy {
     // found, so whether Mesa's driver or a GPU without mesh shaders needs it wants a run. RX_VK_SPLIT_BEFORE_DRAW. Read
     // (vk_replay.cpp part_ends_before_draw)
     bool split_before_draw = false;
-    // AMD's Windows driver on the graphics in Ryzen 7000 and 9000 desktop CPUs (0x164E, 0x13C0) and the Radeon 860M (0x1114,
-    // #1040): ASTC decoded on the CPU, as the GPU decoder's one long submission had Windows reset the device (a Ryzen 9 7900X,
-    // 7 runs of 8; seen on driver 26.10.1; the 860M lost it on the same Kokiri Forest arrays). RX_VK_ASTC_CPU. Read
+    // Off by default: large GPU ASTC uploads split across bounded submissions (RX_VK_ASTC_CHUNK_MPX), avoiding the one
+    // long upload submission that had Windows reset integrated AMD GPUs on Kokiri Forest's terrain arrays.
+    // RX_VK_ASTC_CPU forces CPU decoding to RGBA8 and raises the iGPU texture cap above 16 GB RAM. Read
     // (vk_texture.cpp astc_on_cpu)
     bool astc_on_cpu = false;
     // NVIDIA: the Deku Tree web's vertex code b449bcdb69b36a8a has its global loads inlined, as NVIDIA's compiler
-    // substitutes a load's result there (#455). No switch. Read (vk_shader.cpp translate_into; in the program cache's stamp)
+    // substitutes a load's result there. No switch. Read (vk_shader.cpp translate_into; in the program cache's stamp)
     bool inline_deku_web_loads = false;
     // Every vendor but NVIDIA: the movie upscaler's networks are left out (the last pass becomes a linear upscale of the
     // movie), as their multiplies took minutes each for AMD's compiler and the movies ran at 10 fps (issues 26, 38, 43).
@@ -348,7 +346,7 @@ struct DevicePolicy {
     // Idle imports given back past this share of the system heap's budget: 85, and 0 (off) on the same Windows drivers,
     // for the same losses. RX_VK_IMPORT_HIGH. Site (vk_memory.cpp), step 2
     int idle_import_high_pct = 85;
-    // An allowance the driver gives as the count itself is taken a tenth lower (AMD's Windows driver, #933, #1025). On
+    // An allowance the driver gives as the count itself is taken a tenth lower (AMD's Windows driver). On
     // every PC: vram_usage sees the driver do it, and no fact here chooses. Site (vk_vma.cpp), step 2
     bool allowance_at_count_rule = true;
 
@@ -377,10 +375,9 @@ struct DevicePolicy {
     bool warp64 = false;
 
     // ---- measured on one card ----
-    // RADV but on GCN 1-4: the replay's submits held and sent as one (a Radeon 8060S on Bazzite, the submit 70 -> 6 ms a
-    // frame, issue 413; an RX 580 lost 4 fps). GCN is DeviceFacts::radv_gcn, the one definition; it was "no stage pinned
-    // to 32 lanes and 64-lane waves" until this rule moved here, which RX_VK_NO_SUBGROUP_PIN made true of every 64-lane
-    // card and which took Vega (GFX9) for GCN too. RX_VK_BATCH. Read (vk_replay.cpp batch_on)
+    // RADV but on GCN 1-4: the replay's submits held and sent as one (a Radeon 8060S: the submit 70 -> 6 ms a frame; an
+    // RX 580 loses 4 fps). GCN is DeviceFacts::radv_gcn, the one definition (not a 64-lane test, which RX_VK_NO_SUBGROUP_PIN
+    // makes true of every 64-lane card and which takes Vega (GFX9) for GCN too). RX_VK_BATCH. Read (vk_replay.cpp batch_on)
     bool batch_submits = false;
     // RADV and AMD RDNA 4 on AMD's Windows driver: the software matrix multiplies' unrolled forms are tried (measured on the
     // Steam Deck and an RX 9060 XT); a test shader on the device then says which is used. RX_VK_MMA_UNROLL. Site
@@ -390,8 +387,7 @@ struct DevicePolicy {
     // the written-out form (Windows not tried). RX_VK_GM_LOOP. Site (vk_coopmat.cpp table_loop_wanted), step 7
     bool global_table_loop = false;
     // Intel's Windows driver on a discrete card: occlusion counts copied to host memory, not read from the pool (an Arc
-    // B580, 34.8 -> 45.8 fps in the market; seen on driver 101.9154). Off with the parallel replay, at the site.
-    // RX_VK_OCC_COPY. Read (vk_replay.cpp occ_copy_wanted)
+    // B580, 34.8 -> 45.8 fps in the market; seen on driver 101.9154). RX_VK_OCC_COPY. Read (vk_replay.cpp occ_copy_wanted)
     bool occ_copy = false;
     // Intel on Windows, the Arc B-series from driver 101.9154: the Intel shader compiles row's Auto is side by side (a
     // B580 froze 248-409 s at an area's first visit one at a time). Site (intel_compiles.h, vk_menu.cpp), step 4
@@ -403,9 +399,12 @@ struct DevicePolicy {
     // The Steam Deck's own APU: its peak clock state while its power level is auto, which the site reads later (+8% to
     // +46% for about 4 W). RX_VK_GPU_CLOCK. Site (gpu_clock.h, vk_gpu_clock.cpp), step 2
     bool gpu_clock_peak = false;
-    // NVIDIA: a queue kept for the presenter thread, which is itself off. The study of these rules doubts it: nothing
-    // uses the queue. RX_VK_PRESENT_THREAD. Site (create_device), step 5
-    bool presenter_queue = false;
+    // The Steam Deck and the handhelds Steam runs as one (auto_profile's hw.handheld): a CPU read of GPU results whose writer
+    // is the newest submission handed out is read without its wait, a frame late (readback_late.h `newest`), on top of the
+    // culling camera block every PC reads late: on a Steam Deck OLED 24.3 -> 30.1 fps on a heavy view, 21.9 -> 26.4 in the
+    // main outdoor area (#238). On an RTX 3090 (Linux) the waits are 0.04-0.2 ms and the rule changed nothing measurable.
+    // RX_VK_READBACK_LATE (its rules, read at the site; set, it replaces this). Read (vk_replay.cpp readback_late_wanted)
+    bool readback_late_newest = false;
     // Linux with NVIDIA's own driver and 20 GB of RAM or less: the pipeline cache's file may be left unread, where
     // NVIDIA's own cache is warm and programs load at create (pcache_load.h decides with those). RX_VK_PCACHE_LOAD. Site
     // (vk_draw.cpp pcache_load_off), step 4
@@ -518,7 +517,7 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
                            f.buffer_device_address;
     p.amd_retry_no_optimizer = f.amd() && p.task_mesh_fallback;
     p.amd_cloth_no_optimizer = f.windows && f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
-    // (corrected: AMD's Windows driver, whose hang issue 996 is, and not the vendor, which also held RADV's and AMDVLK's
+    // (corrected: AMD's Windows driver, whose hang this is, and not the vendor, which also held RADV's and AMDVLK's
     // builds to one at a time. To go back: f.amd())
     p.fault_gate_serial = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
     // (Mesa's Intel driver has its own limit: its compiler did not finish the 29,000- and 80,000-phi stages, fallback_size_policy.h)
@@ -526,12 +525,12 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
                            : f.driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ? fallback_size::kIntelPhiLimit : 0;
     p.intel_side_by_side_auto = f.windows && f.intel() && intel_side_by_side_measured(f.device_id, f.driver_version);
     p.intel_compile_gate = f.windows && f.intel() && !p.intel_side_by_side_auto;
-    // (corrected: Intel's Windows driver, whose compiler issue 496 is, and not the vendor, which also held ANV's compute
+    // (corrected: Intel's Windows driver, whose compiler this is, and not the vendor, which also held ANV's compute
     // builds to one at a time. To go back: f.intel())
     p.compute_builds_serial = f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
     p.pcache_fetch_lock = f.windows && f.intel();
     p.split_before_draw = f.intel();
-    p.astc_on_cpu = f.windows && f.amd() && (f.device_id == 0x164E || f.device_id == 0x13C0 || f.device_id == 0x1114);
+    p.astc_on_cpu = false;
     p.inline_deku_web_loads = f.nvidia();
     p.networks_left_out = !f.nvidia();
     p.dma_buf_imports = !f.windows && f.driver_id != VK_DRIVER_ID_NVIDIA_PROPRIETARY;
@@ -556,7 +555,7 @@ inline DevicePolicy device_policy(const DeviceFacts& f) {
     p.occ_copy = f.driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && f.discrete();
     p.fsr4_tune = f.amd();
     p.gpu_clock_peak = f.amd() && f.deck_apu();
-    p.presenter_queue = f.nvidia();
+    p.readback_late_newest = f.handheld();
     p.pcache_small_pc = !f.windows && f.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY && (f.ram >> 20) && (f.ram >> 20) <= 20480;
 
     // sizes
@@ -748,7 +747,7 @@ template <class Line> void device_policy_log(const DevicePolicy& p, const Device
         l.flag("compute_builds_serial", p.compute_builds_serial, p.set(Sw::compute_builds_serial));
         l.flag("pcache_fetch_lock", p.pcache_fetch_lock, p.set(Sw::pcache_fetch_lock), "101.9175");
         l.flag("split_before_draw", p.split_before_draw, p.set(Sw::split_before_draw), "101.9154");
-        l.flag("astc_on_cpu", p.astc_on_cpu, p.set(Sw::astc_on_cpu), "26.10.1");
+        l.flag("astc_on_cpu", p.astc_on_cpu, p.set(Sw::astc_on_cpu));
         l.flag("inline_deku_web_loads", p.inline_deku_web_loads);
         l.flag("networks_left_out", p.networks_left_out);
         l.flag("dma_buf_imports", p.dma_buf_imports);
@@ -773,7 +772,7 @@ template <class Line> void device_policy_log(const DevicePolicy& p, const Device
         l.flag("intel_side_by_side_auto", p.intel_side_by_side_auto, false, "101.9154");
         l.flag("fsr4_tune", p.fsr4_tune, p.set(Sw::fsr4_tune));
         l.flag("gpu_clock_peak", p.gpu_clock_peak);
-        l.flag("presenter_queue", p.presenter_queue);
+        l.flag("readback_late_newest", p.readback_late_newest);
         l.flag("pcache_small_pc", p.pcache_small_pc);
         line(l.text);
     }

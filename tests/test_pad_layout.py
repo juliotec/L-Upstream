@@ -152,7 +152,8 @@ int main() {
 
 
 def sources(root):
-    menu = (root / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    # (the Layout preset's engine: the Controls page module's, gpu/vk/menu/bindings.cpp, #1633)
+    menu = (root / "gpu" / "vk" / "menu" / "bindings.cpp").read_text(encoding="utf-8")
     api = (root / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
     hid = (root / "host" / "nn_hid.c").read_text(encoding="utf-8")
     # (the controls' enums from gpu/vk/vk_api.h: the header itself is C, with C's _Static_assert)
@@ -170,12 +171,12 @@ def sources(root):
 
 class PadLayoutTests(unittest.TestCase):
     def test_the_row_takes_what_the_preset_gave(self):
-        menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-        branch = menu[menu.index("if (r.value == &opts.pad_layout) {", menu.index("void set_row(")):]
-        branch = block(branch, 0)
-        self.assertIn("apply_pad_layout(", branch)
-        self.assertTrue(branch.rstrip("} \n").endswith("*r.value = detect_pad_layout();   // (Custom when the preset could not be had whole)"),
-                        "set_row: the Layout preset row no longer takes its value from detect_pad_layout after the preset")
+        # (the row's own on_change, gpu/vk/menu/bindings.cpp: the preset bound, then the row read back from the bindings)
+        module = (ROOT / "gpu" / "vk" / "menu" / "bindings.cpp").read_text(encoding="utf-8")
+        chosen = block(module, module.index("void pad_layout_chosen(int v)"))
+        self.assertLess(chosen.index("apply_pad_layout(v);"), chosen.index("opts.pad_layout = detect_pad_layout();"))
+        self.assertIn(".on_change = MENU_HOOK(pad_layout_chosen)", module,
+                      "the Layout preset row no longer takes its value from detect_pad_layout after the preset")
 
     def test_presets(self):
         cc = shutil.which("gcc") or shutil.which("clang")

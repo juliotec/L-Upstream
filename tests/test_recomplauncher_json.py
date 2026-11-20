@@ -20,6 +20,9 @@ class RecompLauncherJsonTests(unittest.TestCase):
         # output_res, resolution, upscaling, frame_rate_cap, dlss)
         ini_key = menu.split("const char* ini_key(const Row& r) {", 1)[1].split("\n}", 1)[0]
         rows |= set(re.findall(r'return "([a-z_0-9]+)";', ini_key))
+        # (#1633: the rows the menu's modules describe, gpu/vk/menu/, by their keys)
+        for module in (ROOT / "gpu" / "vk" / "menu").glob("*.cpp"):
+            rows |= set(re.findall(r'\.key = "([a-z_0-9]+)"', module.read_text(encoding="utf-8")))
         keys = {key for setting in manifest["settings"] for choice in setting["choices"] for key in choice["set"]}
         self.assertTrue(keys)
         # (keys the game reads that are no menu row: Compile shaders, which the preparation reads, vk_draw.cpp compile_all)

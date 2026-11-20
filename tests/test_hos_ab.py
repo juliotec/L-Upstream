@@ -1,4 +1,4 @@
-"""(longshot) The A/B within one run (host/hos_ab.c, HOS_AB) and its summary (scripts/ab_summary.py), game-free.
+"""(longshot) The A/B within one run (host/hos_ab.c, HOS_AB) and its summary (scripts/perf.py ab), game-free.
 
 The real host/hos_ab.c is compiled over a stub hos.h (the real one's A/B declarations, a clock the fixture moves, the log kept
 in memory) and a stub windows.h (no thread is started: the fixture calls hos_ab_tick at the times it chooses), with the wired
@@ -27,7 +27,7 @@ of a plain walk, the 256-mark step and the 32-mark one taking turns).
 The places of the calls (hos_ab_start before the game's threads, hos_ab_present in rx_nvn_present, hos_ab_end in
 hos_close_finish, hos_ab_frame last in vk_host) and the list of wired switches are read from the source.
 
-scripts/ab_summary.py on made-up traces: known means per side (16 and 18 ms), the warm-up's and the transitions' frames (50 and
+scripts/perf.py ab (scripts/profiling/ab.py) on made-up traces: known means per side (16 and 18 ms), the warm-up's and the transitions' frames (50 and
 100 ms) left out, a last period cut short left out and one more for the same side at both ends, two files together, and a
 steady drift that moves both sides alike giving no difference. Its broken variants (transitions kept, sides swapped, the
 warm-up counted, the cut-short period kept, the parity trim gone) must fail.
@@ -362,12 +362,17 @@ def wiring_checks():
     if not 0 <= present.index("hos_ab_present();") < present.index("vk->nvn_present(t, crop)"):
         fail("host/rx_backend.c: rx_nvn_present does not count the frame (hos_ab_present) before the renderer presents")
     table = re.sub(r"/\*.*?\*/", "", block(backend, "static const MkwVkHost vk_host = {"), flags=re.S)
-    if [v.strip() for v in table.split(",") if v.strip()][-2] != "hos_ab_frame":
-        fail("host/rx_backend.c: vk_host does not end with hos_ab_frame (MkwVkHost.ab_frame, version 34)")
+    names = [v.strip() for v in table.split(",") if re.fullmatch(r"\w+", v.strip())]
+    # (the Mods tab's functions, version 35, come after it)
+    if "hos_ab_frame" not in names or names[names.index("hos_ab_frame") + 1:] != [
+            "hos_mod_info", "hos_mod_edit", "hos_mods_changed", "hos_cheat_info", "hos_cheat_set"]:
+        fail("host/rx_backend.c: vk_host does not have hos_ab_frame (MkwVkHost.ab_frame, version 34) right before the "
+             "Mods tab's functions")
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
     if int(re.search(r"#define MKWVK_API_VERSION (\d+)", api).group(1)) < 34 or \
-            "int (*ab_frame)(int64_t from_ns, int64_t to_ns);\n} MkwVkHost;" not in api:
-        fail("gpu/vk/vk_api.h: MkwVkHost does not end with ab_frame at version 34 or later")
+            not re.search(r"int \(\*ab_frame\)\(int64_t from_ns, int64_t to_ns\);\n    /\* \(version 35: .*?\*/\n"
+                          r"    int \(\*mod_info\)\(", api, re.S):
+        fail("gpu/vk/vk_api.h: MkwVkHost does not have ab_frame at version 34 right before the Mods tab's functions")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     if "host->version >= 34 && host->ab_frame ? host->ab_frame(l_at, at) : -1" not in replay:
         fail("gpu/vk/vk_replay.cpp: the frame trace does not ask the host for ab_side (only from a version 34 host)")
@@ -459,7 +464,7 @@ def flips_collect(cc, tmp):
           % (reads, old))
 
 
-# ---- scripts/ab_summary.py
+# ---- scripts/perf.py ab (scripts/profiling/ab.py)
 BROKEN_PY = [
     ("transitions kept", '        if v in TRANSITION:\n            p["transitions"] += 1\n        else:\n            p["ms"].append(ms)\n',
      '        p["ms"].append(ms)\n'),
@@ -509,16 +514,19 @@ def drifting(path):
 
 
 def summary_checks(tmp):
-    script = (ROOT / "scripts/ab_summary.py").read_text(encoding="utf-8")
+    script = (ROOT / "scripts/profiling/ab.py").read_text(encoding="utf-8")
     a, b = Path(tmp) / "frames.csv", Path(tmp) / "drift.csv"
     made_up(a)
     drifting(b)
+    # (a copy of the tool, whose ab.py each variant replaces)
+    copy = Path(tmp) / "scripts"
+    shutil.copytree(ROOT / "scripts/profiling", copy / "profiling", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(ROOT / "scripts/perf.py", copy / "perf.py")
 
     def run(text, *args):
-        p = Path(tmp) / "ab_summary_run.py"
-        p.write_text(text, encoding="utf-8")
-        r = subprocess.run([sys.executable, "-I", "-B", str(p), "--json", *map(str, args)], capture_output=True, text=True,
-                           timeout=120)
+        (copy / "profiling" / "ab.py").write_text(text, encoding="utf-8")
+        r = subprocess.run([sys.executable, "-I", "-B", str(copy / "perf.py"), "ab", "--json", *map(str, args)],
+                           capture_output=True, text=True, timeout=120)
         if r.returncode:
             return None, r.stderr
         return json.loads(r.stdout), ""
@@ -555,18 +563,18 @@ def summary_checks(tmp):
 
     bad = check(script)
     if bad:
-        fail("scripts/ab_summary.py:\n  " + "\n  ".join(bad))
-    r = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/ab_summary.py"), str(a)], capture_output=True, text=True,
-                       timeout=120)
+        fail("scripts/profiling/ab.py:\n  " + "\n  ".join(bad))
+    r = subprocess.run([sys.executable, "-I", "-B", str(ROOT / "scripts/perf.py"), "ab", str(a)], capture_output=True,
+                       text=True, timeout=120)
     if r.returncode or "side 1 is slower" not in r.stdout:
-        fail("scripts/ab_summary.py's text:\n" + r.stdout + r.stderr)
+        fail("scripts/perf.py ab's text:\n" + r.stdout + r.stderr)
     print(r.stdout.rstrip())
     for what, old, new in BROKEN_PY:
         if script.count(old) != 1:
-            fail("scripts/ab_summary.py no longer has the text the broken variant '%s' changes: %r" % (what, old))
+            fail("scripts/profiling/ab.py no longer has the text the broken variant '%s' changes: %r" % (what, old))
         found = check(script.replace(old, new))
         if not found:
-            fail("broken variant of scripts/ab_summary.py '%s' passed" % what)
+            fail("broken variant of scripts/profiling/ab.py '%s' passed" % what)
         print("broken variant %s: caught (%s)" % (what, found[0][:110]))
 
 
@@ -583,7 +591,7 @@ def main():
         flips_collect(cc, tmp)
         summary_checks(tmp)
     print("PASS: the A/B's parser, schedule, frames, cheap path and sums; the wired switch flips with it and stays right when "
-          "flipped at every call; ab_summary.py's sides, transitions, warm-up, trims and interval")
+          "flipped at every call; perf.py ab's sides, transitions, warm-up, trims and interval")
 
 
 if __name__ == "__main__":

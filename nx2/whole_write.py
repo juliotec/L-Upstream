@@ -1,6 +1,6 @@
-"""(issue 1197) A lifted C file rewritten in place (the patches, the chunk split) is written beside it and moved over it: a run
+"""A lifted C file rewritten in place (the patches, the chunk split) is written beside it and moved over it: a run
 stopped mid-write (the builder closed, a second build stopping the first, a full disk) leaves the old file whole, never the first
-megabytes of the new one, which the compile then stopped on at every try ("g_module_b" where g_module_base was)."""
+megabytes of the new one, which the compile would then stop on at every try ("g_module_b" where g_module_base was)."""
 import os
 import time
 

@@ -13,8 +13,9 @@ with the prompts' entries merged into it. On made-up tables, no game data:
   merged table), and, with the zstandard package, a table compressed as Clawshot writes it and one whose frame does not give
   its size.
 
-The documented, authored file-mod example in docs/mods.md also goes through the same Linux filesystem fixture:
-discovery, whole-path order, disabling and restart, default/HOS_MODS roots, case/slash lookup and ignored ExeFS.
+The documented, authored file-mod example in docs/dev/reference/mods.md also goes through the same Linux filesystem fixture:
+discovery, whole-path order, disabling and restart, default/HOS_MODS roots, case/slash lookup and an ExeFS folder
+that is listed and never served as RomFS.
 
 python -I -B tests/test_mods_size_table.py [--cc gcc]
 """
@@ -190,9 +191,9 @@ POSIX_PIECES = ["static DWORD error_of(int e) {", "static void slashes(char *dst
 
 def documented_example_checks(exe, tmp):
     """Use the documentation's actual files, not a second loader or a separately maintained example."""
-    doc = (ROOT / "docs/mods.md").read_text(encoding="utf-8")
+    doc = (ROOT / "docs/dev/reference/mods.md").read_text(encoding="utf-8")
     blocks = re.findall(r"<!-- romfs-example -->\s*```json\n(.*?)\n```\s*<!-- /romfs-example -->", doc, re.S)
-    check(len(blocks) == 1, "docs/mods.md must contain one runnable RomFS example")
+    check(len(blocks) == 1, "docs/dev/reference/mods.md must contain one runnable RomFS example")
     files = json.loads(blocks[0])
     tmp.mkdir()
     for rel, text in files.items():
@@ -234,7 +235,9 @@ def documented_example_checks(exe, tmp):
         return out
 
     log = run("HOS_MODS root, discovery, full-path order and lookup", mods, expected)
-    check("03-code-only: exefs patches are left out" in log, "the example's ExeFS warning is missing")
+    # (a mod with only an exefs folder is listed with what it has; its patches belong to the build, not to this loader)
+    check("03-code-only: 0 RomFS files (0 replace the game's, 0 added), ExeFS patches" in log,
+          "the example's ExeFS mod is not listed with its ExeFS folder")
     run("default root beside the executable", None, expected)
     # Every invocation is a new process: the loader deliberately indexes once per start.
     (mods / "contents").rename(mods / "-contents")
@@ -255,7 +258,7 @@ def routing_checks(cc, tmp, zstandard, host):
     posix = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
     src = tmp / "src"
     src.mkdir(parents=True)
-    for f in ("mods.c", "prompts.c", "texts.c"):   # (beside a hos.h of the test's: hos_log, and what the live prompts read: none
+    for f in ("mods.c", "mods_list.c", "prompts.c", "texts.c", "zs.c"):   # (beside a hos.h of the test's: hos_log, and what the live prompts read: none
                                                    # here; texts.c: mods.c asks it for a path no mod and no prompt has)
         (src / f).write_bytes((host / f).read_bytes())
     (src / "hos.h").write_text("#pragma once\n#include <stddef.h>\n#include <stdint.h>\nvoid hos_log(const char *f, ...);\n"
@@ -289,6 +292,7 @@ DWORD GetModuleFileNameA(HMODULE m, LPSTR out, DWORD cap) { (void)m; return (DWO
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 void hos_log(const char *f, ...) { va_list ap; va_start(ap, f); printf("log: "); vprintf(f, ap); printf("\n"); va_end(ap); }
 int hos_binding(int set, int button, int slot) { (void)set; (void)button; (void)slot; return -1; }
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }
@@ -296,7 +300,16 @@ int hos_xinput_pads(void) { return 0; } /* no controllers in this routing fixtur
 void hos_sdl_pad_first_name(char *out, size_t cap) { if (cap) *out = 0; }
 int hos_regions(uint64_t (*out)[2], int cap) { (void)out; (void)cap; return 0; }
 int64_t hos_now_ns(void) { return 0; }
+const char *hos_romfs_dir;   /* (no game RomFS here: mods.c merges no table of its own, the last mod's is the base) */
 int rx_option(int id, int otherwise) { (void)id; return otherwise; }
+const char *hos_options_file(void) {   /* (host/options_path.c: beside the game, as for a game started without --user) */
+    static char p[4096];
+    snprintf(p, sizeof p - 32, "%s", getenv("TEST_GAME_EXE"));
+    size_t n = strlen(p);
+    while (n && p[n - 1] != '/' && p[n - 1] != '\\') n--;
+    snprintf(p + n, sizeof p - n, "longshot_options.ini");
+    return p;
+}
 void hos_mods_init(const char *image_path);
 int hos_mods_romfs(const char *rel, char *out, size_t cap);
 const char *hos_romfs_dir;
@@ -316,7 +329,7 @@ int main(int argc, char **argv) {
                     "-I", str(ROOT / "host"), "-I", str(ROOT / "host/posix"), "-I", str(ZSTD),
                     "-include", str(ROOT / "gpu/vk/compat/longshot_env.h"),   # (texts.c is a copy: its own path to it is gone)
                     str(src / "mods.c"),
-                    str(src / "prompts.c"), str(src / "texts.c"), str(tmp / "posix.c"), str(tmp / "main.c"),
+                    str(src / "mods_list.c"), str(src / "prompts.c"), str(src / "texts.c"), str(src / "zs.c"), str(ROOT / "host/restbl.c"), str(tmp / "posix.c"), str(tmp / "main.c"),
                     *(str(ZSTD / f) for f in ZSTD_SOURCES), "-o", str(exe)], check=True)
 
     documented_example_checks(exe, tmp / "documented-example")

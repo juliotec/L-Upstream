@@ -1,6 +1,6 @@
 // (longshot) AMD FidelityFX Super Resolution 3.1 (the FSR 3.1.4 upscaler of FidelityFX SDK v1.1.4) in place of OoT's
 // gameplay upscale network, the same place NVIDIA DLSS takes (vk_dlss.h). Built from AMD's open shader sources
-// (third_party/fidelityfx-sdk, compiled into gpu/vk/shaders by scripts/fsr3_shaders.py): every pass is a dispatch of ours,
+// (third_party/fidelityfx-sdk, compiled into gpu/vk/shaders by scripts/shaders.py fsr3): every pass is a dispatch of ours,
 // and nothing of AMD's is linked or loaded at run time, so it is in every build and runs on any GPU with what supported()
 // asks for.
 //

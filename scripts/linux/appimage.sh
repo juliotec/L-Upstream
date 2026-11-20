@@ -2,11 +2,11 @@
 # The Linux AppImage: Longshot Builder, its Python and Longshot's sources. No game data and nothing made from it is in it:
 # the game is built from the player's own copy, as on Windows. Its build tools (the compiler, the sysroot, FFmpeg, SDL2,
 # the Vulkan headers) are not in it either: they are tools.lock's linux-x64 lines, which the Longshot Launcher installs
-# beside it, or the AppImage itself at its first start (builder/linux/linux_tools.py; docs/releases.md, "tools.lock").
+# beside it, or the AppImage itself at its first start (builder/linux/linux_tools.py; docs/dev/reference/releases.md, "tools.lock").
 #
 #   scripts/linux/deps.sh        (first: Python, the AppImage packer, into build-linux/deps)
 #   scripts/linux/appimage.sh    -> build-linux/Longshot-<version>-x86_64.AppImage: the Linux builder a release ships, which
-#                                   the Longshot Launcher installs (docs/releases.md)
+#                                   the Longshot Launcher installs (docs/dev/reference/releases.md)
 # The same image builds the game and, with --play, starts the one it saved.
 #
 # The tools this build itself uses (clang for the native helpers, the sysroot for the check below) are tools.lock's, installed
@@ -24,7 +24,7 @@ B=$ROOT/build-linux
 DEPS=${DEPS:-$B/deps}
 APPDIR=$B/AppDir
 # (a release's tag, or the nightly's name nightly-<count>-<commit>, from the release workflow; a build of a checkout is named by git
-# describe --long, which is on no channel: the launcher installs only released versions, docs/releases.md)
+# describe --long, which is on no channel: the launcher installs only released versions, docs/dev/reference/releases.md)
 VERSION=${LONGSHOT_VERSION:-$(git describe --tags --long --always --match "v[0-9]*" 2>/dev/null || echo dev)}
 PY=$DEPS/python/bin/python3
 # ---- the build tools, tools.lock's linux-x64 lines, at their places under $TOOLS (as in an installed builder) ----
@@ -53,25 +53,34 @@ printf '%s
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
 cp -a gpu/render/*.h "$T/gpu/render/"
-# (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
+# (every gpu/vk header the host's sources include: one left out and no Linux build finishes.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)
 for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_/]+[.]h' host | sort -u); do if [ -f "$h" ]; then mkdir -p "$T/$(dirname "$h")" && cp -a "$h" "$T/$h"; fi; done
+# (RenHDrum's C header: host/rumble_renhdrum.c, which every player's build compiles, includes it)
+mkdir -p "$T/third_party/renhdrum/include"
+cp third_party/renhdrum/include/renhdrum.h "$T/third_party/renhdrum/include/"
 cp -a third_party/opus "$T/third_party/"
+# (RenHDrum, which some controllers' vibration plays through (host/rumble_renhdrum.c): renhdrum.so, built by the workflow
+# (scripts/renhdrum.py build --target linux) and named by RENHDRUM_SO; a player's build puts it beside the game. Without it
+# every controller keeps its motors or its own HD rumble)
+if [ -n "${RENHDRUM_SO:-}" ]; then
+    mkdir -p "$T/licenses/renhdrum"
+    cp "$RENHDRUM_SO" "$T/third_party/renhdrum/renhdrum.so"
+    cp third_party/renhdrum/LICENSE-MIT third_party/renhdrum/LICENSE-APACHE third_party/renhdrum/NOTICE \
+       third_party/renhdrum/PROVENANCE.md "$T/licenses/renhdrum/"
+fi
 cp -a third_party/kenney_input "$T/third_party/"
 cp -a third_party/kenney_input_keyboard "$T/third_party/"
-# (the Vulkan back end's sources, which every player's build compiles (nx2/build.py), and, for NVIDIA DLSS when ticked in the
-# builder, scripts/ngx_sdk.py, compiled with LONGSHOT_NGX_SDK. assets/ above carries its play profile and the hot list,
-# assets/profiles/)
-mkdir -p "$T/scripts"
-cp scripts/ngx_sdk.py "$T/scripts/"
+# (the Vulkan back end's sources, which every player's build compiles (nx2/build.py); for NVIDIA DLSS when ticked in the
+# builder, with LONGSHOT_NGX_SDK from scripts/fetch.py dlss, which scripts/ above carries. assets/ above carries its play
+# profile and the hot list, assets/profiles/)
 cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
 cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
 # (AMD FSR 4, when chosen: AMD's MIT FSR API headers, which the player's Vulkan back end builds with (make_game.py --fsr,
 # nx2/build.py). AMD's runtime is not among them: on Linux the player's own amd_fidelityfx_upscaler_vk.so, the readme)
 cp -a third_party/fidelityfx "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
-# (zbic's single-file zstd too: the player's Vulkan back end builds zstd.c and includes zstd.h; v2.2.0-rc.1
-# carried only zbic.so, and every Linux build with DLSS stopped at FileNotFoundError: zstd.h)
+# (zbic's single-file zstd too: the player's Vulkan back end builds zstd.c and includes zstd.h)
 cp -a third_party/zbic/zbic.so third_party/zbic/zstd.c third_party/zbic/zstd.h third_party/zbic/zstd_errors.h \
       third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
 cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
@@ -83,8 +92,8 @@ if [ -d work ]; then
 fi
 # (the pipeline state list's sources, assets/pipeline_states/, came with assets/ above, and are required: nx2/make_game.py merges
 # them beside the game, and without them a new install's first field load is drawn white for seconds while its pipelines
-# compile; v2.0.8 to v2.0.14 shipped none. scripts/linux/check_player_build.sh reads them back from the image)
-[ -n "$(find "$T/assets/pipeline_states" -name "*.bin.xz" 2>/dev/null)" ] || { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
+# compile. scripts/linux/check_player_build.sh reads them back from the image)
+[ -n "$(find "$T/assets/pipeline_states" -name "*.bin.xz" 2>/dev/null)" ] || { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/dev/reference/pipeline-states.md)"; exit 1; }
 find "$T" -name __pycache__ -prune -exec rm -rf {} +
 
 # ---- what it starts with: its Python (the tools' download, nx2/make_game.py) ----
@@ -95,7 +104,7 @@ cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/im
 cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
 cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
 cp third_party/fidelityfx/LICENSE.md third_party/fidelityfx/PROVENANCE.md "$T/licenses/fidelityfx/"   # (with AMD FSR 4)
-# (AMD's FidelityFX SDK shaders, compiled into gpu/vk/shaders' FSR 3.1 headers that every build has: scripts/fsr3_shaders.py)
+# (AMD's FidelityFX SDK shaders, compiled into gpu/vk/shaders' FSR 3.1 headers that every build has: scripts/shaders.py fsr3)
 cp third_party/fidelityfx-sdk/LICENSE.txt third_party/fidelityfx-sdk/PROVENANCE.md "$T/licenses/fidelityfx-sdk/"
 # ---- end of the licences ----
 
@@ -129,7 +138,7 @@ EOF
 # ---- the AppDir's own files ----
 cp builder/linux/AppRun "$APPDIR/AppRun"
 cp builder/linux/longshot-builder.desktop "$APPDIR/"
-# (RecompLauncher reads this from inside the AppImage, at /recomplauncher.json: docs/releases.md, "RecompLauncher")
+# (RecompLauncher reads this from inside the AppImage, at /recomplauncher.json: docs/dev/reference/releases.md, "Update channels")
 cp recomplauncher.json "$APPDIR/recomplauncher.json"
 cp assets/longshot.png "$APPDIR/longshot.png"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"

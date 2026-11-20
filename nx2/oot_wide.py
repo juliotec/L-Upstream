@@ -9,7 +9,7 @@ and the picture a save keeps shows that middle 16:9 (a narrower picture: its mid
 
 The sites and what each does come from NX2navi's recomp/patches-v111.txt, where they are credited to Ivan0xFF (MIT,
 "The matrix-update, UI and movie sites: Copyright (c) 2026 Ivan0xFF"); the picture and scene size sites are the same
-constants that file names; the save picture's site is Longshot's own (issue 952). Here each is written as C after the
+constants that file names; the save picture's site is Longshot's own. Here each is written as C after the
 original instruction instead of a replacement of it.
 Each site's original instruction word is checked: another game version leaves the site out (and says so).
 """
@@ -75,9 +75,9 @@ MOVIE = ("{ extern volatile float hos_wide_margin; const float _m = hos_wide_mar
          "memcpy(&_ua, &_a, 4); memcpy(&_ub, &_b, 4); recomp_store32(c, _vp + 8, _ua); recomp_store32(c, _vp + 16, _ub); } }"
          "   /* (nx2/oot_wide.py: movies in the middle 16:9) */")
 
-# The save's picture (issue 952): the pause menu draws the whole picture into a 543 x 306 texture, the save's JPEG, through the
+# The save's picture: the pause menu draws the whole picture into a 543 x 306 texture, the save's JPEG, through the
 # game's viewport-and-scissor helper (f_802a46e0: SetScissor, then SetViewport(x, y, w, h) in w1-w4 from [x8], called by blr x8).
-# Wider than 16:9, the whole picture was squeezed into it. That one viewport is made wider than the texture by the picture's
+# Wider than 16:9, the whole picture would be squeezed into it. That one viewport is made wider than the texture by the picture's
 # ratio over 16:9, centred: the middle 16:9 fills the texture (the scissor keeps the texture's), as a 16:9 window would show.
 # Narrower than 16:9 (4:3, 16:10) it is made taller instead, by 16:9 over the picture's ratio: the picture's middle band fills
 # the texture at its own shape, neither squeezed nor with bars.

@@ -245,21 +245,25 @@ void load_work(LoadJob& job) {
                     census.load_computes_cold++;   // (its first dispatch asks again, and compiles on a worker: as before)
                 }
             } else if (notes != index_notes.end()) {
+                // every noted pipeline of the variant built here: its modules can go, remade from the file if play ever
+                // builds another state of it (program_cache_drop_loaded). One deferred, cold or not read keeps them
+                size_t built = 0, left = 0;
                 for (const NoteAt& n : notes->second) {
                     if (n.variant != p->variant) continue;
                     if (!job.draw_waiting.load(std::memory_order_relaxed)) {
-                        if (!pipe_note_at(notes_in, n.at, note.get())) continue;
+                        if (!pipe_note_at(notes_in, n.at, note.get())) { left++; continue; }
                         bytes += (int64_t)sizeof(PipeNote);
                         // The draw may have arrived during the disk read.
                         if (!job.draw_waiting.load(std::memory_order_relaxed)) {
-                            if (const VkPipeline pl = source.graphics(*p, *note)) census.load_pipes += pipeline_keep_ready(n.key, pl);
-                            else census.load_pipes_cold++;
+                            if (const VkPipeline pl = source.graphics(*p, *note)) census.load_pipes += pipeline_keep_ready(n.key, pl), built++;
+                            else census.load_pipes_cold++, left++;
                             continue;
                         }
                     }
                     pipeline_defer(n.key);
-                    census.load_pipes_deferred++;
+                    census.load_pipes_deferred++, left++;
                 }
+                if (built && !left && drop_loaded_modules_on()) census.load_modules_dropped += (int64_t)program_cache_drop_loaded(*p);
             }
             census.load_programs++;
             census.load_unlisted += !p->compute && notes == index_notes.end();
@@ -748,6 +752,10 @@ void programs_census_log(const char* when) {
          n(c.load_programs), n(c.load_light), n(c.load_unlisted), n(c.load_pipes), n(c.load_pipes_cold), n(c.load_computes), n(c.load_computes_cold),
          n(c.units_run_by_draw), n(c.units_waited), c.unit_wait_ns.load() / 1e6, n(c.pipes_taken), n(c.units_nothing),
          n(c.units_early), units, ready, loading, alive, n(c.load_pipes_deferred));
+    if (drop_loaded_modules_on())
+        logf("vk: program loads at create (%s): %lld shader modules let go once their programs' noted pipelines were built, %lld "
+             "programs' modules made again for a new pipeline state (RX_VK_DROP_LOADED_MODULES=0 keeps them)",
+             when, n(c.load_modules_dropped), (long long)program_cache_remade());
     if (ids_on.load(std::memory_order_acquire))
         logf("vk: module identifiers (%s): %zu known, %lld learned in this run; %lld compute pipelines made by them at a create "
              "call, %lld asked that way were in no cache (their code read, as before)",

@@ -28,8 +28,6 @@ uintptr_t serial=100;
 template<class T> T handle() { return reinterpret_cast<T>(++serial); }
 bool coherent=false,fail_buffer=false;
 unsigned flushed=0,queued=0;
-std::mutex par_mutex;
-struct ParLock { std::lock_guard<std::mutex> lock{par_mutex}; };
 namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
 inline void slot_begin(uint64_t) {}
 inline void slot_done() {}

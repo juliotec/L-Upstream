@@ -70,6 +70,11 @@ FF_FP_OK = re.compile(r"c->fpcr\s*&|c->fpsr\s*\|=")
 FF_CONV = re.compile(r"\ba64_vfpx_(add32|sub32|mul32)\(|"
                      r"\ba64_fpx_(add32_add32|sub32_sub32|mul32_fma32|fma32_fma32|div32_div32|sqrt32_sqrt32)\(")
 VREG_REF = re.compile(r"c->vreg\[(\d+)\]")
+# ((longshot) nx2/vecfp.py: an instruction it puts behind an SSE fast path, `if (!a64_vfpx_<form>(c, ...)) { its lanes }`,
+# is in a region's fast copy `if (!a64_ff_<form>(c, ...)) { ... }`: one SSE op in the MXCSR window with the guard on
+# its lanes, which always answers 1, so the lanes are dead code there. The run's count of float ops is still its lanes'
+# FF_CONV matches, as before vecfp)
+FF_VX = re.compile(r"\ba64_vfpx_(mul32e|fma32e|fms32e|mul32v|fma32v|fms32v|div32v)\(")
 
 
 def fastfp_mode():
@@ -125,6 +130,8 @@ def ff_region(items, least=None):
     if n < (ff_min() if least is None else least):
         return exact, 0
     fast = FF_CONV.sub(lambda m: "a64_ff_v%s(" % m.group(1) if m.group(1) else "a64_ff_%s(" % m.group(2), exact)
+    if "a64_vfpx_" in fast:   # (nx2/vecfp.py's lane forms: their region twins, one SSE op each; their lanes go dead)
+        fast = FF_VX.sub(r"a64_ff_\1(", fast)
     xs = sorted({int(r) for r in REG_REF.findall(exact)})
     vs = sorted({int(r) for r in VREG_REF.findall(exact)})
     fl = sorted(set(FLAG_REF.findall(exact)))
@@ -144,8 +151,9 @@ def ff_region(items, least=None):
         same = " && ".join(["1"] + ["_ffox%d == c->x[%d]" % (r, r) for r in xs] +
                            ["_ffov%d0 == c->vreg[%d][0] && _ffov%d1 == c->vreg[%d][1]" % (r, r, r, r) for r in vs] +
                            ["_ffof%s == c->%s" % (f, f) for f in fl])
+        # (the "}" of its else not at the start of a line: one there closes the function, nx2/split_giants.py)
         return ("{ if (A64_FF_ON(c)) { %sconst unsigned _ffm = a64_ff_begin(c);\n%s\n"
-                "const int _ffok = a64_ff_end(c, _ffm);\n%s%s\n%s\na64_ff_check(0x%xu, _ffok, %s); } else {\n%s\n} }"
+                "const int _ffok = a64_ff_end(c, _ffm);\n%s%s\n%s\na64_ff_check(0x%xu, _ffok, %s); } else {\n%s\n    } }"
                 % (save, fast, keep, restore, exact, items[0][0], same, exact)), n
     return ("{ if (A64_FF_ON(c)) { %sconst unsigned _ffm = a64_ff_begin(c);\n%s\n"
             "if (RECOMP_LIKELY(a64_ff_end(c, _ffm))) goto %s;\n%s}\n%s\n%s:; }"
@@ -289,6 +297,80 @@ static inline __attribute__((always_inline)) void a64_ff_check(unsigned pc, int 
 #define a64_ff_check(pc, clean, same) ((void)0)
 #endif
 """
+
+# (longshot) nx2/vecfp.py's lane forms' region twins (FF_VX), appended to a64_fpx.h after FASTFP_HEADER only when vecfp is on
+# (vecfp_on): with A64_VECFP=0 the header is main's to the byte. They use FASTFP_HEADER's helpers (a64_ff_vld, the guard)
+FF_VX_HEADER = r"""
+#if RECOMP_FPX_HOST == 2 && defined(__x86_64__) && !defined(__EMSCRIPTEN__)
+/* (longshot) nx2/vecfp.py's lane forms in a region: one SSE op each, guarded as the others (a NaN lane, or one exactly
+   2^-126 from a product, quotient or multiply-add, raises the invalid flag), returning 1 so that the lanes the lifted C
+   keeps behind them are dead code here. By element: the element broadcast; FMLS: the first operand's sign flipped, as the
+   lanes do. 2 lanes: the inputs' top halves are loaded as zeros (a64_ff_vld) and a divisor's as ones, so that they raise
+   no flag of their own; the result's top half is zero. Without FMA3 the fused forms answer 0: their lanes run (the region's
+   own scalar helpers, a64_ff_fma32_fma32 = the exact helper there) */
+static inline __attribute__((always_inline)) __m128 a64_ff_vlane(const void *p) { float x; memcpy(&x, p, 4); return _mm_set1_ps(x); }
+static inline __attribute__((always_inline)) int a64_ff_vmul_(uint64_t *d, __m128 a, __m128 b, int k) {
+    __m128 r; A64_FF_OP("mulps", r, a, b); a64_ff_vguard_(r, k, 1); a64_ff_vst(d, r, k); return 1; }
+static inline __attribute__((always_inline)) int a64_ff_mul32e(Ctx *c, uint64_t *d, const uint64_t *n, const void *m, int k) {
+    (void)c; return a64_ff_vmul_(d, a64_ff_vld(n, k), k == 4 ? a64_ff_vlane(m) : _mm_castsi128_ps(_mm_move_epi64(_mm_castps_si128(a64_ff_vlane(m)))), k); }
+static inline __attribute__((always_inline)) int a64_ff_mul32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    (void)c; return a64_ff_vmul_(d, a64_ff_vld(n, k), a64_ff_vld(m, k), k); }
+static inline __attribute__((always_inline)) __m128 a64_ff_vneg(__m128 a) { return _mm_castsi128_ps(_mm_xor_si128(_mm_castps_si128(a), _mm_set1_epi32((int)0x80000000u))); }
+#ifdef __FMA__
+static inline __attribute__((always_inline)) int a64_ff_vfma_(uint64_t *d, __m128 a, __m128 b, int k) {
+    __m128 r = a64_ff_vld(d, k);
+    __asm__ volatile("vfmadd231ps %2, %1, %0" : "+x"(r) : "x"(a), "x"(b));
+    a64_ff_vguard_(r, k, 1); a64_ff_vst(d, r, k); return 1; }
+static inline __attribute__((always_inline)) __m128 a64_ff_vlane_k(const void *m, int k) {
+    return k == 4 ? a64_ff_vlane(m) : _mm_castsi128_ps(_mm_move_epi64(_mm_castps_si128(a64_ff_vlane(m)))); }
+static inline __attribute__((always_inline)) int a64_ff_fma32e(Ctx *c, uint64_t *d, const uint64_t *n, const void *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vld(n, k), a64_ff_vlane_k(m, k), k); }
+static inline __attribute__((always_inline)) int a64_ff_fms32e(Ctx *c, uint64_t *d, const uint64_t *n, const void *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vneg(a64_ff_vld(n, k)), a64_ff_vlane_k(m, k), k); }
+static inline __attribute__((always_inline)) int a64_ff_fma32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vld(n, k), a64_ff_vld(m, k), k); }
+static inline __attribute__((always_inline)) int a64_ff_fms32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    (void)c; return a64_ff_vfma_(d, a64_ff_vneg(a64_ff_vld(n, k)), a64_ff_vld(m, k), k); }
+#else
+#define a64_ff_fma32e(c, ...) 0
+#define a64_ff_fms32e(c, ...) 0
+#define a64_ff_fma32v(c, ...) 0
+#define a64_ff_fms32v(c, ...) 0
+#endif
+/* (a subnormal over a zero, as a64_ff_div32_div32: x86 raises no denormal flag beside divide-by-zero, Arm under FZ
+   flushes it, 0 / 0: such a lane raises the invalid flag here) */
+static inline __attribute__((always_inline)) int a64_ff_div32v(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k) {
+    const __m128 a = a64_ff_vld(n, k);
+    __m128 b = a64_ff_vld(m, k), r;
+    (void)c;
+    if (k != 4) b = _mm_or_ps(b, _mm_castsi128_ps(_mm_set_epi32(0x3f800000, 0x3f800000, 0, 0)));
+    const __m128i ai = _mm_castps_si128(a), bi = _mm_castps_si128(b);
+    const __m128i bz = _mm_cmpeq_epi32(_mm_slli_epi32(bi, 1), _mm_setzero_si128());
+    const __m128i as = _mm_cmplt_epi32(_mm_sub_epi32(_mm_slli_epi32(ai, 1), _mm_set1_epi32(1)), _mm_set1_epi32(0x00ffffff));
+    const __m128i ap = _mm_cmpgt_epi32(_mm_slli_epi32(ai, 1), _mm_setzero_si128());   /* ((a << 1) - 1 in 0 .. 0xfffffe: a subnormal) */
+    if (__builtin_expect(_mm_movemask_ps(_mm_castsi128_ps(_mm_and_si128(bz, _mm_and_si128(as, ap)))) & (k == 4 ? 15 : 3), 0)) a64_ff_spoil_();
+    A64_FF_OP("divps", r, a, b);
+    a64_ff_vguard_(r, k, 1);
+    a64_ff_vst(d, r, k);
+    return 1;
+}
+#else
+#define a64_ff_mul32e a64_vfpx_mul32e
+#define a64_ff_fma32e a64_vfpx_fma32e
+#define a64_ff_fms32e a64_vfpx_fms32e
+#define a64_ff_mul32v a64_vfpx_mul32v
+#define a64_ff_fma32v a64_vfpx_fma32v
+#define a64_ff_fms32v a64_vfpx_fms32v
+#define a64_ff_div32v a64_vfpx_div32v
+#endif
+"""
+
+
+def vecfp_on():
+    """nx2/vecfp.py is installed and A64_VECFP turns a group on: the lifted C may name the twins"""
+    import vecfp
+    return vecfp.installed() and bool(vecfp.groups())
+
 
 
 _ff_only = []
@@ -474,7 +556,7 @@ def install():
         mode = fastfp_mode()
         if mode:
             with open(os.path.join(out_dir, "a64_fpx.h"), "a", newline="\n") as f:   # (after the kit's fpx and FCMP parts)
-                f.write(FASTFP_HEADER)
+                f.write(FASTFP_HEADER + (FF_VX_HEADER if vecfp_on() else ""))
             print("fast float regions (A64_FASTFP=%s): %d, %d float ops in them" % (
                 mode, self.stats.get("ff_regions", 0), self.stats.get("ff_ops", 0)))
         return files

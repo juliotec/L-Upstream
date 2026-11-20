@@ -20,6 +20,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -200,7 +204,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     header = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     main_cpp = (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")

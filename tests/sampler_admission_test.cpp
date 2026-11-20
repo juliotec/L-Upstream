@@ -47,7 +47,6 @@ struct {
     bool custom_border_color = false;
 } dev;
 std::mutex replay_mu;
-struct ParLock { std::lock_guard<std::mutex> lock; ParLock() : lock(replay_mu) {} };
 std::atomic<uint64_t> generation{1};   // (sampler_registrations_generation: a registration, the rows, or a retirement moved it)
 uint64_t frame_no = 1;
 unsigned creates = 0, destroyed = 0;
@@ -160,7 +159,7 @@ struct DescWriter { std::vector<VkWriteDescriptorSet> writes; } descriptor_write
 DescWriter& dw() { return descriptor_writes; }
 struct Pushed;
 std::array<Pushed, 2>& pushed();
-struct Recording { VkDescriptorPool pool{}; std::vector<VkDescriptorPool> extra; } recording;
+struct Recording { VkDescriptorPool pool{}; std::vector<VkDescriptorPool> extra; uint32_t pool_sets = 0, pool_descs[6] = {}; } recording;
 Recording* cur = &recording;
 std::atomic<uint64_t> pools_extra{0};
 bool g_fine = false;
@@ -226,7 +225,7 @@ void retry(const std::string& test) {
     else next = get();
     valid(next); assert(creates == 2 && get() == next);
 }
-// (sampler reuse) A recording thread that lives through a whole case, as a parallel replay's segment workers do: its own tables
+// (sampler reuse) A recording thread that lives through a whole case, as the render thread does: its own tables
 // (sampler_for's by id, sampler_make's mine) stay from one recording to the next
 struct Worker {
     std::mutex m;

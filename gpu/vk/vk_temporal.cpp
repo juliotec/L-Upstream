@@ -1,7 +1,7 @@
 // (longshot) A temporal upscaler in place of OoT's gameplay upscale network: the frame chain (vk_temporal.h), shared by the
 // engines that draw with it, NVIDIA DLSS (vk_dlss.cpp), AMD FSR 4 (vk_fsr4.cpp) and Intel XeSS (vk_xess.cpp).
-// The chain is hckrman101's, from their NVIDIA DLSS (#841): the camera, the inputs pass, the actor motion and the jitter's
-// state, moved here from vk_dlss.cpp unchanged in what they do, so that DLSS and FSR share them.
+// The chain was NVIDIA DLSS's: the camera, the inputs pass, the actor motion and the jitter's state, here so that DLSS and
+// FSR share them.
 //
 // OoT has no temporal upscaler of its own: its scene is drawn at a lower size and a network of its own (the program
 // fd029a317a9a4b94 at 3/4, another for each other share; one dispatch, cooperative matrices) scales it up, from the
@@ -21,7 +21,7 @@
 //    copied on the GPU from where the game has them into two buffers that take turns; a pixel is the draw's where its depth is
 //    the scene's (within RX_VK_DLSS_ACTOR_TOL steps, default 64). What moves without bones (particles, water, foliage moved in
 //    its vertex shader, mesh-shader draws) keeps the camera's motion.
-//  - hidden meshes (vk_draw.cpp hidden_depth_draw, hidden_mesh.h; #1370): the game goes on drawing a skinned mesh into the
+//  - hidden meshes (vk_draw.cpp hidden_depth_draw, hidden_mesh.h): the game goes on drawing a skinned mesh into the
 //    scene's depth after it stops showing it (Link, with the camera pushed into him), so those depth draws are left out:
 //    the depth and the actor motion then have no invisible body in front of the room. RX_VK_DLSS_FADED=0: drawn.
 //  - the engine scales them to the output's size; shaders/dlss_out.comp squares that back to linear colour into the
@@ -65,6 +65,7 @@
 #include <vector>
 
 #include "dlss_actor.h"
+#include "longshot_env.h"
 #include "dlss_checks.h"
 #include "dlss_math.h"
 #include "hidden_mesh.h"
@@ -141,20 +142,16 @@ bool temporal_full_scale() { return ur::full_scale(temporal_mode()); }
 
 namespace {
 /// (longshot) DLAA before the game's bloom and tone map (temporal_pre_bloom) now, the mode being DLAA: the Upscaler's DLAA
-/// before the bloom row (opts.dlss_pre_bloom, off by default; RX_VK_DLSS_PRE_BLOOM over it for a run, vk_menu.cpp), and not
-/// with the parallel replay (RX_VK_PARALLEL=2 and more), whose threads record a frame's passes out of order. Read at each
-/// call, the row changing at once; a change is logged
+/// before the bloom row (opts.dlss_pre_bloom, off by default; RX_VK_DLSS_PRE_BLOOM over it for a run, vk_menu.cpp). Read at
+/// each call, the row changing at once; a change is logged
 bool pre_bloom_wanted(int mode) {
-    static const bool parallel = env_switch("RX_VK_PARALLEL") >= 2;
     const bool asked = opts.dlss_pre_bloom != 0;
     static std::atomic<int> told{-1};
-    const int now = asked ? (parallel ? 2 : 1) : 0;
+    const int now = asked ? 1 : 0;
     if (told.exchange(now, std::memory_order_relaxed) != now)
         logf("vk: upscaler: NVIDIA DLAA %s", now == 0 ? "after the game's bloom and tone map (DLAA before the bloom: off)"
-                                             : now == 2 ? "after the game's bloom and tone map: the parallel replay is on "
-                                                          "(RX_VK_PARALLEL)"
-                                                        : "before the game's bloom and tone map (DLAA before the bloom: on)");
-    return asked && !parallel && mode == ur::DLAA;
+                                                      : "before the game's bloom and tone map (DLAA before the bloom: on)");
+    return asked && mode == ur::DLAA;
 }
 }  // namespace
 
@@ -1067,8 +1064,8 @@ void temporal_idle() {
     const uint64_t now = texture_frame_no();
     if (now - s.asked <= 120) return;   // (in use, or off for under 120 frames (2 s): kept, a row stepped through comes back at once)
     // (longshot, a stutter: kept too while DLSS or FSR 4 is still the Upscaler's choice. Each area change's loading screen has no
-    // gameplay upscale for 2 s and more, and DLSS's feature let go then was made again at the next area's first frame: 44-78 ms
-    // of the replay thread at every area entry (12 times in a 15-minute walk, 2026-11-10, #1520). Let go once the row leaves them)
+    // gameplay upscale for 2 s and more, and DLSS's feature let go then would be made again at the next area's first frame:
+    // 44-78 ms of the replay thread at every area entry. Let go once the row leaves them)
     if (temporal_wanted()) return;
     if (s.drawing) {
         logf("vk: %s: not used for 120 frames (the last at frame %llu, now %llu): what it made and its images let go; "
@@ -1082,23 +1079,131 @@ void temporal_idle() {
     s.holding = !s.dead.empty();
 }
 
-// ---- (longshot, #1370) the depth draws of hidden meshes (vk_draw.cpp hidden_depth_draw has the why) ----
+// ---- (longshot, smoothness) DLSS's feature made before the game's first 3D frame (vk_temporal.h temporal_prewarm_on) ----
+namespace {
+std::atomic<int64_t> prewarm_draws{1 << 30};   // (the last frame's draws: none known yet, not light)
+std::atomic<uint64_t> prewarm_present{0};      // (the game's last picture, width << 32 | height)
+}  // namespace
+
+bool temporal_prewarm_on() {   // (on unless RX_VK_DLSS_PREWARM is 0, off, false or no: the switches' one rule)
+    static const bool on = env_on_or("RX_VK_DLSS_PREWARM", 1);
+    return on;
+}
+void temporal_note_frame(int64_t draws) { prewarm_draws.store(draws, std::memory_order_relaxed); }
+void temporal_note_present(uint32_t width, uint32_t height) {
+    prewarm_present.store((uint64_t)width << 32 | height, std::memory_order_relaxed);
+}
+
+void temporal_prewarm(VkCommandBuffer cmd) {
+    static bool probed = false;   // (the replay thread's alone)
+    if (!probed) {
+        probed = true;
+        if (dev.offscreen && env_switch("RX_VK_PROBE_HEADLESS") != 0) {
+            logf("vk: upscaler: no window: the upscalers asked in the background as the start-up screen does "
+                 "(RX_VK_PROBE_HEADLESS=0: at the first upscale)");
+            upscalers_probe_start();
+        }
+    }
+    // (made again when the Upscaler row or the presented size changes before the game's first 3D frame: a player who picks
+    // DLSS over DLAA at the title gets DLSS's feature, not a DLAA one made for nothing. The row held for 30 frames first, so
+    // stepping through it makes none; four at the most)
+    static bool done = false;
+    static int warmed_mode = -1, seen_mode = -1, warmed_n = 0;
+    static uint64_t warmed_pic = 0, seen_since = 0;
+    if (done || !cmd || !temporal_prewarm_on()) return;
+    State& s = st();
+    // (a gameplay upscale asked for already: too late, it makes its own)
+    if (s.asked_frame.load(std::memory_order_relaxed)) {
+        done = true;
+        return;
+    }
+    const int mode = temporal_mode();
+    const uint64_t frame = texture_frame_no();
+    if (mode != seen_mode) seen_mode = mode, seen_since = frame;
+    // (a light frame: the title, the file select, a loading screen, as texture_ahead.h's kLightDraws)
+    if (prewarm_draws.load(std::memory_order_relaxed) >= 200) return;
+    if (!ur::is_dlss(mode) || frame - seen_since < 30) return;   // (another Upscaler now, or the row just changed)
+    const uint64_t pic = prewarm_present.load(std::memory_order_relaxed);
+    if (mode == warmed_mode && pic == warmed_pic) return;   // (made for this already)
+    const int ngx = dlss_ngx_ready();
+    if (ngx < 0) return;   // (NGX not started yet: the probe's thread starts it)
+    const uint32_t ow = (uint32_t)(pic >> 32), oh = (uint32_t)pic;
+    if (ngx == 0 || !ow || !oh) {
+        if (ngx == 0) done = true;
+        return;
+    }
+    std::lock_guard lk(s.mu);
+    if (s.asked || (s.drawing && warmed_mode < 0)) return void(done = true);
+    warmed_mode = mode, warmed_pic = pic;
+    if (++warmed_n >= 4) done = true;
+    const auto t0 = std::chrono::steady_clock::now();
+    Engine& engine = engine_of(mode);
+    if (!engine.e || engine.failed) return;
+    if (!engine.started) engine.started = true, engine.ok = engine.e->start();
+    if (!engine.ok) return;
+    if (!make_pipelines()) return;
+    (void)make_actor_pipeline();
+    // (the size the scene will have: the output's for DLAA, and for DLSS the full size too, which its scaled mode's range
+    // holds (vk_dlss.cpp prepare): the Render resolution's Auto starts each area at full size)
+    const bool native = ur::full_scale(mode);
+    const uint32_t rw = ow, rh = oh;
+    struct Disturbed {
+        ~Disturbed() { descriptors_disturbed(); }
+    } disturbed;
+    full_barrier(cmd);
+    uint32_t iw = rw, ih = rh;
+    const char* why = nullptr;
+    const int ready = engine.e->prepare(cmd, rw, rh, ow, oh, native, &iw, &ih, &why);
+    if (ready <= 0) {
+        logf("vk: %s: not made ahead (%s)", name_of(mode), why ? why : "not now");
+        return;
+    }
+    s.drawing = engine.e;   // (temporal_idle lets it go if the row leaves DLSS before the game draws)
+    s.holding = true;
+    s.last_frame = 0;       // (the first gameplay frame starts a new history)
+    const VkImageUsageFlags copied = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, iw, ih, VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+        !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, iw, ih, copied) ||
+        !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, iw, ih, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | copied) ||
+        !make_image(cmd, s.output, VK_FORMAT_R16G16B16A16_SFLOAT, native ? rw : ow, native ? rh : oh,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+        logf("vk: %s: made ahead, its images were not", name_of(mode));
+        return;
+    }
+    // (one evaluation, a new history, on cleared images: NGX's first-evaluation work and the driver's for its kernels done
+    // here too. Its picture goes nowhere; the first gameplay frame's is a new history again)
+    full_barrier(cmd);
+    const VkClearColorValue zero{};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    for (const Image* im : {&s.color, &s.depth, &s.motion, &s.output})
+        vkCmdClearColorImage(cmd, im->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+    full_barrier(cmd);
+    // (not named f: tests/test_temporal_history.py takes the first `f.reset =` in this file as draw_engine's)
+    TemporalFrame warm;
+    warm.color = s.color.shown(), warm.depth = s.depth.shown(), warm.motion = s.motion.shown(), warm.output = s.output.shown();
+    warm.render_w = rw, warm.render_h = rh;
+    warm.reset = true;
+    warm.jitter_phases = (uint32_t)dlss_jitter_phases(rw, rh, native ? rw : ow, native ? rh : oh);
+    const bool evaluated = engine.e->evaluate(cmd, warm);
+    full_barrier(cmd);
+    logf("vk: %s: its feature made ahead of the game's first 3D frame for %ux%u (%.1f ms of the replay's, a light frame%s; "
+         "RX_VK_DLSS_PREWARM)",
+         name_of(mode), ow, oh, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+         evaluated ? ", one evaluation" : ", its evaluation failed");
+}
+
+// ---- (longshot) the depth draws of hidden meshes (vk_draw.cpp hidden_depth_draw has the why) ----
 int temporal_hidden_mesh_mode() {
     static const int mode = [] {
         const bool rule = env_switch("RX_VK_DLSS_FADED") != 0;          // (unset: on)
         const bool detail = env_switch("RX_VK_DLSS_FADED_LOG") == 1;   // (unset: off)
-        // (the parallel replay, RX_VK_PARALLEL=2 and more (vk_replay.cpp par_threads), draws a frame's segments on several
-        // threads at once, where the one table is drawn from by one thread at a time: nothing here runs then)
-        const bool parallel = env_switch("RX_VK_PARALLEL") >= 2;
-        if (parallel)
-            logf("vk: upscaler: faded: the parallel replay is on (RX_VK_PARALLEL): hidden meshes' depth draws are drawn");
-        else if (rule)
+        if (rule)
             logf("vk: upscaler: faded: while a temporal upscaler or frame generation draws, the depth draws of a skinned mesh "
                  "that had colour and has had none for %u frames are left out until its colour is back (RX_VK_DLSS_FADED=0 "
                  "draws them)", hidden_mesh::kHiddenAfter);
         else
             logf("vk: upscaler: faded: RX_VK_DLSS_FADED=0: hidden meshes' depth draws are drawn");
-        return parallel ? 0 : (rule ? 1 : 0) | (detail ? 2 : 0);
+        return (rule ? 1 : 0) | (detail ? 2 : 0);
     }();
     return mode;
 }
@@ -1410,8 +1515,8 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
     // Some games keep a smaller scene even at full scale: then use native AA at that size.
     // Creating DLAA for that queued scene would replace the feature twice in successive frames.
     // (longshot) The same for FSR 4's and XeSS's native AA entered from their scaled mode: the queued frames are drawn by the
-    // scaled engine. Made at a queued size, FSR 4's native context failed on an RX 6600 at the VRAM limit (its upscaler was not
-    // made (3) for 1429x804, #744), and the engine then stayed off until the player changed the upscaler
+    // scaled engine. Made at a queued size, FSR 4's native context can fail at the VRAM limit, and the engine then stays off
+    // until the player changes the upscaler
     const bool entering_native =
         ur::full_scale(mode) && s.drawing == engine.e && s.drawn_mode == ur::engine(mode) && ur::engine(mode) != mode;
     const bool queued_native = entering_native && (rw != ow || rh != oh);

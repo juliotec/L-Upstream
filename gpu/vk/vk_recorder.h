@@ -13,7 +13,6 @@
 //                        before every call of RX_REC_BOUNDARIES (vk_work.h: command buffer begin/end/reset, submits, presents, waits,
 //                        query and fault reads, every destruction), when vk_replay.cpp's replay_mu is let go (DrainingMutex), before
 //                        a fallback, at the soft byte budget, and when the arena has no memory (then the call is made directly).
-//                        Refused (off, logged once) with RX_VK_PARALLEL>=2; while par_active, packets run at once.
 //                        RX_VK_RECORDER_POISON=1: the arena filled with 0xCD after each drain. tests/test_recorder_sync.py
 //   RX_VK_RECORDER=thread: (step 2, serial replay only) the thread that holds vk_replay.cpp's replay_mu is the producer: its packets
 //                        go into one bounded ring (Recorder, below) and a recorder thread runs them, in order, while the replay goes
@@ -24,15 +23,15 @@
 //                        replay_mu make their calls directly (after the recorder has run what was published, should it be busy:
 //                        counted and logged once). The ring full: the producer waits (backpressure); a packet bigger than the room
 //                        it is given, or no ring: the producer waits until the recorder is idle, then makes the call directly.
-//                        Refused (off, logged once) with RX_VK_PARALLEL>=2. RX_VK_RECORDER_RING_MB (default 8),
+//                        RX_VK_RECORDER_RING_MB (default 8),
 //                        RX_VK_RECORDER_POISON=1 (each packet filled with 0xCD once run), RX_VK_RECORDER_STATS=0 (no 10 s stats
 //                        line), RX_VK_RECORDER_SPIN_US (the recorder's spin with nothing to run, before it sleeps: default adaptive 20-200),
 //                        RX_VK_RECORDER_OWN=1 (a recording slot's own resets at its reuse without the wait: OwnSlot, below),
 //                        RX_VK_RECORDER_IDLE=wait (the recorder waits on the ring's counter after a 20 us spin: Recorder::idle)
 //
 // A packet: [Packet header: thunk, next, op, size][the call's closure: its value arguments and the arena pointers of its copies],
-// preceded in the arena by the copied arrays. The arena is the recording thread's own (thread_local: the parallel replay's workers each
-// have theirs) and in sync mode is rewound after each packet runs, so it stays at one packet's size. A call whose structs carry a
+// preceded in the arena by the copied arrays. The arena is the recording thread's own (thread_local: each recording thread
+// has its own) and in sync mode is rewound after each packet runs, so it stays at one packet's size. A call whose structs carry a
 // pNext chain (none does today) or a descriptor type the packer does not know is not packed: what is held is drained, then the call
 // is made directly (counted in Arena::fallbacks).
 //
@@ -69,7 +68,6 @@
 
 namespace mkwvk {
 void logf(const char* fmt, ...);        // (vk_main.cpp)
-extern std::atomic<bool> par_active;   // (vk_replay.cpp: a parallel replay's segments are being recorded)
 } // namespace mkwvk
 
 // The calls the recorder carries. V: value arguments only (handles, numbers, enums), one generic packer; A: arrays or structs behind
@@ -132,7 +130,6 @@ enum Bound : uint16_t {
     B_REPLAY_UNLOCK,   // replay_mu let go
     B_FALLBACK,        // a call not packed (pNext chain, unknown descriptor type)
     B_NOMEM,           // a packet bigger than the ring's room for it, or no ring
-    B_PAR,             // a parallel replay's segments being recorded (par_active)
     B_RING_FULL,       // backpressure: the ring had no room
     B_FOREIGN,         // a thread without replay_mu made a call while the recorder was busy
     B_DIRECT,          // code about to record into a command buffer directly, outside vk_work.h (Dear ImGui: vk_menu.cpp)
@@ -143,7 +140,7 @@ inline const char* bound_name(uint32_t b) {
 #define RX_REC_BNAME(f) #f,
         RX_REC_BOUNDARIES(RX_REC_BNAME, RX_REC_BNAME)
 #undef RX_REC_BNAME
-        "replay_mu unlock", "fallback", "no ring room", "par_active", "ring full", "off the replay lock", "direct recording"};
+        "replay_mu unlock", "fallback", "no ring room", "ring full", "off the replay lock", "direct recording"};
     static_assert(sizeof names / sizeof *names == B_COUNT);
     return b < B_COUNT ? names[b] : "?";
 }
@@ -179,29 +176,21 @@ inline bool g_idle_wait = false;
 inline bool (*g_wait_on_address)(volatile void* addr, void* compare, size_t size, uint32_t ms) = nullptr;
 inline void (*g_wake_by_address)(void* addr) = nullptr;
 
-/// RX_VK_PARALLEL as vk_replay.cpp's par_threads() reads it: 2 or more, segments of one command buffer recorded on several threads
-inline bool parallel_configured() {
-    const char* p = getenv("RX_VK_PARALLEL");
-    return p && atoi(p) >= 2;
-}
 /// (longshot) The Insert menu's Threaded rendering, the recorder's half of it (threaded_rendering.h; vk_menu.cpp
 /// menu_recorder_thread, set by vk_replay.cpp before anything runs): true, the recorder thread, as RX_VK_RECORDER=thread
 /// (the row On, or its Auto from 6 cores; with 4 or 5 Auto has the render thread alone and this is false).
 /// Asked only with RX_VK_RECORDER unset: the switch, when set, is over the row. Null: no menu (the checks), off
 inline bool (*g_setting_thread)() = nullptr;
-/// RX_VK_RECORDER: sync; defer, thread (serial only: refused, off, with RX_VK_PARALLEL); anything else, off.
-/// Unset: off, or thread where the Threaded rendering row says so (g_setting_thread), refused as the switch's thread is
+/// RX_VK_RECORDER: sync, defer, thread; anything else, off. Unset: off, or thread where the Threaded rendering row says so
+/// (g_setting_thread)
 inline int mode_from_env(bool* refused) {
     const char* e = getenv("RX_VK_RECORDER");
     *refused = false;
     if (!e && g_setting_thread && g_setting_thread()) e = "thread";
     if (!e) return OFF;
     if (!strcmp(e, "sync")) return SYNC;
-    if (!strcmp(e, "defer") || !strcmp(e, "thread")) {
-        if (!parallel_configured()) return e[0] == 'd' ? DEFER : THREAD;
-        *refused = true;
-        return OFF;
-    }
+    if (!strcmp(e, "defer")) return DEFER;
+    if (!strcmp(e, "thread")) return THREAD;
     return OFF;
 }
 inline int mode_init() {
@@ -220,19 +209,14 @@ inline int mode_init() {
     }
     int was = -1;
     if (!g_mode.compare_exchange_strong(was, m, std::memory_order_relaxed)) return was;   // (another thread read it first)
-    if (refused)   // (once: the thread that set the mode)
-        ::mkwvk::logf("vk: RX_VK_RECORDER=%s refused: RX_VK_PARALLEL=%s records a command buffer on several threads (deferred "
-                      "packets are the recording thread's own); the recorder is off",
-                      getenv("RX_VK_RECORDER") ? getenv("RX_VK_RECORDER") : "thread (the Threaded rendering setting)",
-                      getenv("RX_VK_PARALLEL"));
-    else if (m == DEFER)
+    if (m == DEFER)
         ::mkwvk::logf("vk: RX_VK_RECORDER=defer: vkCmd* packed and held, drained in order at each command buffer begin, end and "
-                      "reset, submit, wait, readback, destruction and replay lock release (serial replay only)%s",
+                      "reset, submit, wait, readback, destruction and replay lock release%s",
                       g_poison.load(std::memory_order_relaxed) ? "; the arena poisoned after each drain" : "");
     else if (m == THREAD)
         ::mkwvk::logf("vk: RX_VK_RECORDER=thread: vkCmd* packed on the replay thread and run in order by a recorder thread; the "
                       "replay waits for it at each command buffer begin, end and reset, submit, wait, readback, destruction and "
-                      "replay lock release (serial replay only); ring %zu KB, spin %s%llu us%s%s%s",
+                      "replay lock release; ring %zu KB, spin %s%llu us%s%s%s",
                       g_ring_bytes >> 10, g_idle_wait || g_spin_ns ? "" : "adaptive 20-",
                       (unsigned long long)(g_idle_wait ? kSpinLo / 1000 : g_spin_ns ? g_spin_ns / 1000 : 200),
                       g_poison.load(std::memory_order_relaxed) ? "; packets poisoned once run" : "",
@@ -308,14 +292,19 @@ struct Arena {
     }
     ~Arena();
 };
-inline thread_local Arena t_arena;
+// Function-local ownership keeps the nontrivial TLS initializer with its use under COFF ThinLTO.
+// The arena's self-referential tail prevents constant initialization; its destructor still drains and frees it.
+inline Arena& t_arena() {
+    static thread_local Arena arena;
+    return arena;
+}
 
 /// The decoder: runs one packet's call with its copies
 inline void execute(const Packet* p) { p->run(p); }
 
 /// (DEFER) runs every held packet, in order, and empties the arena
 inline void drain() {
-    Arena& a = t_arena;
+    Arena& a = t_arena();
     const Packet* p = a.head;
     a.head = nullptr, a.tail = &a.head;
     while (p) {
@@ -793,7 +782,7 @@ template <class F>
 inline void fallback(const F& direct) {
     if (g_mode.load(std::memory_order_relaxed) == THREAD) settle(B_FALLBACK);
     else drain();
-    t_arena.fallbacks++;
+    t_arena().fallbacks++;
     direct();
 }
 
@@ -807,14 +796,14 @@ void thunk_at(const Packet* p) {   // (THREAD: the closure at its offset in the 
 }
 
 /// One packet being encoded: its copies, then emit() with the closure that makes the call and the direct call. Sync: run at emit, the
-/// arena rewound when the encoder goes out of scope. Defer: held; drained first when the held bytes reached the soft budget, and
-/// made at once (after a drain) while a parallel replay records (par_active: never held then). An allocation that fails (the hard
+/// arena rewound when the encoder goes out of scope. Defer: held; drained first when the held bytes reached the soft budget. An
+/// allocation that fails (the hard
 /// budget, the table, the system) makes emit drain what is held, in order, then make the direct call: no call lost or reordered
 ///
 /// THREAD, on the producer (the replay lock's holder): the packet is written straight into the ring (header first, then the copies,
 /// then the closure) and published at emit; no room for it (bigger than the room a packet is given) or no ring: the producer waits
-/// until the recorder has run everything published, then makes the call directly. On another thread, or while par_active: the
-/// call made directly (PASS), after what was published has run
+/// until the recorder has run everything published, then makes the call directly. On another thread: the call made directly
+/// (PASS), after what was published has run
 inline uint8_t* align_up(uint8_t* p, size_t a) { return reinterpret_cast<uint8_t*>(((uintptr_t)p + a - 1) & ~(uintptr_t)(a - 1)); }
 struct Enc {
     int md = mode();
@@ -830,22 +819,17 @@ struct Enc {
             begin_thread();
             return;
         }
-        a = &t_arena;
-        if (md == DEFER) {
-            if (par_active.load(std::memory_order_relaxed)) {
-                drain();
-                md = SYNC;
-            } else if (a->held >= g_soft_budget) {
-                drain();
-                a->budget_drains++;
-            }
+        a = &t_arena();
+        if (md == DEFER && a->held >= g_soft_budget) {
+            drain();
+            a->budget_drains++;
         }
         m = a->mark();
     }
     void begin_thread() {
         g = t_prod;
-        if (!g || par_active.load(std::memory_order_relaxed)) [[unlikely]] {
-            settle(B_PAR);
+        if (!g) [[unlikely]] {   // (a thread without the replay's lock: what was published first, then the call itself)
+            settle(B_FOREIGN);
             md = PASS, failed = true;
             return;
         }

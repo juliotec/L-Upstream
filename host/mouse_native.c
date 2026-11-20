@@ -103,8 +103,8 @@ static int free_look(void) {
 }
 
 /* The Controls row "Disable camera centering" (option 45), independent of the mouse mode. The game's state-3 yaw-follow
-   branch asks before it runs (nx2/oot_patches.py); 0 keeps the stock behavior, including without a renderer. (#2617 took it
-   out with its rewrite of this file; the lifted game still calls it, and the link failed without it) */
+   branch asks before it runs (nx2/oot_patches.py); 0 keeps the stock behavior, including without a renderer. (The lifted
+   game calls it: the link fails without it) */
 int hos_disable_camera_centering(void) { return rx_option(45, 0); }
 
 /* nn_hid.c, with each read of the controller: 1 while the game leaves the camera to the player, 0 while it takes the

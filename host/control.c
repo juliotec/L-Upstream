@@ -1,6 +1,6 @@
 /* (longshot) The control bridge: HOS_CONTROL=<socket path> lets a tool on the same PC (a test, a script, a coding agent)
    drive the running game and read its state over a local socket, instead of a file the game polls (HOS_INPUT_LIVE) and its
-   log scraped for the frame rate and draw counts. docs/control.md has the protocol; scripts/longshot_ctl.py is a client.
+   log scraped for the frame rate and draw counts. docs/dev/reference/control-bridge.md has the protocol; scripts/longshot_ctl.py is a client.
 
    Off unless HOS_CONTROL is set. Linux: a Unix domain socket at that path, made 0600 (the umask around bind too), never
    over an existing file that is not a socket, and a client of another user is turned away (SO_PEERCRED). Windows: a named
@@ -1503,7 +1503,7 @@ static void cmd_relaunch(int ci, const char *id) {
     G.game->relaunch();
 }
 
-/* ---- guest memory (host/control.c's HOS_CONTROL_MEM, docs/control.md): mem_read, mem_read_many, mem_write ---- */
+/* ---- guest memory (host/control.c's HOS_CONTROL_MEM, docs/dev/reference/control-bridge.md): mem_read, mem_read_many, mem_write ---- */
 static void buf_hex(Buf *b, const uint8_t *p, uint64_t n) {
     static const char hex[] = "0123456789abcdef";
     buf_put(b, "\"", 1);
@@ -1615,7 +1615,7 @@ static int mem_off(const char *cmd) { return !strcmp(cmd, "mem_read") || !strcmp
 static void cmd_mem(int ci, const JDoc *d, int req, const char *id, const char *cmd) {
     Conn *c = &G.conns[ci];
     if (!mem_off(cmd))   /* symbols, or any other mem_* */
-        return reply_error(c, id, "unavailable", "no such memory command (named values are not served; docs/control.md)");
+        return reply_error(c, id, "unavailable", "no such memory command (named values are not served; docs/dev/reference/control-bridge.md)");
     if (!G.mem_level)
         return reply_error(c, id, "forbidden",
                            "guest memory is off: set HOS_CONTROL_MEM=ro for reads or rw for reads and writes");
@@ -2537,7 +2537,7 @@ void hos_control_start(const char *version) {
     if (!path || !*path) return;
     game.version = version;
     if (hos_control_serve(path, &game))
-        hos_log("control: listening on %s (HOS_CONTROL: this user only, no TCP; guest memory %s; docs/control.md)", path,
+        hos_log("control: listening on %s (HOS_CONTROL: this user only, no TCP; guest memory %s; docs/dev/reference/control-bridge.md)", path,
                 G.mem_level == 2 ? "read and write" : G.mem_level == 1 ? "read only" : "off");
     else hos_log("control: off (HOS_CONTROL=%s could not be served)", path);
 }

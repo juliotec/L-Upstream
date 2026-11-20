@@ -20,17 +20,22 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   camera each frame by the speeds the right stick's turn functions return in s0; hos_camera_scale multiplies them at each of
   their returns, 1.0 as shipped. Even the fastest of the game's own camera speeds turned slowly for players.
 - The OptimizeChangeBank thread's allocations tried again when their heap is full (host/oot_heap_retry.c): f_804566e0's two
-  calls of f_80522050, its GPU memory (GPU_ALLOC_SITES), and its two tryAllocs of CPU buffers (HEAP_ALLOC_SITES). They went on
-  with a null pointer and crashed writing through it (issue 1697). The supported build only.
+  calls of f_80522050, its GPU memory (GPU_ALLOC_SITES), and its two tryAllocs of CPU buffers (HEAP_ALLOC_SITES). Otherwise
+  they go on with a null pointer and crash writing through it. The supported build only.
 - The Voice Language option kept after a restart (host/oot_voice.c): the voice resource's update (f_80a9ca30) asks
   GameDataMgr whether the option was written (f_80a9d1c0) and applies it only then; option.sav's value replaces the
-  option without a write, so a saved choice was never applied (issue 430). The call goes through hos_oot_voice_option,
+  option without a write, so a saved choice would never be applied. The call goes through hos_oot_voice_option,
   which also says yes when the option's value is not the one of the update before. The supported build only.
 - The texture data heap's compaction asked for once in a while (host/oot_tex_compact.h): the manager's per-frame step
   (f_80797240) asks the Compaction thread for a round whenever none runs (its flag bit 1, always set), and each texture a
   round moved is made again; hos_oot_tex_compact_due says whether it may ask now (HOS_TEX_COMPACT_MS: once a second as
   shipped, 0 at every frame, the game's own). The round itself is untouched.
 - Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c); a tick whose gates refuse reports no wait, so a dialogue keeps its buttons.
+- The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers
+  (host/oot_ocb_hold.h): the preload manager's update (f_832b9880) picks one of the map's neighbours each frame and a
+  change cancels the one loading or loaded; a choice flickering between two (or in and out of a radius) reloaded them over
+  and over with Link on one spot. Its choice goes through hos_oot_ocb_pick, which takes another neighbour only once it
+  stays the choice HOS_OCB_HOLD_MS (0: the game's own at every frame).
 - The game's job barriers waiting for their work (host/oot_barrier.h): three parallel-for jobs (f_800998a0, f_800738e0,
   f_8007e200) sleep 20 us and look again while the masks they poll are not full; the sleep is hos_oot_barrier_wait, which
   ends when a polled word moves, and each OR into such a word wakes the waiters (hos_oot_barrier_wake). On by default;
@@ -41,7 +46,7 @@ import glob
 import os
 import re
 import sys
-import whole_write   # (rewrites written beside and moved over: issue 1197)
+import whole_write   # (rewrites written beside and moved over)
 
 DECL = "extern volatile int hos_fixed_resolution;\nextern volatile int hos_dynres_runs;\nextern volatile uint32_t hos_fixed_scale_bits;\n"
 OLD = "if (!((c->x[8] >> 0) & 1)) { goto L_8082640c; }"
@@ -453,8 +458,8 @@ def unpatch_frame_seconds(s):
 # A movie's frame count above a 60 cap. The game's movie player counts its updates while a movie plays (f_83b7c710: one more
 # at +760 of the player each frame), and a cutscene that shows a movie takes that count as its timeline's frame (f_83b5ec10,
 # f_83b5e9a0): the narration, the rumble and the cutscene's end are placed by it. The movie itself follows the clock, so above
-# 60 fps those cues ran ahead of the picture, fps / 60 times too fast (issue 1742). The count now grows by the frames' time, as
-# the game's clock does (hos_movie_frames, host/nn_vi.c: 1 as before while the host gives no frame time).
+# 60 fps those cues would run ahead of the picture, fps / 60 times too fast. The count grows by the frames' time, as
+# the game's clock does (hos_movie_frames, host/nn_vi.c: 1 while the host gives no frame time).
 MOVIE_HEAD = "void f_83b7c710(Ctx *__restrict A64_NOESC c) {\n"
 # (the load and the add alone: the store after them is rewritten by the page marks' pass, which runs after these edits)
 MOVIE_OLD = ("    c->x[8]=recomp_load32(c,c->x[20] + 760);\n"
@@ -558,17 +563,17 @@ def patch_loop_pose(s):
 # is 1; under a Frame rate cap above 60 it is the frame's own time, under 1 (0.42 at 144 fps), and the cut is 0 every frame:
 # - f_80a87e50, the pick-up indicator above Link's head (a rupee, a Deku Stick): the count it shows (+864) moves toward the
 #   wallet's (+860) by (int)(step * max(distance / 50, 1)) and the indicator fades when they meet. Cut to 0, it stayed at the old
-#   count until a door or a talk replaced it (issue 1832).
+#   count until a door or a talk replaced it.
 # - f_800672e0, the water renderer: its ripple simulation runs (int)step times the water's substeps (+76 of the pass) each frame.
 #   Cut to 0, the rings Link and the actors make in water stood still above 60 fps. Found by atk3001 for Lichii (zortos293/
 #   Lichii#1152), as ported to Fritchii (Frizti/Fritchii d389685a4, 063dbb741): its remainder is kept per water object (x21).
 #   Whole frames carried, a frame ran all its substeps or none (0 or 4 at 108 fps), and the rings stood still for a frame and
-#   then jumped (issue 1199): the substeps are carried instead (WHOLE_TIMES), 2 or 3 every frame.
+#   then jumped: the substeps are carried instead (WHOLE_TIMES), 2 or 3 every frame.
 # - f_803edf70, the time of day: each frame it adds (int)(2 * step) game seconds (+60) to the seconds of the day (+40, a day of
 #   86400, then the day count +44). Cut, it added 1 a frame below 120 fps (the day slower: 83% at 100) and 0 above 120, where
 #   the clock stood still and the sun swung back and forth over the frozen hour.
 # - f_832b32b0, Scarecrow's Song playback: elapsed frames (+0x265fc) advance the saved note delays. Cut to 0, the song
-#   waits on the same note until a slow frame lets the counter move (issue 2668).
+#   waits on the same note until a slow frame lets the counter move.
 # - f_832b6840, the eight-note recording (mode 10): the same elapsed counter is reset between notes and gaps, then saved
 #   as their lengths. Cut to 0, their timing is lost even though the eight pitches are recorded. The mode-13 cut is separate.
 # - f_832b2690, recording completion: after the eighth note starts, it times that note and writes its final delay into
@@ -608,7 +613,7 @@ WHOLE_SITES = (
     ("void f_832b2690(Ctx *__restrict A64_NOESC c) {@",
      "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@",
      "c->x[19] + 0x265fc"),
-    # (the floor web's simulation steps: keep each object's fraction before the existing 0..3 clamp, issues 2667/2271)
+    # (the floor web's simulation steps: keep each object's fraction before the existing 0..3 clamp)
     ("void f_80652cb0(Ctx *__restrict A64_NOESC c) {@",
      "    c->x[22]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
      "c->x[19] + 2296"),
@@ -617,7 +622,7 @@ WHOLE_SITES = tuple((h.replace("@", "\n"), o.replace("@", "\n"), k) for h, o, k 
 WHOLE_MARK = "/* (the step's whole frames: nx2/oot_patches.py) */"
 WHOLE_DECL = "extern uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits);\n"
 WHOLE_TIMES_DECL = "extern uint32_t hos_frame_whole_times(uint64_t at, uint32_t amount_bits, uint32_t times);\n"
-WHOLE_TIMES = {"void f_800672e0(Ctx *__restrict A64_NOESC c) {\n": "c->x[8]"}   # (the water's substeps, issue 1199)
+WHOLE_TIMES = {"void f_800672e0(Ctx *__restrict A64_NOESC c) {\n": "c->x[8]"}   # (the water's substeps)
 
 
 def whole_new(old, key, times=None):
@@ -681,7 +686,7 @@ def patch_whole_frames(s):
 #   change flags the gate held back (hos_oot_bgm_begin) and its four reads of the battle manager's change flags ([x26]+2200)
 #   get them with the byte (hos_oot_bgm_flags): flags set for one frame the gate held are not lost (the battle music after a fight).
 # - the physics solver's step count, set each update from the frame step in f_838ceb80 and f_838cfc10 (the same code in both):
-#   hos_oot_solver_steps rounds it up instead of down, at least 1, so Link stays on moving platforms (issue 1798).
+#   hos_oot_solver_steps rounds it up instead of down, at least 1, so Link stays on moving platforms.
 SOUND_HEAD = "void f_80435300(Ctx *__restrict A64_NOESC c) {\n"
 SOUND_SLOT = "g_module_base + 0x80435000ULL + (int64_t)75927552"   # (the page of the step's pointer, whose +2192 holds it)
 SOUND_OLD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
@@ -729,7 +734,7 @@ HORSE_DECL = "extern int hos_oot_horse_whole_step(uint32_t step_bits, uint64_t s
 # Three characters' update modules (f_80159dc0, f_8015d490, f_838baa40) carry a character that stands on a moving floor by the
 # floor's velocity, but first test the physics time object's 1/dt (its +40) against 100, and above it (a frame under 10 ms: at
 # 60 fps, time slowed below 0.6) carry it by a tenth of it. Above 100 fps every frame is under 10 ms, so Link and the enemies
-# slid to the back of the Shadow Temple's barge (issue 439). Each module's branch to the tenth (its own label) asks
+# slid to the back of the Shadow Temple's barge. Each module's branch to the tenth (its own label) asks
 # hos_oot_floor_carry_slow too: above a 60 fps cap, on a frame under a 60 fps one, it is 1/dt times the frame's step (the time
 # object's, [[slot]]+0x10) over 100, the game's test as it would be at 60 fps (host/oot_high_fps.h).
 FLOOR_SITES = (("void f_80159dc0(Ctx *__restrict A64_NOESC c) {\n", "L_8015a39c"),
@@ -747,7 +752,7 @@ FLOOR_DECL = "extern int hos_oot_floor_carry_slow(uint32_t inv_dt_bits, uint64_t
 # A rigid body's update before the physics step, f_804f5030, on its path for a body driven to a target (x20 the controller, x23
 # the body): the game sets the target (+0x3c) to the body's position plus this frame's move and asks for (target - position) /
 # dt. Above 60 fps Havok's solve delivers only part of it (0.86 at 120 fps), the next target starts from where the body ended
-# up, and Link's pull-up onto a ledge fell short: he slid back on the lip (issue 1494). Before the target is read,
+# up, and Link's pull-up onto a ledge fell short: he slid back on the lip. Before the target is read,
 # hos_oot_drive_target adds last update's shortfall to Link's (host/oot_high_fps.h). The path is in the function twice.
 DRIVE_HEAD = "void f_804f5030(Ctx *__restrict A64_NOESC c) {\n"
 # (two copies of that path, the body loaded into x23 or x24: the same type test, reached from different places)
@@ -856,6 +861,46 @@ def patch_tex_compact(s):
     s = s[:head] + body.replace(TEXC_OLD, TEXC_NEW, 1) + s[end:]
     if TEXC_DECL not in s:
         s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXC_DECL, 1)
+    return s, 1
+
+
+# The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers (host/oot_ocb_hold.h
+# has why). f_832b9880 is the preload manager's update: at 0x832b9dc8 the unit it chose is in w21 (bit 31: none) and the
+# manager in x19; from there it asks for that unit and lets the others go. The choice goes through the host first.
+OCBH_HEAD = "void f_832b9880(Ctx *__restrict A64_NOESC c) {\n"
+OCBH_LABEL = "L_832b9dc8:;\n"
+OCBH_RE = re.compile(r"L_832b9dc8:;\nif \(\(\((x21_|c->x\[21\]) >> 31\) & 1\)\) \{ goto L_832b9e0c; \}\n")
+OCBH_MARK = "/* (nx2/oot_patches.py: HOS_OCB_HOLD_MS, the preloaded neighbour kept while the choice flickers) */"
+OCBH_DECL = "extern uint64_t hos_oot_ocb_pick(Ctx *c, uint64_t mgr, uint64_t chosen);\n"
+
+
+def patch_ocb_hold(s):
+    """The preload manager's choice of a neighbouring map through the host: (s, 1) when its update is in s with it (made now
+    or before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, OCBH_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(OCBH_MARK) == 1:
+        return s, 1
+    found = OCBH_RE.findall(body)
+    if len(found) != 1 or OCBH_MARK in body:
+        return s, 0
+    w21 = found[0]
+    x19 = "c->x[19]"
+    if w21 == "x21_":
+        # (the registers as locals: the manager is x19's local, which the function keeps up to date and c->x[19] need not be.
+        # A function without that local on its first line is not the code this patch knows: left as it is, and the report's
+        # warning says so)
+        if not re.search(r"\bx19_ = c->x\[19\]", body[:body.find("\n", len(OCBH_HEAD)) + 1]):
+            return s, 0
+        x19 = "x19_"
+    call = "    %s = hos_oot_ocb_pick(c, %s, %s);   %s\n" % (w21, x19, w21, OCBH_MARK)
+    body = OCBH_RE.sub(lambda m: OCBH_LABEL + call + m.group(0)[len(OCBH_LABEL):], body, count=1)
+    s = s[:head] + body + s[end:]
+    if OCBH_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OCBH_DECL, 1)
     return s, 1
 
 
@@ -1180,7 +1225,7 @@ def patch_cloth_solve(s):
 
 # f_8263e8e0, the steering update: after applying a turn it clamps the saved rate (+36) to the turn's magnitude times
 # the step. The turn was already scaled by the step, so a rate-limited update keeps rate * step squared: above 60 fps
-# Gohma can keep circling the ceiling without reaching her next point (issue 312). Convert the turn back to a rate for
+# Gohma can keep circling the ceiling without reaching her next point. Convert the turn back to a rate for
 # both bounds when 0 < step < 1. At a step of 1 or more, and for invalid steps, keep the game's arithmetic unchanged.
 TURN_RATE_HEAD = "void f_8263e8e0(Ctx *__restrict A64_NOESC c) {\n"
 TURN_RATE_OLD = """    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c->vreg[1],4);_z=(_a^_b)&0x80000000ULL;
@@ -1377,7 +1422,7 @@ def patch_heap_retry(s):
 # The voice resource's update (f_80a9ca30) asks GameDataMgr whether OptionData.VoiceLanguage was written (f_80a9d1c0, its one
 # call there, by its return address) and reads and applies the option only then. Made through host/oot_voice.c
 # hos_oot_voice_option, which calls the game's own and also answers yes when the option's value changed without a write
-# (option.sav read after the start: issue 430). f_80a9d1c0's other callers stay as they are.
+# (option.sav read after the start). f_80a9d1c0's other callers stay as they are.
 VOICE_OPTION_OLD = "c->x[30] = 0x80a9ca9cULL; f_80a9d1c0(c);"
 VOICE_OPTION_NEW = "c->x[30] = 0x80a9ca9cULL; hos_oot_voice_option(c, f_80a9d1c0);   /* (nx2/oot_patches.py: host/oot_voice.c) */"
 VOICE_OPTION_DECL = "void hos_oot_voice_option(Ctx *A64_NOESC c, A64Fn game);\n"
@@ -1644,6 +1689,11 @@ def patch_file(s, name, protect_hearts=False):
     if texc != out:
         lines.append("oot_patches: the texture heap's compaction asked for through the host in " + name)
     out = texc
+    ocbh, found = patch_ocb_hold(out)
+    counts["preload choice"] += found
+    if ocbh != out:
+        lines.append("oot_patches: the preload manager's choice of a neighbouring map through the host in " + name)
+    out = ocbh
     flags, found = patch_bgm_flags(out)
     counts["music manager flags"] += found
     if flags != out:
@@ -1738,6 +1788,8 @@ def report(paths, counts, protect_hearts=False):
         print("oot_patches: WARNING: the music manager's time was found %d times, not once" % total["music manager time"])
     if total["texture compaction"] != 1:   # (without it HOS_TEX_COMPACT_MS does nothing: the game compacts at every frame)
         print("oot_patches: WARNING: the texture heap's compaction request was found %d times, not once" % total["texture compaction"])
+    if total["preload choice"] != 1:   # (without it HOS_OCB_HOLD_MS does nothing: a flickering choice reloads the neighbours)
+        print("oot_patches: WARNING: the preload manager's choice was found %d times, not once" % total["preload choice"])
     if total["music manager flags"] != 1:   # (without it, above 60 fps the battle music can play on after a fight)
         print("oot_patches: WARNING: the music manager's change flags were found %d times, not once" % total["music manager flags"])
     if total["job barrier waits"] != len(BARRIER_SITES):   # (without them the job barriers sleep 20 us there, as before)

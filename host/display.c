@@ -67,7 +67,7 @@ static int esc_had_capture;
    game's thread), their clicks */
 static int game_menu_open;
 /* (one of them has the mouse, the Insert menu closed: read on the game's thread, where the mouse's side buttons, which no
-   menu takes, stay their controls'. host/nn_hid.c mouse_buttons_arm, Longshot #1306) */
+   menu takes, stay their controls'. host/nn_hid.c mouse_buttons_arm) */
 static volatile LONG game_menu_mouse;
 int hos_mouse_in_game_menu(void) { return (int)game_menu_mouse; }
 static volatile LONG64 game_menu_seen_ns;
@@ -458,7 +458,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             if (fullscreen) set_fullscreen(w,1); /* selection/hotplug changes, on the window thread */
         }
         pointer_update(w, 0, 0);
-        /* (longshot, #1532) a controller is not input to Windows: playing with one, the display went off at the power
+        /* (longshot) a controller is not input to Windows: playing with one, the display would go off at the power
            plan's timeout. While the game's window is in front and not minimized, the display's idle timer is reset every
            30 s (ES_DISPLAY_REQUIRED without ES_CONTINUOUS: nothing is held when the game is left or closed).
            HOS_KEEP_DISPLAY=0: Windows' timeout as before */

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// (longshot, issue 388) Whether the pipeline cache's file (cache/longshot_vk_pipelines.bin, 1.2 GB after a preparation) is read
+// (longshot) Whether the pipeline cache's file (cache/longshot_vk_pipelines.bin, 1.2 GB after a preparation) is read
 // at the start (vk_draw.cpp pcache_init), where RX_VK_PCACHE_LOAD does not say, and how NVIDIA's own shader cache is found for
 // that. Nothing of Vulkan here: tests/test_pcache_load.py.
 //
@@ -22,6 +22,14 @@
 //   filled would leave every pipeline to be compiled in play, and there the file is what answers). Only NVIDIA's folder
 //   counts: Mesa's, or another driver's, cannot answer NVIDIA's pipelines;
 // - not a --prepare-shaders run, which builds into the file and saves it.
+// The same on Windows with NVIDIA's own driver: it keeps its own shader cache there too (%LOCALAPPDATA%\NVIDIA\GLCache,
+// where its Vulkan driver files the pipelines it compiles), and the driver's copy of the file was 1563 MB of the game's
+// private memory (a Market stand, RTX 4070 SUPER, 32 GB: vkCreatePipelineCache's allocations, counted by call stack). Not
+// read (RX_VK_PCACHE_LOAD=0, two stands each way): working set 1.0 GB and private memory 1.2 GB lower, steady frames the same,
+// but each load at create took its pipelines from NVIDIA's disk cache, median 3.4-3.8 ms against 0.9-1.0 ms, and draws ran
+// ~40 loads themselves against 11-18. So on Windows, as on Linux, only with 20 GB of RAM or less, where the gigabyte is what
+// pushes the game into paging; the driver is NVIDIA's and its GLCache folder holds at least kWarmMb (not a --prepare-shaders
+// run); read as before everywhere else (more RAM, AMD, Intel, a folder nearly empty or not readable).
 // RX_VK_PCACHE_LOAD=0 or 1 (or off/on): not read or read, whatever these say, a --prepare-shaders run included.
 #pragma once
 #include <cstdint>
@@ -38,23 +46,33 @@ constexpr uint64_t kWarmMb = 512;
 /// folder could not be walked through)
 enum class Cache { kMeasured, kOff, kUnknown };
 
-enum class Why { kSwitch, kPreparing, kStart, kNotLinuxNvidia, kRam, kDriverCacheOff, kDriverCacheUnknown, kColdDriverCache, kSmallPc };
+enum class Why { kSwitch, kPreparing, kStart, kNotLinuxNvidia, kRam, kDriverCacheOff, kDriverCacheUnknown, kColdDriverCache, kSmallPc,
+                 kWindowsNvidia };
 struct Choice {
     bool load;
     Why why;
 };
 
 /// Whether everything but NVIDIA's own cache already says not to read the file: its folder is walked only then.
-/// sw: RX_VK_PCACHE_LOAD (-1 unset, 0 off, 1 on). linux_nvidia: Linux with NVIDIA's own driver. ram_mb: the PC's RAM (0: not known)
-constexpr bool needs_cache(int sw, bool preparing, bool load_at_create, bool linux_nvidia, uint32_t ram_mb) {
-    return sw < 0 && !preparing && load_at_create && linux_nvidia && ram_mb && ram_mb <= kSmallRamMb;
+/// sw: RX_VK_PCACHE_LOAD (-1 unset, 0 off, 1 on). linux_nvidia: Linux with NVIDIA's own driver. ram_mb: the PC's RAM (0: not known).
+/// windows_nvidia: Windows with NVIDIA's own driver (its RAM rule is Linux's)
+constexpr bool needs_cache(int sw, bool preparing, bool load_at_create, bool linux_nvidia, uint32_t ram_mb,
+                           bool windows_nvidia = false) {
+    return sw < 0 && !preparing && load_at_create && (linux_nvidia || windows_nvidia) && ram_mb && ram_mb <= kSmallRamMb;
 }
-/// cache, cache_mb: NVIDIA's own cache (nvidia_cache), looked at only where needs_cache()
+/// cache, cache_mb: NVIDIA's own cache (nvidia_cache, nvidia_cache_windows), looked at only where needs_cache()
 constexpr Choice choose(int sw, bool preparing, bool load_at_create, bool linux_nvidia, uint32_t ram_mb, Cache cache,
-                        uint64_t cache_mb) {
+                        uint64_t cache_mb, bool windows_nvidia = false) {
     if (sw >= 0) return {sw == 1, Why::kSwitch};
     if (preparing) return {true, Why::kPreparing};
     if (!load_at_create) return {true, Why::kStart};
+    if (windows_nvidia) {
+        if (!ram_mb || ram_mb > kSmallRamMb) return {true, Why::kRam};
+        if (cache == Cache::kOff) return {true, Why::kDriverCacheOff};
+        if (cache != Cache::kMeasured) return {true, Why::kDriverCacheUnknown};
+        if (cache_mb < kWarmMb) return {true, Why::kColdDriverCache};
+        return {false, Why::kWindowsNvidia};
+    }
     if (!linux_nvidia) return {true, Why::kNotLinuxNvidia};
     if (!ram_mb || ram_mb > kSmallRamMb) return {true, Why::kRam};
     if (cache == Cache::kOff) return {true, Why::kDriverCacheOff};
@@ -69,12 +87,15 @@ constexpr const char* why_text(Why w) {
         case Why::kSwitch: return "RX_VK_PCACHE_LOAD says so";
         case Why::kPreparing: return "a --prepare-shaders run builds into it";
         case Why::kStart: return "programs are loaded before the title";
-        case Why::kNotLinuxNvidia: return "not Linux with NVIDIA's own driver";
+        case Why::kNotLinuxNvidia: return "not NVIDIA's own driver";
         case Why::kRam: return "more than 20 GB of RAM, or the RAM not known";
         case Why::kDriverCacheOff: return "NVIDIA's own shader cache is off";
         case Why::kDriverCacheUnknown: return "NVIDIA's own shader cache could not be measured";
         case Why::kColdDriverCache: return "NVIDIA's own shader cache is nearly empty";
         case Why::kSmallPc: return "20 GB of RAM or less, programs loaded at create: NVIDIA's own shader cache answers them";
+        case Why::kWindowsNvidia:
+            return "Windows with NVIDIA's own driver, 20 GB of RAM or less, programs loaded at create: NVIDIA's own shader cache "
+                   "answers them";
     }
     return "";
 }
@@ -129,6 +150,19 @@ inline Measured nvidia_cache(bool switched_off, const char* path, const char* xd
     if (switched_off) return {Cache::kOff, 0};
     const std::filesystem::path d = nvidia_cache_dir(path, xdg, home);
     if (d.empty()) return {Cache::kOff, 0};
+    if (dir) *dir = d.string();
+    return folder_bytes(d);
+}
+
+/// The folder NVIDIA's Windows driver keeps its Vulkan shader cache in: %LOCALAPPDATA%\NVIDIA\GLCache (driver 617: the
+/// pipelines a run compiles land in its files). Not known without LOCALAPPDATA. The driver reads no switch for it from the
+/// environment on Windows (its control panel sets the size): a folder emptied, nearly empty or not there reads as cold
+inline Measured nvidia_cache_windows(const char* localappdata, std::string* dir = nullptr) {
+    if (!localappdata || !*localappdata) {
+        if (dir) *dir = "%LOCALAPPDATA% (not set)";
+        return {Cache::kUnknown, 0};
+    }
+    const std::filesystem::path d = std::filesystem::path(localappdata) / "NVIDIA" / "GLCache";
     if (dir) *dir = d.string();
     return folder_bytes(d);
 }

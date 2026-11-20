@@ -64,11 +64,11 @@ struct SkinnedDraw {
 };
 void temporal_note_skinned_draw(const SkinnedDraw& k);
 
-/// (longshot, #1370) The hidden-mesh rule's switches (vk_draw.cpp hidden_depth_draw, gpu/vk/hidden_mesh.h). Bit 0: the depth
+/// (longshot) The hidden-mesh rule's switches (vk_draw.cpp hidden_depth_draw, gpu/vk/hidden_mesh.h). Bit 0: the depth
 /// draws of hidden meshes are left out (unless RX_VK_DLSS_FADED=0); bit 1: the detailed log (RX_VK_DLSS_FADED_LOG=1). 0:
-/// nothing runs, as with the parallel replay (RX_VK_PARALLEL=2 and more). Read once; the first call logs what it is
+/// nothing runs. Read once; the first call logs what it is
 int temporal_hidden_mesh_mode();
-/// (longshot, #1370) Whether `depth` is the depth target of the scene the chain has taken in this frame (its camera's)
+/// (longshot) Whether `depth` is the depth target of the scene the chain has taken in this frame (its camera's)
 bool temporal_scene_depth_is(const Texture* depth);
 
 /// (longshot) NVIDIA DLAA before the game's bloom and tone map (pre_bloom.h has where and why): with DLAA and the
@@ -100,6 +100,21 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
 /// engine's own state, the chain's images and deferred frees are let go, so their video memory comes back. Nothing to do
 /// costs one atomic load
 void temporal_idle();
+/// (longshot, smoothness) RX_VK_DLSS_PREWARM (on by default; 0: off): DLSS's feature made before the game's first 3D frame. Its creation (NGX's
+/// CreateFeature, 70-120 ms of the replay thread in play, 33-50 ms headless) and the chain's first evaluate and pipelines were
+/// all in the first gameplay frame after a load. temporal_prewarm makes them in a light frame (the title, the file select, a
+/// loading screen: fewer draws than texture_ahead::kLightDraws) once NGX has started, for the size the game presents at
+/// (temporal_note_present) and the Upscaler row's DLSS or DLAA, with one evaluate (reset) on the chain's cleared images.
+/// The first gameplay frame then finds it made. A key that misses is made again there, as before, and logged with its why.
+/// Also (vk_dlss.cpp prepare): DLSS at a full-size frame takes the scaled mode that holds it, not a DLAA-mode feature
+bool temporal_prewarm_on();
+/// At each recording's start on the replay thread (cmd: its first command buffer). With RX_VK_DLSS_PREWARM=0 it only asks
+/// the upscalers at the first one in a run with no window (HOS_HEADLESS: no start-up screen asks them, and NGX's ~450 ms start
+/// fell into the first gameplay frame of every test run; RX_VK_PROBE_HEADLESS=0: not asked)
+void temporal_prewarm(VkCommandBuffer cmd);
+/// The draws of the last frame (vk_replay.cpp status_tick) and the size of the picture the game presented (do_present)
+void temporal_note_frame(int64_t draws);
+void temporal_note_present(uint32_t width, uint32_t height);
 /// (longshot) The game asked for its gameplay upscale (temporal_upscale) in this frame or the two before: it draws a 3D
 /// scene now, whether or not an engine then drew it (failed, refused, not this frame). Not in its own menus, movies and
 /// loading screens. Without the lock (an atomic frame number)

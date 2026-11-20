@@ -46,7 +46,7 @@ amd_retry_no_optimizer amd_cloth_no_optimizer fault_gate_serial task_mesh_fallba
 pcache_fetch_lock split_before_draw astc_on_cpu inline_deku_web_loads networks_left_out dma_buf_imports nv_checkpoints
 allowance_at_count_rule
 mirrors ub_snapshot split_ub_flush native_float_add warp64 batch_submits mma_unroll_try global_table_loop occ_copy
-intel_side_by_side_auto fsr4_tune gpu_clock_peak presenter_queue pcache_small_pc small_vram_textures astc_bc_all
+intel_side_by_side_auto fsr4_tune gpu_clock_peak readback_late_newest pcache_small_pc small_vram_textures astc_bc_all
 room_in_blocks_rule squeeze_damped linux_hold_caps_budget dlss_cnn auto_render_third rtx rdna4 threaded_auto_render
 threaded_auto_recorder drop_modules_small_ram""".split()
 # The numbers: the field and how the fixture prints it (sizes in whole MB; -1: no limit)
@@ -96,22 +96,22 @@ PCS = [
          facts=(0x10DE, 0x2204, "NVIDIA_PROPRIETARY", 0, "DISCRETE_GPU", "580.105.08", "NVIDIA GeForce RTX 3090", 0, 0,
                 24576, 24000, 32768, 24, 24, 12, 1, 1, 1, 1, 1, 1, 1, 32, 32, 0),
          on="inline_deku_web_loads nv_checkpoints allowance_at_count_rule mirrors split_ub_flush native_float_add "
-            "presenter_queue room_in_blocks_rule rtx threaded_auto_render threaded_auto_recorder",
+            "room_in_blocks_rule rtx threaded_auto_render threaded_auto_recorder",
          num=(0, 0, 0, 1, 85, 4, 11000, 3072, 768, 512, 3000, -1, 256, 24, 64, 32, 97, 5, 6, 4, 8, 6, 4)),
     # (an 8 GB card: every large ASTC texture as BC3, the squeeze damped, 12 blocks at the start and the 32 MB blocks)
     dict(name="RTX 4070 Laptop (8 GB), NVIDIA's Windows driver",
          facts=(0x10DE, 0x2860, "NVIDIA_PROPRIETARY", 0, "DISCRETE_GPU", "581.57", "NVIDIA GeForce RTX 4070 Laptop GPU", 1, 0,
                 8188, 7400, 16200, 16, 16, 8, 1, 1, 1, 1, 1, 1, 1, 32, 32, 0),
          on="inline_deku_web_loads nv_checkpoints allowance_at_count_rule mirrors split_ub_flush native_float_add "
-            "presenter_queue astc_bc_all room_in_blocks_rule squeeze_damped rtx threaded_auto_render threaded_auto_recorder",
+            "astc_bc_all room_in_blocks_rule squeeze_damped rtx threaded_auto_render threaded_auto_recorder",
          num=(0, 0, 0, 1, 85, 4, 4776, 2047, 616, 462, 925, -1, 256, 12, 32, 16, 97, 3, 6, 4, 8, 6, 4)),
     # (a 4 GB card. The rules that ask the vendor take NVK for NVIDIA's compiler: no invariant positions, no fetch bounds,
-    # the Deku web's loads inlined, the presenter's queue; the study doubts each. And it doubts the mirrors' 1365 MB here,
+    # the Deku web's loads inlined; the study doubts each. And it doubts the mirrors' 1365 MB here,
     # a third of the card, where mirror_budget.h argues for 256)
     dict(name="GTX 1650 (4 GB), NVK",
          facts=(0x10DE, 0x1F82, "MESA_NVK", 0, "DISCRETE_GPU", "Mesa 26.0.1", "NVIDIA GeForce GTX 1650 (NVK TU117)", 0, 0,
                 4096, 3900, 16000, 8, 8, 4, 0, 1, 0, 0, 0, 1, 1, 32, 32, 0),
-         on="inline_deku_web_loads dma_buf_imports allowance_at_count_rule mirrors split_ub_flush presenter_queue "
+         on="inline_deku_web_loads dma_buf_imports allowance_at_count_rule mirrors split_ub_flush "
             "small_vram_textures astc_bc_all room_in_blocks_rule squeeze_damped dlss_cnn threaded_auto_render "
             "drop_modules_small_ram",
          num=(0, 0, 0, 1, 85, 4, 2200, 1365, 325, 243, 487, 32, 128, 10, 32, 16, 97, 1, 2, 2, 4, 4, 2)),
@@ -171,7 +171,7 @@ PCS = [
          facts=(0x1002, 0x163F, "MESA_RADV", 0, "INTEGRATED_GPU", "Mesa 25.1.0", "AMD Custom GPU 0405 (RADV VANGOGH)", 0, 1,
                 7168, 6800, 14800, 8, 8, 4, 1, 1, 1, 0, 0, 1, 1, 64, 64, 0xFF),
          on="fetch_bounds networks_left_out gather_offset position_invariant dma_buf_imports allowance_at_count_rule "
-            "split_ub_flush warp64 batch_submits mma_unroll_try fsr4_tune gpu_clock_peak small_vram_textures astc_bc_all "
+            "split_ub_flush warp64 batch_submits mma_unroll_try fsr4_tune gpu_clock_peak readback_late_newest small_vram_textures astc_bc_all "
             "squeeze_damped linux_hold_caps_budget threaded_auto_render drop_modules_small_ram",
          num=(0, 2, 0, 1, 85, 16, 2560, 1792, 566, 425, 512, -1, 256, 0, 32, 16, 90, 1, 2, 2, 4, 4, 2)),
     # (corrected, twice: mesh_mode is Automatic (0), so its own mesh shaders, as the deadlock of issue 2245 is RADV's and
@@ -237,14 +237,14 @@ PCS = [
          facts=(0x10DE, 0x2520, "NVIDIA_PROPRIETARY", 0, "DISCRETE_GPU", "581.57", "NVIDIA GeForce RTX 3060 Laptop GPU", 1, 0,
                 6144, 5700, 16200, 16, 16, 8, 1, 1, 1, 1, 1, 1, 1, 32, 32, 0),
          on="inline_deku_web_loads nv_checkpoints allowance_at_count_rule mirrors split_ub_flush native_float_add "
-            "presenter_queue astc_bc_all room_in_blocks_rule squeeze_damped dlss_cnn rtx "
+            "astc_bc_all room_in_blocks_rule squeeze_damped dlss_cnn rtx "
             "threaded_auto_render threaded_auto_recorder",
          num=(0, 0, 0, 1, 85, 4, 3584, 1700, 475, 356, 712, 32, 128, 12, 32, 16, 97, 2, 6, 4, 8, 6, 4)),
     dict(name="RTX 4090 (24 GB), NVIDIA's Windows driver",
          facts=(0x10DE, 0x2684, "NVIDIA_PROPRIETARY", 0, "DISCRETE_GPU", "581.57", "NVIDIA GeForce RTX 4090", 1, 0,
                 24564, 23500, 65000, 32, 32, 16, 1, 1, 1, 1, 1, 1, 1, 32, 32, 0),
          on="inline_deku_web_loads nv_checkpoints allowance_at_count_rule mirrors split_ub_flush native_float_add "
-            "presenter_queue room_in_blocks_rule rtx threaded_auto_render threaded_auto_recorder",
+            "room_in_blocks_rule rtx threaded_auto_render threaded_auto_recorder",
          num=(0, 0, 0, 1, 85, 4, 11000, 3072, 768, 512, 2937, -1, 256, 24, 64, 32, 97, 5, 6, 4, 8, 6, 4)),
     # (no mesh shaders: Minimum, and no task + mesh fallback to choose)
     dict(name="RX 5700 (8 GB), AMD's Windows driver (RDNA 1 compiler)",
@@ -254,16 +254,16 @@ PCS = [
             "amd_cloth_no_optimizer fault_gate_serial allowance_at_count_rule mirrors split_ub_flush warp64 fsr4_tune "
             "astc_bc_all room_in_blocks_rule squeeze_damped threaded_auto_render threaded_auto_recorder",
          num=(0, 0, 0, 2, 0, 4, 4769, 2044, 614, 461, 922, -1, 256, 12, 32, 16, 97, 1, 4, 4, 6, 6, 3)),
-    # (ASTC on the CPU: 70% of 10,232 MB allowed is 7,162 MB, under the 8 GB cap for 32 GB RAM. The process may use 8 of the
-    # PC's 24 threads: the workers go by the 24, Threaded rendering's Auto by the 4 cores of those 8 (the render thread
-    # alone), which the study names as two ways of counting)
+    # (ASTC on the GPU in bounded chunks: 4,096 MB cap for 32 GB RAM; RX_VK_ASTC_CPU=1 raises it to 7,162 MB. The process may
+    # use 8 of the PC's 24 threads: the workers go by the 24, Threaded rendering's Auto by the 4 cores of those 8 (the render
+    # thread alone), which the study names as two ways of counting)
     dict(name="Ryzen 9 7900X's graphics (32 GB), AMD's Windows driver, on 8 of 24 threads",
          facts=(0x1002, 0x164E, "AMD_PROPRIETARY", 0x800161, "INTEGRATED_GPU", "26.10.1 " + AMD_OLD, "AMD Radeon(TM) Graphics", 1, 0,
                 16300, 10232, 32600, 24, 8, 4, 1, 1, 0, 0, 0, 1, 1, 64, 64, 0xFF),
          on="fetch_bounds networks_left_out nan_bits gather_offset frag_shuffle_fallback position_invariant mesh_no_optimizer "
-            "amd_cloth_no_optimizer fault_gate_serial astc_on_cpu allowance_at_count_rule split_ub_flush warp64 fsr4_tune "
+            "amd_cloth_no_optimizer fault_gate_serial allowance_at_count_rule split_ub_flush warp64 fsr4_tune "
             "astc_bc_all threaded_auto_render",
-         num=(0, 0, 0, 2, 0, 16, 7162, 3072, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 6, 4, 8, 6, 4)),
+         num=(0, 0, 0, 2, 0, 16, 4096, 3072, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 6, 4, 8, 6, 4)),
 ]
 
 # The switches (device_policy_env). The fields a switch can set, in the Sw enum's order (its bit in set_by_switch), and what
@@ -295,8 +295,9 @@ ENV = [
     (UHD, {"RX_VK_COMPUTE_SERIAL": "0"}, {"compute_builds_serial": 0}, ["compute_builds_serial"], []),
     (UHD, {"RX_VK_COMPUTE_SERIAL": "off"}, {"compute_builds_serial": 0}, ["compute_builds_serial"], []),
     (UHD, {"RX_VK_COMPUTE_SERIAL": ""}, {}, [], []),                                   # (was off)
-    (RAPHAEL, {"RX_VK_ASTC_CPU": "0"}, {"astc_on_cpu": 0, "texture_budget": 4096}, ["astc_on_cpu"], []),
-    (RAPHAEL, {"RX_VK_ASTC_CPU": ""}, {}, [], []),                                     # (was off)
+    (RAPHAEL, {"RX_VK_ASTC_CPU": "1"}, {"astc_on_cpu": 1, "texture_budget": 7162}, ["astc_on_cpu"], []),
+    (RAPHAEL, {"RX_VK_ASTC_CPU": "0"}, {}, ["astc_on_cpu"], []),
+    (RAPHAEL, {"RX_VK_ASTC_CPU": ""}, {}, [], []),                                     # (empty is the default)
     (UHD, {"RX_VK_ASTC_CPU": "1"}, {"astc_on_cpu": 1}, ["astc_on_cpu"], []),           # (<= 16 GB RAM: budget cap stays 2560 MB)
     (NVIDIA, {"RX_VK_ASTC_CPU": "yes"}, {"astc_on_cpu": 1}, ["astc_on_cpu"], []),
     (NVIDIA, {"RX_VK_PCACHE_FETCH_LOCK": "1", "RX_VK_SPLIT_BEFORE_DRAW": "1", "RX_VK_UB_SNAPSHOT": "1"},
@@ -589,7 +590,7 @@ def check_source():
           "texture_rule::integrated_bytes(a, device_vram_bytes(), astc_on_cpu())",
           "own = policy_rule::integrated_texture_budget(driver_budget, system_ram, astc_on_cpu());")),
         ("vk_replay.cpp", "bool batch_on() {", ("const bool v = dev.policy.batch_submits;",)),
-        ("vk_replay.cpp", "bool occ_copy_wanted() {", ("if (par_threads() != 0) return false;", "return dev.policy.occ_copy;")),
+        ("vk_replay.cpp", "bool occ_copy_wanted() {", ("return dev.policy.occ_copy;",)),
         ("vk_replay.cpp", "bool part_ends_before_draw() {", ("return dev.policy.split_before_draw;",)),
         ("vk_replay.cpp", "void split_part(VkCommandBuffer& cmd) {", ("const bool part_flush = dev.policy.split_ub_flush;",)),
         ("vk_memory.cpp", "uint64_t cap_spare_max() {",

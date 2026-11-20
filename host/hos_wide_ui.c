@@ -181,7 +181,7 @@ static const char *const WHOLE_LAYOUTS[] = {"ShortCutBG_00", "EventFade_00"};
 /* (held where the game puts them, at the HUD's size: never made smaller, and moved only by name (RULE_HELD_RIGHT). The text
    box and its choices: fitted as a menu's on a narrower screen the choices came out at another scale than the box. The
    choices' column (N_BtnNum_00) reaches the 16:9 canvas's right edge: left there on a 16:10 screen, where the canvas at
-   the HUD's size is wider than the screen, the boxes' right ends and their longer texts were off it (Longshot #1050)) */
+   the HUD's size is wider than the screen, the boxes' right ends and their longer texts would be off it) */
 static const char *const HELD_LAYOUTS[] = {"MessageDialog_00"};
 /* (the HUD's root layouts: the hearts, magic, rupees and buttons; the place's name; the minimap (the pause menu's map page is
    the same layout: drawn as a menu's while it shows, as_menu); the text box and its button guide ("Hide", "Conversation
@@ -580,7 +580,7 @@ void hos_wide_ui_tick(void) {
     }
     const float r = hos_wide_ratio;
     /* (the HUD's moves: HOS_WIDE_UI when set, else the Insert menu's HUD layout, read at each present so a change shows at
-       once: 0 Screen's edges, 1 Middle 16:9, HOS_OPT_HUD_LAYOUT, #1133) */
+       once: 0 Screen's edges, 1 Middle 16:9, HOS_OPT_HUD_LAYOUT) */
     int rx_option(int id, int otherwise);
     const int hud = env && *env ? !env_value_off(env) : rx_option(71, 0) == 0;
     float qx = 0.0f, qy = 0.0f, fit = 1.0f, ex = 0.0f, ey = 0.0f;

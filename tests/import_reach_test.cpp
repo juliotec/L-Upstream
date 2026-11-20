@@ -71,7 +71,6 @@ static uint64_t span_bytes;
 static uint64_t import_span() { return span_bytes; }   // (RX_VK_IMPORT_SPAN_MB=0: the planned range is the chunks of the binding alone)
 static unsigned bg_starts;
 static void bg_start() { ++bg_starts; }
-static void rb_hazard_locked(uint64_t, uint64_t) {}
 static bool mem_check_on() { return false; }   // (RX_VK_MEM_CHECK off: memory_note_gpu_write's hook)
 static void mem_check_gpu_only(uint64_t, uint64_t) {}
 

@@ -28,7 +28,7 @@ VmaAllocator vma;
 static uint64_t device_local_heap_bytes() {
     uint64_t heap = 0;
     for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
-        if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, test_vram_bytes(dev.memory.memoryHeaps[h].size));   // (RX_VK_TEST_VRAM_MB, #1107)
+        if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) heap = std::max<uint64_t>(heap, test_vram_bytes(dev.memory.memoryHeaps[h].size));   // (RX_VK_TEST_VRAM_MB)
     return heap;
 }
 
@@ -483,12 +483,12 @@ bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free) {
             f += b[h].statistics.blockBytes - std::min(b[h].statistics.blockBytes, b[h].statistics.allocationBytes);
         }
     // (a test: RX_VK_TEST_ALLOWED_MB=<n> reports what the driver allows as at most n MB, so a 16 GB card plays the eviction and
-    // keep-rendered paths an 8 GB card takes when its VRAM fills (the rainbow textures of issue 993 were never seen here otherwise))
+    // keep-rendered paths an 8 GB card takes when its VRAM fills)
     static const uint64_t test_allowed = getenv("RX_VK_TEST_ALLOWED_MB") ? (uint64_t)atoi(getenv("RX_VK_TEST_ALLOWED_MB")) << 20 : 0;
     if (test_allowed && t > test_allowed) t = test_allowed;
     // (and RX_VK_TEST_ALLOWED_FILE=<file>: the same bound read from that file's number of MB, looked at again once a second, so
-    // a run can shrink the allowance in play, as Windows does when another program takes VRAM: an RX 6600 went from 7378 to
-    // 5940 MB allowed in Hyrule Field (#1025). A missing file or 0 leaves the driver's)
+    // a run can shrink the allowance in play, as Windows does when another program takes VRAM. A missing file or 0 leaves the
+    // driver's)
     static const char* test_file = getenv("RX_VK_TEST_ALLOWED_FILE");
     if (test_file) {
         static std::atomic<uint64_t> file_allowed{0};
@@ -510,15 +510,14 @@ bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free) {
         const uint64_t fa = file_allowed.load(std::memory_order_relaxed);
         if (fa && t > fa) t = fa;
     }
-    // (and RX_VK_TEST_ALLOWED_FOLLOW=1: an allowance the count is past is reported as the count, as AMD's Windows driver does
-    // (#933, #1025), so the rule below can be seen at work on any card)
+    // (and RX_VK_TEST_ALLOWED_FOLLOW=1: an allowance the count is past is reported as the count, as AMD's Windows driver does,
+    // so the rule below can be seen at work on any card)
     static const bool test_follow = env_on("RX_VK_TEST_ALLOWED_FOLLOW");
     if (test_follow && (test_allowed || test_file) && t && u > t) t = u;
     // (longshot) an allowance the driver gives as the count itself is past: AMD's Windows driver, once a process is over what it
-    // allows, reports the allowance as what the process uses. An RX 6600 at 3.4 of 7.2 GB entered Hyrule Field and sat at 5940 of
-    // 5940 MB; another went from 5.3 of 6.5 GB to 6.6 of 6.6, the allowance rising with the count. Taken as it is, the count is
-    // within it: room in the blocks kept the 97% squeeze waiting and the hold's line rose with the count, while the driver paged:
-    // frames of 1.2-15.7 s (#933, #1025). vram_compact::past_allowance makes it a tenth under the count, so every rule sees the
+    // allows, reports the allowance as what the process uses (5940 of 5940 MB, the allowance rising with the count). Taken as it
+    // is, the count is within it: room in the blocks keeps the 97% squeeze waiting and the hold's line rises with the count, while
+    // the driver pages: frames of seconds. vram_compact::past_allowance makes it a tenth under the count, so every rule sees the
     // count past it and gives back until the driver reports an allowance over the count again
     {
         const uint64_t was = t;

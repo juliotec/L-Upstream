@@ -25,6 +25,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+from menu_model_fixture import output_engine  # noqa: E402
 
 
 def block(text, marker):
@@ -60,6 +63,7 @@ MENU_FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include "host/hold_toggle.h"
 #include "gpu/vk/display_modes.h"
 #include "gpu/vk/menu_restart.h"
+#include "gpu/vk/menu_model.h"   // (#1633: a row can be a module's, Row.setting)
 using namespace mkwvk;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 constexpr int VK_BACK = 8, VK_TAB = 9, VK_RETURN = 0x0d, VK_ESCAPE = 0x1b, VK_END = 0x23, VK_HOME = 0x24, VK_LEFT = 0x25,
@@ -70,10 +74,16 @@ enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, H
 enum { HOS_MOUSE_LEFT = 1, HOS_MOUSE_RIGHT = 2 };
 @@TEXT_ENUMS@@
 struct { int output_res, preset, ultrawide, handheld, audio_output; } opts;
-struct Row { int* value; int hi; bool restart; };
-Row rows[] = {{&opts.ultrawide, 0, true}, {&opts.output_res, 0, true}, {&opts.audio_output, 3, true}};
+struct Row { int* value; int hi; bool restart; const menu::Setting* setting = nullptr; };
+int speaker_restart_value(int v);   // (the Speaker layout row's, gpu/vk/menu/audio.cpp: cut below, #1633)
+const menu::Setting speaker = [] { menu::Setting s; s.key = "audio_output"; s.restart_value = speaker_restart_value; return s; }();
+Row rows[] = {{&opts.ultrawide, 0, true}, {&opts.output_res, 0, true}, {&opts.audio_output, 3, true, &speaker}};
 constexpr int kRows = 3;
 int restart_slot[kRows] = {0, 1, 2};
+int mods_slot = -1;   // (the Mods tab's slot, which restart_values fills after the rows': no mods here)
+bool can_mods() { return false; }
+uint32_t hos_pad_raw();
+struct { uint32_t (*pad_raw)(); uint64_t (*mods_changed)(); } host_value{hos_pad_raw, nullptr}, *host = &host_value;
 namespace mr = menu_restart;
 struct RestartState : mr::State {
     int noted = 0;
@@ -149,7 +159,6 @@ void tap(int button, int count = 1) {
 // The host's raw pad callback and the menu's edge/repeat path, not a latched game-button word.
 uint32_t pad_raw_now = 0;
 @@PAD_RAW@@
-struct { uint32_t (*pad_raw)(); } host_value{hos_pad_raw}, *host = &host_value;
 void routed_tick() {
     const bool mine = true;
     bool pad_last = false, held[5] = {};
@@ -600,10 +609,11 @@ def main():
         raise SystemExit("FAIL: vk_api.h: no HOS_TEXT_KEY and HOS_TEXT_OFF/ON/PASTE")
     cut = "\n".join([block(menu, "struct TextField {"), between(menu, "enum { kTextGoOn", "\n") + "\n",
                      block(menu, "int text_edit("), block(menu, "void text_set("),
-                     between(menu, "struct Out {", "Out shown_output()"),
+                     output_engine(ROOT, "Out shown_output()"),   # (the output module's, #1633)
                      block(menu, "void outputs_sync("), block(menu, "int row_restart_value("),
                      block(menu, "int restart_slot_of("), block(menu, "bool restart_changed("),
                      block(menu, "void restart_values("),
+                     block((ROOT / "gpu/vk/menu/audio.cpp").read_text(encoding="utf-8"), "int speaker_restart_value("),
                      between(menu, "bool output_size_char(", "struct FieldRow {"),
                      between(menu, "TextField* editing =", "// ---- (longshot) the Controls page:")])
     host_cut = between(backend, "enum { TEXT_QUEUE", "static const MkwVkHost vk_host")

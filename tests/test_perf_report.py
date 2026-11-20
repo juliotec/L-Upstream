@@ -1,4 +1,4 @@
-"""The performance statistics (docs/performance-statistics.md): the game's summary (gpu/vk/perf_report.h, compiled with
+"""The performance statistics (docs/dev/reference/profiling.md, Performance statistics): the game's summary (gpu/vk/perf_report.h, compiled with
 tests/test_perf_report.cpp: buckets, hitches, pacing, the JSON, a frame's cost), the wiring (on only with the tick, a
 frame added at each present, the events where they happen), what the relay does with what the game sends, and the
 launcher's side (nx2/perf_report.py):

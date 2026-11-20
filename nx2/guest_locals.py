@@ -76,7 +76,7 @@ RAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ran_funcs.txt")
 
 def ran_functions():
     """the functions that may get locals (A64_LOCAL_FUNCS): unset, the ones nx2/ran_funcs.txt names (the functions a
-    100-minute play session ran, recorded with scripts/coverage/cover.py: 77,725 of the game's ~295,000, issue #362);
+    100-minute play session ran, recorded with scripts/coverage/cover.py: 77,725 of the game's ~295,000);
     `all`, every function (None). No such file: every function too. The file's contents are in the lift key (a .txt in
     nx2/: make_game.py's lift_sources)"""
     if os.environ.get("A64_LOCAL_FUNCS", "").strip().lower() == "all" or not os.path.isfile(RAN):

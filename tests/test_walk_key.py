@@ -26,6 +26,8 @@ from pathlib import Path
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 
 
 def block(text, marker):
@@ -352,7 +354,7 @@ class WalkKeyTests(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, mode + ": " + run.stdout + run.stderr)
 
     def test_wiring(self):
-        api, hid, menu = read("gpu", "vk", "vk_api.h"), read("host", "nn_hid.c"), read("gpu", "vk", "vk_menu.cpp")
+        api, hid, menu = read("gpu", "vk", "vk_api.h"), read("host", "nn_hid.c"), menu_text(ROOT)   # (with the modules' rows: gpu/vk/menu/walk.cpp)
         header, replay = read("gpu", "vk", "vk_menu.h"), read("gpu", "vk", "vk_replay.cpp")
         self.assertIn("enum { HOS_OPT_WALK_MODE = 49, HOS_OPT_WALK_SPEED };", api)
         self.assertRegex(api, r"HOS_KEY_OC_NOTE_X, HOS_KEY_WALK, HOS_KEY_N \};")
@@ -376,11 +378,11 @@ class WalkKeyTests(unittest.TestCase):
         self.assertIn("int walk_mode = 0;", header)
         self.assertIn("rx_option(HOS_OPT_WALK_MODE, 0) == 1", block(hid, "static void read_input("))
         # (documented where the rows and the ini's keys are)
-        readme, development = read("README.md"), read("docs", "development.md")
+        settings, development = read("docs", "user", "graphics-and-controls.md"), read("docs", "dev", "reference", "switches.md")
         lo, hi = speed.groups()
         for text in ("| | Walk mode | Hold, Toggle | Hold |",
                      "| | Walk speed | %s%% to %s%%, in steps of 5 | %d%% |" % (lo, hi, default), "`walk`"):
-            self.assertIn(text, readme)
+            self.assertIn(text, settings)
         self.assertIn("| `walk_mode` | 0 Hold, 1 Toggle |", development)
 
 

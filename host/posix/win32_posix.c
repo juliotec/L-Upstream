@@ -192,8 +192,8 @@ static void thread_unref(HThread *t) {
         free(t);
     }
 }
-/* (NULL when calloc is refused: CreateThread then fails as Windows' does, rather than write through NULL; issue 333's notice
-   thread is started after a host allocation kept failing, when this one may be refused too) */
+/* (NULL when calloc is refused: CreateThread then fails as Windows' does, rather than write through NULL; the out-of-memory
+   notice's thread is started after a host allocation kept failing, when this one may be refused too) */
 static HThread *thread_new(void) {
     HThread *t = (HThread *)calloc(1, sizeof *t);
     if (!t) return NULL;
@@ -205,7 +205,7 @@ static HThread *thread_new(void) {
    only the threads'. Read from the asking thread each time, it was that thread's own mask, which shrank once hos_thread_pin
    pinned it off the reserved core: the Presentation Thread's pin, asked for from a game thread kept off that core, then
    saw no reserved core in the "process" mask and kept the Presentation Thread off it too, against render_thread_on_reserved
-   (host/hos_thread.c; Ryzen 9 9950X3D, 2026-11-09). Taken once, before main, when no thread is pinned yet.
+   (host/hos_thread.c). Taken once, before main, when no thread is pinned yet.
    Also applied when a thread first registers here (CreateThread's thread_entry, or a std::thread in thread_self on its
    first GetCurrentThread call in SetThreadDescription / SetThreadPriority), so a thread made inside a pinned replay
    (ReplayPin in gpu/vk/vk_replay.cpp) starts with the process's affinity as on Windows rather than inheriting the pin.

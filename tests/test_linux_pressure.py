@@ -47,7 +47,7 @@ def check_source():
     tex = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     mem = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
-    dev_doc = (ROOT / "docs/development.md").read_text(encoding="utf-8")
+    table = (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8")
 
     need("vk_texture.cpp", tex, ['#include "linux_pressure.h"', 'linux_pressure::avail_reserve(getenv("RX_VK_AVAIL_RESERVE_MB"))'])
     frame = block(tex, "void texture_frame(uint64_t completed)")
@@ -110,7 +110,8 @@ def check_source():
     need("vk_draw.cpp: build_graphics()", bg, ["program_modules_dropped(p)"])
     qp = block(draw, "bool quick_pipeline(PipeEntry& e,")
     need("vk_draw.cpp: quick_pipeline()", qp, ["program_modules_dropped(p)"])
-    need("docs/development.md", dev_doc, ["RX_VK_AVAIL_RESERVE_MB", "RX_VK_DROP_MODULES", "RX_VK_KEEP_MODULES"])
+    need("gpu/vk/switches.def (each switch's row is its documentation)", table,
+         ["SW(RX_VK_AVAIL_RESERVE_MB,", "SW(RX_VK_DROP_MODULES,", "SW(RX_VK_KEEP_MODULES,"])
     progcache = (ROOT / "gpu/vk/vk_progcache.cpp").read_text(encoding="utf-8")
     comp_gfx = block(progcache, "bool program_cache_complete_graphics(const Program& prog)")
     tail = comp_gfx[comp_gfx.index("std::lock_guard lk(light_mu);"):]

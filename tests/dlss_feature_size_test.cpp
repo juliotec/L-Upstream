@@ -55,7 +55,7 @@ uint64_t texture_frame_no() { return frame; }
 unsigned preset = 11;
 unsigned wanted_preset() { return preset; }
 void logf(const char*, ...) {}
-void note_work() {}
+void note_other_work() {}   // (vk_work.h: NGX's own commands, counted as other work)
 void temporal_later(std::function<void()> f) { f(); }
 void NVSDK_NGX_VULKAN_ReleaseFeature(NVSDK_NGX_Handle*) {}
 void NVSDK_NGX_Parameter_SetUI(void*, const char*, unsigned) {}

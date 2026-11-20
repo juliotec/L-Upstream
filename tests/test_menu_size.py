@@ -14,6 +14,7 @@ import sys
 import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402
+from menu_model_fixture import menu_text  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
@@ -29,7 +30,7 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     ui = (ROOT / "gpu/vk/vk_ui.h").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     header = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
 
     check("int menu_size = 2;" in header, "Menu size is not Medium by default")

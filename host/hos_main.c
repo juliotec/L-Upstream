@@ -26,10 +26,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef LONGSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
-#define LONGSHOT_VERSION "unknown"
+const char *hos_version(void);   /* (host/version.c: the one file nx2/build.py gives the version to) */
+#ifndef LONGSHOT_VERSION   /* (a test that cuts a piece of this file out may give its own) */
+#define LONGSHOT_VERSION hos_version()
 #endif
-const char *hos_version(void) { return LONGSHOT_VERSION; }   /* (discord_rpc.c's status) */
 
 #if defined(_WIN32) || defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
@@ -210,7 +210,7 @@ static int reserve_guest(void) {
                     warned = 1;
                     const char *warning = "WARNING: /dev/udmabuf permission denied; GPU imports may be slower, especially on AMD/RADV. "
                         "Ask your administrator for access via its device group or a device-specific udev rule "
-                        "(see README, On Linux). Do not run the game as root.";
+                        "(see https://longshot.magicbean.dev/settings/advanced/, udmabuf). Do not run the game as root.";
                     if (startup_stderr >= 0) dprintf(startup_stderr, "%s (%s)\n", warning, strerror(err));
                     hos_log("%s (%s)", warning, strerror(err));
                 }
@@ -218,7 +218,7 @@ static int reserve_guest(void) {
             if (startup_stderr >= 0) close(startup_stderr), startup_stderr = -1;
             if (u >= 0) {
                 close(u);
-                /* (issue 1135) usable whatever size_limit_mb says: the renderer reads the limit itself and takes udmabuf's
+                /* usable whatever size_limit_mb says: the renderer reads the limit itself and takes udmabuf's
                    default, 64 MB, when it can't (gpu/vk/vk_memory.cpp import_dma_buf), and a limit too small only makes more
                    dma-bufs. A Flatpak's or Steam's container shows /dev/udmabuf but not /sys/module */
                 FILE *f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r");
@@ -252,9 +252,9 @@ static int reserve_guest(void) {
     if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
         return 0;
-    /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
+    /* no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
-       next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
+       next submission: ~250 ms a submit on RADV while the GPU sits idle. HOS_THP=1: allowed */
     if (!env_on("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
 #ifdef __linux__
     /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
@@ -1153,7 +1153,7 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         release_link(c);
     }
     *c = saved;
-    /* (issues 2217, 2588) A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
+    /* A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
        Only clear it once the event manager takes the request; the destination may hide its own minimap.
        Use the game's Bool setter (mgr, value, hash): it queues the change for the live value AND the save's copy.
        Writing only the live byte restores the HUD until the next load, but saves keep the old hidden value. */
@@ -1906,7 +1906,7 @@ float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
 volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
 volatile uint32_t hos_wide_keep_mask = 0xf;   /* (nx2/oot_wide.py KEEP_VTABLES: the screens that keep the whole picture, a bit each; MkwVkHost.wide_menus) */
-/* (issues 1241, 2838) Swap can keep a small Linux PC from running out of backing storage without keeping it responsive.
+/* Swap can keep a small Linux PC from running out of backing storage without keeping it responsive.
    Warn below the existing 10 GiB floor in physical RAM there too; this is not a promise that 10 GiB is enough.
    The game starts anyway, and headless runs only log the warning. Windows keeps its commit-limit check. */
 #define HOS_MEMORY_NEEDED_MB 10240ull
@@ -1972,7 +1972,7 @@ static void driver_env_log(void) {
 }
 #ifdef _WIN32
 /* (longshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
-   PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
+   PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps */
 __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
@@ -2265,7 +2265,7 @@ static int game_main(int argc, char **argv) {
             const double r = hos_wide_clamp(want);
             /* (the height kept, the width at the screen's ratio, at most hos_wide_max_px() pixels (5120 x 2160's, a 21:9 screen's
                native at the 4K output) with the shape kept: host/hos_wide_size.h, which the Insert menu's Output and Render
-               resolution rows share; issue 1031) */
+               resolution rows share) */
             unsigned ow, oh;
             hos_wide_size(output_h, r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
@@ -2288,6 +2288,8 @@ static int game_main(int argc, char **argv) {
 #endif
     void hos_mods_init(const char *image_path);
     hos_mods_init(image);   /* mods.c: <exe folder>\mods (RomFS files) */
+    void hos_cheats_init(void);
+    hos_cheats_init();   /* (hookshot) cheats.c: the cheats of the mods that are on */
 
     Ctx *c = hos_boot_main_thread(hos_main_stack_size);
     uint64_t sp = c->x[31];
@@ -2321,6 +2323,9 @@ static int game_main(int argc, char **argv) {
         call_guest(c, hos_module_init[i], sp, what);
     }
     call_guest(c, hos_entry_nnMain, sp, "nnMain");
+    /* (longshot) the game is over: RenHDrum's backends stop and let go of the pads (host/rumble_renhdrum.c) */
+    void hos_sdl_vibration_shutdown(void);
+    hos_sdl_vibration_shutdown();
     hos_log("nnMain returned");
     void hos_crash_clean_end(void);
     hos_crash_clean_end();

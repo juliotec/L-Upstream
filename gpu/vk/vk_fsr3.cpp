@@ -878,7 +878,7 @@ bool chain_hdr() {
     static const bool enabled = upscaler_rows::psychov35_compatibility(env_switch("RX_VK_PSYCHOV35_DLSS"));
     return enabled && scene_tonemap_on();
 }
-// (fsr_depth: its passes are built with FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH, scripts/fsr3_shaders.py; retry: an
+// (fsr_depth: its passes are built with FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH, scripts/shaders.py fsr3; retry: an
 // evaluation that fails (no room for its constants in the frame's stream) leaves that frame to the network, and the next one
 // tries again. Named, so a field added to TemporalEngine cannot shift these into another)
 const TemporalEngine kChainEngine{.name = "AMD FSR 3.1", .short_name = "FSR 3.1", .start = chain_start,

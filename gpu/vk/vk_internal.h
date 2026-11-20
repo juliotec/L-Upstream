@@ -37,16 +37,17 @@ void logf(const char* fmt, ...);
 // (longshot) A line at another level than info, as host/hos.h's hos_log_at: "[trace] " leads its text, after the host's thread tag
 enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };
 void logf_at(LogLevel level, const char* fmt, ...);
-void new_refused();                       // (vk_main.cpp, issue 1280: the renderer's new_handler)
+void new_refused();                       // (vk_main.cpp: the renderer's new_handler)
 void new_refuse_test(int64_t presents);   // (vk_main.cpp: HOS_TEST_ALLOC_REFUSE's allocation, at the replay's present)
 void queue_flush_locked();   // (vk_replay.cpp, RX_VK_BATCH: held submits out; dev.present_mu held)
 void queue_flush();          // (the same, taking dev.present_mu)
+bool replay_flush_upload(VkCommandBuffer cur);   // (vk_replay.cpp: submits, waits on and re-begins the recording's upload command buffer)
 // (longshot) held submits out, then vkDeviceWaitIdle with the present queue's lock taken too (dev.present_mu held): the device's
 // every queue is synchronized by the host around it
 void device_wait_idle_locked();
 // (longshot) why the swapchain is SDR though the Insert menu's HDR is on (Device::hdr_sdr_why): no VK_EXT_swapchain_colorspace;
 // HDR off in Windows' display settings; HDR on there but the driver lists no HDR10 surface
-// (docs/common-issues.md); the display lists none and the system's setting is not known (Linux, or a Windows that doesn't say).
+// (docs/user/common-issues.md); the display lists none and the system's setting is not known (Linux, or a Windows that doesn't say).
 // hdr_sdr_count: how many, for the log's and the menu's line for each
 enum HdrSdrWhy : int { hdr_sdr_none, hdr_sdr_no_extension, hdr_sdr_os_off, hdr_sdr_driver, hdr_sdr_unknown, hdr_sdr_count };
 
@@ -140,26 +141,20 @@ struct Device {
     bool present_queue_supported = false;
     std::mutex present_queue_mu;
     uint32_t present_family = 0;   // (present_queue's family, the swapchain's images shared with it)
-    // (longshot) the presenter thread's own queue (vk_replay.cpp, RX_VK_PRESENT_THREAD=0: none): a second queue of the replay's
-    // family where it has one, else a queue of a compute family; no other thread submits or presents on it, so the presents never
-    // take the replay's lock. VK_NULL_HANDLE, or a family that cannot present to the window: the presents stay on the game's
-    // thread. Its lock is taken after present_queue_mu (device_wait_idle_locked), never before it
-    VkQueue presenter_queue = VK_NULL_HANDLE;
-    uint32_t presenter_family = 0;
-    bool presenter_supported = false;   // (its family presents to the window's surface: choose_present_queue)
+    // (longshot) the presenter thread's use of the swapchain (vk_replay.cpp presenter_loop): held over its present call, which it
+    // makes on the presents' own queue under that queue's lock (present_mu or present_queue_mu), so taken after both, never before
     std::mutex presenter_queue_mu;
     bool present_wait = false;   // (VK_KHR_present_id + VK_KHR_present_wait enabled: the presenter waits for each present to be shown)
     VkPresentModeKHR swap_mode = VK_PRESENT_MODE_FIFO_KHR;   // (the swapchain's present mode, as made)
 };
 extern Device dev;
 
-/// (longshot) Windows Intel's compiler (igvk64, UHD and Arc) faults when two threads hand it shaders at once. An Arc
-/// A750 froze the PC on four compute pipelines (issue 496). An Intel UHD on Windows read address 0x170 inside igvk64
-/// during the first scene's compiles (two frames in longshot_vk.dll, and no "driver faulted compiling" line, so the
-/// call was not inside guarded_graphics). One thread enters vkCreateShaderModule and vkCreate*Pipelines.
+/// (longshot) Windows Intel's compiler (igvk64, UHD and Arc) faults when two threads hand it shaders at once (four compute
+/// pipelines can freeze the PC; on a UHD, a read of address 0x170 inside igvk64 during the first scene's compiles, outside
+/// guarded_graphics). One thread enters vkCreateShaderModule and vkCreate*Pipelines.
 /// Other vendors, and Intel on other systems, are not held. The Intel shader compiles row's Side by side, its Auto on
 /// the Arc B-series (intel_compiles.h: where side by side was measured), or RX_VK_NO_INTEL_SERIAL=1 over it: side by
-/// side, as before.
+/// side.
 /// ask: a create that compiles nothing (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT), on the replay thread so a
 /// draw or dispatch never waits for a compile. It never waits here either: while a worker holds the gate, busy is set and
 /// the caller answers VK_PIPELINE_COMPILE_REQUIRED (cold) without asking the driver.
@@ -259,9 +254,7 @@ uint64_t gpu_bind_stamp();
 /// Around each submission's recording: mirrors wanted since the last one are made (begin), what the GPU wrote into
 /// mirrors goes back to guest memory (end, outside any pass, before the closing barrier)
 void memory_begin_submission();
-void memory_sync_mirrors_before_segments();   // (longshot: vk_memory.cpp)
 bool probe_on();                                // (longshot: vk_draw.cpp, RX_VK_PROBE)
-bool probe_serial();
 void probe_dump_all(const char* why);
 void probe_log(uint64_t frame);
 void memory_end_submission(VkCommandBuffer cmd, uint64_t part = 0);   // (part: the recording cmd is, for the pages it writes back)
@@ -278,29 +271,6 @@ void coopmat_init();   // vk_coopmat.cpp (once the device is made)
 /// pool or texture), RX_VK_CHECKPOINTS
 void checkpoint_mark(VkCommandBuffer cmd, uint64_t key, char kind);
 
-/// Parallel replay (vk_replay.cpp, RX_VK_PARALLEL): while segments of a submission are recorded on several threads,
-/// what they share (textures and their uploads, programs, pipelines, samplers, pools and memory stamps) is used under
-/// one lock; the per-draw caches are each thread's own
-extern std::atomic<bool> par_active;
-extern std::atomic<int64_t> par_lock_wait_ns, par_locks;   // (contention: the time threads waited for it)
-std::recursive_mutex& par_mutex();
-int64_t par_now_ns();
-struct ParLock {
-    bool on;
-    explicit ParLock(bool want = true) : on(want && par_active.load(std::memory_order_relaxed)) {
-        if (!on) return;
-        par_locks.fetch_add(1, std::memory_order_relaxed);
-        if (par_mutex().try_lock()) return;
-        const int64_t t0 = par_now_ns();
-        par_mutex().lock();
-        par_lock_wait_ns.fetch_add(par_now_ns() - t0, std::memory_order_relaxed);
-    }
-    ~ParLock() {
-        if (on) par_mutex().unlock();
-    }
-    ParLock(const ParLock&) = delete;
-    ParLock& operator=(const ParLock&) = delete;
-};
 void memory_pool_created(uint64_t gpu, uint64_t size);
 /// Whether guest memory in [lo, hi) is in an imported pool, live or retired (the GPU may read or write it)
 int memory_guest_imported(uint64_t lo, uint64_t hi);
@@ -370,7 +340,7 @@ void memory_drop_shadow(uint64_t guest, uint64_t size);   // (a write the captur
 /// when any write-back ever did
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
 bool memory_writeback_ever(uint64_t guest, uint64_t size);   // (longshot) its *ever without a lock: invalidate_quick
-void memory_note_readback(uint64_t guest, uint64_t size);   // (PR 430) a CPU read of GPU results: see memory_rb_refresh
+void memory_note_readback(uint64_t guest, uint64_t size);   // a CPU read of GPU results: see memory_rb_refresh
 bool texture_storage_any(uint64_t gpu, uint64_t size);   // (vk_replay.cpp) a texture the game made has its storage there
 bool replay_render_thread_on();   // (vk_replay.cpp) the replay runs on the render thread (RX_VK_ASYNC, Threaded rendering)
 // (longshot, diagnostics) RX_VK_LOG_RB_WRITERS=1: what wrote the pages a readback waits for. The replay says what it is recording
@@ -418,7 +388,6 @@ void memory_note_cpu_access(uint64_t guest, uint64_t size, bool write);   // (an
 bool memory_wb_followed(uint64_t lo, uint64_t hi);   // (whether a large binding wb_learn.h follows overlaps [lo, hi))
 bool memory_rb_refresh(VkCommandBuffer up);
 void memory_rb_recording_begun();   // (longshot) at a recording's start, on its thread: the submission it joins (memory_rb_refresh)
-void memory_rb_segments_begin(uint64_t base, uint64_t n);   // (and a parallel replay's segments: their order, base on)
 /// (longshot) a range a program may write in the mirror that is not bound as written (not copied back): memory_rb_refresh
 void memory_note_gpu_write(uint64_t gpu, uint64_t size);
 /// (longshot, RX_VK_UB_SNAPSHOT's guard, vk_memory.cpp) the GPU writes this thread's recordings have noted that guest memory
@@ -654,7 +623,7 @@ struct ProfThread {
     int open, k;     // (the PROF_HOT scopes open, and the outermost one's weight: 0 not timed)
     int64_t exact;   // (the nanoseconds PROF / PROF_EXACT timed on this thread so far)
 };
-inline thread_local ProfThread prof_t;
+inline constinit thread_local ProfThread prof_t{};
 struct ProfScope {
     int phase;   // (-1: PROF_EXACT, no phase of its own)
     int64_t t0, x0;

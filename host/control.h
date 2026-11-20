@@ -1,4 +1,4 @@
-/* (longshot) The control bridge (host/control.c, docs/control.md): HOS_CONTROL=<socket path> lets a tool on the same PC
+/* (longshot) The control bridge (host/control.c, docs/dev/reference/control-bridge.md): HOS_CONTROL=<socket path> lets a tool on the same PC
    drive the running game over a local socket, one JSON request a line. Off unless that is set. */
 #pragma once
 

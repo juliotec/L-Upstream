@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render the maintained menu without a game, Vulkan device, window or private assets.
 Linux capture helper; optional SDL2/libpng/C++/Vulkan-header dependencies are not used
-by documentation builds. See docs/images/guide/README.md for the capture contract.
+by documentation builds. See docs/user/images/guide/README.md for the capture contract.
 """
 import argparse
 import hashlib

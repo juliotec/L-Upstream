@@ -17,10 +17,9 @@ after the writer. Cut from the source and run:
     not done; the whole submission otherwise (writer not known, only mirrored pages pending, the part not found); none for a
     range RX_VK_READBACK_LATE reads late;
   - unset: on without mirrors and off with them; =0 off; asked for, on with mirrors too;
-  - with RX_VK_PARALLEL=2 or more the switch is left off (a segment's part never reaches the recordings' timeline);
   - the wiring: note_direct_write notes every in-place write; the early wait comes before the choice of the usual wait, which
     it replaces only when it waited; the replay ends a part after an op that asked, at least RX_VK_READBACK_EARLY_GAP draws
-    into it, maybe_split still ends one every RX_VK_CHUNK draws, and a draw of a program that writes storage buffers builds
+    into it, maybe_split still ends one where the game ends its render pass (from RX_VK_PART_MIN draws, at RX_VK_PART_MAX at the latest), and a draw of a program that writes storage buffers builds
     its descriptors;
   - RX_VK_LOG_EARLY_CHECK (a diagnostic): words changed after a read let go early, by whether the CPU wrote a page they are on
     (ec_compare, a word across a page's end included), the CPU's pages by interval and the second full collection begun after a
@@ -84,6 +83,7 @@ bool memory_readback_early_active();
 namespace {
 /* PAGES */
 std::atomic<uint64_t> mem_rec_part{0}, mem_in_place_part{0};
+/* REC_PART */
 }  // namespace
 /* WRITERS */
 static int failures;
@@ -616,8 +616,8 @@ def main():
             raise SystemExit("FAIL: %s finishes a recording without closing its RX_VK_LOG_RB_WRITERS span" % where)
     if replay.count("finish_recording(") != replay.count("rb_span_close(), finish_recording(") + 2:   # (+ its declaration, definition)
         raise SystemExit("FAIL: a recording is finished without closing its RX_VK_LOG_RB_WRITERS span")
-    if "++part_work < every" not in block(replay, "void maybe_split(VkCommandBuffer& cmd) {"):
-        raise SystemExit("FAIL: maybe_split no longer ends a part by its count")
+    if "++part_work < need" not in block(replay, "void maybe_split(VkCommandBuffer& cmd) {"):
+        raise SystemExit("FAIL: maybe_split no longer ends a part only from RX_VK_PART_MIN draws on (RX_VK_PART_FIRST for a first part)")
     # (the end after a writer: at once, or at the next plain draw where a part ends only there, RX_VK_SPLIT_BEFORE_DRAW;
     # tests/test_early_split_before_draw.py runs it)
     ends = block(replay, "void early_split(VkCommandBuffer& cmd) {")
@@ -632,10 +632,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="readback-early-") as tmp:
         tmp = Path(tmp)
         mem_src, mem_exe = tmp / "memory.cpp", tmp / ("memory.exe" if os.name == "nt" else "memory")
-        mem_src.write_text(MEMORY.replace("/* PAGES */", pages).replace("/* WRITERS */", writers), encoding="utf-8")
+        rec_part = between(memory, "std::atomic<uint64_t> mem_rec_part{0}, mem_in_place_part{0};", "void note_in_place_read(")
+        mem_src.write_text(MEMORY.replace("/* PAGES */", pages).replace("/* REC_PART */", rec_part)
+                           .replace("/* WRITERS */", writers), encoding="utf-8")
         env_on = dict(os.environ, RX_VK_READBACK_EARLY="1")
         env_unset = {k: v for k, v in os.environ.items()
-                     if k not in ("RX_VK_READBACK_EARLY", "RX_VK_LOG_RB_WRITERS", "TEST_EARLY_MIRRORS", "RX_VK_PARALLEL")}
+                     if k not in ("RX_VK_READBACK_EARLY", "RX_VK_LOG_RB_WRITERS", "TEST_EARLY_MIRRORS")}
         env_off = dict(env_unset, RX_VK_READBACK_EARLY="0")
         run(a.cxx, mem_src, mem_exe, ["on"], env_on)
         for args, env, what in ((["off"], env_off, "with the switch off (=0)"),
@@ -646,11 +648,6 @@ def main():
             print(r.stdout, end="")
             if r.returncode:
                 raise SystemExit("FAIL: %s\n%s" % (what, r.stderr))
-        env_par = dict(env_on, RX_VK_PARALLEL="3")   # (a parallel replay's segments: their parts never reach the timeline)
-        r = subprocess.run([str(mem_exe), "off"], capture_output=True, text=True, timeout=60, env=env_par)
-        print(r.stdout, end="")
-        if r.returncode:
-            raise SystemExit("FAIL: with RX_VK_PARALLEL=3 the switch is not left off\n" + r.stderr)
         choice_src, choice_exe = tmp / "choice.cpp", tmp / ("choice.exe" if os.name == "nt" else "choice")
         choice_src.write_text(CHOICE.replace("/* EARLY */", early), encoding="utf-8")
         run(a.cxx, choice_src, choice_exe)

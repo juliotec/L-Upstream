@@ -22,6 +22,10 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_model_prelude, menu_model_member  , menu_text# noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -234,7 +238,8 @@ static struct { int steps = 0; bool went_down = false; } auto_tuning;   // (and 
 static std::string mic_key(const char* name) { return name; }
 static void mic_tell_host() {}
 static int rumble_step(int v) { return v; }
-struct Row { int tab; const char* name; int* value; int lo, hi; };
+struct Row { int tab; const char* name; int* value; int lo, hi; // MODEL_MEMBER
+};
 // INI_KEY
 // BIND_NAMES
 static Row rows[] = {{0, "Menu shortcut", &opts.menu_shortcut, 0, 2}};
@@ -299,7 +304,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
-    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
     # The public header pulls in C-only NVN assertions; use its real enums as test_pad_layout does.
     enums = [re.search(r"enum \{ " + first + r"\b.*?\};", api, re.S).group(0)
@@ -340,7 +345,7 @@ def main():
     fixture = FIXTURE.replace("// API_ENUMS", "\n".join(enums)).replace("// KEYBOARD_FIXTURE", keyboard)
     with tempfile.TemporaryDirectory(prefix="menu-keys-") as tmp:
         cpp, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture"
-        cpp.write_text(fixture, encoding="utf-8")
+        cpp.write_text(menu_model_prelude() + fixture.replace("// MODEL_MEMBER", menu_model_member()), encoding="utf-8")
         # (_CRT_SECURE_NO_WARNINGS: the MSVC CRT's fopen deprecation, as the game's own Windows build passes)
         subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(ROOT), str(cpp),
                         "-o", str(exe)], check=True)

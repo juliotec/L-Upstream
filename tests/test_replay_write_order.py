@@ -69,7 +69,6 @@ struct GuestPool { uint64_t lo = 0, hi = 0; };
 std::vector<GuestPool> guest_pools = {{0x10000, 0x20000}, {0x20000, 0x30000}, {0x38000, 0x40000}, {0x40000, 0x48000}};
 constexpr size_t kFailing = 3;
 std::mutex pools_mu;
-struct ParLock { explicit ParLock(bool = true) {} };
 const VkCommandBuffer kCb = (VkCommandBuffer)(uintptr_t)7;
 const VkBuffer kStream = (VkBuffer)(uintptr_t)0x900;
 VkBuffer pool_buffer(size_t i) { return (VkBuffer)(uintptr_t)(0x100 + i); }

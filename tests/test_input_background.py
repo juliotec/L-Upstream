@@ -21,6 +21,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from menu_model_fixture import menu_text  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402
 
@@ -43,7 +46,7 @@ def main():
     a = p.parse_args()
     hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
-    menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
+    menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
 
     read = block(hid, "static void read_input(")
     behind = read[read.index("if (!game_in_front()"):]   # (with or without PR 545's scripted-background test)
