@@ -3648,8 +3648,11 @@ std::map<uint64_t, uint64_t> vw;   // (storage start -> end of the GPU-written t
 // never taken off (page_marks.h: the order)
 PageMarks<(1ull << 39 >> 12), (1ull << 16)> vw_ever;
 bool flushable(const Texture& t) {
+    // (a DEPTH24 kept as D32_SFLOAT, vk_formats.cpp: read back and converted to 24-bit unorm in flush_finish)
+    const bool d24_as_d32 = t.nvn_format == NVN_FORMAT_DEPTH24 && t.format == VK_FORMAT_D32_SFLOAT &&
+                            t.aspect == VK_IMAGE_ASPECT_DEPTH_BIT;
     if (!t.guest_size || t.guest_size > kFlushMax || t.astc || t.bc || t.sparse || t.skip ||
-        t.samples != VK_SAMPLE_COUNT_1_BIT || t.aspect != VK_IMAGE_ASPECT_COLOR_BIT || t.bpb <= 0 || !t.image ||
+        t.samples != VK_SAMPLE_COUNT_1_BIT || (t.aspect != VK_IMAGE_ASPECT_COLOR_BIT && !d24_as_d32) || t.bpb <= 0 || !t.image ||
         (nvn_tex_is_linear(&t.d) && (t.levels != 1 || t.type == VK_IMAGE_TYPE_3D)))   // (linear: one level, rows)
         return false;
     int from = 0;
@@ -3799,7 +3802,8 @@ bool flush_record(Flush& f, VkCommandBuffer cmd = VK_NULL_HANDLE) {
         r.bufferOffset = p.at;
         r.bufferRowLength = p.g.tw * (uint32_t)t.block_w;
         r.bufferImageHeight = p.g.th * (uint32_t)t.block_h;
-        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, p.level, t.type == VK_IMAGE_TYPE_3D ? 0 : p.layer, 1};
+        r.imageSubresource = {t.aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                              p.level, t.type == VK_IMAGE_TYPE_3D ? 0 : p.layer, 1};
         r.imageExtent = {p.g.w, p.g.h, p.g.d};
         c.push_back(r);
     }
@@ -3835,6 +3839,20 @@ bool flush_finish(Flush& f, bool gpu_ok) {
     void* map = f.map;
     bool ok = f.ok && gpu_ok;
     if (ok) invalidate_mapped(f.alloc, total);
+    if (ok && t.nvn_format == NVN_FORMAT_DEPTH24 && t.format == VK_FORMAT_D32_SFLOAT) {
+        // (the floats back to the game's 24-bit unorm words, the inverse of upload's conversion; the top 8 bits, unused
+        // by DEPTH24, are zero)
+        for (const Part& p : parts) {
+            uint8_t* w = (uint8_t*)map + p.at;
+            for (uint64_t k = 0; k + 4 <= p.n; k += 4) {
+                float v;
+                std::memcpy(&v, w + k, 4);
+                v = v > 0.0f ? (v < 1.0f ? v : 1.0f) : 0.0f;   // (NaN to 0 too)
+                const uint32_t u = (uint32_t)(v * 16777215.0 + 0.5);   // (double: in float 1.0 rounds to 1 << 24)
+                std::memcpy(w + k, &u, 4);
+            }
+        }
+    }
     // (only_untouched: the memory as it is now, whatever the page generations know of it yet. The texels are staged
     // against this snapshot and go in at the end, compared with it word by word: publish below)
     std::vector<uint8_t> was, staged;
