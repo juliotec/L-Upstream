@@ -16,6 +16,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <utility>   // (std::exchange: framegen_idle)
 
 #include <cmath>
 
@@ -1023,6 +1024,11 @@ void note_maker(FgMaker m) {
     maker_at.store(now_ns(), std::memory_order_relaxed);
 }
 
+// (longshot) This present gave FSR 3.1 a frame (fsr3fi_frames, right before fsr3fi::generate): its own images were in use, whatever
+// came of it and whichever made frames were shown. framegen_idle takes it, and clears it for the next present: both on the replay
+// thread, framegen_record before framegen_idle in every present
+bool fsr_given = false;
+
 } // namespace
 
 int framegen_capped(int framegen, int dlss_most) {
@@ -1056,12 +1062,13 @@ bool framegen_on() {
 
 void framegen_idle(bool recorded) {
     using namespace framegen_idle_rule;
-    static uint32_t off = 0, fsr_off = 0;
+    static Counts counts;
     const bool on = framegen_on();
-    fsr_off = next_off(fsr_off, on && fsr3fi::frames_wanted(), recorded);
-    if (fsr_off >= kIdlePresents) fsr3fi::release();
-    off = next_off(off, on, recorded);
-    if (!release_due(off, fg.w != 0)) return;
+    // (FSR's own images by this present's own use of them, not by `recorded`: a set the built-in or DLSS-G made leaves them unused)
+    const bool fsr_used = std::exchange(fsr_given, false);
+    const Release due = step(counts, {on, on && fsr3fi::frames_wanted(), recorded, fsr_used, fg.w != 0});
+    if (due.fsr) fsr3fi::release();
+    if (!due.shared) return;
     {   // (as ensure_size: the display thread done with the sets, then every queue idle)
         std::unique_lock lk(fg.mu);
         fg.cv.wait(lk, [] { return fg.jobs.empty() && !fg.sets[0].busy && !fg.sets[1].busy && !fg.sets[2].busy; });
@@ -1089,7 +1096,7 @@ WideSides wide_sides() {
     // (KEEP_VTABLES 1 and 3: the pause / system menus and the loading fade, whose layout host/hos_wide_ui.c then places as the
     // HUD's. 0, the item wheel's background, and 2, the event fade, keep covering the whole picture)
     constexpr uint32_t kMenus = 0xa;
-    const float margin = host->wide_menus(opts.wide_menus ? 0xfu & ~kMenus : 0xfu);
+    const float margin = host->wide_menus(opts.wide_menus ? 0x1fu & ~kMenus : 0x1fu);
     extern std::atomic<int64_t> world_drawn_at;
     extern int64_t presents_now;
     extern std::atomic<int64_t> wheel_drawn_at;
@@ -1097,8 +1104,10 @@ WideSides wide_sides() {
     // console: its sides are left as the game draws them)
     const bool no_world = presents_now - world_drawn_at.load(std::memory_order_relaxed) > 3 &&
                           presents_now - wheel_drawn_at.load(std::memory_order_relaxed) > 3;
-    wide_possible.store(opts.wide_menus && margin > 0.0f, std::memory_order_relaxed);
-    if (opts.wide_menus && margin > 0.0f && no_world) w.x0 = margin, w.side = opts.wide_menus;
+    // (3, Extended: the menus at their own size with their side panes at the screen's edges, host/hos_wide_ui.c: no sides of their own)
+    const bool centred = opts.wide_menus == 1 || opts.wide_menus == 2;
+    wide_possible.store(centred && margin > 0.0f, std::memory_order_relaxed);
+    if (centred && margin > 0.0f && no_world) w.x0 = margin, w.side = opts.wide_menus;
     static int told = 0;
     if (w.side != told) {   // (each change logged: a report of blurred sides in play says when they came and went)
         logf("vk: ultrawide menu sides %s at present %lld (the world last drawn at present %lld)", w.side ? "on" : "off",
@@ -1242,7 +1251,7 @@ VkImageView framegen_scaled_view() { return scale.output_view; }
 /// Native's scaled picture, else black).
 /// src is the SDR picture, expanded, or with pq the game's own HDR10 picture (Native); either graded by the HDR contrast row
 VkImage framegen_hdr(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh,
-                     bool pq) {
+                     bool pq, int colour_vision) {
     if (!src || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     const PresentSourceRect source = present_source_rect(sw, sh, crop);
     if (!source.w || !source.h) return VK_NULL_HANDLE;
@@ -1274,10 +1283,10 @@ VkImage framegen_hdr(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     const float x0 = source.x / (float)sw, y0 = source.y / (float)sh;
     const float x1 = (source.x + source.w) / (float)sw, y1 = (source.y + source.h) / (float)sh;
-    // (hdr_encode.comp's push constants: the crop, paper white, peak, knee, mode, contrast, exposure (1: none), two pads)
-    const struct { float uv[4]; float white, peak, knee, mode, contrast, exposure, pad0, pad1; } pc{
+    // (hdr_encode.comp's push constants: the crop, paper white, peak, knee, mode, contrast, exposure (1: none), colour vision mode, pad)
+    const struct { float uv[4]; float white, peak, knee, mode, contrast, exposure, colour_vision, pad1; } pc{
         {x0, y0, x1, y1}, (float)std::clamp(opts.hdr_white, 80, 500), (float)std::clamp(opts.hdr_peak, 400, 10000), 0.6f,
-        pq ? 1.0f : 0.0f, std::clamp(opts.hdr_contrast, 50, 200) / 100.0f, 1.0f, 0.0f, 0.0f};
+        pq ? 1.0f : 0.0f, std::clamp(opts.hdr_contrast, 50, 200) / 100.0f, 1.0f, (float)colour_vision, 0.0f};
     pass(cmd, hdr.pipe, {{src, scale.linear}, {hdr.out.view, VK_NULL_HANDLE}}, dw, dh, &pc, sizeof pc);
     return hdr.out.image;
 }
@@ -1382,7 +1391,10 @@ bool hud_layer_wanted() {
     }();
     return on;
 }
-bool hudless_wanted() {
+bool hudless_wanted(bool native_pq) {
+    // The game captures the HUD's linear target before its HDR encode. Treating that colour as PQ
+    // corrupts both the HUD-less input and the learned layer. Use the mask with the game's PQ present.
+    if (native_pq) return false;
     static const bool on = [] {
         const char* e = getenv("RX_VK_FSR_FG_HUDLESS");
         return !(e && *e && atoi(e) == 0);
@@ -1393,7 +1405,7 @@ bool hudless_wanted() {
 /// The HUD layer of this present (hud.layer, shaders/fg_hud_layer.comp), from this frame's pictures and the frame before's:
 /// how see-through the HUD is where it is known. False: none (the HUD laid over the made frames whole, as presented)
 bool hud_layer(VkCommandBuffer cmd, int x0, int y0, uint32_t w, uint32_t h) {
-    if (hud.layer_failed || !hud_layer_wanted() || !hudless_wanted()) return false;
+    if (hud.layer_failed || !hud_layer_wanted()) return false;
     const VkDescriptorType S = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, I = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     if (!hud.fit_pipe.pipe && (!make_pipe(hud.fit_pipe, BUILTIN_SPV_ARGS(FG_HUD_LAYER_COMP_SPV), {S, S, S, S, I, I}, 20) ||
                                !make_pipe(hud.over_pipe, BUILTIN_SPV_ARGS(FG_HUD_COMPOSITE_COMP_SPV), {I, S, S}, 12))) {
@@ -1477,9 +1489,9 @@ bool hud_source(VkCommandBuffer cmd, int cur, uint32_t sw, uint32_t sh, int x0, 
         logf("vk: fsr3fi: the HUD marked for it: what the game drew over its picture after the upscale (%ux%u, format %d)",
              sw, sh, (int)hud.format);
     }
-    hud.layered = hud_layer(cmd, x0, y0, w, h);
-    // (this frame's pictures are the next one's frame before; the next copies go into the other pair)
-    hud.prev = true;
+    hud.layered = hudless_wanted(pq) && hud_layer(cmd, x0, y0, w, h);
+    // (a fit uses the preceding pair only if its layer ran; a Native HDR capture must not feed the next sRGB fit)
+    hud.prev = hud.layered;
     hud.k ^= 1;
     hud.marked++;
     return hud.ready = true;
@@ -1540,7 +1552,7 @@ int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32
     fsr3fi::Inputs in;
     in.color = fg.frames[cur].view;
     in.color_image = fg.frames[cur].image;
-    const bool hudless = hudless_wanted();
+    const bool hudless = hudless_wanted(native_pq);
     // (the HUD layer: FSR 3.1 given the HUD-less colour as its present too, so it lays nothing over the made frames, and the
     // HUD goes over them below by how see-through it is)
     const bool layered = hud.ready && hudless && hud.layered;
@@ -1562,6 +1574,8 @@ int fsr3fi_frames(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32
     in.frame_time_ms = f.frame_ms;
     in.reset = f.reset;
     in.sequence = sequence;
+    // (its images in use this present from here, whatever generate makes of it: a reset, its history alone, none made)
+    fsr_given = true;
     if (count <= 0) return (void)fsr3fi::generate(cmd, in, t, 0), 0;   // (its history alone)
     if ((int)fsr3fi::generate(cmd, in, t, (uint32_t)count) != count) return 0;
     const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},

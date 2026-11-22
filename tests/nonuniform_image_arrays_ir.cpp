@@ -67,6 +67,7 @@ struct {
                  shaderDenormPreserveFloat32 = 1, shaderDenormFlushToZeroFloat32 = 1;
     } float_controls;
     VkShaderStageFlags subgroup_stages = 0xff;
+    bool mesh_shader = true;   // (native task and mesh shaders: translator_stamp counts their subgroup stages)
 } dev;
 
 #include "nonuniform_profile.inc"   // (storage_binding_align, make_profile, profile(), stamp_section and STAMP_SECTION)

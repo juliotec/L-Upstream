@@ -35,23 +35,23 @@ def main():
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
     main_cpp = (vk / "vk_main.cpp").read_text(encoding="utf-8")
 
-    out = block(replay, "static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
+    out = block(replay, "static bool present_out(uint32_t index, std::unique_lock<decltype(dev.present_mu)>& qk, OutputTrialSource trial, bool preview_path) {")
     hand = out[: out.index("present_hand_off(")]
-    need("if (present_copy_done && present_thread_on()) {" in hand, "a present is handed over from frame generation")
+    need("const bool hand_off = present_copy_done && present_thread_on();" in hand and "if (hand_off) {" in hand, "a present is handed over from frame generation")
     # (NVIDIA Reflex: its present id goes with the present; the game's thread lets go of the present marker, the presenter
     # presents with that id and marks the present's end)
     need("static_cast<const VkPresentIdKHR*>(pi.pNext)->pPresentIds[0]" in hand and
          "if (reflex_id) reflex_present_handed_off();" in hand,
          "with NVIDIA Reflex the present's id is not handed over with it, or the game's thread keeps its present marker")
-    need("present_hand_off(index, present_copy_done, reflex_id);" in out, "the present is handed over without its Reflex id")
+    need("present_hand_off(index, present_copy_done, reflex_id, frame);" in out, "the present is handed over without its Reflex id")
     need("qk.unlock();" in hand, "the queue's lock is held while the game's thread hands a present over")
     rest = out[out.index("present_hand_off("):]
     need("qk.unlock();\n        present_thread_drain();\n        qk.lock();" in rest and
          rest.index("present_thread_drain();") < rest.index("vkQueuePresentKHR"),
          "a present made directly may go out before the one handed over, or waits for it with the queue's lock held")
 
-    image = block(replay, "void present_image(")
-    need("present_copy_done = f.done;\n    present_out(index, qk);\n    present_copy_done = VK_NULL_HANDLE;" in image,
+    image = block(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
+    need("present_copy_done = f.done;\n    present_out(index, qk, trial, preview_path);\n    present_copy_done = VK_NULL_HANDLE;" in image,
          "present_image does not let its present (and only it) be handed over")
     for site in ("reflex_swapchain_stale() || hdr_changed || vsync_changed) {", "if (res == VK_ERROR_OUT_OF_DATE_KHR) {"):
         at = image[image.index(site):]
@@ -61,12 +61,12 @@ def main():
     need("present_out(p.index, qk);" in commit and "present_copy_done" not in commit,
          "frame generation's paced presents are handed over")
 
-    give = block(replay, "void present_hand_off(uint32_t index, VkFence done, uint64_t reflex_id) {")
+    give = block(replay, "void present_hand_off(uint32_t index, VkFence done, uint64_t reflex_id, OutputTrialFrame trial) {")
     idle = block(replay, "bool presenter_wait_idle(std::unique_lock<std::mutex>& lk, int limit_ms = 0) {")
     need("presenter.cv.wait(lk, idle);" in idle, "presenter_wait_idle does not wait for the presenter")
     need(give.index("presenter_wait_idle(lk);") < give.index("presenter.busy = true"),
          "a present is handed over before the one before is made")
-    need("presenter_wait_idle(lk, 5000)" in block(replay, "void present_thread_drain() {"), "present_thread_drain does not wait, or without a limit")
+    need("presenter_wait_idle(lk, 5000)" in block(replay, "bool present_thread_drain() {"), "present_thread_drain does not wait, or without a limit")
 
     loop = block(replay, "void presenter_loop() {")
     need("presenter.reflex_id = reflex_id;" in give and "const uint64_t reflex_id = presenter.reflex_id;" in loop,
@@ -112,8 +112,10 @@ def main():
     need(acq.index("present_thread_drain();") < acq.index("invalidate_lost_surface(res);"),
          "the acquire's lost surface is dropped with a present still out on the presenter")
     make = block(main_cpp, "bool create_swapchain(uint32_t width, uint32_t height) {")
-    need(make[make.index("{") + 1:].lstrip().startswith("present_thread_drain();"),
-         "create_swapchain does not wait for the presenter first")
+    first = next(l.strip() for l in make[make.index("{") + 1:].splitlines()
+                 if l.strip() and not l.strip().startswith("//"))   # (the comment lines name the why; the first statement is the pin)
+    need(first == "if (!swapchain_made_ready()) return false;",
+         "create_swapchain does not answer not-made while a present is in the making on the presenter thread")
     on = block(replay, "bool present_thread_on() {")
     need("getenv" not in on and "return true;" in on, "the presenter thread is not on on every PC")
     dev_make = block(main_cpp, "bool create_device() {")

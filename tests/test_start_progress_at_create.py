@@ -74,6 +74,8 @@ static Path precompile_built_path() { return {}; }
 static bool precompile_covers_notes() { return covered; }
 static bool env_on(const char* name) { return prepare_only && !std::strcmp(name, "LONGSHOT_PREPARE_ONLY"); }
 static bool notes_lost_by_driver() { return false; }
+struct StartNoteRefs {};   // (vk_draw.cpp: the start's kept references of the notes, let go when the load at create is not run)
+static StartNoteRefs start_note_refs_kept;
 static bool prepare_stopped() { return false; }
 static size_t program_cache_fallback_steps() { return steps_guess; }
 static void precompile_warm(Progress progress) {

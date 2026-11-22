@@ -7,12 +7,15 @@ Measurements section, the runtime's freshness against its base and pack, the pin
     python -I -B tests/test_dev_ab.py
 """
 import json
+import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -111,12 +114,32 @@ class Scenes(unittest.TestCase):
             ab.scene_of("nowhere")
 
     def test_options_keys_in_source(self):
-        with open(os.path.join(ROOT, "gpu", "vk", "vk_menu.cpp"), encoding="utf-8") as f:
-            menu = f.read()
-        for key, row in ((ab.SKIP_TITLE, '"Skip title screen", &opts.skip_title'), (ab.FRAMEGEN_OFF, '"Frame generation", &opts.framegen'),
-                         (ab.VSYNC_OFF, '"V-Sync", &opts.vsync')):
-            self.assertIn(row, menu, key)
-        self.assertIn('{"Auto", "On", "Off"}', menu)   # (vsync=2: Off)
+        """The rows the pinned options file sets, by the key and the value each menu module gives them"""
+        menu = os.path.join(ROOT, "gpu", "vk", "menu")
+        rows = {}
+        for name in sorted(os.listdir(menu)):
+            if name.endswith(".cpp"):
+                with open(os.path.join(menu, name), encoding="utf-8") as f:
+                    for m in re.finditer(r'\.row\(\{\.key = "(\w+)",\s*\.label = "([^"]+)"(.*?)\}', f.read(), re.S):
+                        rows[m.group(1)] = (m.group(2), m.group(3), name)
+        for (key, value), label, field in ((ab.SKIP_TITLE, "Skip title screen", "&opts.skip_title"),
+                                           (ab.FRAMEGEN_OFF, "Frame generation", "&opts.framegen"),
+                                           (ab.VSYNC_OFF, "V-Sync", "&opts.vsync")):
+            self.assertIn(key, rows)
+            self.assertEqual(rows[key][0], label)
+            self.assertRegex(rows[key][1], r'\.value\s*=\s*' + re.escape(field) + r'\s*,')
+        with open(os.path.join(menu, rows["vsync"][2]), encoding="utf-8") as f:
+            source = f.read()
+        self.assertRegex(rows["vsync"][1], r'\.text\s*=\s*\[\]\(int v\)\s*\{\s*return std::string\(tx_vsync\(v\)\);\s*$')
+        mapping = re.search(r'const char\* tx_vsync\(int v\)\s*\{\s*static const char\* const t\[\]\s*=\s*\{([^}]*)\};\s*return t\[std::clamp\(v,\s*0,\s*(\d+)\)\];', source)
+        self.assertIsNotNone(mapping)
+        labels = re.findall(r'"([^"]+)"', mapping.group(1))
+        self.assertLessEqual(ab.VSYNC_OFF[1], int(mapping.group(2)))
+        self.assertEqual(labels[ab.VSYNC_OFF[1]], "Off")
+        with open(os.path.join(ROOT, "gpu", "vk", "upscaler_rows.h"), encoding="utf-8") as f:
+            self.assertIn("kPercent[] = {0, 100, 75, 67,", f.read())   # (FIXED_RESOLUTION's 3: 67 %, Auto 0)
+        with open(os.path.join(menu, "upscaler.cpp"), encoding="utf-8") as f:
+            self.assertIn('.key = "resolution"', f.read())
 
 
 class Trace(unittest.TestCase):
@@ -220,6 +243,37 @@ class Facts(unittest.TestCase):
         self.assertEqual(p["allow"], ["frame_rate_cap", "upscaler"])
 
 
+class Timing(unittest.TestCase):
+    """Where a job's time goes: each run's phases, the job's medians"""
+    def test_lap(self):
+        with mock.patch.object(ab.time, "monotonic", side_effect=[10, 12, 15, 20, 21]):
+            clock = ab.new_clock()
+            ab.lap(clock, "start")
+            ab.lap(clock, "warm-up")
+            ab.lap(clock, "warm-up")
+            done = ab.lap(clock, None)
+        self.assertEqual(done, {"start": 2, "warm-up": 8})
+
+    def test_summary(self):
+        runs = [{"timing": {"start": 60.0, "title and load": 30.0, "warm-up": 20.0, "measured": 63.0, "stop": 5.0}},
+                {"timing": {"start": 70.0, "title and load": 32.0, "warm-up": 40.0, "measured": 63.0, "stop": 5.0}},
+                {"error": "title timeout", "timing": {"start": 300.0, "title and load": 300.0, "cleanup": 15.0}}]
+        t = ab.timing_summary(runs, 600.0)
+        self.assertEqual(t["job_s"], 600.0)
+        self.assertEqual(t["median_s"]["warm-up"], 30.0)
+        self.assertEqual(t["median_s"]["start"], 70.0)          # (the failed run counts: its time was spent too)
+        text = ab.timing_text(t)
+        self.assertIn("10.0 min through analysis (3 runs", text)
+        self.assertIn("warm-up 30 s", text)
+        self.assertIn("cleanup 15 s", text)
+        self.assertEqual(t["median_s"]["title and load"], 32.0)
+
+    def test_batch_and_preparation(self):
+        t = ab.timing_summary([{"timing": {"copy and analysis": 10.0}}], 600.0, 240.0, 350.0)
+        self.assertIn("preparation 4.0 min, run batch 5.8 min", ab.timing_text(t))
+        self.assertIn("copy and analysis 10 s", ab.timing_text(t))
+
+
 class WriteUp(unittest.TestCase):
     def test_verdict(self):
         self.assertEqual(ab.verdict([60, 61, 62], [65, 66, 67])[0], "gain")
@@ -227,6 +281,9 @@ class WriteUp(unittest.TestCase):
         kind, text = ab.verdict([60, 61, 62], [61.5, 62.5, 63])
         self.assertEqual(kind, "within spread")
         self.assertIn("within the runs' spread", text)
+        kind, text = ab.verdict([60], [66])   # (one run a side: no spread to tell a gain from noise)
+        self.assertEqual(kind, "too few runs")
+        self.assertIn("one run a side cannot tell", text)
 
     def test_measurements(self):
         p = plan()
@@ -243,11 +300,19 @@ class WriteUp(unittest.TestCase):
         text = ab.measurements(p, res)
         self.assertTrue(text.startswith("**Verdict:** faster:"))
         self.assertIn("**Setup:** Linux 7, RX 580; Market", text)
+        self.assertIn("(window 1280x720)", text)
+        runs[0]["headless"] = True
+        self.assertIn("(headless, window 1280x720)", ab.setup_line(p, res))
         self.assertIn("| | Before: main @ 1a2b3c4d | After: this PR @ 9f8e7d6c | Δ |", text)
         self.assertIn("60.0 / 61.0 (median 60.5)", text)
         self.assertIn("A1: 100 frames in 60 s, 60.0 fps", text)
         self.assertIn("vk: switches set (1)", text)
+        self.assertIn("| frames of 50 ms or more (median) | 0 | 0 | +0 |", text)
+        self.assertIn("**Spread:** observed fps ranges: A 60.0 to 61.0; B 66.0 to 67.0", text)
+        one = dict(res, runs=runs[:2], verdict=ab.verdict([60], [66]))
+        self.assertIn("**Spread:** fewer than 2 runs", ab.measurements(p, one))
         self.assertIn("FAILED: boom", ab.run_line({"side": "B", "k": 2, "error": "boom"}))
+        self.assertNotIn("CPU (% of a core", text)
 
     def write_up(self, p, version="v0.9.1-12-g7afe6ae1"):
         runs = []
@@ -275,6 +340,24 @@ class WriteUp(unittest.TestCase):
         for what, text in (("change", change), ("--dirty", self.write_up(dirty)), ("switch", switch)):
             self.assertEqual(check_pr_description.measurement_problems(text, "perf"), [], what)
 
+    def test_frames_of_50_ms(self):
+        st = ab.frame_stats([16.0] * 97 + [50.0, 70.0, 49.9])
+        self.assertEqual(st["n50"], 2)
+
+    def test_spread(self):
+        runs = [{"side": side, "stats": {"fps": fps}} for side, fps in
+                (("A", 60), ("A", 60), ("B", 70), ("B", 70))]
+        text = ab.spread_line({"runs": runs})
+        self.assertIn("A 60.0 to 60.0; B 70.0 to 70.0", text)
+        self.assertIn("do not predict", text)
+
+    def test_in_run_hitches_per_minute(self):
+        p = plan("in-run", "switch")
+        sides = {str(s): {"fps": 60, "mean_ms": 16, "median_ms": 16, "p99_ms": 50} for s in (0, 1)}
+        res = {"ran": {}, "pooled": {"sides": sides}, "runs": [{"periods": [
+            {"side": 0, "ms": [50, 50]}, {"side": 1, "ms": [50, 150]}]}]}
+        self.assertIn("| frames of 50 ms or more per minute | 1200.00 | 600.00 | -600.00 |", ab.table(p, res))
+
     def test_in_run_table_without_a_number(self):
         """The in-run table: a side missing a number leaves its Δ empty instead of failing"""
         p = plan("in-run", "switch")
@@ -295,9 +378,73 @@ class WriteUp(unittest.TestCase):
         self.assertIsNone(res["verdict"])
         self.assertTrue(res["problems"])
         runs[1]["ran"] = ran
-        self.assertEqual(ab.summarise(p, runs)["verdict"][0], "within spread")
+        self.assertEqual(ab.summarise(p, runs)["verdict"][0], "too few runs")   # (one run a side)
         runs[1]["error"] = "the game ended"
         self.assertIsNone(ab.summarise(p, runs)["verdict"])
+
+
+class CommandPath(unittest.TestCase):
+    def test_in_run_report_keeps_hitch_rates(self):
+        with tempfile.TemporaryDirectory() as d:
+            parser = argparse.ArgumentParser()
+            ab.add_commands(parser.add_subparsers())
+            args = parser.parse_args(["ab", "--env", "HOS_COLLECT_WIDE=0", "--runtime", d, "--runs", "1"])
+            ran = {"options": {}, "switches": {}, "version": "v"}
+            runs = [{"side": "AB", "k": 1, "ran": ran, "line": "AB1", "periods": [
+                {"side": 0, "ms": [50, 50]}, {"side": 1, "ms": [50, 150]}], "dropped": 0, "left_out": [0, 0]}]
+            sides = {str(s): {"fps": 60, "mean_ms": 16, "median_ms": 16, "p99_ms": 50} for s in (0, 1)}
+            def summary(plan, actual):
+                return {"runs": actual, "ran": ran, "pooled": {"sides": sides}, "verdict": ("within spread", "no difference")}
+            with mock.patch.object(ab.common, "dev_path", return_value=d), mock.patch.object(ab, "run_one", return_value=runs[0]), \
+                 mock.patch.object(ab, "summarise", side_effect=summary), mock.patch.object(ab, "pin_options"):
+                self.assertEqual(ab.cmd_ab(args), 0)
+            folder = os.path.join(d, "ab", os.listdir(os.path.join(d, "ab"))[0])
+            with open(os.path.join(folder, "measurements.md"), encoding="utf-8") as f:
+                self.assertIn("| frames of 50 ms or more per minute | 1200.00 | 600.00 | -600.00 |", f.read())
+            with open(os.path.join(folder, "results.json"), encoding="utf-8") as f:
+                self.assertNotIn("periods", json.load(f)["runs"][0])
+
+    def test_run_does_not_read_live_log(self):
+        import longshot_bridge
+        from tours import drive
+        with tempfile.TemporaryDirectory() as d:
+            p = plan()
+            p.update(folder=d, warmup=0, seconds=10)
+            p["scene"].update(hour=None, age=None, dest=None)
+            p["sides"]["A"]["runtime"] = d
+            pinned = os.path.join(d, "pinned")
+            log = os.path.join(d, "log")
+            with open(pinned, "w") as f:
+                f.write("")
+            with open(log, "w") as f:
+                f.write(LOG)
+            session = mock.Mock()
+            running = [True]
+            session.info.return_value = {"state": "running"}
+            def stop(**kwargs):
+                running[0] = False
+                return {"exit_code": 0, "log": log}
+            session.stop.side_effect = stop
+            session.log.side_effect = AssertionError("live log read")
+            game = mock.Mock()
+            game.status.return_value = {"map": 1, "fresh": True, "event": False, "loading": False}
+            game.must.side_effect = lambda name, **kw: {"options": []} if name == "option_get" else {}
+            rows = [{"at_ns": "0", "ms": "50"}, {"at_ns": "10000000000", "ms": "50"}]
+            real_open = open
+            real_copyfile = shutil.copyfile
+            def guarded_open(path, *args, **kwargs):
+                if os.fspath(path) == log and running[0]:
+                    raise AssertionError("live log read")
+                return real_open(path, *args, **kwargs)
+            with mock.patch.object(longshot_bridge, "start_session", return_value=session), mock.patch.object(drive, "Game", return_value=game), \
+                 mock.patch.object(ab.packs, "runtime_romfs", return_value=None), mock.patch.object(ab.time, "sleep"), \
+                 mock.patch.object(ab, "read_trace", side_effect=[[rows[0]], [rows[0]], rows]), mock.patch.object(ab, "settled", return_value=True), \
+                 mock.patch.object(ab.shutil, "copyfile") as copy, mock.patch("builtins.open", side_effect=guarded_open):
+                copy.side_effect = lambda src, dst: None if src.endswith(ab.TRACE) else real_copyfile(src, dst)
+                result = ab.run_one(p, "A", 1, pinned)
+            self.assertNotIn("error", result)
+            session.log.assert_not_called()
+            self.assertIn("copy and analysis", result["timing"])
 
 
 class Files(unittest.TestCase):
@@ -339,11 +486,30 @@ class Files(unittest.TestCase):
         ab.pin_options(mine, pinned, framegen=False, vsync=False)
         with open(pinned) as f:
             lines = f.read().split()
-        self.assertEqual(lines, ["upscaler=3", "vsync=2", "skip_title_screen=1", "frame_generation=0"])
+        self.assertEqual(lines, ["upscaler=3", "vsync=2", "skip_title_screen=1", "frame_generation=0", "resolution=3"])
         with open(mine) as f:
             self.assertEqual(f.read(), "upscaler=3\nvsync=1\n")   # (the player's file left alone)
         fresh = os.path.join(self.d, "fresh.ini")
         ab.pin_options(None, fresh, framegen=True, vsync=True)
+        with open(fresh) as f:
+            self.assertEqual(f.read().split(), ["skip_title_screen=1", "resolution=3"])
+
+    def test_pin_options_resolution(self):
+        # (Auto, the game's dynamic resolution, is pinned at 67 %; a player's own share is kept; --dynamic keeps Auto)
+        cases = (("resolution=0\n", False, "resolution=3"), ("resolution=4\n", False, "resolution=4"),
+                 ("upscaler=1\n", False, "resolution=3"), ("resolution=0\n", True, "resolution=0"))
+        for k, (text, dynamic, want) in enumerate(cases):
+            src = os.path.join(self.d, "src%d.ini" % k)
+            with open(src, "w") as f:
+                f.write(text)
+            out = os.path.join(self.d, "out%d.ini" % k)
+            ab.pin_options(src, out, framegen=True, vsync=True, dynamic=dynamic)
+            with open(out) as f:
+                got = [l for l in f.read().split() if l.startswith("resolution=")]
+            self.assertEqual(got, [want], text)
+        self.assertTrue(ab.dynamic_resolution(None))
+        fresh = os.path.join(self.d, "dyn.ini")
+        ab.pin_options(None, fresh, framegen=True, vsync=True, dynamic=True)
         with open(fresh) as f:
             self.assertEqual(f.read().split(), ["skip_title_screen=1"])
 

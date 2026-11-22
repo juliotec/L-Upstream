@@ -52,7 +52,7 @@ class MiseBuildTest(unittest.TestCase):
         # (a non-Linux setup goes on without the checks' Linux tools)
         self.assertIn("exit 0", tasks["test-deps"]["run"].split("fi", 1)[0])
         shown = sorted(n for n, t in tasks.items() if not t.get("hide"))
-        self.assertEqual(shown, ["build", "build-dev", "ci:smoke", "dev", "lint", "setup", "test", "test-changed", "tracy-tools"],
+        self.assertEqual(shown, ["build", "build-dev", "ci", "ci:smoke", "dev", "lint", "setup", "test", "test-changed", "tracy-tools"],
                          "a new task is one more thing to learn: fold it into one of these, or hide a helper")
 
     def test_windows_tooling_and_graceful_launcher(self):

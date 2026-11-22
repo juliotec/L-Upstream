@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
-from menu_model_fixture import menu_model_prelude, menu_model_member, menu_text  # noqa: E402
+from menu_model_fixture import menu_model_prelude, menu_text  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
@@ -46,6 +46,7 @@ def definition(text, name):
 FIXTURE = r"""
 #include "upscaler_rows.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -78,6 +79,7 @@ void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 void mic_chosen() {}
+std::atomic<int> grass_distance_now{0};   // (the Grass distance row's hook in set_row: the game thread's copy)
 int output_pick;
 int monitor_pick;
 bool output_forced() { return false; }
@@ -88,6 +90,9 @@ void menu_debug_rows(int, int) {}   // (the Debug rows that apply in play: vk_dr
 int temporal_resets = 0;
 void temporal_reset_failure() { ++temporal_resets; }
 void prompts_at_once(const Row&) {}
+struct Picture { unsigned w, h; };
+Picture picture_for(int) { return {}; }
+bool request_native_preview(Picture) { return false; }   // The Output resolution preview has its own fixture.
 int step_output_choice(int id, int dir) { return id + dir; }
 // (the Aspect ratio row moves the Output resolution to one of its shape's sizes, output_for_aspect: not what this checks)
 int output_for_aspect(int) { return opts.output_res; }

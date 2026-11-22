@@ -368,8 +368,10 @@ def check_code_prints():
     check("...the same with other comments and docstrings",
           prints(a=plain)["a"] == prints(a=plain.replace('"""doc"""', '"""other"""').replace("# c", "# d"))["a"])
     own = "import os\nME = os.path.abspath(__file__)\n"
-    check("a module that may open its own file is hashed whole", prints(a=own, b=plain)["a"] is None)
-    check("...and the others still by their code", prints(a=own, b=plain)["b"] is not None)
+    check("a module that may open its own file has every module hashed whole", set(prints(a=own, b=plain).values()) == {None})
+    # (oot_patches.py's __file__ is in MARKS_NOT_OUTPUT: it reads only its own text, so it alone is hashed whole)
+    check("a module whose own file is all it reads is hashed whole", prints(oot_patches=own, b=plain)["oot_patches"] is None)
+    check("...and the others still by their code", prints(oot_patches=own, b=plain)["b"] is not None)
     for mark in ("import inspect\n", "import linecache\n", "X = f.__doc__\n", "import sys\nX = sys._getframe().f_lineno\n",
                  "X = getattr(f, '__doc__')\n", "import traceback\n"):
         check("a module that may read source text or line numbers (%r) has every module hashed whole" % mark,
@@ -384,17 +386,18 @@ def check_code_prints():
     for mark in ("from inspect import getdoc\n", "from traceback import extract_stack\n"):
         check("a module importing from a source-reading module (%r) has every module hashed whole" % mark,
               set(prints(a=mark, b=plain).values()) == {None})
-    for use in ("P = __file__.replace('a.py', 'b.py')\n", "import os\nP = os.path.join(os.path.dirname(__file__), 'x')\n",
+    for use in ("P = __file__.replace('a.py', 'b.py')\n",
                 "import os\nP = os.path.dirname(os.path.dirname(os.path.abspath(__file__) + 'x'))\n",
                 "import os\nP = os.path.dirname(__file__ + '/../b')\n"):
         check("__file__ other than the sole argument of dirname() (%r) has every module hashed whole" % use,
               set(prints(a="import os\n" + use, b=plain).values()) == {None})
     for use in ("P = os.path.dirname(__file__)\n", "P = os.path.dirname(os.path.realpath(__file__))\n",
-                "from os.path import dirname\nP = dirname(__file__)\n"):
+                "from os.path import dirname\nP = dirname(__file__)\n", "P = os.path.join(os.path.dirname(__file__), 'x')\n"):
         check("a folder from dirname(__file__) (%r) keeps every module hashed by its code" % use,
               None not in prints(a="import os\n" + use, b=plain).values())
     allowed = make_game.MARKS_NOT_OUTPUT
     with mock.patch.dict(allowed, {"nx2/a.py": {"__doc__"}}):
+        make_game._CODE_PRINTS.clear()   # (its answers are kept by the files alone: MARKS_NOT_OUTPUT is fixed in a build)
         check("a module's MARKS_NOT_OUTPUT covers only its own marks: __doc__ allowed, inspect still hashes every module whole",
               set(prints(a="import inspect\nX = f.__doc__\n", b=plain).values()) == {None})
         check("...and with every mark it names allowed, the others are hashed by their code",

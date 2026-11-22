@@ -35,6 +35,7 @@
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/ir_opt/fragment_output_guard.h"
+#include "shader_recompiler/ir_opt/sim_turf_pool_pass.h"
 #include "shader_recompiler/ir_opt/scene_tonemap_pass.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -807,7 +808,9 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv, uint64_t program,
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
     VkShaderModule m = VK_NULL_HANDLE;
-    IntelDriverGate gate(busy != nullptr);   // (busy given: Intel's gate only tried, the dispatch's program_cache_complete_ask)
+    // (busy given: Intel's gate only tried, the dispatch's program_cache_complete_ask. A preparation thread's: side by side
+    // where intel_prepare_open, a module being no compute pipeline)
+    IntelDriverGate gate(busy != nullptr, true);
     if (gate.busy) {
         *busy = true;
         return VK_NULL_HANDLE;
@@ -844,8 +847,8 @@ namespace {
 uint64_t stage_storage_base(const NvnState& s, const Stage& st, uint32_t binding) {
     if (binding >= st.info.storage_buffers_descriptors.size()) return 0;
     const auto& d = st.info.storage_buffers_descriptors[binding];
-    return stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset) |
-           (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, d.cbuf_offset + 4) << 32;
+    const uint32_t off = Shader::SimTurfStorageOrig(d);   // (a private one: the address it stands for, sim_turf_pool_pass.h)
+    return stage_cbuf_word(s, st, d.cbuf_index, off) | (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, off + 4) << 32;
 }
 uint32_t stage_storage_word(uint64_t base, uint32_t offset) {
     uint32_t v = 0;
@@ -1330,6 +1333,24 @@ void mesh_nocull(Shader::IR::Program& program, uint64_t code_key) {
              made ? "off, every meshlet drawn" : "pattern not found, left as it is");
 }
 
+// Simulated turf's renderer-owned lists and runtime caps (ir_opt/sim_turf_pool_pass.h; vk_draw.cpp sim_turf_private_binding).
+// RX_VK_SIM_TURF_POOLS=0: the game's own lists and caps, as before (high simulated-turf demand can flicker)
+bool sim_turf_pools_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_SIM_TURF_POOLS");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+void sim_turf_pools(Shader::IR::Program& program, uint64_t code_key) {
+    if (!sim_turf_pools_on()) return;
+    const std::string what = Shader::Optimization::SimTurfPools(program, code_key);
+    if (what.empty()) return;
+    if (what.find("made larger") != std::string::npos) Shader::Optimization::DeadCodeEliminationPass(program);
+    static std::atomic<int> told{0};
+    if (told++ < 32) logf("vk: simulated turf: program %016llx: %s", (unsigned long long)code_key, what.c_str());
+}
+
 // (longshot) What the program cache's records are good for, as far as the translation goes: this translator (LONGSHOT_SHADER_STAMP,
 // nx2/build.py) and what it is told of the GPU and the environment. The cache's own format and I/O are vk_progcache.cpp's, outside
 // the stamp, with a version of their own (kProgramCacheFormat): a change to how the cache is read or scheduled no longer throws
@@ -1381,6 +1402,11 @@ uint64_t translator_stamp() {
 #endif
     };
     add(abi, sizeof abi);
+    // (longshot: and simulated turf's lists left as the game has them, RX_VK_SIM_TURF_POOLS=0: only then, so the default keeps one cache)
+    if (!sim_turf_pools_on()) {
+        const uint32_t no_sim_turf = 0x6e677270u;   // ("ngrp")
+        add(&no_sim_turf, sizeof no_sim_turf);
+    }
     // (and handle tables off, host_info: only then, so the GPUs that have them keep one cache)
     if (!handle_tables_on()) {
         const uint32_t no_tables = 0x6e687462u;   // ("nhtb")
@@ -1397,7 +1423,10 @@ uint64_t translator_stamp() {
                                // (and the software multiplies' form, vk_coopmat.cpp choose_software_form: 0 for the loop, as before)
                                (mma_software ? mma_software_form << 8 | (mma_software_form && mma_software_quad ? 1024u : 0u) : 0u) |
                                (mesh_fallback_pages ? 2048u : 0u) | (mesh_fallback_global_attributes ? 4096u : 0u) |
-                               (mesh_fallback_shared_warp ? 8192u : 0u) | (mesh_fallback_shared_warp_check ? 16384u : 0u);
+                               (mesh_fallback_shared_warp ? 8192u : 0u) | (mesh_fallback_shared_warp_check ? 16384u : 0u) |
+                               (mesh_fallback_strict_fmul ? 32768u : 0u) |
+                               (mma_wmma16 ? 65536u : 0u) | (mma_wmma16_fast ? 131072u : 0u) |
+                               (mma_wmma16 && mma_wmma16_fused ? 262144u : 0u) | (uint32_t)graphics_table_loads << 19;
         add(&flags, sizeof flags);
         add(mma_order_a.data(), sizeof(uint32_t) * mma_order_a.size());
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
@@ -1449,6 +1478,9 @@ uint64_t translator_stamp() {
     for (char** e = _environ; e && *e; e++) {
         const char* const eq = strchr(*e, '=');
         if (eq && switches::find_gone(std::string(*e, (size_t)(eq - *e)).c_str())) continue;
+        // (RX_VK_GP_TABLE: what it does is graphics_table_loads, in the flags above; by its name too, setting it to the default
+        // prepared every shader again)
+        if (!strncmp(*e, "RX_VK_GP_TABLE=", 15)) continue;
         for (const char* pre : {"RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_F16", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_MARKERS",
                                 "RX_VK_ALL_GLOBAL_PROGS", "RX_VK_MISS_LOG", "RX_VK_BLOCK_PROBE", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
@@ -1511,6 +1543,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
             } reset_table;
             auto t = translate(env, false);
             questions += env.texture_questions;
+            sim_turf_pools(t->program, p.key);
             Shader::RuntimeInfo rt{};
             dump_ir(p, "compute", t->program);   // (before the SPIR-V: the programs it fails on are the ones to read)
             if (getenv("RX_VK_IR"))
@@ -1532,8 +1565,10 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     kept_one = !k.empty() && !strncmp(hex, k.c_str(), k.size());
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
-                // (device_policy.h networks_left_out: every vendor but NVIDIA; and where the multiplies run in software, whoever made the GPU)
-                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.policy.networks_left_out)) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
+                // (device_policy.h networks_left_out: every vendor but NVIDIA; and where the multiplies run in software, whoever made the GPU;
+                // kept where the WMMA 16x16x16 tiles run them: Wmma16Fits, or EmitSPIRV would compile the software multiply)
+                const auto& wg = t->program.workgroup_size;
+                if ((!kept_one && (Shader::Backend::SPIRV::mma_software || (dev.policy.networks_left_out && !(Shader::Backend::SPIRV::mma_wmma16 && Shader::Backend::SPIRV::Wmma16Fits(profile_pinned(uint64_t(wg[0]) * wg[1] * wg[2]), t->program))))) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
                     throw std::runtime_error(network_left_out);
             }
             // (pinned to 32 lanes only where 32-lane subgroups cover its workgroup, as its pipeline is: pin_subgroup, pins_32)
@@ -1686,7 +1721,7 @@ void miss_note(uint64_t key, const char* what, uint64_t a, uint64_t b, const Nvn
 }
 
 std::array<u32, 3> mesh_registers_of(const Code* task, const Code& mesh) {
-    // (the control section's topology in GL's numbers: 3 triangles; 1 points, not lines. OoT's four mesh programs with a 1 (the grass
+    // (the control section's topology in GL's numbers: 3 triangles; 1 points, not lines. OoT's four mesh programs with a 1 (the simulated turf
     // drawn into the 2400 x 2400 shadow map around Link) write one index byte per primitive, the primitive count = their vertex
     // count, and a point size. Read as lines, each joined vertex 2i to 2i + 1 of its meshlet: a mesh of long thin dark stripes on
     // the ground, the water and Link around him, on AMD)
@@ -1751,6 +1786,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
         Env menv{s, mesh, Shader::Stage::Mesh};
         menv.set_mesh(mesh_regs, prim ? prim->sph : nullptr);
         auto mesh_t = translate(menv, true, true);
+        sim_turf_pools(mesh_t->program, mesh.key);
         dump_ir(p, "mesh", mesh_t->program, mesh.key);
         {
             static std::atomic<int> told{0};
@@ -1844,7 +1880,7 @@ void translate_mesh_into(Program& p, const NvnState& s, const Code* task, const 
                     frt.per_primitive_generics.set(index);
             }
             // (points: a generic the fragment program reads and the mesh program never writes is the point sprite's coordinate,
-            // as the hardware replaces it. OoT's grass shadow reads its alpha mask at generic 5's (s, t): left at (0, 0, 0, 1),
+            // as the hardware replaces it. OoT's simulated-turf shadow reads its alpha mask at generic 5's (s, t): left at (0, 0, 0, 1),
             // each point was a filled square in the shadow map instead of a tuft)
             if (mesh_t->program.mesh.topology == 0)
                 for (size_t i = 0; i < Shader::IR::NUM_GENERICS; i++)

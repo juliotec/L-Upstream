@@ -82,7 +82,6 @@ bool memory_split_wanted();
 bool memory_readback_early_active();
 namespace {
 /* PAGES */
-std::atomic<uint64_t> mem_rec_part{0}, mem_in_place_part{0};
 /* REC_PART */
 }  // namespace
 /* WRITERS */
@@ -559,8 +558,13 @@ def main():
     if inv.index("bool early_done = false;") > inv.index("const bool in_place_after = memory_in_place_part() > part;"):
         raise SystemExit("FAIL: invalidate: the early wait comes after the usual choice")
     rep = block(replay, "void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {")
-    if "if (split_after || memory_split_wanted()) early_split_pending = true;" not in rep or \
-            "if (early_split_pending && part_work >= early_gap) early_split(cmd);\n        }\n        p += h.size;" not in rep:
+    split_end = "if (early_split_pending && part_work >= early_gap) early_split(cmd);\n        }\n"
+    after = rep[rep.index(split_end) + len(split_end):] if split_end in rep else ""
+    # (between the part's end and the next op only RX_VK_MESH_CONV's rescan may come: it records into the part just begun)
+    gap = after[:after.index("        p += h.size;")] if "        p += h.size;" in after else None
+    rescan = "if (p == mesh_rescan_at) mesh_conv_at_barrier(cmd, p + h.size, end, true);"
+    if "if (split_after || memory_split_wanted()) early_split_pending = true;" not in rep or gap is None or \
+            any(not (l.strip().startswith("//") or l.strip() == rescan) for l in gap.splitlines() if l.strip()):
         raise SystemExit("FAIL: replay: a part does not end after an op that asked for it, at least the gap into it")
     mem_note = block(memory, "void note_direct_write(")
     if "early_in_place_write(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value);" not in mem_note.split("if (size <=")[0]:
@@ -576,7 +580,7 @@ def main():
     if "const bool same_desc = !no_reuse && !early_rebind && " not in draw or "if (d.is_written) return true;" not in draw or \
             "const bool early_rebind = early && memory_readback_early_active() && [&] {" not in draw:
         raise SystemExit("FAIL: vk_draw.cpp: a draw of a program that writes storage buffers may keep the set before, its write not noted")
-    if "if (early && !dry && memory_rb_waited_range(host->gpu_guest(u.dst), u.size)) split_after = true;" not in rep:
+    if "if (early && memory_rb_waited_range(host->gpu_guest(u.dst), u.size)) split_after = true;" not in rep:
         raise SystemExit("FAIL: replay: an update of uniforms a read waited for does not end its part")
     # RX_VK_LOG_EARLY_CHECK (log only): a read let go early is checked, the replay's writes and the CPU's pages reach it, and the
     # snapshots' collection generation is read after their copy

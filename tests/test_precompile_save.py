@@ -46,6 +46,13 @@ def check_sources():
     if not in_order(run, ["precompile_save::due("] + saving):
         problems.append("precompile_run's save is not inside the start-up screen's saving state, or its log does not say what "
                         "the save did")
+    # (the .built record's word that the file holds them, pcache_stamp.h: from a save that got them there or a cache its file
+    # already matches, never from how long the pass took)
+    if not in_order(run, ["pipeline_cache_save(true)", "saved = precompile_save::in_file(pcache_save_outcome)",
+                          "(saved || pcache_in_file())) precompile_built_whole();"]) or "kDefaultS" in run:
+        problems.append("precompile_run says its pipelines reached the file without a save or a cache that matches it")
+    if "precompile_save::unchanged(sized, n, pcache_saved_size" not in block(draw, "static bool pcache_in_file() {"):
+        problems.append("pcache_in_file does not compare the cache with the size its file was last read or written at")
     warm = block(draw, "void precompile_warm(void (*progress)(size_t done, size_t total)) {")
     if not in_order(warm, saving):
         problems.append("precompile_warm (RX_VK_LOAD=create) does not log what its save did")

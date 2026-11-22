@@ -54,6 +54,7 @@ LAYOUT = (
     ("work", "`mise run build`'s work folder (work-windows: the Windows game built on Linux)"),
     ("sdk", "the vendors' SDKs scripts/fetch.py downloads: ngx-linux, ngx-windows, ffx, xess"),
     ("runs", "game runs' output: longshot_ctl.py's control runs, memtour.py's, cover.py's"),
+    ("update", "`dev.py update`'s worktree, work folder, backups of the game folder and history"),
     ("tools", "tools the checks and profiling use: glslang, Tracy's capture tools"),
 )
 
@@ -119,10 +120,11 @@ def mounts():
 
 
 def on_ram(path, table=None):
-    """The path is on a RAM file system (tmpfs, ramfs): never for builds, game folders or test output"""
-    if WINDOWS:
+    """The path is on a RAM file system (tmpfs, ramfs): never for builds, game folders or test output. table: a made-up
+    mount table and a path of it as it is, on any OS (the test)"""
+    if WINDOWS and table is None:
         return False
-    p = os.path.realpath(path)
+    p = os.path.realpath(path) if table is None else path
     best, kind = "", ""
     for mnt, fs in mounts() if table is None else table:
         if (p == mnt or p.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):

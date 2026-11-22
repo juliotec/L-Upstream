@@ -7,6 +7,7 @@ workspace has no .git), else git (the Test Farm's checkouts). Every function tak
     distance(tree, c)       how many commits the tree is ahead of c
     resolve(tree, rev)      a revision as its full commit id
     clean(tree)             whether the tree has no uncommitted changes to tracked files
+    show(tree, c, path)     a file's text at commit c (path / separated, from the checkout's top)
 """
 import os
 import subprocess
@@ -91,3 +92,10 @@ def distance(tree, base):
         return int(run(tree, ["git", "rev-list", "--count", "%s..HEAD" % base], check=False) or "")
     except ValueError:
         return 1 << 30
+
+
+def show(tree, base, path):
+    """A file's text as commit base has it; raises CalledProcessError when it has no such file"""
+    if is_jj(tree):
+        return run(tree, ["jj", "file", "show", "--ignore-working-copy", "-r", base, "root:" + path])
+    return run(tree, ["git", "show", "%s:%s" % (base, path)])

@@ -191,6 +191,7 @@ static void hos_log(const char *f, ...) { if (getenv("MODS_TEST_LOG")) { va_list
 static int64_t hos_now_ns(void) { return 0; }
 static DWORD hos_game_path_a(char *buf, DWORD size) { return (DWORD)snprintf(buf, size, "%shookshot", game_root); }
 int hos_prompts_romfs(const char *key, const char *mod, char *out, size_t cap) { (void)key; (void)mod; (void)out; (void)cap; return 0; }
+uint32_t hos_prompts_font_entry(uint32_t entry) { (void)entry; return 0; }   /* (prompts.c: no prompts' font) */
 int hos_texts_romfs(const char *key, const char *mod, char *out, size_t cap) { (void)key; (void)mod; (void)out; (void)cap; return 0; }   /* (host/texts.c: no texts of the build's here) */
 ''' + "\n".join(pieces) + FIXTURE_MAIN
     with tempfile.TemporaryDirectory(prefix="mods-sizes-") as tmp:

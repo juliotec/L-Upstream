@@ -10,6 +10,7 @@
 // with the Switch 2 GOB swizzle); other formats are unswizzled on the CPU straight into the staging memory.
 #pragma once
 
+#include <memory>
 #include <string>
 #include <cstdint>
 #include <unordered_map>
@@ -135,9 +136,30 @@ uint64_t texture_destroy_generation();
 bool texture_alive(uint64_t gpu, const Texture* t, VkImage image);
 // (longshot, RX_VK_FRAME_TRACE: time no other column has; totals in ns, the trace takes their differences)
 int64_t texture_readback_wait_ns();   // (a read-back's submit and wait for the GPU: the write-backs before an eviction)
+void texture_step_times(int64_t out[8]);
+void texture_pool_counts(int64_t out[9]);   // (TEST, local: vk_texture.cpp)
 int64_t texture_frame_ns();           // (texture_frame as a whole: each present's eviction, compaction and sweeps)
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its
 /// storage since). null for formats and targets that have no image (buffers, unknown formats).
+struct OutputTrialBacking {
+    struct Image {
+        VkImage image{};
+        VmaAllocation allocation{};
+        VkImageCreateInfo shape{};
+        VkImageView view{};
+        uint64_t serial{};
+        uint64_t gpu{};
+    };
+    Image images[3]{};
+    OutputTrialBacking() = default;
+    OutputTrialBacking(const OutputTrialBacking&) = delete;
+    OutputTrialBacking& operator=(const OutputTrialBacking&) = delete;
+    ~OutputTrialBacking();
+    bool matches(uint64_t serial, VkImage image) const;
+};
+std::unique_ptr<OutputTrialBacking> output_probe_backing(const nvn_tex* targets, bool fail_second,
+                                                        unsigned& made, uint64_t& bytes);
+void take_output_trial_image(const nvn_tex* t, const VkImageCreateInfo& shape, VkImage& image, VmaAllocation& allocation);
 Texture* texture_get(const nvn_tex* t, bool for_sampling);
 /// (longshot, RX_VK_TEX_AHEAD: texture_ahead.h) Textures made and uploaded before their first draw, while the frames are
 /// light. The host's announcements: a texture the game made, and one it released (any thread)
@@ -192,6 +214,9 @@ Texture* texture_for_present(const nvn_tex* t);
 void texture_complete_writes(uint64_t completed);
 /// Ages the cache by one present; images nothing used for a while go, after the work that last read them
 void texture_frame(uint64_t completed_value);
+/// (longshot, #1879: vk_replay.cpp submit_give_back, any thread) The driver refused a submit for want of memory: the next
+/// texture_frame frees every idle staging arena and the reaper's whole queue
+void texture_memory_refused();
 void texture_released(const nvn_tex* t);
 /// (diagnostics: what guest memory holds of a texture's storage now, level by level, logged)
 void texture_log_guest(const Texture* t);

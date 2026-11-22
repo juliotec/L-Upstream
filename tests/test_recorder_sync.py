@@ -294,7 +294,8 @@ def build(cxx, headers, out, recorder_text, name, extra=(), work_text=None):
 
 def run(exe, env_mode, *args, parallel=None, timeout=600):
     env = dict(os.environ)
-    for k in ("RX_VK_RECORDER", "RX_VK_PARALLEL", "RX_VK_RECORDER_POISON", "RX_VK_RECORDER_RING_MB", "RX_VK_RECORDER_STATS"):
+    for k in ("RX_VK_RECORDER", "RX_VK_PARALLEL", "RX_VK_RECORDER_POISON", "RX_VK_RECORDER_RING_MB", "RX_VK_RECORDER_STATS",
+              "RX_VK_RECORDER_PARTS"):
         env.pop(k, None)
     if env_mode:
         env["RX_VK_RECORDER"] = env_mode

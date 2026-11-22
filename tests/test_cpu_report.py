@@ -1,7 +1,8 @@
 """scripts/perf.py cpu on a synthetic capture: linker maps in lld's format, an all-thread sample file and load.json, no game.
 Checks the owner and self views (a driver leaf under the renderer is charged to the renderer in the owner view), the guest
-subsystem map, blocked samples left out of CPU time, the per-thread table, unclassified symbols listed, and the categories'
-own rule order; with a broken variant: a rule set where nothing matches must leave everything unclassified.
+subsystem map, blocked samples left out of CPU time (the driver's wait on a GPU fence from the CPU among them, a submit
+beside it left as CPU time), the per-thread table, unclassified symbols listed, and the categories' own rule order; with
+a broken variant: a rule set where nothing matches must leave everything unclassified.
 
     python -I -B tests/test_cpu_report.py
 """
@@ -45,6 +46,10 @@ SAMPLES = [
     "4 BaseProcExecutor3|longshot.exe+6010;longshot.exe+2020",        # zz_unknown.o: unclassified
     "6 sead::MainThread|longshot.exe+4010;longshot.exe+1010",         # a64_lookup: runtime/indirect-calls
     "6 Presentation_Thread|ntdll.dll+1010;longshot_vk.dll+1010",      # blocked in a wait: not CPU time
+    # (the driver's wait on a GPU fence from the CPU, under vkWaitSemaphores / vkWaitForFences: blocked, not CPU time; the
+    # submit beside it does work: CPU time, system/other)
+    "0 GpuWaiter|win32u.dll+1010;longshot_vk.dll+2010",              # NtGdiDdDDIWaitForSynchronizationObjectFromCpu
+    "2 GpuWaiter|win32u.dll+2010",                                    # NtGdiDdDDISubmitCommandToHwQueue
 ]
 NTDLL_MAP = """ ntdll
 
@@ -52,6 +57,14 @@ NTDLL_MAP = """ ntdll
 
  Start         Length     Name                   Class
  0001:00000000       NtWaitForSingleObject      0000000180001000     ntdll.o
+"""
+WIN32U_MAP = """ win32u
+
+ Preferred load address is 0000000180000000
+
+ Start         Length     Name                   Class
+ 0001:00000000       NtGdiDdDDIWaitForSynchronizationObjectFromCpu 0000000180001000     win32u.o
+ 0001:00001000       NtGdiDdDDISubmitCommandToHwQueue 0000000180002000     win32u.o
 """
 CANDIDATES = {"candidates": [{"id": "t", "title": "Test draw", "match": "^draw_one$", "what": "w", "fix": "f", "gain": [0.5, 0.5],
                               "risk": "r", "evidence": "e"}], "game_own": []}
@@ -64,6 +77,7 @@ def run(tmp, cats_text=None, extra=(), candidates=None, guest=True, samples=None
     (maps / "longshot.map").write_text(EXE_MAP, encoding="utf-8")
     (maps / "longshot_vk.map").write_text(VK_MAP, encoding="utf-8")
     (maps / "ntdll.dll.map").write_text(NTDLL_MAP, encoding="utf-8")
+    (maps / "win32u.dll.map").write_text(WIN32U_MAP, encoding="utf-8")
     (rundir / "all.txt").write_text("\n".join(samples or SAMPLES) + "\n", encoding="utf-8")
     # (a copy of the tool and its package, whose categories and data files the test replaces; the package's sample file
     # reader reads both sample formats: #1279)
@@ -127,6 +141,15 @@ def main():
         blocked = [l for l in md.split("## Blocked")[-1].splitlines() if l.startswith("| Presentation_Thread")]
         if not blocked or "`draw_one`" not in blocked[0]:
             failures.append("the blocked sample should be listed under Blocked, under the function that waits: %s" % blocked)
+        # (the GPU fence wait is blocked under the function that waits, not CPU time: GpuWaiter is on the CPU for its
+        # submit only, 1 of 4 instants, 25 % of a core, 5 ms a frame at 50 fps; control: the submit is still CPU time)
+        fence = [l for l in md.split("## Blocked")[-1].splitlines() if l.startswith("| GpuWaiter")]
+        if not fence or "`take_capture`" not in fence[0]:
+            failures.append("the GPU fence wait should be listed under Blocked, under the function that waits: %s" % fence)
+        waiter = row(md.split("## Threads")[1], "GpuWaiter")
+        if not waiter or "| 25.0 | 5.00 |" not in waiter:
+            failures.append("thread table: GpuWaiter should be on the CPU for its submit only (25%% of a core), "
+                            "its GPU fence wait not CPU time: %s" % waiter)
         # (a candidate is priced from the samples with its function in the stack: draw_one in 2 of 4 instants; at 50 fps
         # 50 % of a core is 10 ms a frame, the gain half of it; control: a match nothing has costs nothing)
         def cand_row(text):
@@ -173,7 +196,7 @@ def main():
         (Path(t) / "game.log").write_text(
             "[hos host] vk: device 0: Integrated GPU, Vulkan 1.3, driver 0x1, type 1\n"
             "[hos host] vk: device 1: Discrete GPU, Vulkan 1.4, driver 0x2, type 2\n"
-            "[hos host] vk: Discrete GPU, Vulkan 1.4, driver 0x2; mesh shaders yes, host memory import yes, pipeline libraries yes\n",
+            "[hos host] vk: Discrete GPU, Vulkan 1.4, driver 0x2; mesh shaders used, host memory import yes, pipeline libraries yes\n",
             encoding="utf-8")
         gpu = rep.machine(t).get("gpu", "")
         if not gpu.startswith("Discrete GPU"):

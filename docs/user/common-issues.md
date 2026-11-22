@@ -98,7 +98,11 @@ the FPS on the title screen and in the first scene.
 1. **Check Vulkan and mesh shaders.** `vulkaninfo | grep mesh` should list `VK_EXT_mesh_shader`. The game needs a
    Vulkan 1.3 driver, ideally with mesh shaders.
 2. **Update Mesa or the NVIDIA driver** if it doesn't.
-3. **The log warns that `/dev/udmabuf` is denied:** the game runs, but imports GPU memory more slowly, much more on AMD.
+3. **NVIDIA on a real-time kernel** (one with `rt` in its name, such as CachyOS's `linux-cachyos-rt-bore`): if the NVIDIA
+   kernel module is not loaded, a driver compatibility or loading issue may be involved. Check the driver and kernel module
+   logs, try a supported NVIDIA driver or a standard kernel, and check that a Vulkan driver is installed and loaded.
+   `vulkaninfo --summary` lists the available Vulkan devices.
+4. **The log warns that `/dev/udmabuf` is denied:** the game runs, but imports GPU memory more slowly, much more on AMD.
    [Give your user access](advanced.md#linux-faster-gpu-memory-devudmabuf).
 
 [Search Linux reports](https://longshot.magicbean.dev/progress/#problem-search?q=linux)
@@ -119,6 +123,19 @@ startup errors and its exit status. Started from a terminal, the game prints the
 
 [Search memory reports](https://longshot.magicbean.dev/progress/#problem-search?q=memory)
 
+### Windows: an out-of-memory notice, or a crash with `0xc00000fd` (stack overflow)
+
+Windows has run out of memory: RAM plus the page file. The log has `mem: ... at the commit limit` lines before it. The
+game waits up to 5 seconds for memory to come back; when it doesn't, it shows the notice and closes. A crash report that
+says `0xc00000fd` with those lines is the same thing, from a version before the wait.
+
+1. **Let Windows manage the page file.** In System > About > Advanced system settings > Performance > Advanced >
+   Virtual memory, choose "Automatically manage paging file size for all drives", or give it at least 16 GB.
+2. **Close other large programs**, such as browsers and other games, while you play.
+3. **Choose a lower Quality preset** in the Insert menu: it uses less memory.
+
+[Search memory reports](https://longshot.magicbean.dev/progress/#problem-search?q=memory)
+
 ## In game: graphics
 
 ### Parts of the picture are missing, or a message says your card has no mesh shader support
@@ -136,7 +153,12 @@ Without mesh shaders, Longshot draws through its compute fallback, which leaves 
 
 1. **Look for `longshot_damaged_files.txt`** in the game folder. The build writes it when your dump of the game is
    incomplete (about 23.3 GB instead of 23.8 GB), listing each damaged file and what was put in its place.
-2. **Dump the game again** and build from the new dump. The file is removed once the dump is whole.
+2. **Look in `longshot_log.txt` for `is damaged in this copy of the game`.** Game files that Longshot Builder didn't
+   unpack (copied from another tool, or by hand) get no `longshot_damaged_files.txt`. The game then reads a similar
+   texture in place of each damaged one as it plays, writes nothing to your game files, and logs one line per file.
+   Without it, the Great Fairy Fountain's damaged floor cost about a third of the frame rate in the starting forest
+   and the castle town's market.
+3. **Dump the game again** and build from the new dump. The file and the lines go once the dump is whole.
 
 [Search texture reports](https://longshot.magicbean.dev/progress/#problem-search?q=texture)
 
@@ -183,9 +205,12 @@ If it stutters everywhere, for a long time, and the log says `the shaders' prepa
 
 ### Windows, NVIDIA: it stutters on every start, in places you have seen
 
-The driver's shader cache is too small to keep them all (the first start builds about 2 GB). Open the **NVIDIA Control
-Panel**, then **Manage 3D settings**, and set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises
-the driver's limit itself.
+The driver's shader cache is too small to keep them all (the first start builds about 2 GB; the driver's default often holds
+only 1 GB, and it throws shaders out as it fills). The launcher raises a cache under 4 GB to 10 GB before a build or a start,
+and says so on Home; when Windows needs an administrator for it, Home's **Raise it to 10 GB** asks. To do it yourself: open
+the **NVIDIA Control Panel**, then **Manage 3D settings**, and set **Shader Cache Size** to **Unlimited** (or 10 GB). The
+log's `vk: driver shader cache: NVIDIA's holds at most` line says what the game found. On Linux the game raises the
+driver's limit itself.
 
 [Search stutter reports](https://longshot.magicbean.dev/progress/#problem-search?q=stutter)
 

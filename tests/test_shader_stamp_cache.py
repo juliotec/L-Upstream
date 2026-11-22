@@ -133,6 +133,7 @@ class ShaderStampCacheTests(unittest.TestCase):
             # (the back end's branch makes its logo header and fonts file itself since #1567: no files written here)
             "logo_rgba": SimpleNamespace(write=lambda path: ""),
             "ui_fonts": SimpleNamespace(write=lambda path: None),
+            "reshade_fx": SimpleNamespace(build_jobs=lambda *args, **kwargs: []),
             "NGX_SDK": ngx,   # ("": no NVIDIA NGX SDK, vk_dlss.cpp built without DLSS, as by default)
             "NGX_MSVC_RT": "vk_ngx_msvc_rt.cpp",
             "FSR": fsr,   # (LONGSHOT_FSR=1: vk_fsr4.cpp built with AMD FSR 4)

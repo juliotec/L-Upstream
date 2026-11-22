@@ -177,6 +177,9 @@ uint64_t hos_region_alloc(uint64_t size, uint64_t align);  /* address space abov
 void hos_region_free(uint64_t addr);
 int hos_regions(uint64_t (*out)[2], int cap);   /* the regions: {start, end}, at most cap; how many */
 void hos_mem_init(uint64_t image_end);
+int hos_output_page_change_begin(uint64_t addr, uint64_t size);
+void hos_output_page_change_end(void);
+void hos_output_boot_region(uint64_t *addr, uint64_t *size);
 extern uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size;
 
 /* ---- threads (hos_thread.c) */

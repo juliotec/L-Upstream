@@ -42,8 +42,11 @@ python -I scripts/dev.py ab --env RX_VK_X=0 --scene market  # a switch: set agai
 
 - **Frame pacing is measured on the screen**, with PresentMon during the same scripted route, not from the log
   ([architecture](../../../docs/dev/reference/architecture.md#frame-generations-presents)).
-- A route that moves, or a place no scene or save reaches: `dev.py queue run NAME --mode timing -- <your run>`, the
-  same save and route each time (the control bridge or `HOS_INPUT_SCRIPT`), `HOS_OPTIONS_FILE` pinned, interleaved, at
+- A route that moves: `dev.py ab --route <route>` (a route of `assets/routes/`, recorded once with `dev.py route record`);
+  it refuses a run whose replay diverged. Record a route for it if none goes where you need
+  ([replay a recording](../../../docs/dev/developing.md#replay-a-recording)).
+- A place no scene, save or route reaches: `dev.py queue run NAME --mode timing -- <your run>`, the
+  same save and route each time (the control bridge, `HOS_INPUT_PLAY` or `HOS_INPUT_SCRIPT`), `HOS_OPTIONS_FILE` pinned, interleaved, at
   least two runs each, the median; read back each log's `vk: switches set` line.
 - With frame generation on (`--framegen`), count which engine made the frames in the measured stretch only.
 - Steam's Game Mode changes RADV's pipeline keys: warm and measure in the same kind of session. A handheld or laptop
@@ -61,6 +64,7 @@ python -I scripts/dev.py ab --env RX_VK_X=0 --scene market  # a switch: set agai
 ## 5. Stop and ask
 
 - Before using a device someone plays on, or moving a shared base.
-- When a run needs eyes (flicker) or hands (a route the bridge can't drive).
+- When a run needs eyes (flicker) or hands (a route the bridge can't drive and no recording has: ask the person you
+  work for to record one, Debug tab, Input recording).
 - When the numbers don't back the claim: report them as they are.
 - When the hardware isn't here: *Still to test* names it for the Test Farm or a tester.

@@ -19,6 +19,9 @@ game folder are drawn in [architecture](architecture.md#from-dump-to-game-folder
 
 `OOT_DUMP` (or `OOT_EXEFS` / `OOT_ROMFS`) and `OOT_WORK` override `work/dump.txt` and the work folder.
 
+Changing translator code changes the lift key: an update with a cached base translation must lift again. Unchanged
+generated objects can still be reused from the object cache.
+
 ## What the build compiles
 
 - **Lifted chunks** compile at `-O1`. The **hot list** (`assets/profiles/hot_funcs.txt`, the functions the game spends
@@ -43,7 +46,7 @@ Read by the build, not the game, so they are not in `switches.def`.
 
 | Switch | What it does |
 |---|---|
-| `LONGSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once. Default: one per CPU thread but one, each started when memory holds it ([below](#the-compiler-memory-gate); `LONGSHOT_MEM_GATE=0` turns that off) |
+| `LONGSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once. Default: one per CPU thread but one, each started when memory holds it ([below](#the-compiler-memory-gate); `LONGSHOT_MEM_GATE=0` turns that off). Given (not 0), it is also the most workers of every other step `make_game.py` runs side by side: the lift's processes and its discovery, the prompts' faces, and the shader preparation, started on that many CPUs (`nx2/build_jobs.py`). Not given: each step keeps its own count |
 | `LONGSHOT_MEM_LIMIT_GB=<n>` | Memory the compilers may reserve together, whatever is free now |
 | `LONGSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C |
 | `LONGSHOT_KEEP_BUILD_FILES=1` | Keep the lifted C and objects after a build |
@@ -57,6 +60,7 @@ Read by the build, not the game, so they are not in `switches.def`.
 | `RX_HOT_OPT=<level>` | The hot pieces' level (`O2`; `O1` for a fast build) |
 | `LONGSHOT_CHUNK_OPT=all` or `<file>` | Lifted chunks at `-O2` (`LONGSHOT_CHUNK_LEVEL`, `LONGSHOT_CHUNK_PART_MB`) |
 | `LONGSHOT_SPLIT_GIANTS=<KB>` | Piece size for giant functions (8; `0` off) |
+| `LONGSHOT_SPLIT_DIRECT=0` | The pieces of a `LONGSHOT_SPLIT_GIANTS` function go through its dispatch loop only, as before this switch: each goto into another piece returns to the loop, which calls the piece that owns the label. On by default, the pieces jump to each other themselves (`musttail`, with clang's `preserve_none` calling convention, the function's guest registers and flags as arguments in registers), and come back to the loop only for a guest return or tail call; a compiler without those attributes builds the loop either way. A function with guest locals (`nx2/guest_locals.py`) is split in both modes: its locals cross a cut as the pieces' arguments, or through a struct of the loop's in this mode. Compile-time; the objects of each mode are kept apart (the flag names it) |
 | `LONGSHOT_LIGHT_PASSES=0` | Compile small chunks with every module pass (light passes need LLVM 22+) |
 | `RX_MARCH=<level>` | CPU level |
 | `RX_VK_ONLY=1` | The renderer alone |
@@ -67,7 +71,11 @@ Read by the build, not the game, so they are not in `switches.def`.
 | `LONGSHOT_TRACY=1` | A Tracy build ([profiling](profiling.md#tracy)) |
 | `LONGSHOT_NGX_SDK=<dir>`, `LONGSHOT_FSR=1` | Build with NVIDIA DLSS, AMD FSR 4 ([setup](../setup.md#upscaler-sdks-optional)) |
 | `A64_FASTFP`, `A64_LOCAL_REGS`, `A64_LOCAL_FLAGS`, `A64_LOCAL_FUNCS` | Lift-time switches (`nx2/fastfp.py`, `nx2/guest_locals.py`); they change the lift key |
+| `A64_CAMERA_DIAGNOSTICS=1` | Lift-time camera-clearance counters and trace; changes the lift key. In the game's working directory, create `camera-clearance.trace` to log up to 256 hits per site, then remove it and allow a hit before creating it again. Counters continue between traces. Diagnostic builds check for the marker on every hit. |
+| `A64_FASTFP_STORES=0`, `A64_FASTFP_VMOVES=0` | Fast float regions (`nx2/fastfp.py`) stop at a guest store, or at a vector move or shuffle (`nx2/fastvec.py`'s `a64_vld16`, `a64_vdup`, `A64_EXT16`, `A64_EXT8`, `a64_tbl1`), as before. Both on by default: a region may hold stores but no load after one, and its fast copy keeps their addresses and values and stores them, in order, once its MXCSR check passed (its exact copy is unchanged). Lift-time switches: they change the lift key |
 | `A64_VECFP=0` or a list of `elem`, `vec`, `minmax`, `fcvt` | The SSE fast paths for the float forms the translator otherwise does lane by lane (`nx2/vecfp.py`); each keeps a result only where it is provably Arm's, else the instruction's own C runs. All on by default; `0` lifts exactly as without them. A lift-time switch: it changes the lift key |
+| `A64_FPXKEEP=0` | Without `nx2/fpxkeep.py`: float ops with a NaN or infinite operand, and multiply-adds that cancel exactly, go to the software bodies as before. On by default: inside the float gate (round to nearest, DN = 0, IXC set) their exact results are kept from the operands' bits; invalid ones (inf - inf, inf * 0) still take the bodies, and a binary64 multiply-add that cancels is kept only with a host FMA. A lift-time switch: it changes the lift key |
+| `A64_SUB_V=0` | A flag-setting subtraction's V (SUBS, CMP, CCMP) written as the result's sign xor (a < b, signed), which is the same bit, so that the compiler folds the signed conditions (LT, GE, GT, LE: N against V) to one host compare (`nx2/cmpflags.py`). On by default; `0` lifts exactly as without it. A lift-time switch: it changes the lift key |
 
 ## The compiler memory gate
 
@@ -111,6 +119,7 @@ part; `dev.py paths <part>` prints one, for scripts.
 | `work/` | `mise run build`'s work folder (`work-windows/`: `RX_TARGET=windows`) | `~/.cache/longshot-builder`, the player builder's | `--work` |
 | `sdk/` | `scripts/fetch.py`'s SDKs: `ngx-linux/`, `ngx-windows/`, `ffx/`, `xess/` | `build-linux/ngx-sdk`, `work/*-sdk` | `LONGSHOT_NGX_SDK` |
 | `runs/` | Game runs: `control/` (`longshot_ctl.py`), `memtour-*`, `cover-*` | `work/control-runs`, `work/memtour-*` | `--root`, `--out` |
+| `update/` | `dev.py update`'s worktree `tree/`, `work/`, the game folder's `backups/`, `history.md` | | |
 | `tools/` | glslang (`mise run setup`) and Tracy's capture tools (`mise run tracy-tools`) | `~/glslang-16.6.0`, `_deps/tracy-0.15.0` | |
 
 On Windows the old places were `%LOCALAPPDATA%\Longshot\{dev,objects,lifts,queue}` and `%APPDATA%\Longshot\` for the

@@ -1,9 +1,10 @@
 // The Insert menu's upscaler rows (#1633), in the Graphics tab's Resolution and upscaling section after the output's: what
 // scales the 3D up to the Output resolution (the game's own, NVIDIA DLSS and DLAA, AMD FSR 3.1 and FSR 4, Intel XeSS, or
-// none: upscaler_rows.h; each shown only where it runs, and the row shows what runs), NVIDIA's DLSS model, DLAA before the
-// bloom, the Render resolution (the 3D's share of the output, on the upscaler's own steps) and Sharpness. What runs is the
-// renderer's (vk_menu.cpp upscaler, upscalers_available: menu_module.h); a row with nothing to choose is locked, its line
-// saying why. The parts that ask the renderer are fenced from a layout-only build (MENU_LAYOUT_ONLY, MENU_HOOK).
+// none: upscaler_rows.h; each shown only where it runs, and the row shows what runs), NVIDIA's DLSS model, AMD's FSR 4
+// model, DLAA before the bloom, the Render resolution (the 3D's share of the output, on the upscaler's own steps) and
+// Sharpness. What runs is the renderer's (vk_menu.cpp upscaler, upscalers_available: menu_module.h); a row with nothing
+// to choose is locked, its line saying why. The parts that ask the renderer are fenced from a layout-only build
+// (MENU_LAYOUT_ONLY, MENU_HOOK).
 #include "menu_module.h"
 
 #include "upscaler_rows.h"
@@ -158,6 +159,26 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 0 && ur::cnn_for_vram(v, device_vram_bytes())) return cnn;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
 }
+/// The FSR 4 model row (opts.fsr4_model): AMD's own pick for this GPU, or the smaller INT8 Lite network
+const char* tx_fsr4_model(int v) {
+    return v ? "Lite (INT8)" : "Auto (AMD's)";
+}
+/// The FSR 4 model: the value chosen; variant 1: the Upscaler is not FSR 4 (the row waits); variant 2: set for this run
+/// by RX_VK_FSR4_MODEL
+const char* hn_fsr4_model(int v, int variant) {
+    static const char* const t[] = {
+        "AMD's own choice for this GPU: FP8 on RDNA 4, full INT8 on RDNA 3 and Strix Halo, the Navi 2 INT8 model on RX 6000, "
+        "Lite on Strix Point and Van Gogh.",
+        "AMD's smaller FSR 4 network. On a GPU AMD already runs Lite "
+        "on, this setting does nothing.",
+    };
+    static const char* const unused = "Used by AMD FSR 4: choose it in the Upscaler row.";
+    static const char* const env = "Set for this run by RX_VK_FSR4_MODEL.";
+    if (variant < 0) variant = fsr4_model_env() >= 0 ? 2 : !ur::is_fsr4(upscaler()) ? 1 : 0;
+    if (variant == 1) return unused;
+    if (variant == 2) return env;
+    return variant == 0 ? t[std::clamp(v, 0, ur::kFsr4Models - 1)] : nullptr;
+}
 /// (longshot) The DLAA before the bloom row (opts.dlss_pre_bloom; vk_temporal.cpp pre_bloom_wanted): RX_VK_DLSS_PRE_BLOOM set
 /// for this run wins over it
 bool pre_bloom_env() {
@@ -262,12 +283,26 @@ MENU_MODULE(upscaler) {
               .value = &opts.dlss_model,
               .lo = 0, .hi = ur::kModels - 1,
               .preset_exempt = true,
-              .shown = MENU_HOOK([] { return ur::model_shown(dlss_why() == DLSS_OK); }),
+              .shown = MENU_HOOK([] { return ur::model_shown(dlss_why() == DLSS_OK, upscaler()); }),
               .locked = MENU_HOOK([] {
                   return fixed_by_line(ur::model_fixed(upscaler(), dlss_preset_env() != nullptr), hn_dlss_model(opts.dlss_model, -1));
               }),
               .text = MENU_HOOK([](int v) { return std::string(tx_dlss_model(v)); }),
               .hint = MENU_HOOK(hn_dlss_model)}, menu::after("handheld_profile").order(20))
+        .row({.key = "fsr4_model",
+              .label = "FSR 4 model",
+              .help = "The FSR 4 network: Auto lets AMD pick for this GPU, Lite is the faster INT8 network.",
+              .value = &opts.fsr4_model,
+              .lo = 0, .hi = ur::kFsr4Models - 1,
+              .preset_exempt = true,
+              .shown = MENU_HOOK([] { return ur::fsr4_model_shown(fsr4_why() == FSR_OK, fsr4_lite_available()); }),
+              .locked = MENU_HOOK([] {
+                  return fixed_by_line(ur::fsr4_model_fixed(upscaler(), fsr4_model_env() >= 0), hn_fsr4_model(opts.fsr4_model, -1));
+              }),
+              .text = MENU_HOOK([](int v) { return std::string(tx_fsr4_model(v)); }),
+              .hint = MENU_HOOK(hn_fsr4_model),
+              .on_change = MENU_HOOK([](int v) { fsr4_set_model(v ? FSR4_MODEL_LITE : FSR4_MODEL_AUTO); })},
+             menu::after("dlss_model").order(25))
         .row({.key = "dlss_pre_bloom",
               .label = "DLAA before the bloom",
               .help = "Where NVIDIA DLAA smooths the picture: after the game's bloom and tone map, or before them. Changes at "

@@ -33,6 +33,11 @@ whether each started, and why not.
 - **AMD FSR 4** (Windows): turn on **FSR 4** in the launcher's build settings. It shows AMD's license first, then
   fetches AMD's two DLLs into the game folder. On Linux, put a Vulkan FSR 4 library (`amd_fidelityfx_upscaler_vk.so`)
   beside the game yourself: AMD publishes none for Linux.
+  **FSR 4 model** (`fsr4_model=0` or `1`; `RX_VK_FSR4_MODEL=auto` or `lite` for one run) chooses AMD's network: **Auto**
+  keeps AMD's own pick for the GPU (FP8 on RDNA 4, full INT8 on RDNA 3 and Strix Halo, the RDNA 2 model on RX 6000, Lite
+  on Strix Point and Van Gogh). Forcing **Lite (INT8)** requires a supported Windows runtime with a verified Lite provider;
+  the current build leaves forcing disabled until the provider ABI is verified. Linux can retain the saved Lite value but
+  cannot force it, so Auto is used.
 - **Intel XeSS** (Windows): put Intel's `libxess.dll`, from the `bin` folder of a recent
   [Intel XeSS SDK](https://github.com/intel/xess/releases) release, beside `bin\longshot.exe` or in the game folder. It
   runs on Intel Arc and Iris Xe GPUs, and on other GPUs whose Vulkan driver has what XeSS needs. There is no XeSS for
@@ -80,7 +85,8 @@ script. Each version's builder is on [Longshot's releases](https://git.magicbean
 
 On Windows, unpack `LongshotBuilder-<version>-windows-x64.zip` and run `LongshotBuilder.exe --cli` with the same
 options. `--check` only checks your game's version; `--log <file>` saves the build's output; `--jobs <n>` (or
-`LONGSHOT_JOBS=<n>`) limits how many files compile at once. To build from a clone of this repository, see the
+`LONGSHOT_JOBS=<n>`) limits how many files compile at once, and how many CPU threads every other step of the build uses
+(translating, the button prompts, preparing the shaders), so the PC stays usable while it builds. To build from a clone of this repository, see the
 [developer setup](../dev/setup.md).
 
 ## Linux: faster GPU memory (/dev/udmabuf)

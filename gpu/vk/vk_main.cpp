@@ -26,6 +26,8 @@
 #include "vk_framegen.h"
 #include "vk_internal.h"
 #include "vk_new.h"
+#include "cxx_escape.h"
+#include "renderer_guard.h"
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_bug_report.h"
@@ -45,6 +47,7 @@
 #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "longshot_env.h"
 #endif
+#include "longshot_no_gpu.h"   // (why Vulkan listed no GPU, where the PC says: pick_device)
 #include "switches.h"   // (the switches' table: what the run has set, said at the start)
 #ifndef _WIN32
 extern char** environ;
@@ -136,6 +139,7 @@ std::string device_name_text() { return std::string(dev.props.deviceName, strnle
 int64_t steady_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+std::atomic<int> native_zstd_default{0};
 std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
 static void vlogf(LogLevel level, const char* fmt, std::va_list a) {
     static const char* const tags[] = {"[error] ", "[warn] ", "", "[debug] ", "[trace] "};
@@ -204,6 +208,8 @@ void new_refuse_test(int64_t presents) {   // (the replay's present, its count)
 }
 
 namespace {
+
+const char* mesh_note = "not offered by the driver";   // (the device line's: mesh_rule::device_note, set by create_device)
 
 bool has_extension(const std::vector<VkExtensionProperties>& all, const char* name) {
     for (const auto& e : all)
@@ -280,6 +286,18 @@ bool pick_device() {
     vkEnumeratePhysicalDevices(dev.instance, &n, nullptr);
     std::vector<VkPhysicalDevice> all(n);
     vkEnumeratePhysicalDevices(dev.instance, &n, all.data());
+    if (!n) {   // (longshot) no device at all: no Vulkan driver lists a GPU. Why, where the PC says (NVIDIA's driver not loaded, a
+                // real-time kernel): the window after the start reads this line (host/hos_crash_dialog.h)
+        LongshotNoGpu why;
+#ifdef _WIN32
+        longshot_no_gpu_probe(nullptr, &why);
+#else
+        longshot_no_gpu_probe("", &why);
+#endif
+        char line[400];
+        longshot_no_gpu_line(line, sizeof line, &why);
+        logf("vk: %s", line);
+    }
 
     std::vector<uint32_t> valid_gpus;
     gpu_device_names.clear();
@@ -348,16 +366,18 @@ bool pick_device() {
 
 /// (longshot) Whether the shaders' float adds to storage buffers are asked to be the GPU's own atomic (create_device):
 /// RX_VK_NATIVE_FADD by the switches' rule (longshot_env.h env_value_off: 0, false, off, no or empty is off, any other
-/// value on); unset, with NVIDIA's driver and with Intel's Windows driver on the GPU families it was run on: the Xe-LPG
+/// value on); unset, with NVIDIA's driver, with AMD's Windows driver on Radeon 860M/840M (0x1114) from 0x8001a0
+/// (Adrenalin 26.10.1), and with Intel's Windows driver on the GPU families it was run on: the Xe-LPG
 /// iGPUs of Meteor Lake and Arrow Lake (PCI device 0x7Dxx) from driver 101.9175 on (Intel's Windows driverVersion is
-/// 101 << 14 | 9175); the Arc B-series cards, Battlemage (PCI device 0xE2xx), from 101.9154 on; and the Xe3 iGPUs of
-/// Panther Lake (PCI device 0xB0xx) from 101.9150 on. There the loop loses the device, or loses adds, in the sky's light
-/// sums (499dbfd0): exposure far too high, a milky white haze. Intel's other GPUs on Windows (Iris Xe and UHD, Arc A-series, Lunar Lake), older drivers, AMD's RDNA 3
-/// and later and Mesa's Intel driver report the feature too but were not tried: they keep the loop unless the switch asks,
+/// 101 << 14 | 9175); the Arc B-series cards, Battlemage (PCI device 0xE2xx), from 101.9154 on; the Xe3 iGPUs of
+/// Panther Lake (PCI device 0xB0xx) from 101.9150 on; and the Xe2 iGPUs of Lunar Lake (PCI device 0x64xx) from 101.8991
+/// on (an Arc 140V, 0x64A0). There the loop loses the device, or loses adds, in the sky's light
+/// sums (499dbfd0): exposure far too high, a milky white haze. Intel's other GPUs on Windows (Iris Xe and UHD, Arc A-series), older drivers, AMD's other GPUs
+/// and Mesa's Intel driver report the feature too but were not tried: they keep the loop unless the switch asks,
 /// until runs on them say otherwise
-static bool native_fadd_wanted(const char* env, VkDriverId driver, uint32_t device, uint32_t version) {
+static bool native_fadd_wanted(const char* env, VkDriverId driver, uint32_t device, uint32_t version, bool windows) {
     if (env) return !env_value_off(env);
-    return policy_rule::native_fadd_listed(driver, device, version);   // (device_policy.h: the one list of drivers and families)
+    return policy_rule::native_fadd_listed(driver, device, version, windows);   // (device_policy.h: the one list of drivers and families)
 }
 
 bool create_device() {
@@ -399,10 +419,11 @@ bool create_device() {
     // (longshot) RADV's native task/mesh path deadlocks the GPU: the gfx ring and RADV's gang compute ring
     // end up waiting on each other, and a mesh-only draw hangs with the compute queue empty (devcoredumps on an
     // RX 6800: no VM fault; waves stuck on gfx in the second). Task + mesh draws alone on the fallback still crash, so
-    // only full Compute is stable there, and the reports span Navi 2x (RX 6800, RX 6600 XT) and the RDNA3 APUs (Steam
-    // Deck OLED, Rog Xbox Ally X). With RADV, Automatic picks Compute; Native stays a choice (RX_VK_MESH_SHADERS=native).
-    // RDNA1 and older have no mesh shaders on RADV: for them a no-op. (By the driver, device_policy.h mesh_mode: AMDVLK,
-    // which does not show the deadlock, keeps native as its Automatic)
+    // only full Compute is stable there, and the reports span Navi 2x (RX 6800, RX 6600 XT) and the APUs (the Steam Deck
+    // OLED's Van Gogh, RDNA2; the ROG Xbox Ally X, RDNA3.5). With RADV, Automatic picks Compute; Native stays a choice
+    // (RX_VK_MESH_SHADERS=native). RDNA1 and older have no mesh shaders on RADV: for them a no-op. The log says the driver
+    // offers them all the same (mesh_rule::device_note). (By the driver, device_policy.h mesh_mode: AMDVLK, which does
+    // not show the deadlock, keeps native as its Automatic)
     // (the card's own, before the mode below: whether it has task and mesh shaders, for the Quality preset Auto (this PC), which
     // must not put a card that has them on Minimum because this run uses Compute)
     if (has_extension(exts, VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
@@ -413,6 +434,7 @@ bool create_device() {
     }
     int mesh_mode_used = mesh_mode;
     if (mesh_mode_used == 0 && fadd_driver.driverID == VK_DRIVER_ID_MESA_RADV) mesh_mode_used = 2;
+    const bool radv_compute = mesh_mode == 0 && mesh_mode_used == 2;
     if (mesh_mode_used == 2) dev.mesh_shader = false;
     else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
@@ -451,11 +473,16 @@ bool create_device() {
     optional(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, dev.maintenance5);
     // (longshot) the GPU's own float add on storage buffers: the game's RED/ATOM.ADD.F32 become one OpAtomicFAddEXT instead
     // of a compare-exchange loop, which gives up after CAS_LOOP_MAX_TRIES attempts and loses that add (eden
-    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver, and Intel's Windows driver on the
-    // Meteor Lake, Arrow Lake and Panther Lake iGPUs and the Arc B-series (native_fadd_wanted); RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop
+    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver, AMD's Windows driver on 0x1114 from 0x8001a0, and Intel's Windows driver on the
+    // Meteor Lake, Arrow Lake, Panther Lake and Lunar Lake iGPUs and the Arc B-series (native_fadd_wanted); RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop
     // on every one, the extension not even enabled
     const char* const fadd_env = getenv("RX_VK_NATIVE_FADD");
-    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID, dev.props.deviceID, dev.props.driverVersion);
+#ifdef _WIN32
+    constexpr bool fadd_windows = true;
+#else
+    constexpr bool fadd_windows = false;
+#endif
+    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID, dev.props.deviceID, dev.props.driverVersion, fadd_windows);
     bool atomic_float = false;
     if (fadd_wanted) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (longshot: the overlays, vk_imgui.cpp)
@@ -630,10 +657,11 @@ bool create_device() {
                                                      : "compare-exchange loop (no VK_EXT_shader_atomic_float)";
         if (fadd_env) logf("vk: float atomic add on storage buffers: %s, RX_VK_NATIVE_FADD=%s", how, fadd_env);
         else logf("vk: float atomic add on storage buffers: %s, %s", how,
-                  !fadd_wanted ? "by default only with NVIDIA's driver and Intel's Windows driver on Meteor Lake, Arrow Lake, Panther Lake and Battlemage "
-                                 "(RX_VK_NATIVE_FADD=1: native where the GPU has it)"
+                  !fadd_wanted ? "by default only with NVIDIA's driver, Intel's Windows driver on Meteor Lake, Arrow Lake, Panther Lake, Lunar Lake and Battlemage, "
+                                 "and AMD's Windows driver on Radeon 860M/840M (RX_VK_NATIVE_FADD=1: native where the GPU has it)"
                   : fadd_driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY ? "NVIDIA's driver"
-                                                                            : "Intel's Windows driver, Meteor Lake, Arrow Lake, Panther Lake or Battlemage");
+                  : fadd_driver.driverID == VK_DRIVER_ID_AMD_PROPRIETARY    ? "AMD's Windows driver, Radeon 860M/840M (0x1114) from 0x8001a0"
+                                                                            : "Intel's Windows driver, Meteor Lake, Arrow Lake, Panther Lake, Lunar Lake or Battlemage");
     }
     // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device. On by default: the GPU
     // culling pass 53caac5f can fault the device while a save loads, and the scene's lighting reads garbage for single frames
@@ -731,7 +759,9 @@ bool create_device() {
     // (longshot) RDNA1 and older GPUs: no mesh shaders, but task and mesh programs run as compute shaders
     // that write their vertices to buffers, drawn through an ordinary graphics pipeline. It needs buffer device addresses.
     dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !env_on("RX_VK_NO_MESH_FALLBACK");
-    if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
+    if (dev.mesh_fallback)
+        logf("vk: mesh shaders %s: task and mesh programs run as compute shaders (issue 640 fallback)",
+             dev.mesh_capable ? "offered by the driver but not used" : "not offered by the driver");
     bool task_mesh_fallback = false;
 #ifdef _WIN32
     // AMD's Windows driver can time out on Navi 21 to 23 on task + mesh draws and on mesh-only draws: mesh_mode.h
@@ -748,7 +778,10 @@ bool create_device() {
     logf("vk: mesh shaders: %s, from %s: %s", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
          mesh_choice.why, dev.mesh_shader ? (dev.mesh_only_fallback ? "mesh-only and task + mesh draws on the compute path"
                             : dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
-                         : dev.mesh_fallback ? "the compute path" : "none");
+                         : dev.mesh_fallback ? (radv_compute ? "the compute path (RADV's own can hang the GPU, issue 2245)"
+                                                            : "the compute path")
+                                             : "none");
+    mesh_note = mesh_rule::device_note(dev.mesh_capable, dev.mesh_shader, mesh_mode, radv_compute);
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
     dev.features = f.features;
@@ -828,6 +861,7 @@ bool create_device() {
         // (longshot) the translation's vendor and driver workarounds (device_policy.h fetch_bounds, nan_bits, gather_offset),
         // each forced by its RX_VK_ switch
         device_policy_fixes_env(dev.policy, [](const char* name) -> const char* { return getenv(name); });
+        native_zstd_default.store(dev.policy.native_zstd_keep_core ? 2 : 1, std::memory_order_release);
         logf("vk: vendor fixes for %s (%s): out-of-bounds texel fetches 0 %d, NaN tests by bits %d, gather offset %d",
              dev.driver.driverName, dev.driver.driverInfo, (int)dev.policy.fetch_bounds, (int)dev.policy.nan_bits,
              (int)dev.policy.gather_offset);
@@ -963,6 +997,15 @@ void retire_swapchain() {
 
 bool invalidate_lost_surface(VkResult result) {
     if (result != VK_ERROR_SURFACE_LOST_KHR) return false;
+    // (longshot, review) the same rule as the close and create_swapchain, at this third choke:
+    // retire clears the vector the presenter thread reads after its waits. A present in the making
+    // keeps surface and chain: handled anyway — the next frame asks again (acquire answers lost
+    // again, present_out reports again), so a wedge costs frames, never a destroyed chain
+    if (!swapchain_made_ready()) {
+        static unsigned told = 0;
+        if (told++ < 8) logf("vk: the surface is lost but a present is in the making: surface and chain wait for it");
+        return true;
+    }
     retire_swapchain();
     if (dev.surface) vkDestroySurfaceKHR(dev.instance, dev.surface, nullptr);
     dev.surface = VK_NULL_HANDLE;
@@ -979,7 +1022,12 @@ int system_hdr_on(std::string* display);
 }
 
 bool create_swapchain(uint32_t width, uint32_t height) {
-    present_thread_drain();   // (no present of the old swapchain still being made on the presenter thread)
+    // (longshot, review) the drain's answer is not decoration: the presenter thread holds this
+    // chain's image index across its fence and shown-waits and reads dev.swap_rendered[index]
+    // after, and this function's retire (oldSwapchain passes even on a failed create) destroys the
+    // chain and clears that vector. A present still in the making keeps its chain: answer not-made,
+    // and the resize path re-publishes its request for the next frame (vk_replay.cpp)
+    if (!swapchain_made_ready()) return false;
     if (!dev.surface) {
         window_size(&width, &height);
         if (!width || !height) return false;
@@ -1395,7 +1443,7 @@ void prepare_watchdog() {
     prepare_moved(0, 0, 0);
     std::thread([] {
         static const char* const parts[] = {"the shader programs", "the predicted pipelines", "the noted pipelines",
-                                            "the pipeline cache's save"};
+                                            "the pipeline cache's save", "the FSR 4 pipelines"};
         const int64_t limit_s = stall_s > 0 ? stall_s : 300;   // (the save's lines stop after this, whatever RX_VK_PREPARE_STALL_S)
         const int save_stall_s = stall_s * 2;   // (a risky save's stop: twice the parts', above)
         const int64_t compile_stall_s = stall_s * 3;   // (a compile with a CPU at work: three times, 900 s by default)
@@ -1423,12 +1471,13 @@ void prepare_watchdog() {
                 std::lock_guard lk(prepare_seen_mu);
                 at = prepare_seen;
             }
-            const char* what = at.part >= 0 && at.part < 4 ? parts[at.part] : "the preparation";
+            const char* what = at.part >= 0 && at.part < (int)std::size(parts) ? parts[at.part] : "the preparation";
             const int64_t still = (now - at.moved_ms) / 1000;
             const int faults = driver_faults();
             const bool left = prepare_left_workers();
             const bool risky = faults > 0 || left;   // (the driver may be stuck: the save too can wait for ever)
-            const bool compiling = at.part < 3 && cpu_busy && under_way;   // (a compile at work; one with no CPU is stuck)
+            const bool saving = at.part == 3;
+            const bool compiling = !saving && cpu_busy && under_way;   // (a compile at work; one with no CPU is stuck)
             const int64_t part_stall_s = !compiling ? stall_s : prepare_long_compiles() ? long_compile_stall_s : compile_stall_s;
             // (what it waits on: after a fault in the driver, most likely the driver; else the driver or the disk, a slow one
             // reading the caches)
@@ -1439,8 +1488,8 @@ void prepare_watchdog() {
             if (faults != driver_faults_seen.exchange(faults))
                 logf("vk: preparation: the GPU driver faulted %d time%s so far (above): a driver can stop responding after one, so a "
                      "stop here would be why", faults, faults == 1 ? "" : "s");
-            if (stall_s > 0 && (at.part < 3 ? still >= part_stall_s : risky && still >= save_stall_s)) {
-                if (at.part < 3)
+            if (stall_s > 0 && (!saving ? still >= part_stall_s : risky && still >= save_stall_s)) {
+                if (!saving)
                     logf("vk: preparation: STOPPED: nothing moved for %lld s in %s (%zu of %zu): the GPU driver stopped responding%s. "
                          "The rest is built in play, when first drawn; updating the GPU driver may help", (long long)part_stall_s, what,
                          at.done, at.total, faults ? " after it faulted (above)" : "");
@@ -1458,7 +1507,7 @@ void prepare_watchdog() {
             static int64_t said_ms = 0;
             if (now - said_ms < quiet_s * 1000) continue;
             const bool quiet = now - last_log_ms.load(std::memory_order_relaxed) >= quiet_s * 1000;
-            if (at.part >= 3) {
+            if (saving) {
                 if (!quiet) continue;
                 if (risky)
                     logf("vk: preparation: still writing %s (%lld s), %s. Stopped at %d s if it does not end", what,
@@ -1665,6 +1714,10 @@ bool started_up() {
         };
         printf("@@stage shaders Preparing shaders\n");
         fflush(stdout);
+        // The FSR driver may need several GB of commit before the game shader cache is loaded.
+        prepare_moved(4, 0, 0);
+        fsr4_prepare_shaders();
+        prepare_moved(0, 0, 0);
         {
             size_t guess[3];
             prepare_guess(guess);
@@ -1813,8 +1866,7 @@ void auto_profile() {
     hw.mesh_native = dev.mesh_capable;   // (the card's, not this run's mode: Linux AMD's Automatic is Compute)
     hw.mesh_as_compute = dev.mesh_capable && !dev.mesh_shader;
     hw.rtx = hw.vendor == ::auto_settings::NVIDIA && strstr(p.deviceName, "RTX");
-    // (RDNA 4: "AMD Radeon RX 9070 XT", RADV's "(RADV GFX1201)")
-    hw.rdna4 = hw.vendor == ::auto_settings::AMD && (strstr(p.deviceName, "RX 9") || strstr(p.deviceName, "GFX12"));
+    hw.rdna4 = is_rdna4(p.vendorID, p.deviceID, p.deviceName);
     // (the Steam Deck's APU, LCD and OLED, or Steam's flag on an integrated GPU: Steam sets SteamDeck=1 wherever it runs as on a
     // Deck, Gaming Mode sessions on desktops with a discrete card too, which are no handheld)
     const char* deck = getenv("SteamDeck");
@@ -1874,7 +1926,15 @@ int start(void* hwnd) {
     if (!open_window_surface(true)) return 0;
     RECT r{};
     GetClientRect((HWND)hwnd, &r);
-    if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
+    {
+        // (longshot) the same guard as the SDL path below: hos_win runs the renderer on its own
+        // thread, so the window's close (display.c, main thread) can be asked while the initial
+        // chain is being made. The close takes present_image_mu through its retire; take it here
+        // and check its flag — a window already closing gets no chain.
+        std::lock_guard pi(present_image_mu);
+        if (dev.closing.load(std::memory_order_acquire)) return 0;
+        if (!create_swapchain((uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top))) return 0;
+    }
 #else
     const MkwVkWindow* w = (const MkwVkWindow*)hwnd;
     prep_window = w;
@@ -1889,9 +1949,18 @@ int start(void* hwnd) {
         logf("vk: SDL returned zero drawable size %dx%d", width, height);
         return 0;
     }
-    if (!create_swapchain((uint32_t)width, (uint32_t)height)) {
-        logf("vk: swapchain creation failed for drawable %dx%d", width, height);
-        return 0;
+    {
+        // (longshot) the close (mkwvk_close_asked) can be asked while the renderer is still coming
+        // up: SDL runs it on the window's thread. present_image's guard covers presents, but the
+        // initial chain is made here, outside any present — so take the same lock the close takes
+        // and check its flag, the same order present_image uses (present_image_mu, then present_mu
+        // inside). A window already closing gets no chain: the host ends the process next either way.
+        std::lock_guard pi(present_image_mu);
+        if (dev.closing.load(std::memory_order_acquire)) return 0;
+        if (!create_swapchain((uint32_t)width, (uint32_t)height)) {
+            logf("vk: swapchain creation failed for drawable %dx%d", width, height);
+            return 0;
+        }
     }
 #endif
     if (!started_up()) {
@@ -1948,6 +2017,8 @@ void mkwvk_close_asked(void) {
     descriptor_arrays_log("close");   // (the indexed descriptor arrays of the programs translated or read: vk_programs.cpp)
     module_ids_flush();
     page_table_census_log("close");   // (the guest pools the page table cannot reach: how many came, vk_memory.cpp)
+    page_table_check_close();         // (RX_VK_GP_TABLE: its bindings covered, and with =2 the loads checked, vk_draw.cpp)
+    import_stats_log("close");        // (guest-memory imports made, refused by the driver, held after a refusal: vk_memory.cpp)
     fsr4_close();             // (AMD FSR 4's tuned layers: their background builds stopped first, what they made then saved below)
     pipeline_cache_close();   // (in play: the pipelines made since the last save, kept for the next start)
     if (prep_running.load() && !prepare_stopped()) {
@@ -1956,10 +2027,55 @@ void mkwvk_close_asked(void) {
         if (WaitForSingleObject(prep_ended, 10000) != WAIT_OBJECT_0) logf("vk: the preparation did not stop within 10 s: closing anyway");
     }
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
+    // (longshot) let go of the window's swapchain and everything it pins while the process is still here. The compositor
+    // (gamescope on the Deck, any Wayland/X server) reprograms the display right as the window goes away, and on the Deck an
+    // atomic commit there failed with ENOMEM after a long run had this process holding most of the system's memory: the
+    // commit's own allocation failed, the modeset failed, and the player saw the emulator's last frames as garbage over the
+    // Game Mode UI until the display was rebuilt by a mode switch. Freeing the swapchain's images (the VRAM they hold) and
+    // idling the device before we exit is that headroom. Deliberate, not a crash path: dev.closing above tells every
+    // presenter not to make a chain again; the lost-surface path stays for when the compositor itself dies. The presenter
+    // thread is drained first and present_image_mu is held through the retire (the same lock order present_image itself
+    // uses: present_image_mu, then present_mu), so no present is mid-acquire on an image being destroyed.
+    dev.closing.store(true, std::memory_order_release);
+    // (longshot) a present can hold this mutex for as long as its fences run (the lost-window
+    // acquire waits UINT64_MAX under it): the close must not hang behind one and stop the window
+    // from closing at all. Take the mutex with a few seconds of patience; no mutex, or a presenter
+    // thread that does not land its hand-offed present, leaves the chain to the process exit —
+    // which is exactly what happened before this block existed — rather than destroy under a
+    // present that is still running (present_commit's swapchain check guards the stale one, not
+    // one mid-flight).
+    const auto give_up_at = std::chrono::steady_clock::now() + std::chrono::seconds(5);   // (one patience budget for both locks)
+    std::unique_lock pi(present_image_mu, std::try_to_lock);   // (vk_replay.cpp: every present, direct and frame generated, is under this)
+    for (int waited = 0; !pi.owns_lock() && waited < 5000; waited += 50) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::unique_lock attempt(present_image_mu, std::try_to_lock);
+        if (attempt.owns_lock()) pi = std::move(attempt);
+    }
+    if (!pi.owns_lock() || !present_thread_drain()) {
+        logf("vk: the window is closing with a present still running: the swapchain goes with the process, as it always did");
+        return;
+    }
+    // (longshot) and the queue's lock on the same patience: queue_flush holds dev.present_mu across
+    // vkQueueSubmit2 (vk_replay.cpp), so a submit the driver stalled leaves the image mutex free and the
+    // presenter idle: both checks above pass and an unbounded wait here would hold the window thread
+    // open instead of letting the window close. No lock: the chain goes with the process, as the two
+    // checks above already do (the DLSS close waits for this same mutex the same way).
+    std::unique_lock qk(dev.present_mu, std::defer_lock);
+    while (!qk.try_lock() && std::chrono::steady_clock::now() < give_up_at) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (!qk.owns_lock()) {
+        logf("vk: the window is closing with the queue busy: the swapchain goes with the process, as it always did");
+        return;
+    }
+    const bool had = dev.swapchain != VK_NULL_HANDLE;   // (a window that never presented: nothing was ever made)
+    retire_swapchain();   // (device_wait_idle_locked, the rendered semaphores, the chain: vk_main.cpp above)
+    if (had) logf("vk: the window is closing: the swapchain is let go with its images (what the compositor needs back for its final frames)");
 }
 
 static MkwVkHost host_storage;
 
+static const MkwVkRenderer* init_body(const MkwVkHost* h);
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1967,6 +2083,14 @@ __declspec(dllexport)
 __attribute__((visibility("default")))
 #endif
 const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
+    try {
+        return init_body(h);
+    } catch (const std::exception& e) {
+        mkwvk::cxx_escape::escaped("mkwvk_init", e);   // (said, then the game stops; before the hooks are set, on stderr)
+    }
+}
+/// mkwvk_init's work, behind its catch
+static const MkwVkRenderer* init_body(const MkwVkHost* h) {
     using namespace mkwvk;
     if (!h) return nullptr;
     if (h->version < 14 || h->version > MKWVK_API_VERSION) {
@@ -1974,11 +2098,41 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
         return nullptr;
     }
     std::memset(&host_storage, 0, sizeof(host_storage));
-    const size_t copy_size = (h->version == 14) ? (offsetof(MkwVkHost, wide_menus) + sizeof(h->wide_menus))
-                                                : sizeof(MkwVkHost);
+    const size_t copy_size =
+        h->version < 15 ? offsetof(MkwVkHost, slept_ns) :
+        h->version < 17 ? offsetof(MkwVkHost, prompts_live) :
+        h->version < 20 ? offsetof(MkwVkHost, screen_size) :
+        h->version < 22 ? offsetof(MkwVkHost, take_text) :
+        h->version < 23 ? offsetof(MkwVkHost, options_path) :
+        h->version < 24 ? offsetof(MkwVkHost, audio_output_count) :
+        h->version < 25 ? offsetof(MkwVkHost, mic_test) :
+        h->version < 26 ? offsetof(MkwVkHost, perf_info) :
+        h->version < 27 ? offsetof(MkwVkHost, main_thread_times) :
+        h->version < 28 ? offsetof(MkwVkHost, out_of_memory) :
+        h->version < 29 ? offsetof(MkwVkHost, monitor_count) :
+        h->version < 30 ? offsetof(MkwVkHost, perf_tracking) :
+        h->version < 32 ? offsetof(MkwVkHost, rumble_test) :
+        h->version < 33 ? offsetof(MkwVkHost, nfc_count) :
+        h->version < 34 ? offsetof(MkwVkHost, ab_frame) :
+        h->version < 35 ? offsetof(MkwVkHost, mod_info) :
+        h->version < 36 ? offsetof(MkwVkHost, ab_value) :
+        h->version < 41 ? offsetof(MkwVkHost, output_preview_request) :
+        sizeof(MkwVkHost);
     std::memcpy(&host_storage, h, std::min(sizeof(host_storage), copy_size));
     host = &host_storage;
     std::set_new_handler(new_refused);   // (a refused C++ allocation waits, then says out of memory)
+    // (a C++ exception out of the renderer: said with its type and what(), then out of memory or the FATAL line: cxx_escape.h)
+    cxx_escape::g_hooks.log = [](const char* line) { logf("%s", line); };
+    cxx_escape::g_hooks.out_of_memory = [](const char* what) {
+        if (host && host->version >= 28 && host->out_of_memory) host->out_of_memory(what);   // (does not return)
+    };
+    cxx_escape::g_hooks.fatal = [](const char* why) {   // (as vk_replay.cpp's replay_fatal: the crash window reads its "vk: FATAL:")
+        logf("vk: FATAL: %s", why);
+        if (host && host->log_flush) host->log_flush();
+        std::fprintf(stderr, "vk: FATAL: %s\n", why);
+        std::fflush(stderr);
+        std::_Exit(3);
+    };
     if (!load_global()) {
 #ifdef _WIN32
         logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)");
@@ -2003,7 +2157,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     logf("vk: %s, Vulkan %u.%u, driver %#x; mesh shaders %s, host memory import %s, pipeline libraries %s, "
          "maintenance5 %s",
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
-         dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",
+         dev.props.driverVersion, mesh_note, dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no", dev.maintenance5 ? "yes" : "no");
     logf("vk: driver: %s", driver_text().c_str());   // (the builders' Save my pipeline list reads it: nx2/pipeline_share.py)
     // (what this PC is, what it gets for it, and which of those a switch set: device_policy.h)
@@ -2032,6 +2186,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     table.resize = resize;
     table.describe = describe;
     fill_replay_table(table);
+    guard_renderer(table);   // (each function's exceptions said and stopped on, not left to the host's C: renderer_guard.h)
     return &table;
 }
 

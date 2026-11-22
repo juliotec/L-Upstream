@@ -109,6 +109,13 @@ On Windows with the installed nightly Launcher, paste `%APPDATA%\Longshot\save\`
 and press **Enter**. `%APPDATA%` is your **Roaming** folder; `%LOCALAPPDATA%` is **Local**, where the launcher keeps backups.
 Starting `longshot.exe` directly without `--user` does not use the launcher's shared save folder.
 
+`save-work/<user id>/` beside `save/` is the game's working copy: the game writes there, and a finished save goes into
+`save/` one file at a time. A program reading during a save can see files from different saves; copy the folder while the
+game is closed. You can delete the working copy while the game is closed. Leave `<user id>.journal` beside it alone: when
+it is there, a save was interrupted while it was being put in place, and the next start finishes it. If recovery fails,
+the game cannot mount the save until recovery succeeds. `<user id>.lock` marks the
+running game that uses the folder; it holds nothing and may stay. Save tools copy only `save/`.
+
 To keep your own copy, copy the save folder while the game is closed. Keep save files private.
 
 ## Where the emulators keep them

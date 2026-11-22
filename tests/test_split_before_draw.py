@@ -66,7 +66,7 @@ def main():
 
     # replay(): before the switch on the op, for the three plain draws only, and only one that will be recorded
     loop = block(replay, "void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end")
-    order("replay", loop, ["if (!dry && !worker && part_end_wanted &&", "h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT",
+    order("replay", loop, ["if (part_end_wanted &&", "h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT",
                            "s.render_enabled && !s.raster_discard)", "split_part(cmd);", "switch (h.op) {"])
     head = loop[: loop.index("switch (h.op) {")]
     for op in ("NOP_DRAW_MESH", "NOP_DISPATCH"):

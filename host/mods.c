@@ -16,9 +16,9 @@
    Every mod file is indexed once at the start (no disk lookups per open); nn_fs.c asks hos_mods_romfs for each rom:
    path and lists a folder's mod-only entries with the game's own (hos_mods_dir_extras). HOS_FS_OVERLAY (nn_fs.c) is
    looked at after this, so a test overlay wins over mods.
-   (hookshot) The resource size table (restbl.h): when the mods serve files, the game's table (or the button prompts' copy of
-   it) is served with every enabled mod's own table merged in (an entry larger than the game's wins) and the entry of every file
-   a mod serves raised to what its size needs: two mods that each grow files load together. Written to
+   (hookshot) The resource size table (restbl.h): when the mods serve files, the game's table (the button prompts' font entry
+   raised in it, host/prompts.c) is served with every enabled mod's own table merged in (an entry larger than the game's wins)
+   and the entry of every file a mod serves raised to what its size needs: two mods that each grow files load together. Written to
    modcache/rsizetable.zs in the game folder at each start that needs it (merge_sizes).
    (hookshot) ExeFS patches are applied when the game is built (nx2/exefs_patches.py: the code is compiled ahead of time from
    the patched instructions, their data writes are in image.bin). The build lists what it applied in exefs_patches.txt in the
@@ -275,6 +275,7 @@ static Synced *synced;   /* the Mods tab's order and switches when the list was 
 static int nsynced;
 static int list_bad, unsaved;           /* mods.json is not a list; the last change could not be written: the Mods tab says so (mod_text) */
 static char old_state_path[MAX_PATH];   /* longshot_mods.txt in the game folder: the list of builds before mods.json */
+static char state_game_dir[MAX_PATH];   /* the game folder state_file was given: note_state_file's, after a write too */
 static char state_note[MAX_PATH];       /* modcache/mods_json.txt: where the list is, for the build (note_state_file) */
 
 /* A file under limit bytes, a NUL after it, *len its length. NULL with *why: it cannot be opened or held (which may pass), or
@@ -333,6 +334,7 @@ static void state_file(const char *game_dir) {
     if (n < 0 || n >= (int)sizeof state_path) snprintf(state_path, sizeof state_path, "%smods.json", game_dir);
     snprintf(old_state_path, sizeof old_state_path, "%slongshot_mods.txt", game_dir);
     snprintf(state_note, sizeof state_note, "%smodcache/mods_json.txt", game_dir);
+    snprintf(state_game_dir, sizeof state_game_dir, "%s", game_dir);
 }
 
 /* The game folder's list into the user folder, once: a player who started the game by itself and starts it through the
@@ -604,6 +606,7 @@ static int write_state(void) {
     if (ok) {
         sync_tab();
         list_bad = unsaved = 0;
+        note_state_file(state_game_dir);   /* (a list this write made first: the build is told now, not at the next start) */
         return 1;
     }
     hos_log("mods: cannot write %s: the change is kept and written at the next one", state_path);
@@ -711,7 +714,7 @@ static void exefs_status(const char *game_dir) {
 }
 
 /* ---- the size table */
-static int fit_sizes(const char *game_dir) {
+static int fit_sizes(void) {
     if (!sizes_rel[0]) return 0;
     int any = nshipped > 0;
     for (size_t i = 0; i < table_cap && !any; i++) any = table[i].key && !table[i].is_dir;
@@ -723,20 +726,20 @@ static int fit_sizes(const char *game_dir) {
     uint8_t *raw = hos_zs_read(path, &n, 64u << 20);
     Restbl *base = raw ? restbl_parse(raw, n) : NULL;
     free(raw);
-    /* (what is served without mods: the button prompts' copy where they made one, with room for their fonts; else the game's) */
-    /* (prompts.c hos_prompts_romfs serves prompts/rsizetable.zs whenever the build made one: read here, not through it, as its
-       first call chooses the controller's face, which is not known yet) */
-    char prompts_table[MAX_PATH];
-    snprintf(prompts_table, sizeof prompts_table, "%sprompts/rsizetable.zs", game_dir);
+    /* (the game's own table; the button prompts' font entry raised in it as prompts.c raises it in the table it serves without
+       mods (hos_prompts_font_entry, asked here, not through hos_prompts_romfs, as its first call chooses the controller's face,
+       which is not known yet). Never a table the build made: another dump or game version may have made it, #1109) */
     Restbl *out = NULL;
-    if ((raw = hos_zs_read(prompts_table, &n, 64u << 20)) != NULL) {
+    if ((raw = hos_zs_read(path, &n, 64u << 20))) {
         out = restbl_parse(raw, n);
         free(raw);
     }
-    if (!out && (raw = hos_zs_read(path, &n, 64u << 20))) {
-        out = restbl_parse(raw, n);
-        free(raw);
-    }
+    uint32_t hos_prompts_font_entry(uint32_t entry);   /* prompts.c */
+    uint32_t font_entry = 0, font_need = 0;
+    char font_key[MAX_PATH];
+    restbl_key("Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs", font_key, sizeof font_key);
+    if (base && out && restbl_get(base, font_key, &font_entry) && (font_need = hos_prompts_font_entry(font_entry)) > font_entry)
+        restbl_raise(out, font_key, font_need);
     if (!base || !out) {   /* (as without the merge: the last enabled mod's own table, sizes_fallback) */
         hos_log("mods: cannot read the resource size table %s: %s", sizes_rel,
                 sizes_fallback[0] ? "the last mod's own table is served" : "mod files larger than the game's may not load");
@@ -888,7 +891,7 @@ void hos_mods_init(const char *image_path) {
     }
     for (int s = 0; s < nshipped; s++)
         if (!shipped[s].other && mods[shipped[s].mod].enabled) snprintf(sizes_fallback, sizeof sizes_fallback, "%s", shipped[s].host);
-    if (fit_sizes(game_dir)) {
+    if (fit_sizes()) {
         /* (served in the game's table's place: hos_mods_romfs) */
     }
     for (int i = 0; i < nmods; i++) mod_text(&mods[i]);

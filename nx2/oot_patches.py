@@ -30,12 +30,16 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   (f_80797240) asks the Compaction thread for a round whenever none runs (its flag bit 1, always set), and each texture a
   round moved is made again; hos_oot_tex_compact_due says whether it may ask now (HOS_TEX_COMPACT_MS: once a second as
   shipped, 0 at every frame, the game's own). The round itself is untouched.
+- Sprint (host/oot_sprint.c): two places load Link's input flags, whose bit 4 is the dash input, the game's own run after a
+  roll: his movement update (f_804caa80, at 0x804ce798, for the sprint's start and keep tests) and his stance and camera
+  update (f_80c225d0, at 0x80c27f3c). A call right after each load (hos_sprint_link, hos_sprint_stance) ORs the bit in
+  while Sprint runs. A and the game's buttons are left alone.
 - Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c); a tick whose gates refuse reports no wait, so a dialogue keeps its buttons.
 - The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers
   (host/oot_ocb_hold.h): the preload manager's update (f_832b9880) picks one of the map's neighbours each frame and a
   change cancels the one loading or loaded; a choice flickering between two (or in and out of a radius) reloaded them over
   and over with Link on one spot. Its choice goes through hos_oot_ocb_pick, which takes another neighbour only once it
-  stays the choice HOS_OCB_HOLD_MS (0: the game's own at every frame).
+  stays the choice HOS_OCB_HOLD_MS (0: the game's own at every frame). The supported build only.
 - The game's job barriers waiting for their work (host/oot_barrier.h): three parallel-for jobs (f_800998a0, f_800738e0,
   f_8007e200) sleep 20 us and look again while the masks they poll are not full; the sleep is hos_oot_barrier_wait, which
   ends when a polled word moves, and each OR into such a word wakes the waiters (hos_oot_barrier_wake). On by default;
@@ -303,6 +307,26 @@ def patch_menu_tick(source):
     hook = "    hos_oot_menu_tick(c, c->x[0]);   /* (nx2/oot_patches.py: the menus' mouse) */\n"
     return (source[:at] + hook + source[at:]).replace(
         '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_menu_tick(Ctx *c, uint64_t screen);\n', 1)
+
+
+def patch_gameplay_hud_screen(source):
+    """Wrap f_802f1380's body so the shared map's projection is scoped to its update, including all exits."""
+    start = source.find(MENU_TICK_HEAD)
+    if start < 0:
+        return None
+    if "hos_gameplay_hud_screen(c," in source:
+        return source
+    end = source.find("\n}", start)
+    if end < 0:
+        return None
+    end += 2
+    # Keep the game's body beside its original entry for the generated-code splitter and guest local checks.
+    body = source[start:end].replace(MENU_TICK_HEAD, "void gameplay_hud_update_game(Ctx *__restrict A64_NOESC c) {\n", 1)
+    wrapper = (MENU_TICK_HEAD +
+               "    void gameplay_hud_update_game(Ctx *__restrict A64_NOESC c);\n"
+               "    hos_gameplay_hud_screen(c, gameplay_hud_update_game);\n}\n\n")
+    return (source[:start] + wrapper + body + source[end:]).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern void hos_gameplay_hud_screen(Ctx *c, A64Fn update);\n', 1)
 
 
 TEXT_DRAW_HEAD = "void f_8152b670(Ctx *__restrict A64_NOESC c) {\n"
@@ -764,6 +788,25 @@ DRIVE_READ = ("    c->x[%d]=recomp_load64(c,c->x[20] + 240);\n"
 DRIVE_CALL = ("    hos_oot_drive_target(c->x[20], c->x[%d], " + SOUND_SLOT + " + 2192);"
               "   /* (nx2/oot_patches.py: Link's driven body follows its target above 60 fps) */\n")
 DRIVE_DECL = "extern void hos_oot_drive_target(uint64_t controller, uint64_t body, uint64_t slot);\n"
+# A jump's takeoff speed (f_80b97d10: sqrt(2 g h) - g dt / 2 along the character's up, written to the vector its caller gave in x2,
+# kept in x19): on a backflip Link's body gets it for one physics update, so above 60 fps his hop was lower (one shorter step of
+# it) and a backflip down a slope took off twice. After its last store, hos_oot_jump_speed(the vector) keeps the speed for the
+# takeoff's velocity (TAKEOFF_VELOCITY_* below; host/oot_high_fps.h oot_takeoff_rest_speed). x19 is c->x[19] where the lift
+# keeps the function as the edits expect, x19_ in a lift with register locals.
+TAKEOFF_HEAD = "void f_80b97d10(Ctx *__restrict A64_NOESC c) {\n"
+TAKEOFF_STORE = "    {{ {{ uint64_t _v=0; memcpy(&_v,&c->vreg[2][0],4); recomp_store32(c,({x}+8ULL),_v); }} }}\n"
+TAKEOFF_X19 = ("c->x[19]", "x19_")
+TAKEOFF_CALL = "    hos_oot_jump_speed({x});   /* (nx2/oot_patches.py: a jump's takeoff above 60 fps) */\n"
+TAKEOFF_DECL = "extern void hos_oot_jump_speed(uint64_t vec);\n"
+# The takeoff's velocity: f_804f5030 hands Havok a body's velocity with the world's set-velocity call (its vtable +0x190, at
+# 0x804f6694: x1 the body's id, x2 the linear velocity it reads, x19 the body's object), Link's takeoff speed on the takeoff's
+# update. hos_oot_takeoff_velocity(the object, the velocity, the game's time object's slot) before the call gives a body the rest
+# of a 60 fps takeoff step's rise on the next update when the game asks no vertical speed there (a backflip), above a 60 cap.
+# f_804f5030 is kept as the edits expect (DRIVE_HEAD), so the call is written one way.
+TAKEOFF_VELOCITY_SITE = "{ uint64_t _t = c->x[8]; c->x[30] = 0x804f6698ULL; A64_ICALL(c, _t); }\n"
+TAKEOFF_VELOCITY_CALL = ("    hos_oot_takeoff_velocity(c->x[19], c->x[2], " + SOUND_SLOT + " + 2192);"
+                         "   /* (nx2/oot_patches.py: a jump's takeoff above 60 fps) */\n")
+TAKEOFF_VELOCITY_DECL = "extern void hos_oot_takeoff_velocity(uint64_t object, uint64_t velocity, uint64_t slot);\n"
 
 # Below 60 fps, Havok cloth (Link's cap, romfs Phive/Cloth): the simulate operator's per-frame setup, f_81b3aa48, loads its step
 # context's time (x22 + 8) and stores it with a substep's (+44, +48 of its frame data). The time is a 60th whatever the frame, so the
@@ -866,7 +909,9 @@ def patch_tex_compact(s):
 
 # The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers (host/oot_ocb_hold.h
 # has why). f_832b9880 is the preload manager's update: at 0x832b9dc8 the unit it chose is in w21 (bit 31: none) and the
-# manager in x19; from there it asks for that unit and lets the others go. The choice goes through the host first.
+# manager in x19; from there it asks for that unit and lets the others go. The choice goes through the host first. The
+# supported build's lift only (patch_file): the host reads the manager as that build lays it out, and checks the layout
+# (and the build) again in the game before each read; a mismatch there gives the game's own choice.
 OCBH_HEAD = "void f_832b9880(Ctx *__restrict A64_NOESC c) {\n"
 OCBH_LABEL = "L_832b9dc8:;\n"
 OCBH_RE = re.compile(r"L_832b9dc8:;\nif \(\(\((x21_|c->x\[21\]) >> 31\) & 1\)\) \{ goto L_832b9e0c; \}\n")
@@ -1154,6 +1199,46 @@ def patch_drive_target(s):
     if done and DRIVE_DECL not in s:
         s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + DRIVE_DECL, 1)
     return s, done
+
+
+def patch_jump_speed(s):
+    """A jump's takeoff speed to the host after f_80b97d10's last store: (s, 1) when f_80b97d10 is in s with it (made now or
+    before), (s, 0) when it is not here or its store of the vector's last part is not found once, as written"""
+    at = _function(s, TAKEOFF_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    for x in TAKEOFF_X19:
+        store = TAKEOFF_STORE.format(x=x)
+        made = store + TAKEOFF_CALL.format(x=x)
+        if body.count(made) == 1:
+            return s, 1
+        if body.count(store) != 1:
+            continue
+        s = s[:head] + body.replace(store, made, 1) + s[end:]
+        if TAKEOFF_DECL not in s:
+            s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TAKEOFF_DECL, 1)
+        return s, 1
+    return s, 0
+
+
+def patch_takeoff_velocity(s):
+    """A body's velocity through the host before f_804f5030's set-velocity call: (s, 1) when f_804f5030 is in s with it (made now
+    or before), (s, 0) when it is not here or the call is not found once, as written"""
+    at = _function(s, DRIVE_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(TAKEOFF_VELOCITY_CALL + TAKEOFF_VELOCITY_SITE) == 1:
+        return s, 1
+    if body.count(TAKEOFF_VELOCITY_SITE) != 1 or TAKEOFF_VELOCITY_CALL in body:
+        return s, 0
+    s = s[:head] + body.replace(TAKEOFF_VELOCITY_SITE, TAKEOFF_VELOCITY_CALL + TAKEOFF_VELOCITY_SITE, 1) + s[end:]
+    if TAKEOFF_VELOCITY_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TAKEOFF_VELOCITY_DECL, 1)
+    return s, 1
 
 
 def patch_floor_carry(s):
@@ -1517,6 +1602,57 @@ def patch_ocarina_wait(s):
     return s
 
 
+# Sprint (host/oot_sprint.c): two places load Link's input flags, whose bit 4 is the dash input that makes him sprint.
+# Link's movement update, f_804caa80, loads them into x10 at 0x804ce798 for the sprint's start and keep tests; the stance
+# and camera update, f_80c225d0, loads their low byte into x8 at 0x80c27f3c. Link is in x19 at both. A call right after
+# each load ORs the bit in while Sprint runs.
+SPRINT_LINK_HEAD = "void f_804caa80(Ctx *__restrict A64_NOESC c) {\n"
+# Match the loads and their surrounding landmarks as patterns, not excerpts from lifted game code.
+# The named group ends at the instruction whose result the host hook changes.
+_SPRINT_LOAD = r"c->x\[%d\]\s*=\s*recomp_load%d\(c,\s*c->x\[%d\]\s*\+\s*%d\);\s*"
+SPRINT_LINK_AT = (r"L_804ce790:;\s*" + _SPRINT_LOAD % (10, 64, 19, 80) +
+                  _SPRINT_LOAD % (9, 32, 19, 44) +
+                  r"(?P<site>" + _SPRINT_LOAD % (10, 64, 10, 0) + r")")
+SPRINT_LINK_CALL = "    hos_sprint_link(c);   /* (nx2/oot_patches.py: Sprint) */\n"
+SPRINT_STANCE_HEAD = "void f_80c225d0(Ctx *__restrict A64_NOESC c) {\n"
+SPRINT_STANCE_AT = (_SPRINT_LOAD % (8, 64, 19, 80) +
+                    r"(?P<site>" + _SPRINT_LOAD % (8, 8, 8, 0) + r")" +
+                    r"if\s*\(\(\(c->x\[8\]\s*>>\s*4\)\s*&\s*1\)\)\s*\{\s*goto\s+L_80c27f54;\s*\}")
+SPRINT_STANCE_CALL = "    hos_sprint_stance(c);   /* (nx2/oot_patches.py: Sprint) */\n"
+SPRINT_DECL = "extern void hos_sprint_link(Ctx *c);\nextern void hos_sprint_stance(Ctx *c);\n"
+
+
+def _sprint_hook(source, head, pattern, call):
+    """Put call after the unique matching site in the function, or leave differing code alone."""
+    start = source.find(head)
+    if start < 0:
+        return source, 0
+    end = source.find("\nvoid f_", start + len(head))
+    end = end if end >= 0 else len(source)
+    body = source[start:end]
+    if call in body:
+        return source, 1
+    matches = list(re.finditer(pattern, body))
+    if len(matches) != 1:
+        return source, 0
+    at = matches[0].end("site")
+    body = body[:at] + call + body[at:]
+    source = source[:start] + body + source[end:]
+    if SPRINT_DECL not in source:
+        source = source.replace('#include "a64.h"\n', '#include "a64.h"\n' + SPRINT_DECL, 1)
+    return source, 1
+
+
+def patch_sprint_link(source):
+    """f_804caa80 calls hos_sprint_link right after it loads Link's input flags into x10 (0x804ce798): (source, found)"""
+    return _sprint_hook(source, SPRINT_LINK_HEAD, SPRINT_LINK_AT, SPRINT_LINK_CALL)
+
+
+def patch_sprint_stance(source):
+    """f_80c225d0 calls hos_sprint_stance right after it loads the flags' low byte into x8 (0x80c27f3c): (source, found)"""
+    return _sprint_hook(source, SPRINT_STANCE_HEAD, SPRINT_STANCE_AT, SPRINT_STANCE_CALL)
+
+
 def patch_file(s, name, protect_hearts=False):
     """One lifted file's patches (apply(), and nx2/chunks.py edit_c, a process per file): (its text, the places counted in it, the
     lines to print). The counts add up over the files; report() decides from the sums"""
@@ -1543,6 +1679,11 @@ def patch_file(s, name, protect_hearts=False):
         out = tick
         counts["menu tick hook"] += 1
         lines.append("oot_patches: the menus' update hook in " + name)
+    hud = patch_gameplay_hud_screen(out) if protect_hearts else None
+    if hud is not None:
+        out = hud
+        counts["gameplay HUD map hook"] += 1
+        lines.append("oot_patches: the shared map's scoped gameplay HUD placement in " + name)
     draw = patch_text_draw(out) if protect_hearts else None
     if draw is not None:
         out = draw
@@ -1590,6 +1731,13 @@ def patch_file(s, name, protect_hearts=False):
         if ocw != out:
             lines.append("oot_patches: the ocarina note wait in " + name)
         out = ocw
+    if protect_hearts:   # (the supported build's functions)
+        for what, patch in (("sprint link", patch_sprint_link), ("sprint stance", patch_sprint_stance)):
+            sprint, n = patch(out)
+            counts[what] += n
+            if sprint != out:
+                lines.append("oot_patches: Sprint's %s site in %s" % (what.split()[1], name))
+            out = sprint
     out, n = fixed_scale(out)
     if n:
         counts["fixed path's scale"] += 1
@@ -1689,7 +1837,8 @@ def patch_file(s, name, protect_hearts=False):
     if texc != out:
         lines.append("oot_patches: the texture heap's compaction asked for through the host in " + name)
     out = texc
-    ocbh, found = patch_ocb_hold(out)
+    # (the supported build's only: the host reads the manager as that build lays it out, host/oot_ocb_hold.h)
+    ocbh, found = patch_ocb_hold(out) if protect_hearts else (out, 0)
     counts["preload choice"] += found
     if ocbh != out:
         lines.append("oot_patches: the preload manager's choice of a neighbouring map through the host in " + name)
@@ -1739,6 +1888,16 @@ def patch_file(s, name, protect_hearts=False):
     if drive != out:
         lines.append("oot_patches: Link's driven body's target above 60 fps in " + name)
     out = drive
+    jump, found = patch_jump_speed(out)
+    counts["jump takeoff"] += found
+    if jump != out:
+        lines.append("oot_patches: a jump's takeoff speed above 60 fps in " + name)
+    out = jump
+    velocity, found = patch_takeoff_velocity(out)
+    counts["takeoff velocity"] += found
+    if velocity != out:
+        lines.append("oot_patches: a jump's takeoff velocity above 60 fps in " + name)
+    out = velocity
     cue, found = patch_song_cue(out)
     counts["song note flag"] += found
     if cue != out:
@@ -1755,6 +1914,7 @@ def report(paths, counts, protect_hearts=False):
     if protect_hearts:   # (the supported build's: these places are its functions)
         done["menu focus hook"] = 0
         done["menu tick hook"] = 0
+        done["gameplay HUD map hook"] = 0
         done["text draw hook"] = 0
         done["glyph hook"] = 0
         done["text layout hook"] = 0
@@ -1788,7 +1948,7 @@ def report(paths, counts, protect_hearts=False):
         print("oot_patches: WARNING: the music manager's time was found %d times, not once" % total["music manager time"])
     if total["texture compaction"] != 1:   # (without it HOS_TEX_COMPACT_MS does nothing: the game compacts at every frame)
         print("oot_patches: WARNING: the texture heap's compaction request was found %d times, not once" % total["texture compaction"])
-    if total["preload choice"] != 1:   # (without it HOS_OCB_HOLD_MS does nothing: a flickering choice reloads the neighbours)
+    if protect_hearts and total["preload choice"] != 1:   # (without it HOS_OCB_HOLD_MS does nothing: the neighbours reload)
         print("oot_patches: WARNING: the preload manager's choice was found %d times, not once" % total["preload choice"])
     if total["music manager flags"] != 1:   # (without it, above 60 fps the battle music can play on after a fight)
         print("oot_patches: WARNING: the music manager's change flags were found %d times, not once" % total["music manager flags"])
@@ -1803,6 +1963,10 @@ def report(paths, counts, protect_hearts=False):
         print("oot_patches: WARNING: a moving floor's carry was found at %d of %d places" % (total["floor carry"], len(FLOOR_SITES)))
     if total["driven target"] != len(DRIVE_REGS):   # (without them, above 60 fps Link's pull-up onto a ledge falls short)
         print("oot_patches: WARNING: the driven body's target was found at %d of %d places" % (total["driven target"], len(DRIVE_REGS)))
+    if total["jump takeoff"] != 1:   # (without it, above 60 fps Link's jumps hop lower and a backflip down a slope takes off twice)
+        print("oot_patches: WARNING: a jump's takeoff speed was found %d times, not once" % total["jump takeoff"])
+    if total["takeoff velocity"] != 1:   # (without it the takeoff speed is kept and not used: the hop is the game's)
+        print("oot_patches: WARNING: the set-velocity call for a jump's takeoff was found %d times, not once" % total["takeoff velocity"])
     if total["cloth time"] != 1:   # (without it, below 60 fps Link's cap and the other cloth run slow: they swing out and settle slowly)
         print("oot_patches: WARNING: the cloth's time was found %d times, not once" % total["cloth time"])
     if total["cloth solve"] != 1:   # (without it, above 60 fps with HOS_FPS_CLOTH_60=1 the cloth is still solved every frame)
@@ -1815,6 +1979,9 @@ def report(paths, counts, protect_hearts=False):
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
     if protect_hearts and speed_hooks != len(SPEED_PLACES):
         print("oot_patches: WARNING: the movement speed's places were found %d times, not %d" % (speed_hooks, len(SPEED_PLACES)))
+    if protect_hearts and (total["sprint link"], total["sprint stance"]) != (1, 1):   # (without them Sprint does nothing)
+        print("oot_patches: WARNING: Sprint's sites were found %d and %d times of 1 each (movement, stance): Sprint does "
+              "nothing" % (total["sprint link"], total["sprint stance"]))
     if protect_hearts and total["opening skip"] != 3:
         print("oot_patches: WARNING: the opening skip was found at %d of 3 functions" % total["opening skip"])
     if protect_hearts and camera_speed != len(CAMERA_SPEED_HEADS):
@@ -1859,8 +2026,11 @@ def apply(gen, *, protect_hearts=False, required=False):
 # - f_810a7b70 sets up the display-size object (B = [[0x84ca29c0]+216]) from a config (x1): its docked size list (+8, first
 #   2560 x 1440) is the frame's base (B+244; the frame is the base times the graphics scale's factor, f_806702e0, capped by the
 #   scale's display class: docked 3840 x 2160 at scale 0). Its first entry asks the host when it differs.
-OUT_DECL = "uint32_t hos_output_size(int height);\nuint64_t hos_rt_pool_size(uint64_t game);\n"
+OUT_DECL = "uint32_t hos_output_size(int height);\nuint64_t hos_rt_pool_size(uint64_t game);\nint hos_defer_native_output_rebuild(Ctx *c);\n"
 OUT_EDITS = [
+    ("void f_80547fc0(Ctx *__restrict A64_NOESC c) {\n",
+     "void f_80547fc0(Ctx *__restrict A64_NOESC c) {\n"
+     "    if (hos_defer_native_output_rebuild(c)) return;\n"),
     # (the picture's 2560 x 1440 at 0x81202ee4, not f_831f3200's copy at +0xb68; nx2/oot_wide.py's widescreen size, after it,
     # stays over it: host/hos_main.c makes that one at this height)
     ("    c->x[8] = 0xa00ULL;\n    c->x[8] = (c->x[8] & ~(0xFFFFULL<<32)) | (0x5a0ULL<<32);\n"

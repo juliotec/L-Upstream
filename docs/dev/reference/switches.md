@@ -107,7 +107,10 @@ Keys whose numbers are not obvious from the row:
 
 | Key | Values |
 |---|---|
-| `hud_layout` | The HUD layout row, on a screen that is not 16:9: 0 the HUD at the screen's edges (default), 1 in the middle 16:9. Read at each present (`host/hos_wide_ui.c`); `HOS_WIDE_UI` stands over it |
+| `grass_distance` | The short decorative blades' reach: 0 Game's (default; radius 22 m, blades thinned from 12 m to about 20 m), 1 2x, 2 3x, 3 4x. The radius and both fades extend by that factor at once. It does not change the large-scale simulated turf, whose separate **Simulated turf** page uses adaptive record lists (`gpu/vk/vk_draw.cpp` `grass_reach`; `RX_VK_GRASS_DISTANCE` overrides the row) |
+| `hud_layout` | HUD layout. 0 Screen's edges (default), 1 Middle 16:9, 2 Custom. Read at each present (`host/hos_wide_ui.c`). `HOS_WIDE_UI` overrides it |
+| `hud_health_x/y/scale`, `hud_buttons_x/y/scale`, `hud_minimap_x/y/scale` | Custom HUD placement, with horizontal and vertical offsets in percent of the picture and scale in percent of the usual size |
+| `key_toggle_hud`, `pad_toggle_hud` | Session HUD shortcut, unbound by default. Uses the Controls page's normal binding format |
 | `walk_mode` | 0 Hold, 1 Toggle |
 | `threaded_rendering` | The Debug tab's Threaded rendering row (`gpu/vk/threaded_rendering.h`): 0 Auto (default), 1 On (`RX_VK_ASYNC=1` and `RX_VK_RECORDER=thread`), 2 Off. Auto goes by the physical cores the process may run on (`usable_cores` in `gpu/vk/vk_progcache.cpp`): 6 or more cores, the render thread and the recorder thread, as On; 4 or 5, the render thread alone; fewer, Off. Auto is also Off, whatever the cores, where the mode is not safe on the run (the capture off, pools without mirrors, `RX_VK_LOW_SPEC`, a frame dump). `threaded::kAutoEnabled` turned off makes Auto Off on every PC |
 
@@ -142,10 +145,11 @@ Upscaler switches are in [upscalers](upscalers.md#switches).
 | `HOS_DISPLAY_MODES=<w>x<h>,...` | Pretend the screen has these modes, to check the size rows for a screen you lack |
 | `HOS_NO_SDL=1` | No SDL controller thread: no SDL pads |
 | `HOS_TRACE=1` | Log every Horizon call (as `--trace`) |
-| `HOS_FS_TRACE=1` | Log every file the game opens or doesn't find |
+| `HOS_FS_TRACE=1` | File opens and writable changes in call order: create, write offset/size/result, resize, delete, rename and close; save Commit counts, open writers, result and milliseconds |
 | `HOS_TEST_ALLOC_REFUSE=<label text>` | Refuse host allocations whose label contains the text, to see what a player sees at the commit limit |
 | `RX_VK_UI_GAME_FONT=0` | The menu, counter and start-up screen in the included Libertinus, even where the game's files have its own fonts |
 | `RX_VK_UI_PROMPTS=pad\|keys` | The menu's button prompts for a controller or the keyboard, whatever was used last (screenshots) |
+| `RX_VK_ACQUIRE_AHEAD=0/1` | Acquire ahead, for an A/B: the presenter thread asks for the window's next image right after each present instead of the render thread at the next one. On by default with every driver; `0` off (#1458's order, each image asked for at its present). `1` also logs `vk: the window's image (600 presents)`. It acts only where there is a window (not with `HOS_HEADLESS=1`), and not under frame generation or V-Sync On ([threads](threads.md#the-presenter-thread)) |
 
 ### Settings for one run
 
@@ -158,15 +162,34 @@ These override a menu row for the run only (kind `player`).
 | `HOS_DYNRES=0/1`, `HOS_REALTIME_STEP=0/1`, `HOS_TEXT_SPEED=0..3` | Resolution (Auto), Game speed, Text speed |
 | `HOS_FPS_MAX=<30 or 61..1000>` | Game frame rate cap |
 | `HOS_WIDE_UI=0/1` | HUD layout on a screen that is not 16:9 |
+| `HOS_PAD_SPEAKER_VOLUME=<0-200>`, `HOS_PAD_SPEAKER_HEADPHONE_MODE=<0-2>`, `HOS_PAD_SPEAKER_<CLASS>=<0-2>` | Controller speaker: Speaker volume, Headphones on the controller (0 Off, 1 Controller sounds, 2 All sound), a kind of sound's row (`NAVI_VOICE`, `NAVI_SOUND`, `TARGET`, `OCARINA`, `PICKUP`, `ITEM`, `FAIRY`, `UI`, `AGONY`, `LOW_HEALTH`, `FISHING`, `BOTTLE`: 0 Off, 1 Controller only, 2 Controller + TV) |
 | `RX_VK_DEVICE=<n>` | GPU device (the index of `vk: device <n>` in the log) |
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync on, off |
 | `RX_VK_PACE=0/1`, `RX_VK_UPSCALE=0..2` | Frame pacing, upscaling filter |
 | `RX_VK_DLSS=0/1/2`, `RX_VK_FSR4=0/1/2`, `RX_VK_XESS=0/1/2`, `RX_VK_FSR=0/1` | Upscaler: `0` never, `1` the upscaler, `2` its native AA |
+| `RX_VK_FSR4_MODEL=auto\|lite` | The FSR 4 network for one run: Auto lets AMD pick, Lite forces the INT8 Lite provider |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=2..8`, `RX_VK_DLSS_FG=0/1`, `RX_VK_FSR_FG=0/1` | Frame generation (`RX_VK_FRAMEGEN=0` keeps it off whatever the menu says) |
 | `RX_VK_ASYNC=0/1`, `RX_VK_RECORDER=sync\|defer\|thread` | Threaded rendering: the render thread, the recorder (the parallel replay is gone: [threads.md](threads.md)) |
 | `RX_VK_COMPILE_SHADERS=most\|all` | Compile shaders |
 | `RX_VK_NO_INTEL_SERIAL=1/0` | Intel shader compiles: Side by side, One at a time ([below](#intels-compiler-on-windows)) |
 | `RX_VK_ASTC_RGBA8=1` | ASTC as RGBA8 (Debug tab): ASTC textures decoded to RGBA8 instead of BC, which takes much more memory |
+
+### The controller speaker
+
+`host/pad_speaker.c`, `host/audio_source.c` (the Controller speaker page; its rows' own switches are under the next
+heading).
+
+| Switch | What it does |
+|---|---|
+| `HOS_PAD_SPEAKER=0` or `1` | `0` never opens a DualSense's audio endpoint (the pad keeps its sound); `1` opens it even with every kind of sound Off. `HOS_PAD_SPEAKER_TEST=1`: a tone on the pad when it opens |
+| `HOS_AUDIO_SOURCE=0`, `HOS_AUDIO_SOURCE_TRACE=1` | No sound classed (nothing read from the game's sound archives: every sound stays on the TV), or each classed sound logged as it plays, `audio: voice N plays <checksum>: <class>` |
+| `HOS_PAD_SPEAKER_GAIN=<0-7>`, `HOS_PAD_SPEAKER_PATH=<0-3>`, `HOS_PAD_SPEAKER_BUFFER_MS=<5-100>` | The pad's preamp gain (4), its output path for the speaker (3, the speaker alone; 2 speaker and jack; 0 the jack), the buffer before the sync (20 ms). While RenHDrum plays the pad on its cable, the game's sounds are added to its stream's first two channels (HD Haptics' taps on the second kept) and the speaker is opened and given back by RenHDrum's speaker block alone (`rh_usb_speaker`, with HD Haptics off too), at this gain while they play there; the path is then RenHDrum's (3) |
+| `HOS_PAD_SPEAKER_HPF=0`, `HOS_PAD_SPEAKER_LIMITER=0`, `HOS_PAD_SPEAKER_LOW_LATENCY=0` | Each of the speaker's sound fixes turned back for a run: the bass kept, the earlier sample-by-sample curve, the earlier 40 ms buffer |
+| `HOS_PAD_SPEAKER_TV_DELAY=0`, `HOS_PAD_SPEAKER_OCARINA_RUMBLE=<0-100>` | A Controller sync below 0 never holds the TV back (`host/nn_audio.c`); the vibration's strength while an ocarina sound plays on the speaker, in percent (50; 100 as it is) |
+| `HOS_PAD_SPEAKER_HEADPHONES=0` or `1` | Headphones out of or in the pad's jack for a run, over what its input report says (`hos_sdl_pad_headphones`): for a pad or bridge that does not say |
+
+On a cabled DualSense whose vibration plays its voice coils (`host/rumble_renhdrum.c`), the speaker's two channels ride on
+the vibration's stream (`hos_pad_speaker_fill`); otherwise the speaker opens its own, the voice coils' channels silent.
 
 ### GPU debugging
 
@@ -195,6 +218,7 @@ These override a menu row for the run only (kind `player`).
 | `RX_VK_TRANSLATE_WAIT_MS=<ms>` | Bound the wait for translating shaders, then leave their draws out (off by default) |
 | `RX_VK_DRIVER_FAULTS=0/2` | Ask the driver again for programs it faulted on (`0`), or build one at a time on every driver (`2`) |
 | `RX_VK_PROGRAM_CACHE_ZSTD=1` | Keep translated programs zstd-compressed in `longshot_programs.zst.bin`, a file of its own: `longshot_programs.bin` is left alone, and the first run translates every program again. Its records are only read whole, so programs load before the title (`RX_VK_LOAD=start`'s way, `load_default.h`) |
+| `LONGSHOT_SHADER_STORE=<folder>\|0` | Where the shader store keeps the programs' SPIR-V once for every game folder (`spirv.pack`, `spirv.idx`, `spirv.lock`; [architecture](architecture.md)). Unset: `%LOCALAPPDATA%\Longshot\shaders`, on Linux `$XDG_CACHE_HOME/longshot/shaders` (else `~/.cache/longshot/shaders`). `0`: none, each record keeps its SPIR-V as before. A cache written for another store starts over at the next start; one whose store did not open this run (a file held by another program) is kept for the next. Kept for the game the builders start (`make_game.GAME_ENV_KEEP`: the preparation at the build, the AppImage's Play), so it is set where the build runs too. Not with `RX_VK_PROGRAM_CACHE_ZSTD` |
 
 #### Intel's compiler on Windows
 
@@ -207,6 +231,16 @@ The Debug tab's Intel shader compiles row lifts the gate after a restart: Auto (
 B-series (PCI device `0xE2xx`) with driver 101.9154 or newer, one at a time on every other Intel GPU
 (`intel_compiles.h`). `RX_VK_NO_INTEL_SERIAL=1` is side by side for a run, `=0` one at a time.
 
+The shader preparation (the launcher's Prepare shaders, and the start-up screen) goes further on Auto: from driver
+101.9175 its graphics pipelines and shader modules go side by side on every Intel GPU (`IntelPrepareLane`,
+`intel_prepare_side_by_side_chosen`), while its compute pipelines and everything play builds keep the row's choice. One
+at a time, the preparation took hours on an Arc A730M and a Core Ultra's Arc iGPU (#1706, #2011). The fault the gate was
+put in for was the pipeline cache's data fetched beside builds (#252), which `pcache_fetch_lock` keeps apart by itself.
+Side by side there, the threads that build pipelines are held to the free memory, 768 MB each past 4 GB
+(`intel_prepare_workers`): 16 on a 16 GB A730M ran into the commit limit (#1717). The log says it once a step
+(`vk: preparation (...): Intel's compiler takes the graphics pipelines side by side on N threads of M`). One at a time
+on the row, or `RX_VK_NO_INTEL_SERIAL=0`, keeps the preparation one at a time too.
+
 ### Mesh shaders
 
 | Switch | What it does |
@@ -217,6 +251,10 @@ B-series (PCI device `0xE2xx`) with driver 101.9154 or newer, one at a time on e
 | `RX_VK_MESH_NOCULL=<prefix>,...` | Turn off culling in these task shaders, so every meshlet is drawn |
 
 Changing any `RX_VK_MESH*` switch translates every program again.
+
+Whether the driver offers mesh shaders is a separate question from whether this run uses them (`RX_VK_MESH_SHADERS`
+above): the device line (`vk: <GPU>, Vulkan ...; mesh shaders ...`) says `used`, `offered by the driver but not used`
+(a Steam Deck by default, with the reason) or `not offered by the driver`.
 
 ### Memory
 
@@ -235,6 +273,7 @@ Changing any `RX_VK_MESH*` switch translates every program again.
 | `RX_VK_TEX_MAX_DIM=<px>` | Width above which a big decoded ASTC texture leaves out top mip levels (2048; 1024 under the low-VRAM rule) |
 | `RX_VK_TEX_SKIP_MB=<MB>` | Size as RGBA8 from which such a texture loses top levels (64; 8 under the low-VRAM rule) |
 | `RX_VK_TEX_MAX_MB=<MB>` | Size down to which any texture leaves out top levels, whatever its width (1536) |
+| `RX_VK_TARGET_REUSE_MEMORY=0/1/2` | A render target whose create info is not in the render target pool (OoT's shadow maps, their side new every frame) takes the memory of the smallest pooled image it fits in that has waited there a present: of a memory type it can use, aligned, up to 1.5 times its size (or its size class, which under 1 MB may be more), only a share of the targets' blocks (`RX_VK_TARGET_REUSE_MEMORY=1`, the default on a discrete GPU; `gpu/vk/target_pool.h` `verdict`, `takeable_by_size`; the log's `reused by size`, and `missed after their image was taken by size` for the shapes it took from). While it is on, on an integrated GPU, the pool holds its images 64 presents, not 8 (`idle_presents`): there each new allocation was a kernel call that compacts and swaps on a Steam Deck, and the held images are the next shapes' memory; the pool's byte cap and its pressure rules bound it. `=2`, the default on an integrated GPU (measured on a Steam Deck OLED, Minimum, Render 50%; `=1` with the hold there is less measured, not shown worse), also makes a target of the pooled kind, while the pool is not pressed, on an allocation of its size class (`class_bytes`: 64 KiB multiples in steps of a quarter, a block at most, no fewer to a block where fewer than 8 fit), so one a few percent larger takes it: at most a quarter over the requirement rounded to 64 KiB, 6-9% on average, counted in the budget and the pool's bound. A second status line every 600 presents says why the rest missed (`render targets not reused by size:`). `RX_VK_TARGET_REUSE_MEMORY=0` turns the take, the hold and the classes off: a new allocation of the image's size, as before; what stays on is the check that the targets' pool's memory type suits an image (VMA does not make it for a pool), which sends one that cannot use it to an allocation of its own |
 
 **Written bindings** (`gpu/vk/wb_learn.h`): the game writes tens of MB of culling lists and per-frame buffers through
 the GPU that the CPU never reads. A binding over `RX_VK_WB_MAX_KB` is written back whole for its first
@@ -255,6 +294,12 @@ Each of the two switches overrides only its own limit; both apply to decoded AST
 once: change them before a start.
 
 The memory budget and its `vk: budget:` lines are in [architecture](architecture.md).
+
+### Sun shadows
+
+| Switch | What it does |
+|---|---|
+| `HOS_SHADOW_STABLE=0` | Fit the sun's nearest shadow cascade as shipped at every Shadow resolution, following the view each frame. `HOS_SHADOW_STABLE=1` uses the steady fit at every resolution. By default the steady fit runs only on Highest (3072 texels); below it the game's fit is kept because the steady square is coarser standing still. The steady fit (`host/oot_shadow_fit.c`, `nx2/oot_shadow_fit.py`) keeps its basis independent of the camera, following the sun by the smallest turn from a point moving in whole texels, and fits a steady square around the slice's bounding sphere on whole texels. The log says `shadow: the sun's nearest cascade is <n> m a side` when the size changes. |
 
 ### Threads and cores
 

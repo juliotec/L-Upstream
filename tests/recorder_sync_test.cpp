@@ -1661,6 +1661,9 @@ int main(int argc, char** argv) {
     // (the switch as the renderer reads it: first use, from the environment)
     std::printf("env mode %d\n", rec::mode());
     const int env_mode = rec::mode();
+    // (RX_VK_RECORDER_PARTS, on with the recorder from the environment: these checks are of each boundary's wait for the ring and
+    // of replay_mu's drain; the hand-off by part has its own, tests/recorder_parts_test.cpp)
+    rec::g_parts = false;
     g_main_id = std::this_thread::get_id();
     if (argc > 2 && !std::strcmp(argv[1], "--bench")) return bench(std::atoi(argv[2]));
     if (argc > 2 && !std::strcmp(argv[1], "--overlap")) return overlap(std::atoi(argv[2]));

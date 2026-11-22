@@ -44,11 +44,11 @@ from tours.memory import proc_mb  # noqa: E402
 DEFAULT_DESTS = "13,1,2,3,0,7,9,11"
 # (the renderer's pools by the ledger they can be in, as gpu/vk/vk_texture.cpp and vk_memory.cpp register them:
 # tests/test_mem_account.py checks that every registered name is here)
-BUDGET_VRAM = ["textures", "sparse textures", "target pool", "dead images", "dead buffers", "other images", "blocks free",
-               "mirrors", "shadows", "staging", "captures", "capture spares", "imports", "retired imports", "other buffers"]
+BUDGET_VRAM = ["textures", "sparse textures", "target pool", "dead images", "dead buffers", "reaper", "other images",
+               "blocks free", "mirrors", "shadows", "staging", "captures", "capture spares", "imports", "retired imports", "other buffers"]
 BUDGET_RAM = ["imports", "retired imports", "retired records", "captures", "capture spares", "capture staging spares",
-              "capture table", "staging", "textures in RAM", "target pool", "dead images", "dead buffers", "other images",
-              "other buffers"]
+              "capture table", "staging", "textures in RAM", "target pool", "dead images", "dead buffers", "reaper",
+              "other images", "other buffers"]
 BUDGET_COLUMNS = (["vram_sum", "vram_allowed", "vram_driver", "vram_unaccounted"]
                   + ["vram_" + n.replace(" ", "_") for n in BUDGET_VRAM] + ["vram_others", "ram_sum", "ram_private"]
                   + ["ram_" + n.replace(" ", "_") for n in BUDGET_RAM] + ["ram_others"])

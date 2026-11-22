@@ -9,7 +9,7 @@ wants. This check:
   and that build_unrolled asks the caches (no compile) before it asks for kBuildHeadroom;
 - runs pipeline_cache_file.h's sweep of cut-short saves on a leftover .tmp of that file: it goes;
 - compiles pcache_stamp.h and runs its drop against a folder holding the translator's files and that file, made for another
-  translator: the translator's files go, FSR 4's stays.
+  translator and past what another translator carries (its base): the translator's files go, FSR 4's stays.
 
 python -I -B tests/test_fsr4_own_cache.py [--cxx g++]
 """
@@ -42,6 +42,7 @@ static bool there(const std::string& path) {
 int main(int, char** argv) {
     const std::string dir = std::string(argv[1]) + "/", own = argv[2];
     write(dir, 0x1111);   // (the old translator's stamp, as an update finds it)
+    write_base(dir, Base{1, 0x1111, 0, 0});   // (a main file past what another translator carries: its files dropped)
     put(dir + kMainFile);
     put(dir + std::string(kPlayPrefix) + "3.bin");
     put(dir + own);
@@ -88,13 +89,21 @@ def own_file():
     m = re.search(r'constexpr const char\* kOwnCacheFile = "([^"]+)";', fsr4)
     if not m:
         raise SystemExit("vk_fsr4.cpp: no kOwnCacheFile, the unrolled layers' own pipeline cache file")
-    if "own_cache_compute_pipeline(own_cache()" not in build or "own_pipeline_cache_save(own_cache(), kOwnCacheFile" not in build:
+    startup = body((ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8"), "bool started_up()")
+    if "fsr4_prepare_shaders();" not in startup or startup.index("fsr4_prepare_shaders();") > startup.index("prepare_run(progress"):
+        raise SystemExit("FSR 4 cache is not prepared before the game's shader cache is loaded")
+    save = body(fsr4, "bool save_own_cache(")
+    if ("own_cache_compute_pipeline(own_cache()" not in build or "save_own_cache()" not in build
+            or "own_pipeline_cache_save(own_cache(), kOwnCacheFile" not in save):
         raise SystemExit("vk_fsr4.cpp: build_unrolled does not build and save through its own cache (kOwnCacheFile)")
     # (a layer in the caches is taken before the memory a compile wants is asked for: a PC with less than kBuildHeadroom to
     # spare ran without the unrolled layers even when they were cached)
     ask = build.find("VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT")
     if ask < 0 or ask > build.index("build_headroom("):
         raise SystemExit("vk_fsr4.cpp: build_unrolled asks for kBuildHeadroom before it asks the caches for the layer")
+    prepare = body(fsr4, "void fsr4_prepare_shaders()")
+    if not prepare.index("prepare_frame(") < prepare.index("jobs.cv.wait(") < prepare.index("tune::save_own_cache()"):
+        raise SystemExit("FSR 4 preparation must record the frame and wait for optimized jobs before saving")
     return m.group(1)
 
 

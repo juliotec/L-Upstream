@@ -106,6 +106,44 @@ python -I scripts/dev.py packs warm ../base-main --run "<command that plays {run
 - **For numbers**, compare the change's runtime with one made by `rt` from no pack: same base, same caches, one
   difference. Warm the base for your scenes first, so neither side compiles pipelines while it is measured.
 
+## Keep a game on main
+
+To play or test what `main` has right now, without waiting for Nightly, keep a game folder of your own on its newest
+commit:
+
+```
+python -I scripts/dev.py update --game <folder>     # once: names the folder (remembered), and builds it
+python -I scripts/dev.py update                     # later: builds again only when main moved
+python -I scripts/dev.py update --pick 1874,1880    # your folder's commit plus only those merged pull requests
+python -I scripts/dev.py update --with 1913,1925    # open pull requests merged on top, to try them before they land
+python -I scripts/dev.py update --logs              # its logs, crash records and settings in one zip, for a report
+python -I scripts/dev.py update --gui               # all of it in a window: merged and open PRs to tick, searchable
+```
+
+- **What it builds:** main's newest commit, from a worktree of its own (`update/tree` in your development folder): your
+  checkouts and branches are not touched. The build runs with that commit's own `dev.py`, in the player's build
+  environment, through the [job queue](#share-a-pc-the-job-queue), sharing the stores
+  ([what is kept between builds](#what-is-kept-between-builds)): when the translation didn't change, only what changed
+  compiles.
+- **The game files:** a folder that keeps them (`romfs/`, `.longshot_exefs/`, as a launcher or `make_game.py` build
+  does) is built again from them (`make_game.py --update`); a new folder takes the files `dev.py` finds (`"romfs"` and
+  `"exefs"` in `dev_build.json`).
+- **What it keeps:** saves, mods, `longshot_options.ini` and `longshot_env.txt`, as a launcher update does. Before each
+  build it backs up the folder's build files into `update/backups/` (the last three); a failed or stopped build is put
+  back. `--rollback` puts the last backup back.
+- **Picking:** `--pick` (or unticking pull requests in the window) builds the folder's commit with only the picked
+  pull requests merged since, cherry-picked in their order. One that needs a pull request you left out is refused and
+  named; pick that too, or update to everything.
+- **Open pull requests:** `--with` (or ticking them in the window) merges each one's head onto the build, after the
+  main commit or your picks; one that conflicts is refused and named before your folder is touched. The list comes from
+  the forge without signing in. An update without `--with` leaves out the open ones your build had, and says so.
+- **Logs:** `--logs` zips `logs/`, `bug-reports/` (never `bug-reports/local-only/`: its minidumps hold game and private
+  data), the settings files and the last build's log into `update/logs/`. Logs can name your user folder: read them
+  before you share them.
+- **Other options:** `--check` says what's new since the folder's build and builds nothing; `--force` builds even when
+  the folder is on the newest commit; `--remote` and `--branch` follow another remote or branch (remembered). Each
+  update's new commits go into `update/history.md`. It refuses while the game in that folder is running.
+
 ## Share a PC: the job queue
 
 On a PC that several people or agents share, every build and game run goes through `scripts/dev.py queue`. It runs each
@@ -117,7 +155,7 @@ python -I scripts/dev.py queue run shots --mode shared --desc "menu font at 4K" 
 python -I scripts/dev.py queue run fps --mode timing --desc "RX_VK_ASYNC=0, Hyrule Field" -- <your measurement>
 python -I scripts/dev.py queue status           # who plays, what runs, what waits and why
 python -I scripts/dev.py queue history          # the last jobs, and how busy the PC was while a timed one measured
-python -I scripts/dev.py queue cancel <name>
+python -I scripts/dev.py queue cancel <name>   # the job and every process it started: a game it started too
 ```
 
 `--desc` says in a few words what a game run tests: it shows under the version in the menu (F1) and on the start-up
@@ -288,15 +326,58 @@ start. The newest 15 are kept. A helper then shows the [crash window](reference/
 | `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms. `!cheat <n>` sends a Cheats page action; `!synclog` logs the NVN syncs |
 | `HOS_INPUT_FRAME_CLOCK=1` | The script's time runs at 60 game frames a second instead of the wall clock |
 | `HOS_INPUT_EXCLUSIVE=1` | The script alone drives the game until 5 s after its last press |
+| `HOS_INPUT_RECORD=<file>` | Records the input where it reaches the game, frame by frame: an [input recording](reference/input.md#input-recordings) (also the Insert menu's Debug tab, Record input) |
+| `HOS_INPUT_PLAY=<file>` | Plays a recording back in place of the player's devices, the script and the bridge, and logs where the run first leaves it |
+| `HOS_INPUT_SYNC=<n>` | With `HOS_INPUT_PLAY`: Link and the camera put back on the recording at every n-th update (1 by default; 0 never, the exact test) |
+| `HOS_INPUT_SYNC_MAX=<m>` | Past this many metres (1) from the recording the replay has diverged: said once, nothing put back after it |
+| `HOS_INPUT_ROUTE=1` | With `HOS_INPUT_RECORD`: a [route](reference/input.md#routes), no guest words or addresses; `HOS_INPUT_SAVE` names its save |
+| `HOS_INPUT_FROM=boot` | A recording starts at the game's first controller read, not the frame after Link's first update |
 | `RX_VK_MENU_SCRIPT=<s>:<key>,...` | Timed Insert-menu keys: `INS UP DOWN LEFT RIGHT ESC ENTER TABL TABR PADS PADE PADW PADN`, `TYPE:<text>`, and in a text field `HOME END BACK DEL` |
 | `RX_VK_UI_PROMPTS=pad` or `keys` | The menu's button prompts for a pad or keys (screenshots) |
 
 Presses are `<seconds>:<button>[+<button>...][/<ms>]`, comma-separated: `2:A,5.5:LUP/1500,9:ZL+R`. Buttons:
 `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`, and sticks at their edge `LUP LDOWN LLEFT LRIGHT RUP RDOWN
-RLEFT RRIGHT`. A press is held 200 ms unless `/<ms>` says otherwise; names are case-sensitive. Scripted and bridge
+RLEFT RRIGHT`. `SPRINT` holds the Sprint control's key (it runs only with the Controls tab's Sprint row on); the game
+never sees it as a button. `MX=<counts>` and `MY=<counts>` move the mouse that many counts a frame while held, for the
+native mouse camera (`60:MX=40/1000` turns it for a second). A press is held 200 ms unless `/<ms>` says otherwise; names are case-sensitive. Scripted and bridge
 presses count while the window is in the background; the game still has to be in a state that reads the controller.
 Switches that name a file or press buttons are taken only from the environment or `HOS_ENV_FILE`, never from
 `longshot_env.txt` ([switches](reference/switches.md#longshot_envtxt)).
+
+### Replay a recording
+
+The same input on every run, for a bug to show again, a fix to be checked against it, or a moving route to measure on:
+an [input recording](reference/input.md#input-recordings). Every replay says how close it stayed in its log, so a run
+that went another way is seen, not taken for a result.
+
+1. **Record it once.** In the game: the Insert menu's Debug tab, Input recording, Record input; press it again to stop.
+   The file is `recordings/<date>-<time>-<map>.jsonl` in the run's user folder. Over the bridge: `record` and `record
+   action=stop` (its `path`). From the start: `HOS_INPUT_RECORD=<file>`. A recording to commit is a
+   [route](reference/input.md#routes): `dev.py route record --save <name> --name <route>`. Record at the 60 cap with the
+   Per frame step and `HOS_FIXED_TIME`, as a replay runs.
+2. **Play it on the change**, through the queue (`--mode shared`), with `HOS_REALTIME_STEP=0
+   HOS_FIXED_TIME=1767225600 HOS_FPS_MAX=60` as it was recorded:
+   - **a recording made in the game** (the menu or the bridge's `record`): in a running game, the bridge's `play
+     path=<file>` or the Debug tab's Play recording page. Link is taken to the recording's age and map and put at its
+     start first, so it plays from wherever the game is. Wait on `status`'s `recorder` until `mode` is `off` again;
+   - **one made from the start** (`HOS_INPUT_RECORD`, a route): `HOS_INPUT_PLAY=<file>` from the same save. It starts at
+     Link's first update after the save's load, as the recording did, with nothing moved: the exact way. A recording
+     made in the game, played from the switches, starts where the save puts Link, not where it began, and diverges.
+3. **Read how it went.** The log's `input: playback over at frame N of N` line and the `HOS_INPUT_SYNC` line after it:
+   how many updates were apart, the corrections, the largest. `input: the replay diverged at frame N` means the run went
+   another way (a hit, a door missed) and nothing after it is the recording's: the result is not a test of the change.
+   For a number a script reads, record the replay too (`HOS_INPUT_RECORD=<other file>` beside `HOS_INPUT_PLAY`): its
+   last line is `{"cmd":"result",...}`.
+
+| Run | Drift correction | Use |
+|---|---|---|
+| A test of a fix or a picture along a route | on (`HOS_INPUT_SYNC=1`, the default) | Link and the camera follow the route; small float drift is put back, a divergence still fails |
+| Whether the game runs the same twice | off (`HOS_INPUT_SYNC=0`) | the first update apart is the first place the game went its own way |
+| A measurement over a route | `dev.py ab --route <route>` ([measure](#measure-a-change)) | A and B on the same route; a run that diverged or missed a load is refused |
+
+A recording other than a route holds the game's memory words: it stays on the PC, like a save (not in a commit, a pull
+request, a comment or a test request). Write in the pull request what the recording does (where, how long, its loads)
+and what the replays logged, not the file.
 
 ### Memory tour
 
@@ -340,14 +421,18 @@ python -I scripts/dev.py ab --env RX_VK_ASYNC=0 --dry-run      # the plan, nothi
 | Build | A change: `dev.py base` when missing, `dev.py pack` (only what changed), `rt` and `rt --empty`, each runtime kept while it matches its base and pack. A switch: no build, `rt-<checkout>` (else `rt-base`, or `--runtime`) |
 | Start | Each run is one `timing` job of the queue; the game starts once, from the scene's save in a user folder of the run's own, with the title skipped (the Skip title screen row) |
 | Scene | `--scene`: a repository save, then the Debug tab's age switch and teleport (and the hour); `--save FOLDER` starts from your own save |
-| Settings | One pinned options file (`--options FILE`, else the defaults) copied for every run; `HOS_FPS_MAX=1000`, V-Sync and frame generation off unless `--vsync` / `--framegen`; `--set NAME=VALUE` for both sides |
+| Settings | One pinned options file (`--options FILE`, else the defaults) copied for every run; `HOS_FPS_MAX=1000`, V-Sync and frame generation off unless `--vsync` / `--framegen`; the Render resolution at 67 % where the file leaves it at Auto, unless `--dynamic`; `--set NAME=VALUE` for both sides |
+| Render resolution | Auto is the game's dynamic resolution: it sizes the 3D to the GPU's load, so a GPU saving shows as a larger picture, not as frames, and each run settles at a size of its own. One switch came out +6.0 % and then -6.5 % at Auto (Hyrule Field at 4K, RTX 3090), +1.1 % at 67 %. `--dynamic` keeps Auto, to see what a player on Auto gets |
 | Warm-up | `--warmup` seconds at least, then until no frame waited for a pipeline or a shader for 5 s (120 s at most) |
 | Measure | `--seconds` (60) from the frame trace, `--runs` (3) pairs interleaved A, B, A, B. A switch whose reader takes `HOS_AB` is flipped within each run instead ([below](#an-ab-within-one-run); `--separate` to not) |
 | Check | Refuses to write up runs that differ in a menu setting, a switch, the renderer or the window, apart from what is compared (`--allow KEY` for a row the change adds) |
-| Write up | Each run's numbers, the medians and spread, a verdict (gain, loss, within the spread) and the Measurements section, in `runs/ab/` of the development folder (`dev.py paths runs`) and printed. Exit status 1 when a run failed, 3 when the sides differed |
+| Write up | The Measurements section is printed and saved in `runs/ab/` of the development folder (`dev.py paths runs`). Separate runs report each run's fps, 1% low, frame times and hitch count, the medians and observed fps ranges; their verdict cannot distinguish noise with one run a side. In-run comparisons report pooled frame times and hitches per minute of retained steady frames on each side, with a verdict based on an interval across periods; even one launch can provide enough periods. `--threads` is temporarily unavailable because CPU samples cannot yet be matched safely to the measured frames. The timing line reports preparation, the run batch and median run phases, including copy and analysis after stopping; phases (including cleanup on failure) are also in `results.json`. Exit status 1 when a run failed, 3 when the sides differed |
 
-What it can't do, by hand: frame pacing on the screen (PresentMon during the same route), a route that moves (it
-measures Link standing still), a profiled run first ([profile](#profile)), and an older base (build the merge base
+A route that moves: `dev.py ab --route <route>` plays a route of `assets/routes/` in each run and measures while it plays
+(`--sync N`, 1 by default), from the route's save; a run whose replay diverged or missed a load is refused
+([replay a recording](#replay-a-recording)).
+
+What it can't do, by hand: frame pacing on the screen (PresentMon during the same route), a profiled run first ([profile](#profile)), and an older base (build the merge base
 as a pack and compare the two packs). Run each side as `dev.py queue run NAME --mode timing -- <your run>`, with
 `HOS_OPTIONS_FILE` pinned and each log's `vk: switches set` line read back.
 
@@ -503,6 +588,7 @@ The same steps for people and agents. Forge commands are Tooling's `forge.py`
 | `scripts/dev.py base`, `pack`, `rt`, `bases`, `game`, `vk`, `env` | Shared bases, packs, runtimes and builds through the queue; `env` prints a player's build environment |
 | `scripts/dev.py ab` | A switch or this checkout's change against main in the game, written up ([measure a change](#measure-a-change)) |
 | `scripts/dev.py queue` | The PC's job queue: `run`, `status`, `history`, `cancel` |
+| `scripts/dev.py update` | A game folder you play kept on main's newest commit, `--gui` in a window ([keep a game on main](#keep-a-game-on-main)) |
 | `scripts/dev.py packs` | A base folder of your own: `base`, `pack`, `rt`, `warm` |
 | `scripts/dev.py paths`, `migrate` | The development folder and its parts; the once-per-PC move into it ([where dev data lives](reference/build.md#where-dev-data-lives)) |
 | `tests/run_all.py` (`mise run test`) | Every game-free check; `tests/srccut.py` cuts source for a check |
@@ -512,6 +598,7 @@ The same steps for people and agents. Forge commands are Tooling's `forge.py`
 | `scripts/memtour.py` | Memory tour |
 | `scripts/flash.py framelog\|probe` | Find a flash in a frame log; name the pass from a texel probe |
 | `scripts/perf.py report\|threads\|renderer\|stacks\|chain\|hotlist\|cpu\|ab` | Read profiles, samples, recordings and A/B traces ([profiling](reference/profiling.md#tools)) |
+| `scripts/collect_bench.py [--cc clang] [--reps N]` | The write marks' walk (`collect_in`, `host/rx_backend.c`) timed game-free, as the word walk and as the vector walk (`HOS_COLLECT_VECTOR`), on mark arrays shaped like the game's: an indication only, warm caches on one thread |
 | `scripts/pipeline_tour.py` | The pipeline tour and the play profile's merge, its parts in `scripts/tours/` ([pipeline states](reference/pipeline-states.md)) |
 | `scripts/shaders.py crt\|fsr3\|host\|all [--check]` | Regenerate (or check) the checked-in SPIR-V headers; `spirv-operands` regenerates `gpu/vk/spirv_operands.h` |
 | `scripts/check_third_party.py` | `third_party/` against its provenance |

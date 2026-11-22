@@ -47,6 +47,17 @@ writes at run time goes in two subfolders, which the host creates (`host/game_la
   deleting the state list loses the pipelines this PC's play recorded.
 - `logs/`: logs and traces.
 
+The programs' SPIR-V is not in `longshot_programs.bin` but in the player's **shader store** (`gpu/vk/spirv_pack.h`):
+`%LOCALAPPDATA%\Longshot\shaders` on Windows, `$XDG_CACHE_HOME/longshot/shaders` (else `~/.cache/longshot/shaders`) on
+Linux. Each program's SPIR-V is kept there once, by its content, for every game folder, and a record names its place
+and hash: a read gives those words or nothing, whatever is at that place now. Builds with different translators share
+nearly all of it (99.6% of programs between a stable and a nightly), so a further build adds about 0.15 GB of records
+instead of about 8 GB. The cache file's head names the store, and a cache of a store that is gone starts over. Deleting
+the store while no game runs is safe: each game folder prepares again. A store made again is new files put in the old
+ones' place, never the old ones cut short, so a game still reading them keeps them (Linux), and while one has them open
+they are not replaced (Windows). The builders keep `LONGSHOT_SHADER_STORE` for the game they start (the shaders' preparation
+at the build, the AppImage's Play), so the shaders are prepared in the store the game plays with.
+
 ### The host
 
 - **The SDK is replaced at the `nn::` boundary.** `HLE(<mangled name>)` functions in `host/` stand in for the SDK's
@@ -66,7 +77,8 @@ writes at run time goes in two subfolders, which the host creates (`host/game_la
   through Eden's recompiler to SPIR-V, and mesh and task programs use `VK_EXT_mesh_shader` or a compute fallback
   (`RX_VK_MESH_SHADERS`).
 - Its threads: the game's own, one render thread that replays every command buffer, from 6 cores a recorder thread that
-  makes the driver's calls for it, and a presenter thread ([threads.md](threads.md)).
+  makes the driver's calls for it and ends and submits each part the render thread hands it, and a presenter thread
+  ([threads.md](threads.md)).
 - `gpu/vk` is the only renderer. Without a usable Vulkan nothing is drawn, and the log says "no renderer".
 - The interface between the host and the renderer is `MkwVkHost` / `MkwVkRenderer` in
   [`gpu/vk/vk_api.h`](../../../gpu/vk/vk_api.h). Any change to it bumps `MKWVK_API_VERSION`, and both binaries are rebuilt
@@ -200,6 +212,29 @@ Without that rule, a pool that is costly to remake would be freed and remade eve
 off the 90% rule's excess, not the 97% rule's. Mirrors, shadows, imports and captures in use are never
 asked. Mirrors keep their own budget instead (`gpu/vk/mirror_budget.h`). Each return is logged as
 `vk: budget: gave back`.
+
+What the pools leave comes off the texture cache's budget. Within the allowance that budget never falls below a floor
+(`gpu/vk/vram_compact.h`: 1800 MB on a card the driver allows under 8 GB, a quarter of the allowance above, and on the
+smaller cards a floor that rises with an idle card up to half the allowance), so a full card does not evict the textures
+in use one pass after another. Past the allowance there is no floor (`floor_within`): the driver pages VRAM out to system
+memory there, and only the textures used in the last 60 presents stay.
+
+### Each heap's budget
+
+The allowance above is the sum over the device-local heaps, and one heap can be full while the sum has room. A card
+without resizable BAR, and an AMD APU on Windows, has a second device-local heap of 256 MB that the CPU can write: the
+window of VRAM (or of the UMA carve-out) behind the BAR. VMA puts a host-visible buffer the GPU reads there, the staging
+arenas among them. On a Legion Go (8 GB UMA) a save load's staging took that heap to 252-277 MB of the 243 MB AMD's
+driver allows while VRAM as a whole stood at 1.9 of 7.8 GB, and the driver refused every submit after
+(`vk: submit ... failed (-2)`, VK_ERROR_OUT_OF_DEVICE_MEMORY): a black screen with the sound going on (#1879).
+
+- `create_buffer` makes a host-visible buffer within its heap's budget first, so VMA takes the next memory type the
+  buffer can use (system memory) when that heap is full, and makes it as before where no heap has room
+  (`RX_VK_BUFFER_BUDGET=0`: as before). The `vk: memory heaps:` line shows each heap's use and budget.
+- A submit the driver refuses for want of memory is made again, up to three tries, after the GPU's earlier work has
+  finished, and the next present frees the idle staging arenas and the image reaper's queue (`gpu/vk/submit_retry.h`,
+  `vk_replay.cpp`'s `submit_or_retry`; `RX_VK_SUBMIT_RETRY=0`: dropped, as before). Nothing is destroyed under the
+  queue's lock. `RX_VK_TEST_SUBMIT_REFUSE=<n>` refuses the first try of every n-th submit, so any card plays the path.
 
 ## The memory check
 
@@ -403,6 +438,10 @@ Each line below is enforced by a game-free check under `tests/` ([run the checks
 - **Fog and exposure come from the game's own values.** No Longshot factor scales them.
 - **A program the driver's compiler faulted on is never sent to that driver again**, in this run or later ones
   (`gpu/vk/driver_faults.h`, `RX_VK_DRIVER_FAULTS`).
+- **The renderer's own compute pipelines are asked again without the optimizer** when the driver refuses the optimized
+  build (`extern_guarded_compute`; `texture_compute_pipeline` for the texture pipelines and the upscale helpers, through
+  the pipeline cache). Intel's Windows driver on the Arc A-series answered `VK_ERROR_UNKNOWN` for optimized builds it made
+  without the optimizer, and the GPU ASTC decoder was lost to it: every ASTC texture decoded on the CPU (#1874).
 - **Render conditions read reports from earlier in the same stream**, so they cannot be resolved at record time.
 - **Mesh compute fallback pipelines** use a static vertex stride. Binding one invalidates dynamic strides, so the draw
   path drops both vertex-bind skip caches at that bind.
@@ -429,7 +468,7 @@ MENU_MODULE(hdr) {
 - **Its texts are the translations' keys**: a row moved keeps its label, help and choices to the character.
 - **Where it goes**: `after(key)` / `before(key)` beside a row, `first()`, `last()`, `order(n)`, `at(n)` within its
   section; a section (`heading(id, label, place)`) is placed among its tab's the same way. The tabs are `graphics`,
-  `audio`, `gameplay`, `controls`, `nfc`, `mods`, `debug` and the pages `motion`, `fps_details`, `controls_page`. The
+  `audio`, `gameplay`, `controls`, `nfc`, `mods`, `debug` and the pages `motion`, `fps_details`, `recordings`, `controls_page`. The
   order is worked out once, whatever order the modules register in.
 - **Kinds**: Choice, Toggle, Slider, headings, Action (a button: `on_activate`, `verb`, `confirm`) and Page (`opens`).
 - **Hooks** instead of checks by label elsewhere: `shown`, `locked`, `text`, `hint`, `step_fn`, `on_change`,

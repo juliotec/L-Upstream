@@ -359,6 +359,7 @@ void reflex_sleep() {
     w.semaphoreCount = 1, w.pSemaphores = &r.wake, w.pValues = &value;
     {
         const gpu_wait_stats::Exclude pacing;   // (the driver schedules simulation; not completion of GPU resource work)
+        const rec::Settled settled;   // (RX_VK_RECORDER_PARTS: the driver signals it, no part of the replay's)
         vkWaitSemaphores(dev.device, &w, 100000000ull);   // (100 ms at most: a driver that never wakes it does not stop the game)
     }
     std::lock_guard lk(r.mu);

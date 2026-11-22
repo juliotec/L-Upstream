@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 #include "../gpu/vk/compat/longshot_env.h"
+#include "../gpu/vk/spirv_pack.h"
 
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); std::exit(1); } } while (0)
 
@@ -117,6 +118,11 @@ FILE* disk_idx = nullptr;
 bool disk_listing = true;
 bool disk_on = true;
 bool disk_zstd = false;
+// (the shader store, as vk_progcache.cpp has it: on when main is given a folder for it)
+spirv_pack::Store store;
+bool store_on = false;
+constexpr uint64_t kStoreWords = 1ull << 63;
+constexpr int64_t kInStore = 1ll << 62;
 std::atomic<int64_t> st_cache_hits{0};
 constexpr uint32_t kCompressedKind = 16;
 constexpr size_t kZstdHead = 20;
@@ -207,6 +213,8 @@ void test_drop_loaded(const std::string& dir) {
     Program& c = *made[2];
     CHECK(g.key == 0x2001 && f.key == 0x2002 && c.key == 0x2003);
     CHECK(program_cache_remade() == 0);
+    // (with the store, the stages' code is a place in it: remade from there, not from the file)
+    CHECK(((g.stages[0].code_at & kInStore) != 0) == store_on && ((g.stages[1].code_at & kInStore) != 0) == store_on);
 
     // a fallback program and a compute program keep theirs (their compute stages are other pipelines' modules)
     CHECK(program_cache_drop_loaded(f) == 0 && program_cache_drop_loaded(c) == 0 && active_modules == 6);
@@ -253,13 +261,18 @@ void test_drop_loaded(const std::string& dir) {
 } // namespace
 
 int main(int argc, char** argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
     const std::string arg = argv[1];
     if (arg == "--switch") {   // (RX_VK_DROP_LOADED_MODULES as the process has it: 1 on, 0 off)
         std::printf("%d\n", (int)mkwvk::drop_loaded_modules_on());
         return 0;
     }
+    if (argc == 3) {   // (a shader store folder: the SPIR-V kept there, the records naming it)
+        CHECK(mkwvk::store.open(argv[2]));
+        mkwvk::store_on = true;
+    }
     test_drop_loaded(arg);
+    if (mkwvk::store_on) mkwvk::store.close();
     std::printf("PASS: a loaded program's shader modules let go once its noted pipelines are built, and remade from the file\n");
     return 0;
 }

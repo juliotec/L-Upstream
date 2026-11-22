@@ -19,6 +19,7 @@
 #include "imgui_internal.h"   // (RegisterUserTexture: the logo)
 #include "backends/imgui_impl_vulkan.h"
 #include "vk_game_font.h"   // (third_party/zstd: the game's font files)
+#include "colour_vision.h"
 #include "vk_menu.h"        // (opts.hdr_white: the overlays' white on an HDR10 display)
 #include "vk_menu_i18n.h"   // (the menu's language: the letters its fonts need, script_fonts)
 #if __has_include("longshot_logo.h")
@@ -519,11 +520,33 @@ void idle() {
     reap(false);   // (staging buffers and old textures let go while nothing shows too)
 }
 
-void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
+void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h, int mode) {
     ImGui::Render();
     ImDrawData* dd = ImGui::GetDrawData();
     presents++;
     reap(false);
+    if (colour_vision::enabled(mode)) {
+        // The menu reuses a small palette across many vertices. Alpha is independent of correction.
+        struct Entry { ImU32 original = IM_COL32_A_MASK, corrected = 0; };
+        Entry palette[128];
+        for (ImDrawList* list : dd->CmdLists) {
+            for (ImDrawVert& v : list->VtxBuffer) {
+                const ImU32 c = v.col & ~IM_COL32_A_MASK;
+                const ImU32 r = c >> IM_COL32_R_SHIFT & 255;
+                const ImU32 g = c >> IM_COL32_G_SHIFT & 255;
+                const ImU32 b = c >> IM_COL32_B_SHIFT & 255;
+                if (r == g && g == b) continue;
+                auto& entry = palette[(11 * r + 37 * g + 53 * b) % 128];
+                if (entry.original != c) {
+                    const auto rgb = colour_vision::correct_srgb({r / 255.0f, g / 255.0f, b / 255.0f}, mode);
+                    entry = {c, (ImU32)(rgb[0] * 255.0f + 0.5f) << IM_COL32_R_SHIFT |
+                                (ImU32)(rgb[1] * 255.0f + 0.5f) << IM_COL32_G_SHIFT |
+                                (ImU32)(rgb[2] * 255.0f + 0.5f) << IM_COL32_B_SHIFT};
+                }
+                v.col = (v.col & IM_COL32_A_MASK) | entry.corrected;
+            }
+        }
+    }
     if (srgb_target) linearize(dd);
     else if (dev.hdr) hdr10(dd);   // (the overlays at the paper white, not at the display's peak with the wrong primaries)
     if (!image || !view) return;
@@ -561,9 +584,9 @@ void record_to(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w,
            VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
-void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, int mode) {
     const bool has = index < dev.swap_views.size() && dev.swap_views[index];
-    record_to(cmd, has ? dev.swap_images[index] : VK_NULL_HANDLE, has ? dev.swap_views[index] : VK_NULL_HANDLE, w, h);
+    record_to(cmd, has ? dev.swap_images[index] : VK_NULL_HANDLE, has ? dev.swap_views[index] : VK_NULL_HANDLE, w, h, mode);
 }
 
 } // namespace mkwvk::ui

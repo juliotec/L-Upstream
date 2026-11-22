@@ -66,6 +66,24 @@
    update before). At a cap of 60 nothing is carried: the body lands on its target there. (The physics' share is tuned in
    Havok's solve to 60 fps frames; changing it there would change every constraint and contact in the game.)
 
+   A jump's takeoff (f_80b97d10 computes the takeoff speed of a jump of a given height, sqrt(2 g h) - g dt / 2 along the
+   character's up; Link's jumps go through it, the speed kept in his character at +0x2d0): f_804f5030 hands Havok his body's
+   velocity with the world's set-velocity call (its vtable +0x190), that speed on the takeoff's update, 0.2 ms after
+   f_80b97d10. On a side hop the next updates hand the takeoff speed less each step's gravity, so the variable step already
+   raises the body as at 60. On a backflip the next update hands no vertical speed, the fall starting from rest (the jump's
+   height is the animation's), so the body hops by one step of the takeoff speed: 6.4 cm at 60 fps, 4.2 cm at 94 (measured
+   in the game: 3.84 and 3.93 m/s for one update, then 0). Lower, it met a slope about 0.1 s into a backflip above 60 fps,
+   the controller landed and the backflip took off a second time: down the slope behind the Hyrule Field teleport spot it
+   carried Link 2.8 m in 0.43 s, against 2.25 m in 0.34 s at 60 (one takeoff). Above a cap of 60, on a frame shorter than a
+   60 fps one, a body handed an upward speed within 2% of the takeoff speed in the takeoff's own update (within half its
+   frame of f_80b97d10: the bodies f_804f5030 drives to targets at Link's position follow his body a step later) is
+   watched for one update: when the game then asks it for no vertical speed (at most 10% of the takeoff speed either way),
+   that update gets the rest of a 60 fps step's rise, so the two updates raise it as the takeoff's 60 fps step does. A body
+   still rising is left as it is: raising the takeoff's own update instead left a side hop a step's rise high for the whole
+   hop, and on the slope it landed 0.3 m from where it lands at 60 (measured). A speed that is not the takeoff's (a step up a
+   stair, the ledge climb, a slope, the fall) is left as it is. At a cap of 60, on a frame of a 60 fps one or longer, and
+   with HOS_FPS_TAKEOFF=0, the game's speed.
+
    Below 60 fps, the game's Havok cloth (Link's cap, the .bphcl files in romfs Phive/Cloth): the simulate operator's per-frame
    setup (f_81b3aa48, the instance's frame-time mode: its fixed 1/60 mode, f_81b3a964, is left as it is) takes the frame's time
    from its step context (+8) and splits it into the context's count (+24) x the config's subSteps x the operator's own count of
@@ -195,6 +213,26 @@ static inline int oot_floor_carry_slow(uint32_t inv_dt_bits, uint32_t frame_step
     const float inv_dt = oot_bits_float(inv_dt_bits), step = oot_bits_float(frame_step_bits);
     if (!timed || !(step > 0.0f)) return 1;   /* (the game's own test decides) */
     return inv_dt * step > 100.0f;
+}
+
+/* Whether a body's vertical speed on a jump's takeoff update is the takeoff's: vy (the speed f_804f5030 hands Havok for this
+   update), jump (the takeoff speed f_80b97d10 computed just before), step (this frame's). 1 when it is upward and within 2% of
+   the jump's on a frame under a 60 fps one: the body is then watched for its next update (oot_takeoff_rest_speed) */
+static inline int oot_takeoff_match(float vy, float jump, float step) {
+    if (!(step > 0.0f && step < 1.0f) || !(jump > 0.5f && jump < 1000.0f) || !(vy > 0.0f)) return 0;
+    return fabsf(vy - jump) <= 0.02f * jump;
+}
+
+/* A body's vertical speed on the update after a jump's takeoff: vy (the speed f_804f5030 hands Havok now), vy0 and step0 (the
+   speed it was handed on the takeoff's update and that frame's step: oot_takeoff_match was 1), step (this frame's). When the
+   game asks for no vertical speed now (at most 10% of vy0 either way: a backflip's fall starts from rest), the rest of the
+   takeoff's 60 fps step, vy0 (1 - step0) / 60 m, over this frame's time, step / 60 s, added: the two updates then raise the body
+   as a 60 fps takeoff step does. A body still rising (a side hop: vy0 less this step's gravity) already rises as at 60 under the
+   variable step: vy */
+static inline float oot_takeoff_rest_speed(float vy, float vy0, float step0, float step) {
+    if (!(step0 > 0.0f && step0 < 1.0f) || !(step > 0.0f && step < 4.0f) || !(vy0 > 0.5f && vy0 < 1000.0f)) return vy;
+    if (!(fabsf(vy) <= 0.1f * vy0)) return vy;
+    return vy + vy0 * (1.0f - step0) / step;
 }
 
 /* A driven body's target with last update's shortfall carried. st: the last target given, the game's then, its body and Link's

@@ -19,6 +19,8 @@ Vulkan and the FSR 3.1 backend, no GPU and no game:
   - a picture copied after its upscale this frame: FSR 3.1 is given the HUD-less copy (the mask pass's second output) as
     its colour and as Inputs::present too, the HUD layer pass given this frame's pictures and the frame before's (told
     when there is none), and each made frame has the HUD laid over it by that layer; a break (a menu) breaks the pair;
+  - Native HDR uses only marked PQ pixels. The shader keeps opaque and translucent HUD marks and leaves unmarked pixels
+    to the generated scene. The first sRGB fit afterwards starts without a prior sample;
   - the next present with no new copy (a menu, a movie: no gameplay upscale): the frame as it is, the HUD guessed, not last
     frame's picture;
   - the picture destroyed or moved since the copy, or not the presented picture's size: the frame as it is;
@@ -27,6 +29,8 @@ Vulkan and the FSR 3.1 backend, no GPU and no game:
     python -I -B tests/test_fsr3fi_hud_mask.py --headers <Vulkan-Headers/include> [--cxx g++]
 """
 import argparse
+import ast
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -44,6 +48,7 @@ PREFIX = r'''
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -144,9 +149,12 @@ struct Frame {
     float frame_ms = 16.667f;
     bool reset = false;
 };
-bool take(Frame& f) { f = Frame{}; f.frame = frame_no; return true; }
+bool take_ok = true;   // (false: no inputs this present)
+bool take(Frame& f) { f = Frame{}; f.frame = frame_no; return take_ok; }
 uint64_t motions_taken() { return 0; }
 }
+// (vk_framegen.cpp's: this present gave FSR 3.1 a frame, set by fsr3fi_frames before its generate call; framegen_idle's)
+bool fsr_given = false;
 namespace fsr3fi {
 bool wanted = true;
 uint32_t frames_wanted() { return wanted ? 1u : 0u; }
@@ -174,12 +182,53 @@ VkImage made_image(uint32_t) { return (VkImage)(uintptr_t)0x77; }
 }
 '''
 
+PIXEL_STUBS = r'''
+struct vec3 { float x, y, z; bool operator==(const vec3&) const = default; };
+struct vec4 { vec3 rgb; float a; };
+using FfxBoolean = bool;
+using FfxFloat32 = float;
+using FfxFloat32x3 = vec3;
+struct FfxInt32x2 { int x; };
+struct FfxFloat32x2 { float x, y; };
+float length(FfxFloat32x2 value) { return std::hypot(value.x, value.y); }
+bool KeepStaticPixels() { return true; }
+bool HudMaskInAlpha() { return true; }
+bool LongshotSame(FfxInt32x2) { return false; }
+bool IsInRect(FfxInt32x2, FfxInt32x2, FfxInt32x2) { return true; }
+FfxInt32x2 InterpolationRectBase() { return {0}; }
+FfxInt32x2 InterpolationRectSize() { return {1}; }
+FfxFloat32x2 DisplaySize() { return {1.0f, 1.0f}; }
+vec4 mask_pixel;
+float LoadPreviousBackbufferAlpha(FfxInt32x2) { return 1.0f; }
+float LoadCurrentBackbufferAlpha(FfxInt32x2) { return mask_pixel.a; }
+vec3 LoadCurrentBackbuffer(FfxInt32x2) { return mask_pixel.rgb; }
+'''
+
+PIXEL_CHECK = r'''
+void check_pq_hud_pixels() {
+    const vec3 scene{0.08f, 0.30f, 0.52f};
+    const vec3 shown_pq{0.47f, 0.56f, 0.60f}, generated_pq{0.36f, 0.42f, 0.53f};
+    for (const float t : {0.0f, 0.6f, 1.0f}) {
+        const vec3 drawn{(1 - t) * 0.7f + t * scene.x, (1 - t) * 0.1f + t * scene.y, t * scene.z};
+        mask_pixel = pack_mask(scene, drawn, shown_pq);
+        const bool marked = t < 1.0f;
+        CHECK(mask_pixel.a == (marked ? 0.0f : 1.0f) && mask_pixel.rgb == shown_pq);
+        vec3 made = generated_pq;
+        float weight = 1.0f;
+        LongshotStaticPixel({0}, 1.0f, made, weight);
+        CHECK(made == (marked ? shown_pq : generated_pq));
+        CHECK(weight == (marked ? 0.0f : 1.0f));
+    }
+}
+'''
+
 SUFFIX = r'''
 // (the HUD layer's pipelines made again at the next present: a source without them, main's, has nothing to forget)
 template <class H> void forget_layer_pipes(H& h) {
     if constexpr (requires { h.fit_pipe; }) h.fit_pipe = {};
 }
 int main() {
+    check_pq_hud_pixels();
     const VkCommandBuffer cmd = (VkCommandBuffer)(uintptr_t)1;
     fg.frames[0] = {handle<VkImage>(), nullptr, handle<VkImageView>()};
     fg.frames[1] = {handle<VkImage>(), nullptr, handle<VkImageView>()};
@@ -250,12 +299,22 @@ int main() {
     CHECK(overs.back().pc[0] == 1920 && overs.back().pc[1] == 1440);
     CHECK(passes[0].pc[4] == 0);   // (SDR: the copy sRGB-encoded under the HUD, fg_hud.comp hudless_colour)
 
-    // (the native HDR picture: the pass told so, the copy taken as it is under the HUD)
+    // Native HDR captures the HUD in linear RGBA16F, before the game's PQ encode.
+    // Use its mask with the already encoded present, and keep the linear layer out of PQ interpolation.
+    const VkFormat original_format = picture.format;
+    picture.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    const size_t fits_before_pq = fits.size(), composites_before_pq = overs.size();
     framegen_hud_before(cmd, &picture, 0);
-    hud_source(cmd, 1, 2560, 1440, 0, 0, 2560, 1440, true);
-    CHECK(fsr3fi_frames(cmd, set, 1, 2560, 1440, ++sequence, true, t, slot, 1) == 1 && fsr3fi::given.present);
+    CHECK(hud_source(cmd, 1, 2560, 1440, 0, 0, 2560, 1440, true));
+    CHECK(fsr3fi_frames(cmd, set, 1, 2560, 1440, ++sequence, true, t, slot, 1) == 1);
     CHECK(passes.size() == 5 && passes[4].pc[4] == 1);
-    CHECK(overs.back().pc[2] == 1);   // (the HUD laid over the native HDR picture as it is)
+    CHECK(fsr3fi::given.native_pq && fsr3fi::given.hud_mask && !fsr3fi::given.present);
+    CHECK(fsr3fi::given.color == passes[4].views[3] && fsr3fi::given.color != passes[4].views[4]);
+    CHECK(fits.size() == fits_before_pq && overs.size() == composites_before_pq);
+    // Back to an sRGB present using the same float target. Never learn from the preceding HDR capture.
+    framegen_hud_before(cmd, &picture, 0);
+    CHECK(present(0).present && fits.size() == fits_before_pq + 1 && fits.back().pc[4] == 0);
+    picture.format = original_format;
 
     // (the picture destroyed since the copy, or moved to another image: nothing to copy from, the HUD guessed)
     framegen_hud_before(cmd, &picture, 0);
@@ -314,10 +373,36 @@ int main() {
         CHECK(fsr3fi::given.present == fg.frames[0].view && fsr3fi::given.color != fg.frames[0].view);
         CHECK(overs.size() == o);
     }
+    // (FSR's use marked for framegen_idle: by a present whose inputs were taken, its history alone (no frame to make) too, and
+    // not by one without inputs, which leaves FSR's images unused)
+    fsr_given = false;
+    fsr3_inputs::take_ok = false;
+    CHECK(fsr3fi_frames(cmd, set, 0, 1920, 1080, ++sequence, false, t, slot, 1) == 0 && !fsr_given);
+    fsr3_inputs::take_ok = true;
+    CHECK(fsr3fi_frames(cmd, set, 0, 1920, 1080, ++sequence, false, t, slot, 0) == 0 && fsr_given);
+    fsr_given = false;
+    CHECK(fsr3fi_frames(cmd, set, 0, 1920, 1080, ++sequence, false, t, slot, 1) == 1 && fsr_given);
     std::puts("fsr3fi hud mask: ok");
     return 0;
 }
 '''
+
+
+
+def pixel_fixture(source):
+    # Use the actual mask expression and the patched FSR shader that consumes it.
+    shader = (source / "gpu/vk/shaders/fg_hud.comp").read_text(encoding="utf-8")
+    alpha = re.search(r"imageStore\(dst, g, vec4\(shown, (.*?)\)\);", shader)[1]
+    tool = ast.parse((source / "scripts/shaders.py").read_text(encoding="utf-8"))
+    patches = next(node.value for node in tool.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "FI_PATCHES" for target in node.targets))
+    patched = "\n".join(edit.elts[1].value for edits in patches.values for edit in edits.elts
+                        if isinstance(edit.elts[1], ast.Constant))
+    hud = block(patched, "FfxBoolean LongshotHud(")
+    static_pixel = block(patched, "void LongshotStaticPixel(").replace("inout ", "").replace("fColor,", "&fColor,")
+    static_pixel = static_pixel.replace("fInPaintingWeight)", "&fInPaintingWeight)")
+    mask = f"vec4 pack_mask(vec3 scene, vec3 drawn, vec3 shown) {{ return {{shown, float({alpha})}}; }}\n"
+    return PIXEL_STUBS + mask + hud + "\n" + static_pixel + PIXEL_CHECK
 
 
 def main():
@@ -338,7 +423,7 @@ def main():
                           if m in fg or m not in LAYER_HELPERS)
     with tempfile.TemporaryDirectory(prefix="fsr3fi-hud-mask-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
-        cpp.write_text(PREFIX + structs + STUBS + hud + functions + SUFFIX, encoding="utf-8")
+        cpp.write_text(PREFIX + structs + STUBS + hud + functions + pixel_fixture(a.source) + SUFFIX, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
                         "-Wno-unused-function", "-Wno-unused-parameter", "-pthread", "-I" + str(a.headers), str(cpp),
                         "-o", str(exe)], check=True)

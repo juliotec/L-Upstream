@@ -1,6 +1,6 @@
 // The Insert menu's FPS counter rows (#1633): on the Gameplay tab, first (before Menu size), the counter's level, corner and size
 // and the row that opens its details page; on that page, the version at every level and each of the Dev level's lines
-// (opts.fps_dev_show, in fps_stats.h's DevLine order, then the CPU, GPU and driver).
+// (opts.fps_dev_show, in fps_stats.h's DevLine order, then the footer's CPU, GPU and driver, and render lines).
 #include "menu_module.h"
 
 #include "fps_stats.h"
@@ -59,8 +59,8 @@ MENU_MODULE(fps_counter) {
     menu::page("fps_details")
         .row({.key = "version_and_hardware_at_every_level",
               .label = "Version and hardware at every level",
-              .help = "The version, as this menu's banner shows it, and the CPU, the GPU and its driver at the foot of the FPS counter at every "
-                      "level, not only at Dev: for screenshots and recordings. The CPU and GPU lines row below still turns those off.",
+              .help = "The version, as this menu's banner shows it, the CPU, the GPU and its driver, and the render size and upscaler at the foot of the FPS counter at every "
+                      "level, not only at Dev: for screenshots and recordings. The CPU, GPU and render rows below still turn those off.",
               .kind = menu::Kind::Toggle,
               .value = &opts.fps_version_always,
               .lo = 0, .hi = 1,
@@ -147,6 +147,14 @@ MENU_MODULE(fps_counter) {
               .help = kFpsDevLineHelp,
               .kind = menu::Kind::Toggle,
               .value = &opts.fps_dev_show[11],
+              .lo = 0, .hi = 1,
+              .preset_exempt = true})
+        .row({.key = "render_lines",
+              .label = "Render lines",
+              .help = "Whether the FPS counter's footer shows the resolution the 3D is drawn at and what upscales it, as the last "
+                      "frame drew them.",
+              .kind = menu::Kind::Toggle,
+              .value = &opts.fps_dev_show[12],
               .lo = 0, .hi = 1,
               .preset_exempt = true});
 }

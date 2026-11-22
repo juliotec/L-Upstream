@@ -111,7 +111,8 @@ def game_folder(root, list_bytes=None):
     (g / "longshot_log.txt").write_text(
         "[hos host] longshot v2.2.0-rc.1-5-gabcdef1 (source 0123abcd)\n"
         "[hos host] vk: device 0: Some GPU, Vulkan 1.4, driver 0x9b118180, type 2\n"
-        "[hos host] vk: Some GPU, Vulkan 1.4, driver 0x9b118180; mesh shaders yes, host memory import yes, pipeline libraries yes\n"
+        "[hos host] vk: Some GPU, Vulkan 1.4, driver 0x9b118180; mesh shaders offered by the driver but not used (Automatic runs "
+        "RADV on the compute path: RX_VK_MESH_SHADERS=native to try), host memory import yes, pipeline libraries yes\n"
         "[hos host] vk: driver: SomeDriver 1.2.3\n", encoding="utf-8")
     (g / "longshot_version.txt").write_text("version=v2.1.0\n", encoding="utf-8")
     for d in ("mods/a/romfs", "mods/_off/romfs", "mods/-off2/romfs", "mods/contents/deep/b/romfs", "mods/notamod/x",

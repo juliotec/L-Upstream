@@ -171,6 +171,13 @@ static void fps_refresh(void) {
         env = e ? fps_of(atoi(e)) : 0;
         start = hos_ini_option("frame_rate_cap", 0);
         movie_pace = env_on_or("HOS_MOVIE_PACE", 1);   /* (0: the movie pacing off) */
+        /* (longshot, issue 1113: off for a run that records or plays an input recording from its start, whose frames are the
+           game clock's at the 60 cap: a movie's wall-clock pacing would leave the Per frame step, and its frames with it) */
+        const char *rec = getenv("HOS_INPUT_RECORD"), *play = getenv("HOS_INPUT_PLAY");
+        if (movie_pace && ((rec && *rec) || (play && *play))) {
+            movie_pace = 0;
+            hos_log("vi: no movie pacing in a run that records or plays an input recording (HOS_INPUT_RECORD, HOS_INPUT_PLAY)");
+        }
     }
     const int i = env ? 0 : rx_option(HOS_OPT_FPS_CAP, start);
     const int row = env ? env : fps_of(i == -1 ? 30 : caps[i >= 0 && i < CAPS ? i : 0]);
@@ -502,6 +509,21 @@ static void realtime_step(int64_t now) {
     }
     const uint64_t mod = hos_gfx_module;
     if (!mod) return;
+    {   /* (longshot, issue #1639) The game's alternating pacing mode: bit 0 of the graphics module's +0x24f, asked for at +0x24e
+           (2: on, 1: off; f_80670d00 from its config's +0xa30 bit 0, carried out by f_8348c680). While it is on, bit 1 flips every
+           frame (f_8348c680) and the frame wait (f_8042cd20) takes turns: a frame with both bits sleeps to its frame mark (+0x108)
+           plus 1 / the limiter (+0xfc), the next waits for the vsync event (vsync_main, free-running). The frame-time
+           oscillation that set in after an ocarina song or a zone change at a cap of 60 and left only at a reload is suspected
+           to be this mode: logged when it changes, so a log shows whether it is */
+        static int mode_seen = -1;
+        const int mode = *(const uint8_t *)GP(mod + 0x24f) & 1;
+        if (mode != mode_seen) {
+            if (mode_seen >= 0 || mode)
+                hos_log("vi: the game's alternating frame pacing (+0x24f bit 0) %s (asked %d), at cap %d", mode ? "on" : "off",
+                        *(const uint8_t *)GP(mod + 0x24e), fps_max());
+            mode_seen = mode;
+        }
+    }
     {   /* (longshot) The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
            variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. HOS_FPS_TARGET=<fps>: that rate kept, 0: left alone;
            HOS_FPS_LOG=1: what the game asks for, every 300 presents */
@@ -510,9 +532,10 @@ static void realtime_step(int64_t now) {
         if (target < 0) target = getenv("HOS_FPS_TARGET") ? atoi(getenv("HOS_FPS_TARGET")) : 0, log_on = env_on("HOS_FPS_LOG");
         int *limit = (int *)GP(mod + 0xfc);
         if (log_on && !(n++ % 300))
-            hos_log("vi: frame limiter %d, vrr %d %d, nominal %d, controller +0x58.. %d %d %d %d", *limit, *(uint8_t *)GP(mod + 0x231),
-                    *(uint8_t *)GP(mod + 0x232), *(int *)GP(mod + 0x2c8), *(int *)GP(mod + 0x270 + 0x58), *(int *)GP(mod + 0x270 + 0x28),
-                    *(int *)GP(mod + 0x270 + 0x2c), *(int *)GP(mod + 0x270 + 0x30));
+            hos_log("vi: frame limiter %d, vrr %d %d, nominal %d, controller +0x58.. %d %d %d %d, pacing mode %d (asked %d)", *limit,
+                    *(uint8_t *)GP(mod + 0x231), *(uint8_t *)GP(mod + 0x232), *(int *)GP(mod + 0x2c8), *(int *)GP(mod + 0x270 + 0x58),
+                    *(int *)GP(mod + 0x270 + 0x28), *(int *)GP(mod + 0x270 + 0x2c), *(int *)GP(mod + 0x270 + 0x30),
+                    *(uint8_t *)GP(mod + 0x24f), *(uint8_t *)GP(mod + 0x24e));
         if (log_on && !((n - 1) % 300) && hos_step_probe) {   /* (game speed: the game clock's 1/60 s units a second of wall time, 60.0 at speed 1) */
             static double clock_before;
             static int64_t at_before;

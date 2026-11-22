@@ -669,7 +669,14 @@ static DWORD WINAPI display_main(void *p) {
     RegisterRawInputDevices(&rid, 1, sizeof rid);
     pointer_update(hwnd, 0, 0);
     renderer = rx_start(hwnd);
-    if (!renderer) hos_log("display: no renderer: the window stays black");
+    if (!renderer) {   /* (longshot) the game ends at once, as on Linux (host/posix/display_sdl.c renderer_main): behind a black
+                          window it played on until the player closed it. The window after it reads this line */
+        hos_log("display: the renderer did not start: the game ends, and the window after it says why");
+        hos_log_flush();
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
+        ExitProcess(1);
+    }
     SetEvent(renderer_up);
     SetTimer(hwnd, 1, 250, NULL);
     MSG m;

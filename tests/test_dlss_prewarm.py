@@ -64,7 +64,7 @@ def check_source():
     tick = block(replay, "void status_tick()")
     if "temporal_note_frame(draws - l_draws);" not in tick:
         fail.append("status_tick does not give the prewarm the frame's draws")
-    if "temporal_note_present(t->d.width, t->d.height);" not in block(replay, "void do_present(const nvn_tex* t, const int crop[4])"):
+    if "temporal_note_present(t->d.width, t->d.height);" not in block(replay, "void do_present(const nvn_tex* t, const int crop[4], uint64_t native_generation"):
         fail.append("do_present does not note the presented size")
     warm = block(temporal, "void temporal_prewarm(VkCommandBuffer cmd)")
     for needle in ("dev.offscreen", '"RX_VK_PROBE_HEADLESS"', "upscalers_probe_start();", "temporal_prewarm_on()",

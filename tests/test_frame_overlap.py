@@ -104,17 +104,17 @@ def check_source():
          "looking at the next capture takes it, or changes it")
     need("*capture = st_sync_cap_pages, *live = st_sync_live_pages;" in block(memory, "void memory_sync_sources(int64_t* capture, int64_t* live) {"),
          "the parts' counts are not mirror_sync's own (this submit's capture, guest memory as it is)")
-    need('"vk: frame ahead (600 presents): ' in block(replay, "void fo_log(double frames) {") and "vk: frame ahead (600 presents)" in page,
+    need('"vk: frame ahead (600 presents): ' in block(replay, "void fo_log(double frames) {") and "`vk: frame ahead` lines" in page,
          "the frame ahead line is gone from the log or from the page")
     for word in ("part_end_wanted", "submit_recording(", "vkQueueSubmit", "split_part("):
         need(word not in sig, "the frame ahead counters change what is recorded or submitted: " + word)
 
     # (the presenter thread: the swapchain is one thread's at a time)
-    image = block(replay, "void present_image(")
+    image = block(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
     need(image.rindex("present_thread_drain();", 0, image.index("vkAcquireNextImageKHR(")) > image.index("frame_index = (slot + 1) % slots;"),
          "present_image acquires the next image while the presenter thread may still present the last")
     copy = block(replay, "bool presenter_wait_copy(VkFence done) {")
-    need("step < 40;" in copy and "presenter_wait_idle(lk, 5000)" in block(replay, "void present_thread_drain() {"),
+    need("step < 40;" in copy and "presenter_wait_idle(lk, 5000)" in block(replay, "bool present_thread_drain() {"),
          "the presenter's own wait for the copy is not shorter than a drain's wait for the presenter")
 
 

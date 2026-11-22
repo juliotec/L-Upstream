@@ -201,7 +201,8 @@ page only.
 
 ## Signing
 
-CI signs `SHA256SUMS` with the release key (ECDSA P-256, the organization secret `RELEASE_SIGNING_KEY`), then checks
+CI signs `SHA256SUMS` with the release key (ECDSA P-256, the organization secret `RELEASE_SIGNING_KEY_SEALED`, opened
+only on the server's runner: [CI](ci.md#secrets-only-our-runners-can-open)), then checks
 the signature against the public keys the launcher trusts (Longshot's [release_keys.json](../../../scripts/release_keys.json),
 the launcher's `Core/ReleaseTrust.cs`): a key the launcher doesn't trust stops the release in CI. The launcher checks
 the signature, then each file it downloads against `SHA256SUMS`, then each tool against `tools.lock`.
@@ -218,7 +219,8 @@ When it may have leaked, or on a schedule:
 1. `python -I ../Tooling/scripts/release.py keygen <safe folder>` makes `release.pem` and `release.pub.pem` and prints the lines.
 2. **The launcher first:** add the new key beside the old one in `Core/ReleaseTrust.cs` and `scripts/release_keys.json`,
    and release the launcher **signed with the old key**.
-3. **Then switch,** once most players have that launcher: replace `RELEASE_SIGNING_KEY` with the new `release.pem`,
+3. **Then switch,** once most players have that launcher: replace `RELEASE_SIGNING_KEY_SEALED` with the new
+   `release.pem`, sealed (`scripts/ci_secret.sh seal --key seal.key < release.pem`),
    remove the old key from both files, and release the launcher with the new key.
 
 Older launchers then refuse new releases and the player downloads the launcher by hand. If the old key leaked, do
@@ -261,7 +263,8 @@ Finish with `tools.py check --require`. The next release uses the new line; inst
 profiles are not tools: they are committed in `assets/profiles/`.
 
 RenHDrum isn't a tool either. The release builds `renhdrum.dll` and `renhdrum.so` from `third_party/renhdrum`
-(`scripts/renhdrum.py build` in `build-windows.yml` and `build-linux.yml`, with a pinned Rust) and ships them in the
+(`scripts/renhdrum.py build` in `build-windows.yml` and `build-linux.yml`, with a pinned Rust, its build crate by its
+`Cargo.lock` SHA-256 and libopus from `third_party/opus`) and ships them in the
 builders, where a player's build finds them. A newer RenHDrum: its `PROVENANCE.md` says how. A newer Rust:
 `RUST_VERSION` and the parts' SHA-256 in `scripts/renhdrum.py`.
 
@@ -287,8 +290,15 @@ launcher: `/download/launcher/<os>` for the best channel there is (stable, else 
 `linux`. There are no links to the builder files: only the launcher downloads them.
 
 **RecompLauncher** can also run both builders through their `recomplauncher.json`
-([recomplauncher.json](../../../recomplauncher.json), `tests/test_recomplauncher_json.py`): `--cli --prepare --game
-<copy>`, then `--play`.
+([recomplauncher.json](../../../recomplauncher.json), `tests/test_recomplauncher_json.py`): `--cli --prepare
+--game=<copy> --out <the game folder> --work <the install folder>/recompdata/cache/work`, then `--play`. The work folder
+is in the install folder, so it moves and uninstalls with the game, and RecompLauncher's backups leave its `cache` out.
+The build is finished when the folder has its `image.bin` (*prepare*'s `done`). With *prepare*'s `keeps_copy`, a player
+who deleted their copy isn't asked for it again: the launcher runs the same line without `--game`, and the game is built
+from the game files its folder kept, as an update is. RecompLauncher keeps a game set up through an update and builds it
+again only when *prepare*'s `version` changes, so each release's copy of the file carries the release's version there
+(`scripts/builder_package.py` `release_manifest`, for the zip and the AppImage): after an update, the next Play builds
+the game again, from what the folder kept.
 
 ## One-time setup
 
@@ -298,8 +308,9 @@ What a repository needs before its first release (the organization's secret is s
    launcher's `Core/ReleaseTrust.cs` and in [`scripts/release_keys.json`](../../../scripts/release_keys.json), a pull
    request to each. Keep `release.pem` backed up offline: losing it means a launcher with a new key that every player
    downloads by hand.
-2. **The secret** (MagicBeanDev > *Settings* > *Actions* > *Secrets*): `RELEASE_SIGNING_KEY`, the text of
-   `release.pem`. No token secret or bot account: `release.yml` makes the release with the job's own token, which Forgejo
+2. **The secret** (MagicBeanDev > *Settings* > *Actions* > *Secrets*): `RELEASE_SIGNING_KEY_SEALED`, `release.pem`
+   sealed with the server's `seal.key` (`scripts/ci_secret.sh seal --key seal.key < release.pem`; [CI](ci.md#secrets-only-our-runners-can-open)).
+   No token secret or bot account: `release.yml` makes the release with the job's own token, which Forgejo
    gives write access to its own repository on a push or a tag. Don't protect `nightly-*` tags, or the prune can't delete
    them. `tools.py` and `release.py` run by hand (`mirror`, `add`, `prune`) take your own token as `RELEASE_TOKEN`.
 3. **The upload address.** Uploads through Cloudflare are cut at 100 MB, and the builders are larger. Set the
@@ -319,7 +330,9 @@ What a repository needs before its first release (the organization's secret is s
 
 | Symptom | Fix |
 |---|---|
-| *SHA256SUMS, signed*: "no RELEASE_SIGNING_KEY" | the secret isn't set or visible to the repository ([one-time setup](#one-time-setup), step 2) |
+| *SHA256SUMS, signed*: "the sealed secret is empty" | `RELEASE_SIGNING_KEY_SEALED` isn't set or visible to the repository ([one-time setup](#one-time-setup), step 2) |
+| *SHA256SUMS, signed*: "no /run/magicbean-secrets/seal.key" | the job ran on a runner without `seal.key`: only the server's quick runner should carry `deploy` ([CI](ci.md#secrets-only-our-runners-can-open)) |
+| *SHA256SUMS, signed*: "bad decrypt" | the secret was sealed with another `seal.key`: seal it again with the server's |
 | `verify`: "not signed by a trusted key" | the secret's key isn't in `release_keys.json`: set the matching key, or rotate |
 | *Publish*: HTTP 413 or a cut connection | an upload over Cloudflare's 100 MB limit: set `RELEASE_UPLOAD_API` |
 | *Publish*: "upload N of 4 failed", HTTP 5xx | `release.py` tries each upload four times; if all fail, check Forgejo's log and re-run (the draft is reused) |

@@ -173,8 +173,9 @@ class NoScriptTests(unittest.TestCase):
 class AppImageDlssTests(unittest.TestCase):
     def test_build_and_appimage_package_dlss_sources(self):
         build_py = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        # (with DLSS or without, the back end is compiled from the sources: no prebuilt one to set aside)
-        self.assertIn("build_vk = a.standalone and vk_headers and spirv_headers and vma_headers", build_py)
+        # (with DLSS or without, the back end is compiled from the sources: no prebuilt one to set aside. RX_GAME_ONLY, a dev
+        # switch, builds the game alone)
+        self.assertIn("build_vk = a.standalone and not game_only and vk_headers and spirv_headers and vma_headers", build_py)
         self.assertIn("NGX_SDK = ngx_sdk(", build_py)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
         # (scripts/fetch.py and the helpers it imports come with the whole scripts/ folder: tests/test_appimage_scripts.py)

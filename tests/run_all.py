@@ -22,7 +22,7 @@ no arguments and its own defaults.
     RUN_ALL_MODULES = ["zstandard"]                                       # Python packages it imports
     RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}       # OS ("linux", "windows") -> why it is skipped
 
-{name} in an argument is a tool or folder find_tools looks for (cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
+{name} in an argument is a tool or folder find_tools looks for (cc, cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
 dotnet, dav1d); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
 with --strict. A check skipped on both OSes (a GPU, the game) names both. A declaration that is not a plain literal of
 that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stops the run with the file and line; so
@@ -55,6 +55,8 @@ import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from compiler_command import parse_compiler  # noqa: E402
 WINDOWS = os.name == "nt"
 OS = "windows" if WINDOWS else "linux"
 
@@ -114,6 +116,18 @@ def dav1d_prefix():
     return None
 
 
+def bundled_mingw():
+    """(windows) The clone's llvm-mingw folder as LONGSHOT_MINGW for every check, as nx2/make_game.py's bundled_mingw() gives
+    it to the build (CONTRIBUTING.md: the variable, or that folder). Without it a check that builds with
+    toolchain.native_target() asks that folder's clang, found on PATH, for the MSVC target: "'algorithm' file not found".
+    LONGSHOT_MINGW set already wins; LONGSHOT_MSVC=1 (the Visual Studio route) and a folder without its clang leave it unset"""
+    if not WINDOWS or os.environ.get("LONGSHOT_MINGW") or os.environ.get("LONGSHOT_MSVC") == "1":
+        return
+    here = os.path.join(ROOT, "llvm-mingw")
+    if os.path.isfile(os.path.join(here, "bin", "clang.exe")):
+        os.environ["LONGSHOT_MINGW"] = here
+
+
 def find_tools():
     return {
         "dav1d": None if WINDOWS else dav1d_prefix(),
@@ -122,6 +136,7 @@ def find_tools():
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
         "dotnet": which("dotnet"),
+        "cc": os.environ.get("CC") or which("gcc", "clang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 
@@ -249,8 +264,14 @@ def python_check(rel, decl, tools, timeout):
             args.append(a)
     # (a compiler named by the arguments, or the test's own default one, must be on PATH)
     for i, a in enumerate(args[:-1]):
-        if a in ("--cc", "--cxx") and not which(args[i + 1]):
-            missing.append(args[i + 1])
+        if a in ("--cc", "--cxx"):
+            try:
+                command = parse_compiler(args[i + 1]) if a == "--cc" else [args[i + 1]]
+            except ValueError:
+                missing.append("invalid compiler setting: " + args[i + 1])
+                continue
+            if not command or not which(command[0]):
+                missing.append(args[i + 1])
     missing += [m for m in decl["modules"] if importlib.util.find_spec(m) is None]
 
     def run():
@@ -575,6 +596,7 @@ def main():
     if a.changed is not None and (a.names or a.write_times):
         p.error("--changed picks the checks itself: no names, no --write-times")
     times = load_times()
+    bundled_mingw()
     tools = find_tools()
 
     checks = []

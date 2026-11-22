@@ -29,6 +29,7 @@ def main():
     marker = "thread_local const char* astc_fail ="
     start = tex.index(marker)
     actual += "\n" + tex[start:tex.index(";", start) + 1] + "\n"
+    actual += "std::atomic<int64_t> step_ns[8];\nint64_t step_now() { return 0; }\n"
     # The actual gather, publication and command-buffer request. Decoder shaders are outside this cache fixture.
     stop = astc.index("    const uint64_t limit =", astc.index("    const uint64_t staged ="))
     actual += "\n" + astc[:stop] + "    consume(cmd); return true;\n}\n"
@@ -38,8 +39,8 @@ def main():
     assert cpu[start:].startswith("                }")
     start = cpu.index("\n", start) + 1
     end = cpu.index("                copies.push_back(c);", start) + len("                copies.push_back(c);")
-    # The publication site must remain after conversion workers joined and before a copy is queued.
-    assert cpu.index("for (std::thread& t : pool) t.join();") < start < cpu.index("vkCmdCopyBufferToImage(upload_cmd(), buffer, tex.image", start)
+    # The publication site must remain after conversion workers joined (fork_join returns joined) and before a copy is queued.
+    assert cpu.index('fork_join("texture unswizzle"') < start < cpu.index("vkCmdCopyBufferToImage(upload_cmd(), buffer, tex.image", start)
     # (a color upload: no DEPTH24_STENCIL8 stencil bytes after the texels)
     actual += ("\nvoid cpu_slice(Staging st, uint64_t out_bytes) {\n    [[maybe_unused]] const bool d24s8_as_d32 = false;\n"
                "    [[maybe_unused]] const uint64_t s_off = 0, s_bytes = 0;\n" + cpu[start:end] + "\n}\n")

@@ -83,11 +83,12 @@ def main():
     linux = block(draw, "VkResult guarded_shader_module(", linux_at)
     need("sigsetjmp(fault_jmp, 1)" in linux and "vkCreateShaderModule" in linux,
          "Linux does not guard vkCreateShaderModule")
-    for fn in ("VkResult cached_graphics(", "VkResult cached_compute("):
+    # (a graphics build passes the gate on a preparation thread where intel_prepare_open, #1706; a compute one never)
+    for fn, gate_line in (("VkResult cached_graphics(", "IntelDriverGate gate(compiles_nothing(ci->flags), true);"),
+                          ("VkResult cached_compute(", "IntelDriverGate gate(compiles_nothing(ci->flags));")):
         body = block(draw, fn)
         need(body.index("IntelDriverGate") < body.index("create_cached"), fn + " compiles before it takes the lock")
-        need("IntelDriverGate gate(compiles_nothing(ci->flags));" in body and
-             "if (gate.busy) return intel_gate_busy();" in body, fn + " makes an ask wait for a compile")
+        need(gate_line in body and "if (gate.busy) return intel_gate_busy();" in body, fn + " makes an ask wait for a compile")
     graphics = block(draw, "VkResult graphics_with(")
     need("return cached_graphics" in graphics, "the play-cache path takes the lock twice")
     need("if (gate.busy) return intel_gate_busy();" in graphics, "graphics_with makes an ask wait for a compile")
@@ -138,7 +139,7 @@ def main():
     module = block((ROOT / "gpu/vk/vk_shader.cpp").read_text(encoding="utf-8"),
                    "VkShaderModule make_module(")
     need("IntelDriverGate" in module and "guarded_shader_module" in module, "translation still creates a module unguarded")
-    need("IntelDriverGate gate(busy != nullptr);" in module and "*busy = true;" in module,
+    need("IntelDriverGate gate(busy != nullptr, true);" in module and "*busy = true;" in module,
          "make_module waits for the gate where the dispatch only tries it")
     need(module.index("driver_faulted_program(program)") < module.index("IntelDriverGate"),
          "a program the driver faulted on is handed to it again")

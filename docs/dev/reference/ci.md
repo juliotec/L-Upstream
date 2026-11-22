@@ -75,14 +75,50 @@ started under Wine. The labels the workflows ask for, all on the image `docker:/
 
 | Label | For |
 |---|---|
-| `ubuntu-latest`, `ubuntu-24.04` | the checks |
-| `quick` | jobs of a few minutes (title, description, third-party, a release's version and publish), on a runner kept for them with capacity 1 so they never wait behind a build |
+| `ubuntu-latest`, `ubuntu-24.04` | the checks. No secrets: a runner anyone in the team lends can carry these |
+| `quick` | jobs of a few minutes (title, description, third-party, actionlint, guide screenshots), on a runner kept for them so they never wait behind a build |
 | `release` | the builders' builds, on a runner that carries no other label, so CI never takes it. It needs about 50 GB of disk |
+| `deploy` | the jobs that sign, publish or deploy: a release's version and publish, the website's deploy and previews. Only the server's quick runner, which alone has `seal.key` ([below](#secrets-only-our-runners-can-open)) |
 
 Register a runner with `forgejo-runner register --instance https://git.magicbean.dev --token <token> --labels ...` from
-MagicBeanDev's *Settings > Actions > Runners*, and run `forgejo-runner daemon`. git.magicbean.dev is behind Cloudflare,
-which cuts uploads at 100 MB: the organization variable `RELEASE_UPLOAD_API` gives a release runner the server's
-direct address ([one-time setup](releases.md#one-time-setup)).
+MagicBeanDev's *Settings > Actions > Runners*, and run `forgejo-runner daemon`. A runner lent by someone else gets
+`ubuntu-latest` and `ubuntu-24.04` only. git.magicbean.dev is behind Cloudflare, which cuts uploads at 100 MB: the
+organization variable `RELEASE_UPLOAD_API` gives a release runner the server's direct address ([one-time
+setup](releases.md#one-time-setup)).
+
+### Secrets only our runners can open
+
+A label only routes a job: a runner says its own labels each time it starts, so anyone's runner can ask for `deploy`
+or `release`, and Forgejo hands it the job and the job's secrets. So the secrets that sign or deploy are kept in
+Forgejo **sealed** ([scripts/ci_secret.sh](../../../scripts/ci_secret.sh), AES-256 with PBKDF2), and the key that
+opens them, `seal.key`, is a file on the server only: in the runners' Docker (dind) at `/magicbean-secrets/seal.key`,
+which only the quick runner lets a job mount (`container.valid_volumes`, MagicBeanDev/Infra's `runner/quick/config.yml`).
+A `deploy` job mounts it at `/run/magicbean-secrets` and opens its secret there.
+
+- A runner without `seal.key` that takes such a job gets text it can't open: the job fails, and signs or deploys nothing.
+- A job that can mount `seal.key` but gets no secrets (a fork's pull request) has nothing to open.
+
+| Secret (organization) | Sealed | Used by |
+|---|---|---|
+| `RELEASE_SIGNING_KEY_SEALED` | the release key's private PEM, `release.pem` | `release.yml` publish ([signing](releases.md#signing)) |
+| `CLOUDFLARE_API_TOKEN_SEALED` | the Cloudflare token | `website.yml`, deploy and preview |
+| `PREVIEW_COMMENT_TOKEN_SEALED` | optional, a Forgejo token with `write:issue` | `website.yml`, the preview's comment on a fork's PR |
+
+`CLOUDFLARE_ACCOUNT_ID` is not sealed: it opens nothing. To seal a secret, on a PC you trust with a copy of `seal.key`:
+`scripts/ci_secret.sh seal --key seal.key < release.pem`, and paste the line into the Forgejo secret. A new
+`seal.key` (`scripts/ci_secret.sh newkey`) means sealing every secret again.
+
+What sealing doesn't cover:
+
+- A fork's pull request runs its own copy of the workflows, so it can ask for `deploy` and mount `seal.key`. It gets no
+  secrets to open, but `seal.key` itself would leave with it; whoever also has the sealed text (a runner that took a
+  `deploy` job) could then open it. So a fork's run waits for a maintainer's approval: read its `.forgejo/` changes
+  before you approve one, and don't mark a fork's author as always trusted.
+- A job's own token (`forgejo.token`) comes with every job, whichever runner takes it, and on a push it may write to
+  the repository (releases, tags).
+- A builder that asks for `release` builds the files publish signs.
+
+Lend runners only to people you'd trust that far.
 
 ## Before you push
 

@@ -165,7 +165,7 @@ def sources(root):
            .replace("/* APPLY */", definition(menu, "void apply_pad_layout"))
            .replace("/* DETECT */", definition(menu, "int detect_pad_layout")))
     table_from = hid.rindex("\n", 0, hid.index("static const char *const bind_names[HOS_KEY_N]")) + 1
-    table = hid[table_from:hid.index("\nvoid hos_bind(")] + "\n" + definition(hid, "void hos_bind")
+    table = hid[table_from:hid.index("\nvoid hos_bind(int set, int button, int slot, int code) {")] + "\n" + definition(hid, "void hos_bind")
     return HID.replace("/* TABLE */", table), cxx, menu
 
 

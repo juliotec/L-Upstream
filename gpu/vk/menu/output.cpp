@@ -406,7 +406,8 @@ MENU_MODULE(output) {
               .hint = MENU_HOOK(hn_ultrawide)}, menu::before("@Custom output size").order(10))
         .row({.key = "output_res",
               .label = "Output resolution",
-              .help = "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
+              .help = "The game's whole frame, HUD included, before it is scaled to the window. Docked only. On supported Windows "
+                      "setups, 1024x576 can be previewed from 1280x720. Other changes apply after a restart.",
               .value = &opts.output_res,
               .lo = 0, .hi = 0,
               .restart = true,

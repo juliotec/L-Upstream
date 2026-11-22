@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FIXTURE = r"""
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -57,6 +58,7 @@ struct VkPipelineLayout_T { int id; };
 struct VmaAllocation_T { int id; };
 
 using VkCommandBuffer = VkCommandBuffer_T*;
+using VkDeviceSize = uint64_t;
 using VkImage = VkImage_T*;
 using VkImageView = VkImageView_T*;
 using VkBuffer = VkBuffer_T*;
@@ -171,6 +173,8 @@ static VkPipeline_T pipe_astc_obj{1}, pipe_bc_obj{2}, pipe_bc7_obj{3};
 static VkPipelineLayout_T layout_astc_obj{1}, layout_bc_obj{2};
 static VkImage_T scratch_img1{10}, scratch_img2{11};
 static VkImageView_T scratch_view1{0, 0, 8, true}, scratch_view2{0, 0, 8, true};
+static VkImageView_T small_views[8] = {{0,0,1,true}, {0,1,1,true}, {0,2,1,true}, {0,3,1,true},
+                                      {0,4,1,true}, {0,5,1,true}, {0,6,1,true}, {0,7,1,true}};
 static VkBuffer_T bc_out_obj{20}, staging_buf_obj{21};
 static VmaAllocation_T staging_alloc_obj{30};
 
@@ -180,7 +184,9 @@ static VkImage bc_scratch = &scratch_img1, bc_scratch2 = &scratch_img2;
 static VkImageView bc_scratch_view = &scratch_view1, bc_scratch2_view = &scratch_view2;
 static VkBuffer bc_out = &bc_out_obj;
 static bool bc7_enabled() { return false; }
-constexpr uint32_t kBcLayers = 8;
+constexpr uint32_t kBcDim = 2048, kBcLayers = 8;
+static std::atomic<int64_t> step_ns[8];
+static int64_t step_now() { return 0; }
 
 [[maybe_unused]] static thread_local VkCommandBuffer last_barrier_cmd = VK_NULL_HANDLE;
 [[maybe_unused]] static thread_local VkCommandBuffer last_pass_end_cmd = VK_NULL_HANDLE;
@@ -201,6 +207,7 @@ static std::vector<VkImageView_T> view_pool;
 static VkCommandBuffer active_cb = VK_NULL_HANDLE;
 static VkPipeline bound_pipe = VK_NULL_HANDLE;
 static VkImageView bound_astc_view = VK_NULL_HANDLE;
+static VkImageView bound_bc_view = VK_NULL_HANDLE;
 static uint32_t last_astc_blocks_x = 0, last_astc_blocks_y = 0;
 static uint32_t pending_scratch_layers = 0;
 static bool pending_resized_blit = false;
@@ -210,6 +217,9 @@ static SubmitRec cur_submit;
 static std::vector<SubmitRec> submits;
 static std::vector<std::tuple<VkImage, uint32_t, uint32_t>> written_slices;
 static std::vector<std::string> errors;
+static std::vector<uint32_t> encoded_offsets;
+static std::vector<VkImageView> decoded_views, encoded_views;
+static std::vector<char> events;
 
 static void fail(const std::string& msg) {
     if (errors.size() < 16) errors.push_back(msg);
@@ -225,6 +235,7 @@ static void full_barrier(VkCommandBuffer cmd) {
     if (cmd == last_barrier_cmd) return;
     last_barrier_cmd = cmd;
     cur_submit.barriers++;
+    events.push_back('B');
 }
 static void descriptors_disturbed() {}
 static void memory_table_begin() {}
@@ -233,8 +244,10 @@ static bool memory_rb_refresh(VkCommandBuffer) { return false; }
 static bool memory_table_flush() { return false; }
 
 static std::vector<uint8_t> staging_bytes;
+static int staging_calls = 0, fail_staging_at = 0;
 /* STAGING_STRUCT */
 static Staging staging(uint64_t n, uint64_t) {
+    if (++staging_calls == fail_staging_at) return {};
     if (staging_bytes.size() < n) staging_bytes.resize((size_t)n);
     return {&staging_buf_obj, 0, staging_bytes.data(), &staging_alloc_obj};
 }
@@ -265,6 +278,8 @@ static void vkCmdPushDescriptorSetKHR(VkCommandBuffer cmd, int, VkPipelineLayout
     if (bound_pipe == astc_pipe && count >= 2 && writes[1].pImageInfo) {
         bound_astc_view = writes[1].pImageInfo->imageView;
     }
+    if ((bound_pipe == bc_pipe || bound_pipe == bc7_pipe) && count >= 2 && writes[0].pImageInfo)
+        bound_bc_view = writes[0].pImageInfo->imageView;
 }
 /* PUSH_STRUCTS */
 static void vkCmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout layout, int, uint32_t, uint32_t size, const void* p) {
@@ -274,9 +289,13 @@ static void vkCmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout layout, int
         last_astc_blocks_x = pc->blocks_x;
         last_astc_blocks_y = pc->blocks_y;
     }
+    if (layout == bc_layout && size == sizeof(BcPush))
+        encoded_offsets.push_back(static_cast<const BcPush*>(p)->out_offset);
 }
 
 static Texture* active_tex = nullptr;
+static std::vector<uint32_t> decoded_layers;
+static std::vector<std::vector<uint64_t>> copy_offsets;
 static void vkCmdDispatch(VkCommandBuffer cmd, uint32_t, uint32_t, uint32_t gz) {
     if (cmd != active_cb) fail("vkCmdDispatch on inactive command buffer");
     if (cur_submit.barriers == 0) fail("command recorded without prior barrier (stale last_barrier_cmd?)");
@@ -286,12 +305,15 @@ static void vkCmdDispatch(VkCommandBuffer cmd, uint32_t, uint32_t, uint32_t gz) 
     }
     cur_submit.dispatches++;
     if (bound_pipe == astc_pipe) {
+        events.push_back('D');
         cur_submit.astc_dispatches++;
         if (!bound_astc_view) {
             fail("ASTC dispatch without target image view");
             return;
         }
         if (bound_astc_view->scratch) {
+            decoded_layers.push_back(bound_astc_view->base_layer);
+            decoded_views.push_back(bound_astc_view);
             pending_scratch_layers = gz;
             uint32_t mip_w = 0, mip_h = 0;
             if (active_tex) {
@@ -320,6 +342,7 @@ static void vkCmdDispatch(VkCommandBuffer cmd, uint32_t, uint32_t, uint32_t gz) 
         }
     } else {
         cur_submit.bc_dispatches++;
+        encoded_views.push_back(bound_bc_view);
         if (pending_scratch_layers != gz) fail("BC encode layer count != decoded scratch layers");
     }
     last_barrier_cmd = VK_NULL_HANDLE;
@@ -331,13 +354,21 @@ static void vkCmdBlitImage(VkCommandBuffer cmd, VkImage, int, VkImage, int, uint
     pending_resized_blit = true;
     last_barrier_cmd = VK_NULL_HANDLE;
 }
-static void vkCmdCopyBufferToImage(VkCommandBuffer cmd, VkBuffer, VkImage dst, int, uint32_t, const VkBufferImageCopy* c) {
+static void vkCmdCopyBufferToImage(VkCommandBuffer cmd, VkBuffer, VkImage dst, int, uint32_t count, const VkBufferImageCopy* c) {
     if (cmd != active_cb) fail("vkCmdCopyBufferToImage on inactive command buffer");
     if (cur_submit.barriers == 0) fail("command recorded without prior barrier (stale last_barrier_cmd?)");
-    if (c->imageSubresource.layerCount != pending_scratch_layers) fail("BC copy layer count != encoded layers");
-    for (uint32_t z = 0; z < c->imageSubresource.layerCount; ++z) {
-        written_slices.emplace_back(dst, c->imageSubresource.mipLevel, c->imageSubresource.baseArrayLayer + z);
+    std::vector<uint64_t> offsets;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (c[i].imageSubresource.layerCount != pending_scratch_layers) fail("BC copy layer count != encoded layers");
+        offsets.push_back(c[i].bufferOffset);
+        // (a group's copy: the buffer's rows and height given, in whole blocks covering the level, as bc_encode_into's, #2015)
+        if (count > 1 && (c[i].bufferRowLength % 4 || c[i].bufferImageHeight % 4 || c[i].bufferRowLength < c[i].imageExtent.width ||
+                          c[i].bufferImageHeight < c[i].imageExtent.height))
+            fail("a grouped BC copy leaves the buffer's pitch to the driver");
+        for (uint32_t z = 0; z < c[i].imageSubresource.layerCount; ++z)
+            written_slices.emplace_back(dst, c[i].imageSubresource.mipLevel, c[i].imageSubresource.baseArrayLayer + z);
     }
+    copy_offsets.push_back(offsets);
     pending_scratch_layers = 0;
     last_barrier_cmd = VK_NULL_HANDLE;
 }
@@ -395,12 +426,15 @@ static void reset_spy() {
     noop_flush = false;
     pending_scratch_layers = 0;
     pending_resized_blit = false;
+    decoded_layers.clear(); decoded_views.clear(); encoded_views.clear(); encoded_offsets.clear(); copy_offsets.clear(); events.clear();
+    staging_calls = fail_staging_at = 0;
 }
 
 static void begin_rec(uint64_t value) {
     active_cb = alloc_cb();
     bound_pipe = VK_NULL_HANDLE;
     bound_astc_view = VK_NULL_HANDLE;
+    bound_bc_view = VK_NULL_HANDLE;
     cur_submit = {active_cb, 0, 0, 0, 0, 0};
     texture_begin_recording(active_cb, value);
 }
@@ -431,6 +465,55 @@ static bool verify_all_slices(const std::vector<Texture*>& texs) {
 int main(int argc, char** argv) {
     if (argc < 2) return 2;
     const std::string mode = argv[1];
+
+    if (mode == "levels" || mode == "levels_split" || mode == "failure") {
+        reset_spy();
+        bc_small = &scratch_img2;
+        bc_small_view = &scratch_view2;
+        for (unsigned i = 0; i < 8; ++i) bc_small_layer[i] = &small_views[i];
+        Texture tex = mode == "levels_split" ? make_tex(31, 1024, 1024, 11, 1, true) : make_tex(31, 64, 64, 7, 1, true);
+        begin_rec(1);
+        active_tex = &tex;
+        if (mode == "failure") {
+            dev.props.limits.minStorageBufferOffsetAlignment = 1024;
+            fail_staging_at = 2;
+            if (upload_astc_gpu(tex, 0, nullptr)) fail("late staging failure was accepted");
+            if (events != std::vector<char>{'B', 'D', 'D', 'B'} || decoded_layers != std::vector<uint32_t>{0, 1})
+                fail("wrong dispatch or barrier sequence before staging failure");
+            fail_staging_at = 0;
+            Texture next = make_tex(32, 64, 64, 7, 1, true);
+            active_tex = &next;
+            if (!upload_astc_gpu(next, 0, nullptr)) fail("next texture failed");
+            if (events.size() < 5 || events[4] != 'D' || decoded_layers.size() < 3 || decoded_layers[2] != 0)
+                fail("scratch was reused without ordering after failure");
+        } else if (mode == "levels_split") {
+            if (!upload_astc_gpu(tex, 0, nullptr)) fail("split level upload failed");
+            verify_all_slices({&tex});
+            if (!flushes || copy_offsets.size() < 2) fail("level group did not split");
+        } else {
+            if (!upload_astc_gpu(tex, 0, nullptr)) fail("level upload failed");
+            verify_all_slices({&tex});
+            const bool grouped = std::getenv("RX_VK_BC_LEVELS") != nullptr;
+            if (copy_offsets.size() != (grouped ? 1u : 7u)) fail("wrong copy grouping");
+            if (decoded_layers.size() != 7 || (grouped && copy_offsets.size() == 1 && copy_offsets[0].size() != 7))
+                fail("wrong number of mip levels");
+            if (cur_submit.barriers != (grouped ? 4u : 22u)) fail("wrong barrier count");
+            uint64_t offset = 0;
+            for (unsigned l = 0; l < 7 && l < decoded_layers.size() && copy_offsets.size() == (grouped ? 1u : 7u) &&
+                                 (!grouped || copy_offsets[0].size() == 7); ++l) {
+                if (decoded_layers[l] != (grouped ? l : 0)) fail("wrong scratch layer");
+                if (l >= encoded_views.size() || encoded_views[l] != decoded_views[l]) fail("encoder bound wrong scratch view");
+                const uint64_t actual = grouped ? copy_offsets[0][l] : copy_offsets[l][0];
+                if (actual != (grouped ? offset : 0)) fail("wrong BC output range");
+                if (l >= encoded_offsets.size() || encoded_offsets[l] * 8ull != actual) fail("encoder offset differs from copy");
+                const uint32_t dim = std::max(1u, 64u >> l);
+                offset += ((dim + 3) / 4) * ((dim + 3) / 4) * 16;
+            }
+        }
+        end_rec();
+        for (const auto& e : errors) std::fprintf(stderr, "ERROR: %s\n", e.c_str());
+        return errors.empty() ? 0 : 1;
+    }
 
     if (mode == "terrain_bc3_default" || mode == "terrain_bc3_resized" || mode == "terrain_rgba8_default" ||
         mode == "terrain_bc3_off" || mode == "terrain_bc3_4mpx" || mode == "terrain_bc3_neg" ||
@@ -523,7 +606,8 @@ def build_fixture(cxx, temp):
     prod = []
     if "uint32_t bc_small_layers() {" in tex:   # (#1843's small scratch: not made here, every level through the first)
         prod.append("static VkImage bc_small = VK_NULL_HANDLE;\nstatic VkImageView bc_small_view = VK_NULL_HANDLE;\n"
-                    "constexpr uint32_t kBcSmallDim = 1024;\nstatic uint32_t bc_small_layers() { return 8; }")
+                    "static VkImageView bc_small_layer[8] = {};\nstatic bool bc_levels_on() { return std::getenv(\"RX_VK_BC_LEVELS\") != nullptr; }\n"
+                    "constexpr uint32_t kBcSmallDim = 1024;\nstatic uint32_t bc_small_px = kBcSmallDim;\nstatic uint32_t bc_small_layers() { return 8; }")
     if "bool upload_never_put_off(const Texture& tex) {" in tex:
         prod.append(block(tex, "bool upload_never_put_off(const Texture& tex) {"))
     if "GprofSpan" in tex:   # (RX_VK_PASS_TIMING's spans: off here)
@@ -560,10 +644,12 @@ def build_fixture(cxx, temp):
     return exe
 
 
-def run_case(exe, mode, chunk_env=None):
-    env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_ASTC_CHUNK_MPX", "RX_VK_BC_LAYERS")}
+def run_case(exe, mode, chunk_env=None, levels=False):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RX_VK_")}
     if chunk_env is not None:
         env["RX_VK_ASTC_CHUNK_MPX"] = chunk_env
+    if levels:
+        env["RX_VK_BC_LEVELS"] = "1"
     r = subprocess.run([str(exe), mode], text=True, capture_output=True, timeout=30, env=env)
     if r.returncode != 0:
         raise SystemExit(f"FAIL {mode} (RX_VK_ASTC_CHUNK_MPX={chunk_env!r}):\n{r.stdout}{r.stderr}".strip())
@@ -586,6 +672,11 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="astc-chunk-") as temp:
         exe = build_fixture(args.cxx, temp)
+
+        for levels in (False, True):
+            run_case(exe, "levels", "0", levels)
+        run_case(exe, "levels_split", "1", True)
+        run_case(exe, "failure", "0", True)
 
         # 1. Default chunking (16 Mpx) on a 1365x1365x90 11-mip BC3 array (990 slices, 1,980 dispatches, ~223M texels).
         kv, line = run_case(exe, "terrain_bc3_default", None)

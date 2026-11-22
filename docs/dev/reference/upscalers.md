@@ -100,6 +100,18 @@ applies at once: the feature is made again.
 `Preset <letter> (RX_VK_DLSS_PRESET)`. The log's `vk: NVIDIA DLSS: ... preset <letter>` line is what was asked for; with
 `RX_VK_DLSS_LOG=1`, NGX's `Using App hint Preset <letter>` lines are what it took.
 
+### FSR 4 models
+
+The FSR 4 model row (`fsr4_model=`; `RX_VK_FSR4_MODEL=auto|lite` over it for one run) picks AMD's network: Auto lets
+AMD's own `IsSupported` choose (FP8 on RDNA 4, full INT8 on RDNA 3 and Strix Halo, the Navi 2 INT8 model on RX 6000, Lite
+on Strix Point and Van Gogh); Lite forces the INT8 Lite provider.
+
+`fsr4_models::install` (`fsr4_models.cpp`) patches only each provider's `IsSupported` entry (`vtable[2]`), after the
+4.1.2 vtable shape check, and only in this process's copy: a module whose layout is not understood, or whose vtable
+changed under the scan, is left alone (Auto). The log's `vk: AMD FSR 4: models:` lines say what each loaded module held.
+Linux has no Lite provider: the row is hidden and the switch does nothing. Checked against
+`amd_fidelityfx_upscaler_vk.dll` 4.1.2.4555 (FSR SDK 2.4).
+
 ### DLSS's log and memory
 
 NGX starts on demand: when the menu asks whether DLSS can run (`dlss_probe`), at the first DLSS evaluation, or at
@@ -232,14 +244,15 @@ The game draws its HUD into the same picture as the scene, after the gameplay up
 
 1. `framegen_hud_before` copies the picture right after the upscale writes it, whoever drew the upscale.
 2. At the present, `hud_source` (`shaders/fg_hud.comp`) finds the HUD as what the game drew since.
-3. By default (`RX_VK_FSR_FG_HUDLESS`, on) FSR 3.1 interpolates the HUD-less copy, and the HUD is laid over each made
-   frame. With `=0`, the HUD is instead marked in the source's alpha (`Inputs::hud_mask`) and kept in place.
-4. The HUD layer (`RX_VK_FSR_FG_HUD_LAYER`, on): the game blends its HUD as `D = B + T × S`, so from this frame's and
-   the frame before's pictures before and after the HUD, `hud_layer` (`shaders/fg_hud_layer.comp`) fits per pixel how
+3. In SDR and Expanded HDR, by default (`RX_VK_FSR_FG_HUDLESS`, on) FSR 3.1 interpolates the HUD-less copy, and the HUD
+   is laid over each made frame. With `=0`, the HUD is instead marked in the source's alpha (`Inputs::hud_mask`) and kept
+   in place. Native HDR uses the marked, presented PQ frame when a copy is available, regardless of this switch.
+4. In SDR and Expanded HDR, the HUD layer (`RX_VK_FSR_FG_HUD_LAYER`, on): the game blends its HUD as `D = B + T × S`, so
+   from this frame's and the frame before's pictures before and after the HUD, `hud_layer` (`shaders/fg_hud_layer.comp`) fits per pixel how
    see-through the HUD is (T) and its colour (B), kept from frame to frame. FSR 3.1 is given the HUD-less colour as its
    present, and `shaders/fg_hud_composite.comp` lays `B + T ×` the made frame's own scene over each made frame; where T
    isn't known yet, the presented pixel. With `=0`, the presented frame is laid over as it is, and the real frame's
-   scene shows through the HUD's see-through parts.
+   scene shows through the HUD's see-through parts. Native HDR does not use the layer, regardless of this switch.
 5. With no copy this frame (no gameplay upscale, or a picture that is not the presented size), the patched passes guess
    the HUD as pixels unchanged while the scene moves. `RX_VK_FSR_FG_HUD=0` runs AMD's passes unpatched, the HUD moving
    with the scene.
@@ -270,6 +283,7 @@ All switches are in [`switches.def`](../../../gpu/vk/switches.def) and [switches
 | `RX_VK_DLSS`, `RX_VK_FSR`, `RX_VK_FSR4`, `RX_VK_XESS` | Force or forbid an engine for one run, over the Upscaler row |
 | `RX_VK_FSR3_CHAIN=0` | FSR 3.1 on its own inputs instead of the chain |
 | `RX_VK_DLSS_PRESET` | A DLSS preset letter (or `0`) over the DLSS model row ([models](#dlss-models)) |
+| `RX_VK_FSR4_MODEL=auto\|lite` | The FSR 4 network for one run, over the FSR 4 model row ([models](#fsr-4-models)) |
 | `RX_VK_DLSS_LOG=1` | NGX's own lines in the game's log ([which are harmless](#dlsss-log-and-memory)) |
 | `RX_VK_DLSS_DIR`, `RX_VK_FSR_DIR`, `RX_VK_XESS_DIR` | A folder looked in first for the vendor's runtime ([vendor files](#vendor-files)) |
 | `RX_VK_DLSS_DEBUG` | `motion` shows the motion vectors; `alternate` shows the game's upscale every other frame |

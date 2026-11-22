@@ -126,7 +126,7 @@ class FetchTests(unittest.TestCase):
     def test_wrong_download_is_not_kept(self):
         bad = dict(self.good, **{"lib/Windows_x86_64/x64/nvsdk_ngx_s.lib": b"not nvidia's"})
         with mock.patch.object(dlss, "files", lambda platform, runtime=True: self.table):
-            with self.assertRaisesRegex(ValueError, "nvsdk_ngx_s.lib is not the file expected"):
+            with self.assertRaisesRegex(ValueError, r"nvsdk_ngx_s\.lib: not the file pinned"):   # (scripts/helpers.py's check)
                 dlss.fetch(self.sdk, "windows", Opener(bad), say=lambda *_: None)
         lib = dlss.library(self.sdk, "windows")
         self.assertFalse(os.path.exists(lib))

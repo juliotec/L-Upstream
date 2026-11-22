@@ -127,6 +127,15 @@ void vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer target, uint32_
     }
 }
 }
+namespace mkwvk::rec {   // (vk_recorder.h's packers, which vk_work.h's wrappers call: with the recorder off, the driver's call)
+void rx_vkCmdPipelineBarrier2(VkCommandBuffer cmd, const VkDependencyInfo* d) { vkx::vkCmdPipelineBarrier2(cmd, d); }
+void rx_vkCmdUpdateBuffer(VkCommandBuffer cmd, VkBuffer target, VkDeviceSize offset, VkDeviceSize n, const void* data) {
+    vkx::vkCmdUpdateBuffer(cmd, target, offset, n, data);
+}
+void rx_vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer src, VkBuffer target, uint32_t count, const VkBufferCopy* r) {
+    vkx::vkCmdCopyBuffer(cmd, src, target, count, r);
+}
+}
 namespace mkwvk {
 // ---- what flush_ub_updates and full_barrier use ----
 std::atomic<int64_t> st_barriers_left_out{0}, st_barriers_made{0};
@@ -255,14 +264,17 @@ def main():
     work = (vk / "vk_work.h").read_text(encoding="utf-8")
     # (vk_work.h's counts: the thread's work_epoch and other_work_since_barrier, declared there, and note_work /
     # note_other_work; defined here as vk_texture.cpp defines them)
-    note = between(work, "namespace mkwvk {", "} // namespace mkwvk")[len("namespace mkwvk {"):]
+    note = between(work, "namespace mkwvk {\nextern thread_local uint64_t work_epoch;", "} // namespace mkwvk")[len("namespace mkwvk {"):]
     for want in ("extern thread_local uint64_t work_epoch;", "extern thread_local bool other_work_since_barrier;",
                  "inline void note_work()", "inline void note_other_work()"):
         if want not in note:
             raise SystemExit("FAIL: vk_work.h: not found: " + want)
     note += "thread_local uint64_t work_epoch = 0;\nthread_local bool other_work_since_barrier = true;\n"
+    # (the wrappers' glue span of the GPU profile, vk_gprof.cpp: off, as when RX_VK_PASS_TIMING is under 3)
+    note += ("bool gprof_glue_on() { return false; }\nGprofGlue::GprofGlue(VkCommandBuffer c, const char* l) : cmd(c), label(l) {}\n"
+             "GprofGlue::~GprofGlue() {}\n")
     wrappers = [between(work, "#define " + name + "(", "\n")
-                for name in ("vkCmdPipelineBarrier2", "vkCmdUpdateBuffer", "vkCmdCopyBuffer")]
+                for name in ("MKWVK_CMD0_", "MKWVK_CMD0", "MKWVK_GLUE", "vkCmdPipelineBarrier2", "vkCmdUpdateBuffer", "vkCmdCopyBuffer")]
     prefix = PREFIX.replace("@@BUFFERREF@@", block((vk / "vk_internal.h").read_text(encoding="utf-8"), "struct BufferRef {")) \
                    .replace("@@UBUPDATE@@", block(replay, "struct UbUpdate {") + ";")
     source = (prefix + note + "\n}\n" + "\n".join(wrappers) + "\nnamespace mkwvk {\n" + declaration + "\n" + barrier + "\n" +

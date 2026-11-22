@@ -157,6 +157,7 @@
     X(vkResetQueryPool) \
     X(vkCmdSetDepthClipEnableEXT) X(vkCmdSetLogicOpEXT) X(vkCmdClearAttachments) X(vkCmdSetDepthBoundsTestEnable) \
     X(vkCmdSetCheckpointNV) X(vkGetQueueCheckpointDataNV) X(vkGetDeviceFaultInfoEXT) X(vkCmdWriteBufferMarkerAMD) \
+    X(vkGetDeviceImageMemoryRequirements)
     X(vkCmdSetDepthBias2EXT)
 
 namespace vkx {

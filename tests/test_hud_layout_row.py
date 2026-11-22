@@ -58,6 +58,8 @@ int main(int argc, char **argv) {
     dchoice = pane_at(DIALOG, 15, "N_BtnIn_00", 300, 100, 1);
     lroot = pane_at(GUIDE, 16, "RootPane", 0, 0, 0);
     lguide = pane_at(GUIDE, 17, "A_GuideAll_00", 300, 80, 1);
+    dcol = pane_at(DIALOG, 18, "N_BtnNum_00", 940, 200, 0);
+    dbox = pane_at(DIALOG, 19, "N_Message_00", 1600, 500, 1);
     /* the row at argv[2] from the start, then at argv[3] (a change in play: -1, none) */
     fixture_hud_layout = atoi(argv[2]);
     at(ratio);
@@ -132,13 +134,13 @@ def wiring_checks():
     dev = (ROOT / "docs" / "dev" / "reference" / "switches.md").read_text(encoding="utf-8")
     for ok, what in (
             (re.search(r"HOS_OPT_HUD_LAYOUT = 71\b", api), "gpu/vk/vk_api.h names option 71 HOS_OPT_HUD_LAYOUT"),
-            (re.search(r'\{TAB_GRAPHICS, "HUD layout", &opts\.hud_layout, 0, 1, 1,', menu),
-             "the Graphics tab has the HUD layout row, 0 to 1"),
+            (re.search(r'\{TAB_GRAPHICS, "HUD layout", &opts\.hud_layout, 0, 2, 1,', menu),
+             "the Graphics tab has the HUD layout row, 0 to 2"),
             (re.search(r"int hud_layout = 0;", menu_h), "opts.hud_layout is 0 (Screen's edges) by default"),
             (re.search(r'value == &opts\.hud_layout && getenv\("HOS_WIDE_UI"\)', menu[menu.index("bool row_fixed("):]),
              "the row is fixed while HOS_WIDE_UI holds it (row_fixed), as rows other switches hold"),
-            (re.search(r"if \(id == HOS_OPT_HUD_LAYOUT\) return opts\.hud_layout;", replay), "option 71 answers the row"),
-            (re.search(r"rx_option\(71, 0\)", host), "host/hos_wide_ui.c asks the row (rx_option 71)"),
+            (re.search(r"if \(id >= HOS_OPT_HUD_LAYOUT && id <= HOS_OPT_HUD_MINIMAP\) return menu_hud_option\(id\);", replay), "option 71 answers the row"),
+            (re.search(r"rx_option\(HOS_OPT_HUD_LAYOUT, 0\)", host), "host/hos_wide_ui.c asks the row (rx_option 71)"),
             ("| HUD layout |" in settings, "the settings page's table has the row"),
             ("HUD layout" in dev and "hud_layout" in dev, "docs/dev/reference/switches.md's options file has hud_layout"),
             ("keeps the HUD and movies in the middle 16:9" not in settings,

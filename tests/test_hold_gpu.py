@@ -7,9 +7,10 @@ after that wait. When the GPU took longer than hold_ms (a load's uploads), the s
 was drawn with what the game had not written yet: the lit scene and Link dark for a frame (issue 366). Now they are held on
 while such a wait is under way and for hold_ms after it, up to a bound.
 
-The rule is compiled and run (tests/hold_gpu_test.cpp). And the source: wait() counts a thread in gpu_waiters only around its
-wait for its own queue's recorded work and only when its timeout is not a poll's; sync_watch reads the count, takes the
-later of the queues' stop and the last such wait as the hold's start, and asks the rule before it drains.
+The rule is compiled and run (tests/hold_gpu_test.cpp). And the source: wait() (its body in wait_inner) counts a thread in
+gpu_waiters only around its wait for its own queue's recorded work and only when its timeout is not a poll's; sync_watch
+reads the count, takes the later of the queues' stop and the last such wait as the hold's start, and asks the rule before
+it drains.
 
 python -I -B tests/test_hold_gpu.py [--cxx g++]
 """
@@ -49,7 +50,11 @@ def check_source():
     need("if (counted) gpu_waiters.fetch_add(1" in waiter and "if (counted) gpu_waiters.fetch_sub(1" in waiter,
          "GpuWaiter must count a thread in and out, and only when told to")
 
-    wait = block(replay, "int wait(uint64_t f, uint64_t timeout_ns) {")
+    # (wait() times the wait for RX_VK_GPU_TIMELINE and hands it to wait_inner, on every path: the wait is wait_inner's)
+    outer = block(replay, "int wait(uint64_t f, uint64_t timeout_ns) {")
+    need(outer.count("wait_inner(f, timeout_ns)") == 2 and outer.count("return") == 2 and "GpuWaiter" not in outer,
+         "wait() no longer hands every wait to wait_inner, or counts a waiter itself")
+    wait = block(replay, "int wait_inner(uint64_t f, uint64_t timeout_ns) {")
     mine = block(wait, "if (mine) {")
     need("GpuWaiter waiting(timeout_ns > 1000000);" in mine, "a poll must not count as a wait for the GPU")
     need(mine.index("GpuWaiter waiting(") < mine.index("wait_recorded(f, timeout_ns, &ok)"),

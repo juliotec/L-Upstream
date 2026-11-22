@@ -218,7 +218,7 @@ def main():
         raise SystemExit("FAIL: create_swapchain reads RX_VK_FIFO / RX_VK_IMMEDIATE itself: menu_vsync does")
     need(swap, r"if \(vsync != 1\)", "V-Sync On does not keep FIFO")
     need(swap, r"want_immediate = vsync == 2", "V-Sync Off does not ask for immediate")
-    present = block(replay, "void present_image(")
+    present = block(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {")
     need(present, r"vsync_changed", "a V-Sync change does not make the swapchain again")
     need(present, r"vsync_now = [^;]*swapchain_dlssg\(\)", "DLSS-G starting or stopping to make the frames does not make the "
          "swapchain again (V-Sync Auto's mode follows it)")

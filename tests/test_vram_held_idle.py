@@ -29,7 +29,7 @@ class FramegenIdleTests(unittest.TestCase):
 
     def test_off_for_a_while_drains_then_drops(self):
         idle = block(self.fg, "void framegen_idle(bool recorded)")
-        self.assertIn("release_due(off, fg.w != 0)", idle)   # (the rule and its sequences: tests/test_framegen_idle.py)
+        self.assertIn("if (!due.shared) return;", idle)   # (the rule and its sequences: tests/test_framegen_idle.py)
         # (the display thread and the GPU done with the sets before they go, as ensure_size does)
         for part in ("fg.jobs.empty()", "device_wait_idle_locked();", "drop_size();"):
             self.assertIn(part, idle, part)

@@ -10,8 +10,10 @@ file that is neither stops with a message, not a traceback. The script never loa
 `build` is run with cargo and the toolchain stubbed: the command is a locked, offline build of the tracked source, for
 x86_64-pc-windows-gnullvm linked by the llvm-mingw given (the unwinder static, no time stamp) or for
 x86_64-unknown-linux-gnu linked by the C compiler given (no build id), with no local path in it either way; the source is
-copied out of the tree; what fails the check is not copied out. A Rust download whose SHA-256 is not the pinned one is
-refused and not kept.
+copied out of the tree with build.rs, and libopus from third_party/opus where build.rs reads it (its demo program left
+out); libopus is compiled by the same C compiler that links it, its paths relative; cargo reads crates.io only from the
+crates Cargo.lock names, unpacked from the cache (each checked by its Cargo.lock SHA-256, one that is not refused); what
+fails the check is not copied out. A Rust download whose SHA-256 is not the pinned one is refused and not kept.
 
 The Builder's release builds the DLL (.forgejo/workflows/build-windows.yml) and scripts/builder_package.py --renhdrum puts
 it where nx2/build.py looks in a player's tools (tools/third_party/renhdrum/renhdrum.dll), refusing one that fails the
@@ -211,8 +213,12 @@ class Build(unittest.TestCase):
 
         def run(cmd, cwd=None, env=None, **kw):
             calls.append((cmd, cwd, dict(env)))
-            for f in ("Cargo.toml", "Cargo.lock", os.path.join("src", "lib.rs")):   # (the tracked source, copied out)
+            for f in ("Cargo.toml", "Cargo.lock", "build.rs", os.path.join("src", "lib.rs"),   # (the tracked source)
+                      os.path.join("vendor", "opus", "src", "opus_encoder.c"), os.path.join("vendor", "opus", "COPYING")):
                 assert os.path.isfile(os.path.join(cwd, f)), f
+            assert not os.path.exists(os.path.join(cwd, "vendor", "opus", "celt", "opus_custom_demo.c"))
+            with open(os.path.join(env["CARGO_HOME"], "config.toml"), encoding="utf-8") as f:
+                assert 'replace-with = "pinned"' in f.read()
             made = os.path.join(env["CARGO_TARGET_DIR"], rh.TARGETS[target], "release")
             os.makedirs(made)
             with open(os.path.join(made, rh.BUILT[target]), "wb") as f:
@@ -220,6 +226,7 @@ class Build(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0)
         out = os.path.join(self.dir, "out", "renhdrum.dll")
         with mock.patch.object(rh, "toolchain", lambda cache, target: self.bin), mock.patch.object(rh.subprocess, "run", run), \
+                mock.patch.object(rh, "vendor_crates", lambda cache, into: os.makedirs(into)), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             try:
                 rc = rh.main(["build", "--target", target, "--llvm-mingw", self.mingw, "--linker", self.cc, "--cache",
@@ -243,6 +250,9 @@ class Build(unittest.TestCase):
         for want in ("-C target-feature=+crt-static", "--no-insert-timestamp", "--remap-path-prefix=%s=renhdrum" % cwd):
             self.assertIn(want, flags)
         self.assertTrue(env["CARGO_HOME"].startswith(self.cache))
+        self.assertEqual(env["CC_x86_64_pc_windows_gnullvm"], self.linker)   # (libopus: the compiler that links it)
+        self.assertEqual(env["AR_x86_64_pc_windows_gnullvm"], os.path.join(self.mingw, "bin", "llvm-ar" + (".exe" if os.name == "nt" else "")))
+        self.assertIn("-ffile-prefix-map=", env["CFLAGS_x86_64_pc_windows_gnullvm"])
         self.assertFalse(os.path.exists(os.path.join(self.cache, "work")), "the work folder is left behind")
 
     def test_the_linux_build(self):
@@ -255,6 +265,7 @@ class Build(unittest.TestCase):
         self.assertIn("--locked", cmd)
         self.assertIn("--offline", cmd)
         self.assertEqual(os.path.normcase(env["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"]), os.path.normcase(self.cc))
+        self.assertEqual(os.path.normcase(env["CC_x86_64_unknown_linux_gnu"]), os.path.normcase(self.cc))
         self.assertIn("--build-id=none", env["RUSTFLAGS"])
         self.assertNotIn("crt-static", env["RUSTFLAGS"])   # (a glibc shared library: the C library stays the system's)
         self.assertEqual(rh.NAMES["linux"], "renhdrum.so")   # (host/rumble_renhdrum.c's name for it)
@@ -283,6 +294,40 @@ class Build(unittest.TestCase):
             rh.fetch("rustc-x", "0" * 64, self.cache)
         self.assertEqual(os.listdir(self.cache), [])
 
+    def test_the_locked_crates(self):
+        with open(ROOT / "third_party" / "renhdrum" / "Cargo.lock", encoding="utf-8") as f:
+            crates = rh.locked_crates(f.read())
+        self.assertIn("cc", [n for n, _, _ in crates])
+        for name, version, sha in crates:
+            self.assertRegex(sha, r"^[0-9a-f]{64}$", name)
+        git = '[[package]]\nname = "x"\nversion = "1.0.0"\nsource = "git+https://example.invalid/x"\n'
+        unsummed = '[[package]]\nname = "x"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n'
+        for lock in (git, unsummed):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                rh.locked_crates(lock)
+
+    def test_a_crate_from_the_cache(self):
+        crate = os.path.join(self.dir, "made")
+        os.makedirs(os.path.join(crate, "x-1.0.0"))
+        with open(os.path.join(crate, "x-1.0.0", "Cargo.toml"), "w") as f:
+            f.write("[package]\n")
+        archive = os.path.join(self.cache, "crates", "x-1.0.0.crate")
+        os.makedirs(os.path.dirname(archive))
+        import tarfile
+        with tarfile.open(archive, "w:gz") as t:
+            t.add(os.path.join(crate, "x-1.0.0"), "x-1.0.0")
+        sha = hashlib.sha256(open(archive, "rb").read()).hexdigest()
+        into = os.path.join(self.dir, "crates")
+
+        def no_network(*a, **k):
+            raise AssertionError("downloaded a crate the cache holds")
+        with mock.patch.object(rh, "locked_crates", lambda lock: [("x", "1.0.0", sha)]), \
+                mock.patch.object(rh.helpers, "download", no_network):
+            rh.vendor_crates(self.cache, into)
+        self.assertTrue(os.path.isfile(os.path.join(into, "x-1.0.0", "Cargo.toml")))
+        with open(os.path.join(into, "x-1.0.0", ".cargo-checksum.json"), encoding="utf-8") as f:
+            self.assertIn('"package":"%s"' % sha, f.read())
+
     def test_every_part_is_pinned(self):
         for system, parts in rh.RUST.items():
             for name, sha in parts + list(rh.RUST_STD.values()):
@@ -295,16 +340,23 @@ class Build(unittest.TestCase):
 class Ships(unittest.TestCase):
     def test_the_source(self):
         here = ROOT / "third_party" / "renhdrum"
-        for f in ("Cargo.toml", "Cargo.lock", "src/lib.rs", "src/ffi.rs", "include/renhdrum.h", "NOTICE",
+        for f in ("Cargo.toml", "Cargo.lock", "build.rs", "src/lib.rs", "src/ffi.rs", "include/renhdrum.h", "NOTICE",
                   "LICENSE-MIT", "LICENSE-APACHE"):
             self.assertTrue((here / f).is_file(), f)
         note = (here / "PROVENANCE.md").read_text(encoding="utf-8")
-        self.assertIn("upstream: https://github.com/trzz1214/RenHDrum/archive/refs/tags/v0.4.0.tar.gz", note)
+        self.assertIn("upstream: https://github.com/trzz1214/RenHDrum/archive/refs/tags/v0.5.0.tar.gz", note)
         self.assertRegex(note, r"\nupstream-sha256: [0-9a-f]{64}\n")
         lock = (here / "Cargo.lock").read_text(encoding="utf-8")
-        self.assertEqual(lock.count("[[package]]"), 1, "RenHDrum gained a dependency: --offline would fail")
+        toml = (here / "Cargo.toml").read_text(encoding="utf-8").replace("\r", "")
+        self.assertRegex(toml, r"(?m)^\[dependencies\]\n\s*(^\[|\Z)",
+                         "RenHDrum gained a dependency the library links: review it, and its licence")
+        self.assertEqual(lock.count("[[package]]") - 1, len(rh.locked_crates(lock)))
+        # (build.rs compiles libopus from vendor/opus, which the build fills from third_party/opus: the same release)
+        self.assertIn('Path::new("vendor/opus")', (here / "build.rs").read_text(encoding="utf-8"))
+        self.assertIn('.define("PACKAGE_VERSION", "\\"1.5.2\\"")', (here / "build.rs").read_text(encoding="utf-8"))
+        self.assertIn("libopus 1.5.2", (ROOT / "third_party" / "opus" / "PROVENANCE.md").read_text(encoding="utf-8"))
         header = (here / "include" / "renhdrum.h").read_text(encoding="utf-8")
-        self.assertIn("0x000400", header)
+        self.assertIn("#define RENHDRUM_VERSION 0x000500", header)
         module = (ROOT / "host" / "rumble_renhdrum.c").read_text(encoding="utf-8")
         self.assertIn('#include "../third_party/renhdrum/include/renhdrum.h"', module)
         # (every function the module binds is one the check wants, and is in the header)

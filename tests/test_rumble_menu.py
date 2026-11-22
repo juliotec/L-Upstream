@@ -17,7 +17,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
-from menu_model_fixture import menu_model_prelude, menu_model_member, menu_text  # noqa: E402
+from menu_model_fixture import menu_model_prelude, menu_text  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 MENU = ROOT / "gpu" / "vk" / "vk_menu.cpp"
@@ -55,6 +55,7 @@ def one_line(text, head):
 
 FIXTURE = r"""
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -72,6 +73,7 @@ int saves = 0, presets = 0;
 void save() { saves++; }
 void apply_pad_layout(int) {}
 int detect_pad_layout() { return opts.pad_layout; }
+void apply_sprint_layout(bool) {}
 void apply_preset(int) { presets++; }
 void env_release(const int*) {}   // (the environment's hold on a row: none here)
 /* (stand-ins for the rest of set_row, which the Vibration strength row never reaches: the Upscaler's rows, the restart offer) */
@@ -105,6 +107,7 @@ void monitor_chosen() {}  // Fullscreen selection is covered by test_fullscreen_
 /* (the Upscaler row's choices, which set_row steps through: the game's own only, here) */
 unsigned upscalers_available() { return 1; }
 void mic_chosen() {}
+std::atomic<int> grass_distance_now{0};   // (the Grass distance row's hook in set_row: the game thread's copy)
 void samplers_changed() {}
 int temporal_resets = 0;
 void temporal_reset_failure() { ++temporal_resets; }
@@ -114,6 +117,9 @@ void menu_debug_rows(bool, bool) {}
 // (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
 int step_output_choice(int id, int dir) { return id + dir; }
 // (the Aspect ratio row moves the Output resolution to one of its shape's sizes, output_for_aspect: not what this checks)
+struct Picture { unsigned w, h; };
+Picture picture_for(int) { return {}; }
+bool request_native_preview(Picture) { return false; }
 int output_for_aspect(int) { return opts.output_res; }
 // (the Frame generation rows in set_row: DLSS FG offered (framegen_by_dlss_offered); no DLSS FG top here (vk_dlss.cpp
 // dlss_fg_most, vk_framegen.cpp framegen_capped))

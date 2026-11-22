@@ -109,7 +109,7 @@ static int replay_stream(const std::string& stream) {
     VkCommandBuffer cmd = first.cmd;
     int writer_part = -1;
     struct { bool render_enabled = true, raster_discard = false; } s;
-    const bool dry = false, worker = false, early = early_on;
+    const bool early = early_on;
     for (char c : stream) {
         struct { uint32_t op; } h = {c == 'd' ? (uint32_t)NOP_DRAW : c == 'm' ? (uint32_t)NOP_DRAW_MESH : (uint32_t)NOP_DISPATCH};
         bool split_after = false;
@@ -180,7 +180,7 @@ def main():
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     loop = block(replay, "void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end")
     before = between(loop, "// (the part's end maybe_split asked for", "switch (h.op) {")
-    after = block(loop, "if (early && !dry && !worker) {")
+    after = block(loop, "if (early) {")
     if "early_split(cmd);" not in after:
         raise SystemExit("FAIL: replay() no longer ends a writer's part through early_split")
     src = (FIXTURE.replace("/* COUNTERS */", between(replay, "std::atomic<int64_t> st_early_splits{0};", "/// The recording's part ends here"))

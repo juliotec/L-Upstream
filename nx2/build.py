@@ -48,6 +48,7 @@ import lifted_c
 import rtgen
 import logo_rgba
 import object_store
+import reshade_fx
 import ui_fonts
 import toolchain
 import third_party_objects
@@ -60,8 +61,9 @@ NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
-ZSTD_HOST = ("prompts.c", "hos_zstd.c", "zs.c", "oot_heart_containers.c")   # (the host files that use it: a mod's size table; the game's
-# stream decode; the mods' packs; the boss heart containers' ids, read from the map files for the Discord status)
+ZSTD_HOST = ("prompts.c", "hos_zstd.c", "zs.c", "audio_source.c", "oot_heart_containers.c")   # (the host files that use it: a
+# mod's size table; the game's stream decode; the mods' packs; the sound archives the controller speaker classes; the boss heart
+# containers' ids, read from the map files for the Discord status)
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (LONGSHOT_OBJ_STORE: one store of objects for every work folder, nx2/object_store.py. Its folder for this work folder's compiler
 # and headers, or None)
@@ -84,8 +86,8 @@ VK_LIB = "longshot_vk.so" if LINUX else "longshot_vk.dll"
 
 def check_vk_symbols(so):
     """The back end is dlopened with RTLD_NOW, so one unresolved symbol stops the whole thing
-    loading -- and the only sign of that at run time is "the renderer did not start: the window
-    stays black", with no symbol named. The link itself does not fail: a shared object is allowed to
+    loading -- and the only sign of that at run time is "the renderer did not start: the game
+    ends", with no symbol named. The link itself does not fail: a shared object is allowed to
     leave symbols for its loader to supply, which is exactly what the host executable does for the
     weak hos_* ones.
 
@@ -95,7 +97,9 @@ def check_vk_symbols(so):
     globals written inside an anonymous namespace, which makes a different symbol that nothing
     defines.
     """
-    nm = shutil.which("nm") or shutil.which("llvm-nm")
+    # GNU nm on some Linux distributions omits symbol-version suffixes here,
+    # making normal libc imports look unresolved. llvm-nm keeps those suffixes.
+    nm = shutil.which("llvm-nm") or shutil.which("nm")
     if not nm:
         return True   # (not a reason to fail a build; the check is a guard, not a dependency)
     try:
@@ -680,9 +684,14 @@ def header_package(cpm_name, probe, env=None, work=None):
     then common system prefixes (/usr/local, /usr). Distro vulkan-headers / spirv-headers install
     under /usr/include; this is what makes a source build find them without a CPM tree."""
     parts = probe.split("/")
+    need = HEADER_NEEDS.get(cpm_name)
 
     def ok(root):
-        return bool(root) and os.path.isfile(os.path.join(root, "include", *parts))
+        path = os.path.join(root, "include", *parts) if root else ""
+        if not path or not os.path.isfile(path):
+            return False
+        # (a header too old for the renderer is no header: the next place is tried, else it is missing)
+        return not need or header_declares(path, need)
 
     pkg = cpm_package(cpm_name, work)
     if ok(pkg):
@@ -693,15 +702,27 @@ def header_package(cpm_name, probe, env=None, work=None):
             e = os.path.abspath(e)
             if ok(e):
                 return e
-            if os.path.isfile(os.path.join(e, *parts)):
-                parent = os.path.dirname(e)
-                if os.path.normpath(os.path.join(parent, "include")) == os.path.normpath(e):
-                    return parent
+            parent = os.path.dirname(e)   # (e the include/ folder itself)
+            if os.path.normpath(os.path.join(parent, "include")) == os.path.normpath(e) and ok(parent):
+                return parent
     for prefix in ("/usr/local", "/usr"):
         if ok(prefix):
             return prefix
     return None
 
+
+def header_declares(path, text):
+    """whether the header at path has text in it (False when it cannot be read)"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return text in f.read()
+    except OSError:
+        return False
+
+
+# (what a header package must declare to be taken: gpu/vk/vk_vma.cpp calls vmaGetAllocationInfo2, which is VMA 3.1, and a
+# distribution's VMA may be 3.0 (Ubuntu 24.04's): taken, it failed the renderer's build at vk_vma.cpp)
+HEADER_NEEDS = {"vulkanmemoryallocator": "vmaGetAllocationInfo2"}
 
 VK_HEADERS = (("Vulkan", "vulkanheaders", "vulkan/vulkan.h", "LONGSHOT_VULKAN_HEADERS"),
               ("SPIR-V", "spirv-headers", "spirv/unified1/spirv.h", "LONGSHOT_SPIRV_HEADERS"),
@@ -745,12 +766,14 @@ COMPILER_MB = 1500
 # first build's compile 1,347 -> 1,057 s on a Ryzen 5 5600. "0": off; a number: the pieces' size in KB
 def split_giants_flags():
     """The flag the lifted chunks and the hot pieces carry when their giants are split (split_giants.FLAG: the piece size and
-    the splitter's own hash, so a change of either builds them again); [] when off"""
+    the splitter's own hash, so a change of either builds them again); [] when off. LONGSHOT_SPLIT_DIRECT=0: the pieces go
+    through the dispatch loop only, never straight from one to the next (split_giants.macros)"""
     raw = os.environ.get("LONGSHOT_SPLIT_GIANTS", "").strip()
     if raw == "0":
         return []
     import split_giants
-    return [split_giants.flag(int(raw) if raw.isdigit() else split_giants.PIECE_KB)]
+    return [split_giants.flag(int(raw) if raw.isdigit() else split_giants.PIECE_KB,
+                              os.environ.get("LONGSHOT_SPLIT_DIRECT", "").strip() != "0")]
 
 
 # LONGSHOT_CHUNK_OPT ("", the default: the lifted chunks at OPT as they are): "all" compiles every lifted chunk at -O2, or a
@@ -970,14 +993,15 @@ def rss_mb(proc):
         return 0
 
 
+# (a piece's definition in split_giants.py's copy: `static __attribute__((noinline)) s_<addr>_CC uintptr_t s_<addr>_<n>(...) {`)
+PIECE_HEAD = re.compile(rb"\nstatic __attribute__\(\(noinline\)\) (?:\w+ )?uintptr_t s_[0-9a-f]+_\d+\([^;\n]*\) \{")
+
+
 def largest_function(text):
     """The largest function of a lifted file's text, in bytes: each function from the newline before its definition, as mem_need
     was first measured; a giant's pieces are functions of their own (split_giants.py, the copy compile_one compiles)"""
     starts = [m.start() - 1 for m in lifted_c.definitions(text)]
-    i = text.find(b"\nstatic __attribute__((noinline)) uintptr_t s_")
-    while i >= 0:
-        starts.append(i)
-        i = text.find(b"\nstatic __attribute__((noinline)) uintptr_t s_", i + 1)
+    starts += [m.start() for m in PIECE_HEAD.finditer(text)]
     starts = sorted(starts) + [len(text)]
     return max([b - a for a, b in zip(starts, starts[1:])] or [0])
 
@@ -1191,9 +1215,10 @@ if MARCH == "native" and not _native:
 if _native:
     print("build: the game is built for this PC's CPU (%s)" % _native, flush=True)
     CPU += ["-DLONGSHOT_NATIVE_CPU=" + _native]
-# The third-party code (nx2/third_party_objects.py SOURCES: Eden's recompiler, sirit, Dear ImGui, zstd, libopus) is built for
-# x86-64-v3 on every CPU that has it, not -march=native: the release ships it compiled for that level, so a player's build
-# links it instead of compiling it (its keys name no CPU). A CPU below v3, or an RX_MARCH, builds it as the rest
+# The third-party code (nx2/third_party_objects.py SOURCES: Eden's recompiler, sirit, Dear ImGui, zstd, libopus, ReShade's FX
+# compiler) is built for x86-64-v3 on every CPU that has it, not -march=native: the release ships it compiled for that level,
+# so a player's build links it instead of compiling it (its keys name no CPU). A CPU below v3, or an RX_MARCH, builds it as
+# the rest
 THIRD_PARTY_CPU = ["-march=x86-64-v3", "-ffp-contract=off"] if not os.environ.get("RX_MARCH") and MARCH in ("native", "x86-64-v3") \
     else list(CPU)
 OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
@@ -1667,6 +1692,24 @@ def compile_one(job):
             shutil.copyfile(cached, obj)
         open(stamp, "w").write(key)
         return src, 0.0, None
+    # (a zero byte in the source: the translation and the repository never write one into C, so the drive or the memory
+    # changed the file after it was written. A player's code_009.c (26 MB) had one where a "(" belonged, and the compiler said
+    # only "extraneous ')' before ';'" (nightly 695, 2026-11-21). Refused first, in one line with "error:": make_game names
+    # the stopped build by it, and forgets the lift when the file is the game's, so the next build writes it again. A read
+    # of a few milliseconds for the biggest file, beside a compile of seconds to minutes; a file it cannot read is the
+    # compiler's to report)
+    try:
+        with open(src, "rb") as f:
+            data = f.read()
+    except OSError:
+        data = b""
+    at = data.find(b"\0")
+    if at >= 0:
+        return src, 0.0, ("%s:%d:%d: error: this file has a zero byte, which the build never writes: the drive or the PC's "
+                          "memory changed it after it was written. Build again: the file is made again. If this keeps "
+                          "happening, check the drive for errors and test the memory"
+                          % (src, data.count(b"\n", 0, at) + 1, at - data.rfind(b"\n", 0, at)))
+    del data   # (not held while the compiler runs: a 26 MB file per job)
     c_src = src
     if any(f.startswith("-DLONGSHOT_SPLIT_GIANTS=") for f in fl):   # (LONGSHOT_SPLIT_GIANTS: a copy with the giants cut, if any)
         import split_giants
@@ -2047,7 +2090,7 @@ def main():
                        "-DIMGUI_DISABLE_WIN32_FUNCTIONS", "-DIMGUI_DISABLE_DEMO_WINDOWS", "-DIMGUI_DISABLE_DEBUG_TOOLS"]
         imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zbic)
                               for f in sorted(os.listdir(d)) if f.endswith(".h"))
-        imgui_users = ("vk_imgui.cpp", "vk_menu.cpp", "vk_crash_window.cpp")
+        imgui_users = ("vk_imgui.cpp", "vk_menu.cpp", "vk_crash_window.cpp", "reshade.cpp")
         for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
             vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
                             os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), tp_vflags + imgui_flags,
@@ -2103,6 +2146,8 @@ def main():
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []) +
                             (xess_flags if os.path.basename(src) == "vk_xess.cpp" else []),
                             vk_lib_deps + tp_deps if lib else renderer_deps(vdeps, vdeps_roots, obj) + extras))
+        vk_jobs.extend(reshade_fx.build_jobs(cxx, kit.ROOT, gen_dir, obj_dir, vflags + vk_pgo_flags, tp_vflags,
+                                             vdeps, windows=not LINUX, third_party=tp_deps))
         # (longshot) the program cache's zstd compression (RX_VK_PROGRAM_CACHE_ZSTD): third_party/zbic's single-file
         # zstd, built as C into the same DLL. Its headers are the object's dependencies.
         zstd_src = os.path.join(kit.ROOT, "third_party", "zbic", "zstd.c")
@@ -2187,12 +2232,16 @@ def main():
         shown = shown.replace("-O1", "-" + chunk_level())
     print("%d files, %d jobs, %s" % (len(jobs), a.jobs, shown), flush=True)
     t0, failed = time.time(), []
+    vk_job_objects = {j[2] for j in vk_jobs}
+    compile_seconds = {"host and game": 0.0, "renderer": 0.0}
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         # (as each ends, not in order: the builder app shows progress from these lines, and the biggest file comes first)
         submitted = {ex.submit(compile_one, job): job for job in jobs}
         try:
             for future in concurrent.futures.as_completed(submitted):
                 src, secs, err = future.result()
+                category = "renderer" if submitted[future][2] in vk_job_objects else "host and game"
+                compile_seconds[category] += secs
                 size = src_size(src) >> 20
                 if err:
                     failed.append(submitted[future])
@@ -2216,6 +2265,8 @@ def main():
     still = 0
     for job in failed:
         src, secs, err = compile_one(job)
+        category = "renderer" if job[2] in vk_job_objects else "host and game"
+        compile_seconds[category] += secs
         size = src_size(src) >> 20
         if err:
             still += 1
@@ -2228,6 +2279,8 @@ def main():
                 pending.remove(expected[src].pop())
                 print("@@eta %d" % eta_left(pending, eta_jobs), flush=True)
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
+    print("compiler time (summed across parallel jobs): host and game %.1fs, renderer %.1fs" %
+          (compile_seconds["host and game"], compile_seconds["renderer"]), flush=True)
     if still:
         return 1
     if a.third_party_objects:   # (the release's set: these objects and their keys, nothing linked)

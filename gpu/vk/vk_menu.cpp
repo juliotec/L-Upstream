@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <utility>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +35,7 @@
 
 #include "vk_paths.h"
 #include "vk_menu.h"
+#include "../../host/hos_atomic_file.h"
 #include "vk_menu_hit.h"
 #include "vk_fps.h"    // (the FPS counter's levels and numbers)
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
@@ -55,6 +57,7 @@
 #include "vk_fsr4.h"
 #include "vk_xess.h"
 #include "vk_temporal.h"
+#include "upscale_route.h"   // (the FPS counter footer's record of the gameplay upscale as drawn)
 #include "vk_reflex.h"
 #include "vk_antilag.h"
 #include "upscaler_rows.h"
@@ -65,9 +68,12 @@
 #include "menu/output.h"   // (the output module's, still used here: the options file, the bug report, the pipeline share)
 #include "menu/upscaler.h"   // (the upscaler module's, still used here: the pipeline share's line, the bug report)
 #include "menu/bindings.h"   // (the Controls page's module, still used here: the grid, the options file, menu_tick)
+#include "menu/sprint.h"   // (the Sprint module's, still used here: the Controls page's Reset lays Sprint out again)
+#include "menu/sim_turf.h"   // (the Simulated turf page's area observation, persistence and live resource edits)
 #include "menu/pipeline_list.h"   // (Save my pipeline list's, still used here: its worker finished, its line measured)
 #include "menu/nfc.h"   // (the NFC module's, still used here: its tags listed when the menu opens, a scan followed)
 #include "menu/framegen.h"   // (the frame generation module's, still used here: the pipeline share's line, set_row, row_fixed)
+#include "menu/reshade.h"
 #include "auto_settings.h"
 #include "menu_restart.h"
 #include "threaded_rendering.h"   // (the Threaded rendering row's rule, and the one gate over its Auto)
@@ -115,8 +121,11 @@ enum MenuTab {
     TAB_COUNT = 7,
     TAB_MOTION = TAB_COUNT,   // (longshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
-    TAB_FPS_DEV = TAB_MOTION + 1,   // (longshot: not a tab either, the FPS counter's Dev lines page, from the Gameplay tab)
-    TAB_PAGE = TAB_FPS_DEV + 1   // (longshot: the Controls page's rows, above its grid; no tab shows them)
+    TAB_SPEAKER = TAB_MOTION + 1,   // (longshot: not a tab either, the Controller speaker page, from the Audio tab)
+    TAB_FPS_DEV = TAB_SPEAKER + 1,   // (longshot: not a tab either, the FPS counter's Dev lines page, from the Gameplay tab)
+    TAB_RECORDINGS = TAB_FPS_DEV + 1,   // (longshot: nor this, the input recordings to play, from the Debug tab: menu/input_recording.cpp)
+    TAB_SIM_TURF = TAB_RECORDINGS + 1,   // (the Simulated turf page, opened by the Graphics tab's row)
+    TAB_PAGE = TAB_SIM_TURF + 1   // (longshot: the Controls page's rows, above its grid; no tab shows them)
 };
 
 struct Row {
@@ -207,9 +216,15 @@ constexpr const char* kMicLevelHelp =
     "- Second percentage: peak after Microphone gain, also shown by the bar.\n\n"
     "At 100% gain they match. Increasing gain also raises noise and can clip the signal.";
 namespace dm = display_modes;
+Out output_preview_target{};
+bool output_preview_from_field = false;
 /// A row with nothing else to choose here: shown without its arrows, Left and Right leave it (and the saved value) alone
 bool module_locked(const int* value);   // (#1633: a module's row with this value, locked by its own locked(): below)
 bool row_fixed(const int* value) {
+    // Output and the settings that can change its shape or invalidate the preview path wait for the trial.
+    if (output_preview_target.w && (value == &opts.output_res || value == &opts.ultrawide ||
+        value == &opts.handheld || value == &opts.preset || value == &opts.vsync || value == &opts.framegen ||
+        value == &opts.hdr || value == &opts.reflex || value == &opts.dlss)) return true;
     return module_locked(value) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.framegen_by && framegen_by_fixed()) ||   // (its line says why)
            (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI"));   // (host/hos_wide_ui.c's, first)
@@ -393,9 +408,11 @@ constexpr int kCoreRows = sizeof core::rows / sizeof core::rows[0];
 const char* (ini_key)(const Row& r);   // (spelled apart from its definition: the checks cut that by its text)
 /// The model's page for each MenuTab: the strip's tabs, then the pages a row opens
 const char* const kTabIds[TAB_PAGE + 1] = {"graphics", "audio",  "gameplay",    "controls",     "nfc",
-                                           "mods",     "debug",  "motion",      "fps_details",  "controls_page"};
+                                           "mods",     "debug",  "motion",      "controller_speaker", "fps_details",
+                                           "recordings", "sim_turf_settings", "controls_page"};
 const char* const kTabLabels[TAB_PAGE + 1] = {"Graphics", "Audio", "Gameplay", "Controls",            "NFC",
-                                              "Mods",     "Debug", "Motion",   "FPS counter details", "Controls"};
+                                              "Mods",     "Debug", "Motion",   "Controller speaker",  "FPS counter details",
+                                              "Play recording", "Simulated turf", "Controls"};
 int page_tab(const char* id);   // (a page's MenuTab by its id: below)
 // (rows modules describe, headings included; past it a row is left out, and logged. Every row is a module's: 110 of them
 // when the last moved, so room to grow; tests/test_menu_module_slots.py keeps the menu within it)
@@ -584,6 +601,7 @@ bool cheats_env = false;   // (HOS_OOT_CHEATS=1: on whatever the Debug tab says)
 /// The debug tools: the Debug tab's row, or HOS_OOT_CHEATS=1
 bool cheats_on() { return cheats_env || opts.debug_tools; }
 std::atomic<bool> transition_autosave_enabled{true};
+std::atomic<int> grass_distance_now{0};
 void sync_transition_autosave() {
     transition_autosave_enabled.store(opts.transition_autosave != 0, std::memory_order_relaxed);
 }
@@ -772,12 +790,25 @@ void outputs_sync() {
 }
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_FPS_DEV + 1] = {};   // (and the pages' a row opens: Motion, the FPS counter's details)
+int tab_selected[TAB_SIM_TURF + 1] = {};   // (and the pages a row opens: Motion, Controller speaker, FPS details, recordings and Simulated turf)
 bool is_motion_row(const Row& r) {
     return row_opens(r) == TAB_MOTION || (r.tab == TAB_CONTROLS && !r.value && !r.setting && !strcmp(r.name, "Motion"));
 }
+bool is_speaker_row(const Row& r) { return row_opens(r) == TAB_SPEAKER; }   // (longshot: the Audio tab's Controller speaker)
 bool is_fps_dev_row(const Row& r) {
     return row_opens(r) == TAB_FPS_DEV || (r.tab == TAB_GAMEPLAY && !r.value && !r.setting && !strcmp(r.name, "FPS counter details"));
+}
+bool is_recordings_row(const Row& r) { return row_opens(r) == TAB_RECORDINGS; }
+bool is_sim_turf_row(const Row& r) { return row_opens(r) == TAB_SIM_TURF; }
+/// (the page a page of the menu goes back to: Motion to Controls, FPS details to Gameplay, recordings to Debug and simulated
+/// turf settings to Graphics; -1 a tab of the strip)
+int page_parent(int tab) {
+    return tab == TAB_MOTION       ? TAB_CONTROLS
+         : tab == TAB_SPEAKER      ? TAB_AUDIO
+         : tab == TAB_FPS_DEV      ? TAB_GAMEPLAY
+         : tab == TAB_RECORDINGS   ? TAB_DEBUG
+         : tab == TAB_SIM_TURF     ? TAB_GRAPHICS
+                                   : -1;
 }
 
 // ---- the rows that take a restart: their values at the start (menu_init, the GPU's at menu_set_gpu_count) ----
@@ -842,7 +873,9 @@ const char* const* tr_names() {
 std::string restart_list(const char* last) {
     return mr::names(tr_names(), restart_state.n, restart_pending(), ", ", last);
 }
-int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
+int ask_sel = 0;   // (the safe answer is first in both confirmation dialogs)
+int output_preview_countdown{};
+std::mutex options_save_mu;
 
 /// A row on its tab: the debug tools only with them on; a row for what this PC cannot run not at all (Reflex and Anti-Lag 2
 /// only where the driver has them, the Upscaler only where more than the game's own runs, the DLSS model only where DLSS
@@ -971,11 +1004,12 @@ const char* ini_key(const Row& r) {
 const char* const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus", "minus",
                                            "left", "up", "right", "down", "move_up", "move_down", "move_left",
                                            "move_right", "cam_up", "cam_down", "cam_left", "cam_right",
-                                           "note_l", "note_r", "note_a", "note_y", "note_x", "walk"};
+                                           "note_l", "note_r", "note_a", "note_y", "note_x", "walk", "toggle_hud",
+                                           "sprint"};
+bool toggle_on(int button);   // (the Controls page's Toggle column: below, with the page)
 void save() {
     // (one writer at a time: the present's thread, the game's (menu_option_set) and the control bridge's, menu_setting_set)
-    static std::mutex save_mu;
-    std::lock_guard lk(save_mu);
+    std::lock_guard lk(options_save_mu);
     // (longshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c), and their toggle_ flags
     // (and every other line the menu does not write, such as discord_app_id=: they were dropped at the next save)
     std::string kept, others;
@@ -993,11 +1027,16 @@ void save() {
             const char* eq = strchr(line, '=');
             if (!eq || eq == line) continue;
             const std::string key(line, (size_t)(eq - line));
+            if (key == "sprint_auto_bind" && !can_bind()) {
+                kept += line;
+                continue;
+            }
             // (memory_budget and auto_for too: save() writes them, and the file's old line, kept after it, won at the next start;
             // auto_output, the Output resolution Auto once set, is no longer written: its old line is dropped)
             bool mine = key == "audio_output_device_id" || key == "audio_output_device_name" || key == "output_device" ||
                         key == "microphone_device" || key == "options_version" || key == "memory_budget" || key == "auto_for" ||
                         key == "auto_tuned" || key == "auto_output" || key == "auto_steps";
+            mine |= key == "sprint_auto_bind";
             mine |= key == "fullscreen_monitor_id";
             mine |= key == "fullscreen_monitor_name";
             // (and the Mesh shaders row's line, no longer read (gpu/vk/mesh_mode.h): dropped, not kept for nothing)
@@ -1049,18 +1088,22 @@ void save() {
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
         // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
-        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
-        fprintf(f, "options_version=6\n");
+        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h; 7: Sprint's Toggle on by default, see
+        // menu_init)
+        fprintf(f, "options_version=7\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
-        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the stick's and camera's rows, HOS_KEY_MOVE_*/CAM_*, have no pad_ line; the ocarina note rows do)
-            if (i < HOS_SW_N || (i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X)) {
+        else if (const int sprint_auto = host->binding(HOS_BIND_SPRINT_AUTO, 0, 0))
+            fprintf(f, "sprint_auto_bind=%d\n", sprint_auto);
+        for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the stick's and camera's rows, HOS_KEY_MOVE_*/CAM_*, have no pad_ line; the ocarina note rows, the HUD's and Sprint do)
+            if (i < HOS_SW_N || (i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X) || i == HOS_KEY_TOGGLE_HUD ||
+                i == HOS_KEY_SPRINT) {
                 const int alternate = host->binding(HOS_BIND_PAD, i, 1);
                 fprintf(f, "pad_%s=%d", bind_names[i], host->binding(HOS_BIND_PAD, i, 0));
                 if (alternate >= 0) fprintf(f, ",%d", alternate);
                 fputc('\n', f);
             }
-            if (i < HOS_SW_N) fprintf(f, "toggle_%s=%d\n", bind_names[i], (opts.hold_toggle >> i) & 1);
+            if (i < HOS_SW_N || i == HOS_KEY_SPRINT) fprintf(f, "toggle_%s=%d\n", bind_names[i], toggle_on(i) ? 1 : 0);
             fprintf(f, "key_%s=%d,%d\n", bind_names[i], host->binding(HOS_BIND_KEY, i, 0), host->binding(HOS_BIND_KEY, i, 1));
         }
     };
@@ -1188,6 +1231,7 @@ namespace {   // (#1633: the anonymous namespace again, after what the modules a
 bool debug_warning = false;
 int debug_warning_choice = 0;
 
+static bool request_native_preview(Out target, bool from_field = false);
 void set_row(Row& r, int v, int dir, bool keep = true) {
     if (r.value == &opts.debug_tools && !opts.debug_tools && v > 0) {
         debug_warning = true;
@@ -1212,7 +1256,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     }
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);
-        if (v == *r.value) return;
+        if (v == *r.value || (keep && request_native_preview(picture_for(v)))) return;
     }
     // (longshot) Frame generation by where DLSS FG cannot run: FSR 3.1 FG (0; a 2 is the same) and Built-in FG (1)
     if (r.value == &opts.framegen_by && !framegen_by_dlss_offered()) v = (v % 2 + 2) % 2;
@@ -1234,6 +1278,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     }
     if (r.setting && r.setting->on_change) r.setting->on_change(*r.value);   // (#1633: a module's row's own)
     if (r.value == &opts.transition_autosave) sync_transition_autosave();
+    if (r.value == &opts.grass_distance) grass_distance_now.store(opts.grass_distance, std::memory_order_relaxed);
     // (longshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
         samplers_changed();
@@ -1246,6 +1291,118 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         restart_state.note(now);
     }
     if (keep) save();
+}
+
+static bool request_native_preview(Out target, bool from_field) {
+    if (output_preview_target.w || opts.handheld || env_holds(&opts.output_res) ||
+        target.w != 1024 || target.h != 576) return false;
+    // The preview needs an atomic save; linked settings keep the regular restart flow which writes through the link.
+    const std::string path = ini_path();
+    if (path.empty() || hos_af_is_link(path.c_str())) return false;
+    const Out original = shown_output();
+    if (original.w != 1280 || original.h != 720 || !output_preview_request(target.w, target.h)) return false;
+    output_preview_target = target;
+    output_preview_from_field = from_field;
+    return true;
+}
+
+// Replace only the resolution setting. Decline on a failed write so the old output remains effective.
+static bool save_preview_size(Out target) {
+    std::lock_guard lk(options_save_mu);
+    const std::string path = ini_path();
+    if (path.empty() || hos_af_is_link(path.c_str())) return false;
+    FILE* f = fopen(path.c_str(), "rb");
+    std::string old;
+    if (!f) {
+        if (errno != ENOENT) return false;
+    } else {
+        char buffer[4096];
+        while (const size_t n = fread(buffer, 1, sizeof buffer, f)) old.append(buffer, n);
+        const bool read = !ferror(f);
+        fclose(f);
+        if (!read) return false;
+    }
+    const std::string value = "output_res=" + std::to_string(target.w) + "x" + std::to_string(target.h);
+    std::string replaced;
+    bool written = false;
+    for (size_t from = 0; from < old.size();) {
+        const size_t newline = old.find('\n', from);
+        const size_t to = newline == std::string::npos ? old.size() : newline + 1;
+        if (old.compare(from, 11, "output_res=") == 0) {
+            replaced += value;
+            if (newline != std::string::npos) replaced += newline > from && old[newline - 1] == '\r' ? "\r\n" : "\n";
+            written = true;
+        } else {
+            replaced.append(old, from, to - from);
+        }
+        from = to;
+    }
+    if (!written) {
+        if (!replaced.empty() && replaced.back() != '\n') replaced += '\n';
+        replaced += value + "\n";
+    }
+    char temp[HOS_AF_PATH];
+    if (!hos_af_name(temp, sizeof temp, path.c_str(), HOS_AF_NEW)) return false;
+    const HANDLE out = hos_af_open_new(temp);
+    if (out == INVALID_HANDLE_VALUE) return false;
+    const bool wrote = hos_af_write_all(out, replaced.data(), replaced.size()) && FlushFileBuffers(out);
+    const bool closed = CloseHandle(out);
+    const bool moved = wrote && closed && hos_af_move(temp, path.c_str());
+    if (!moved) DeleteFileA(temp);
+    return moved;
+}
+
+extern int page;
+void output_field_show();
+static void answer_native_preview(bool keep) {
+    const Out selected = output_preview_target;
+    const bool accepted = keep && output_preview_answer(true);
+    if (accepted && save_preview_size(selected)) {
+        opts.output_res = output_started = output_choice_of(selected.w, selected.h);
+        for (Row& r : rows)
+            if (r.value == &opts.output_res) {
+                r.hi = last_choice();
+                const int index = restart_slot_of(r);
+                if (index >= 0) restart_state.restart_value(index, row_restart_value(r));
+            }
+        output_field_show();
+        int values[mr::kMax];
+        restart_values(values);
+        restart_state.note(values);
+    } else {
+        if (accepted) logf("menu: could not save the new output resolution; restoring the previous size");
+        output_preview_answer(false);
+    }
+    output_preview_target = {};
+    output_preview_countdown = 0;
+    page = 0;
+    menu_refresh = true;
+}
+
+// A preview refused before activation falls back to the normal restart setting.
+static void apply_custom_output(unsigned w, unsigned h, bool has_size);
+static void unavailable_native_preview() {
+    const Out selected = output_preview_target;
+    const bool from_field = output_preview_from_field;
+    answer_native_preview(false);
+    if (from_field) apply_custom_output(selected.w, selected.h, true);
+    else {
+        opts.output_res = output_choice_of(selected.w, selected.h);
+        for (Row& r : rows)
+            if (r.value == &opts.output_res) r.hi = last_choice();
+        output_field_show();
+        env_release(&opts.output_res);
+        int values[mr::kMax];
+        restart_values(values);
+        restart_state.note(values);
+        save();
+    }
+    if (restart_ask()) {
+        page = 5;
+        ask_sel = 0;
+        open_now = true;
+    }
+    menu_refresh = true;
 }
 
 // ---- (longshot) the rows that are text fields (text_edit): their fields, what Enter on each sets, the one being edited ----
@@ -1278,16 +1435,7 @@ bool size_text(const char* t, unsigned* w, unsigned* h) {
     }
     return true;
 }
-/// Enter on Custom output size: the Output resolution row on the size typed (one it offers, or the player's own), or, emptied,
-/// none of the player's own; saved. nullptr when taken, else why not
-const char* output_field_apply() {
-    unsigned w = 0, h = 0;
-    if (output_field.len) {
-        if (!size_text(output_field.text, &w, &h)) return "Type the width, an x, then the height: 3440x1440.";
-        w &= ~7u, h &= ~7u;
-        if (!hos_output_size_valid(w, h))
-            return "Not a size the game can draw: at least 640x360, at most 5120x2880's pixels, from 5:4 to 48:9 in shape.";
-    }
+static void apply_custom_output(unsigned w, unsigned h, bool has_size) {
     // (changing the custom size can reorder the shape list: keep the startup and Later choices by shape, not index)
     int aspect_slot = -1;
     for (const Row& r : rows)
@@ -1300,9 +1448,9 @@ const char* output_field_apply() {
     const std::string declined_shape = later ? aspect_shape(declined) : std::string();
     const bool start_custom = output_started == custom_index() && custom_output.w;
     const Out started = output_at(output_started);
-    if (output_field.len) opts.output_res = output_choice_of(w, h);
+    if (has_size) opts.output_res = output_choice_of(w, h);
     // (an offered size, including one found on a new screen, or an empty field: no separate custom choice)
-    if (opts.output_res != custom_index() || !output_field.len)
+    if (opts.output_res != custom_index() || !has_size)
         custom_output = {0, 0}, opts.output_res = output_choice(opts.output_res);
     // (the run's original custom size must still be reachable when returning to its starting shape)
     if (start_custom && (custom_output.w != started.w || custom_output.h != started.h)) {
@@ -1325,6 +1473,27 @@ const char* output_field_apply() {
     restart_values(now);
     restart_state.note(now);
     save();
+}
+
+/// Enter on Custom output size: the Output resolution row on the size typed (one it offers, or the player's own), or, emptied,
+/// none of the player's own; saved. nullptr when taken, else why not
+const char* output_field_apply() {
+    if (output_preview_target.w) {
+        output_field_show();
+        return nullptr;
+    }
+    unsigned w = 0, h = 0;
+    if (output_field.len) {
+        if (!size_text(output_field.text, &w, &h)) return "Type the width, an x, then the height: 3440x1440.";
+        w &= ~7u, h &= ~7u;
+        if (!hos_output_size_valid(w, h))
+            return "Not a size the game can draw: at least 640x360, at most 5120x2880's pixels, from 5:4 to 48:9 in shape.";
+    }
+    if (request_native_preview({w, h}, true)) {
+        output_field_show();
+        return nullptr;
+    }
+    apply_custom_output(w, h, output_field.len != 0);
     return nullptr;
 }
 struct FieldRow {
@@ -1359,7 +1528,7 @@ void edit_end(bool done) {
 
 // ---- (longshot) the Controls page: what presses each of the Switch's buttons, a gamepad input and up to two keys ----
 struct Control {
-    int button;   // HOS_SW_*, or HOS_KEY_* (keys only)
+    int button;   // HOS_SW_*, or HOS_KEY_* (the stick's and camera's: keys only)
     const char* name;
 };
 const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {HOS_SW_Y, "Y"}, {HOS_SW_L, "L"},
@@ -1370,14 +1539,32 @@ const Control controls[] = {{HOS_SW_A, "A"}, {HOS_SW_B, "B"}, {HOS_SW_X, "X"}, {
                             {HOS_KEY_MOVE_DOWN, "Move back"}, {HOS_KEY_MOVE_LEFT, "Move left"},
                             {HOS_KEY_MOVE_RIGHT, "Move right"}, {HOS_KEY_CAM_UP, "Camera up"},
                             {HOS_KEY_CAM_DOWN, "Camera down"}, {HOS_KEY_CAM_LEFT, "Camera left"},
-                            {HOS_KEY_CAM_RIGHT, "Camera right"}, {HOS_KEY_WALK, "Walk"}, {HOS_KEY_OC_NOTE_L, "Ocarina note (L)"},
+                            {HOS_KEY_CAM_RIGHT, "Camera right"}, {HOS_KEY_WALK, "Walk"}, {HOS_KEY_SPRINT, "Sprint"},
+                            {HOS_KEY_OC_NOTE_L, "Ocarina note (L)"},
                             {HOS_KEY_OC_NOTE_R, "Ocarina note (R)"}, {HOS_KEY_OC_NOTE_A, "Ocarina note (A)"},
-                            {HOS_KEY_OC_NOTE_Y, "Ocarina note (Y)"}, {HOS_KEY_OC_NOTE_X, "Ocarina note (X)"}};
+                            {HOS_KEY_OC_NOTE_Y, "Ocarina note (Y)"}, {HOS_KEY_OC_NOTE_X, "Ocarina note (X)"},
+                            {HOS_KEY_TOGGLE_HUD, "Toggle HUD"}};
 constexpr int kControls = sizeof controls / sizeof controls[0];   // (then "Reset to defaults")
-// (the stick's and camera's directions and Walk: keys only; the ocarina's note rows take a gamepad input too, host/nn_hid.c)
+// (the stick's and camera's directions and Walk: keys only; the ocarina's note rows and Sprint take a gamepad input too,
+// host/nn_hid.c)
 bool keys_only(int i) {
     return i < kControls && ((controls[i].button >= HOS_KEY_MOVE_UP && controls[i].button <= HOS_KEY_CAM_RIGHT) ||
                              controls[i].button == HOS_KEY_WALK);
+}
+// (the controls with a Toggle column: the Switch's buttons but Plus and Minus (opts.hold_toggle, a bit each), and Sprint
+// (opts.sprint_toggle keeps Sprint out of the Switch-button mask and avoids its sign bit))
+bool has_toggle(int button) {
+    return (button < HOS_SW_N && button != HOS_SW_PLUS && button != HOS_SW_MINUS) || button == HOS_KEY_SPRINT;
+}
+bool toggle_on(int button) { return button == HOS_KEY_SPRINT ? opts.sprint_toggle != 0 : ((opts.hold_toggle >> button) & 1) != 0; }
+// (a control's Toggle as Reset puts it: on for Sprint, off for the buttons)
+bool toggle_default(int button) { return button == HOS_KEY_SPRINT; }
+void toggle_set(int button, bool on) {
+    if (button == HOS_KEY_SPRINT) {
+        opts.sprint_toggle = on;
+        if (host && host->version >= 40 && host->bind) host->bind(HOS_BIND_SPRINT_TOGGLE, 0, 0, on);
+    }
+    else opts.hold_toggle = on ? opts.hold_toggle | (1 << button) : opts.hold_toggle & ~(1 << button);
 }
 // a pad input's name on the controller of the button prompts (the Button prompts row's choice; Auto: the face in use),
 // else by its place
@@ -1386,11 +1573,11 @@ const char* pad_name(int p) {
     static const char* paddles[] = {"R4", "L4", "R5", "L5"};
     if (p >= HOS_PAD_RPADDLE1) return paddles[p - HOS_PAD_RPADDLE1];
     static const char* t[HOS_PROMPT_KEYBOARD + 1][HOS_PAD_RPADDLE1] = {   // (by place, then HOS_PROMPT_*; the keyboard's: by place)
-        {"Bottom button", "Right button", "Left button", "Top button", "Select / Back", "Home", "Start", "L stick press",
-         "R stick press", "L1 / LB", "R1 / RB", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"},
-        {"B", "A", "Y", "X", "Minus", "Home", "Plus", "L stick press", "R stick press", "L", "R", "D-pad up",
+        {"Bottom button", "Right button", "Left button", "Top button", "Select / Back", "Home", "Start", "L3", "R3",
+         "L1 / LB", "R1 / RB", "D-pad up", "D-pad down", "D-pad left", "D-pad right", "L2 / LT", "R2 / RT"},
+        {"B", "A", "Y", "X", "Minus", "Home", "Plus", "L3", "R3", "L", "R", "D-pad up",
          "D-pad down", "D-pad left", "D-pad right", "ZL", "ZR"},
-        {"A", "B", "X", "Y", "View", "Xbox", "Menu", "L stick press", "R stick press", "LB", "RB", "D-pad up",
+        {"A", "B", "X", "Y", "View", "Xbox", "Menu", "L3", "R3", "LB", "RB", "D-pad up",
          "D-pad down", "D-pad left", "D-pad right", "LT", "RT"},
         {"Cross", "Circle", "Square", "Triangle", "Share", "PS", "Options", "L3", "R3", "L1", "R1", "D-pad up", "D-pad down",
          "D-pad left", "D-pad right", "L2", "R2"},
@@ -1467,11 +1654,46 @@ const std::vector<int>& bindable_keys() {
 int page = 0;          // 0 the options, 1 the controls, 3 the teleport list, 4 the inventory, 5 the restart question (2: was the
                        // debug tools' own page, now on the Debug tab)
 int csel = 0, ccol = menu_hit::kCtlPrimary;   // the page's row (options, then bindings and reset) and binding column
+int blocked_reset_row = -1;
+
+enum class ControlAction { None, Rebind, ResetRow, ResetAll };
+struct ControlConfirmation {
+    ControlAction action = ControlAction::None;
+    int row = -1, set = 0, slot = 0, code = 0, choice = 0;
+    uint64_t conflicts = 0;
+};
+ControlConfirmation control_confirmation;
+
+bool control_column_enabled(int row, int col) {
+    using enum menu_hit::CtlColumn;
+    if (col == kCtlReset) {
+        const int button = controls[row].button;
+        return host && host->version >= 44 && host->reset_binding && host->binding_is_default &&
+               ((has_toggle(button) && toggle_on(button) != toggle_default(button)) || !host->binding_is_default(button));
+    }
+    if (col == kCtlToggle) return has_toggle(controls[row].button);
+    return col == kCtlKeyboard || !keys_only(row);
+}
 // (Layout preset and Button prompts: a preset shows in the grid at once. Counted the first time it is asked, not while the
 // DLL starts: the rows are built then, after every module registered)
 int top_rows() {
     static const int n = tab_row_count(TAB_PAGE);
     return n;
+}
+int next_control_selection(int selection, int col, int direction) {
+    using enum menu_hit::CtlColumn;
+    const int first = top_rows(), row = selection - first;
+    if (row < 0 || row >= kControls || (col != kCtlToggle && col != kCtlReset)) {
+        const int count = first + kControls + 1;
+        return (selection + count + direction) % count;
+    }
+    // Stay in this column on binding rows, wrapping past the ends of the grid.
+    int next = row;
+    for (int step = 1; step < kControls; ++step) {
+        next = (next + kControls + direction) % kControls;
+        if (control_column_enabled(next, col)) return first + next;
+    }
+    return selection;
 }
 int listening = 0;     // waiting for the new input: 1 a gamepad's, 2 a key
 bool listen_armed = false;   // (once what started it was let go)
@@ -1520,12 +1742,12 @@ double fps_target_ms() {
     return fps_stats::target_ms_for(cap, fifo, fifo ? (display_refresh_mhz() + 500) / 1000 : 0);
 }
 menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, menu_tick)
-float scroll_at[TAB_FPS_DEV + 2];   // (the first row shown, eased toward the selection: the options' tabs and the Motion page, then
+float scroll_at[TAB_SIM_TURF + 2];   // (the first row shown, eased toward the selection: the tabs and subpages, then
                                    // the Controls page: kControlsSlot)
-constexpr int kControlsSlot = TAB_FPS_DEV + 1;
-int wheel_rows[TAB_FPS_DEV + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
-int scrolled_to[TAB_FPS_DEV + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // (the selection scroll_rows last brought into view)
-float scroll_want[TAB_FPS_DEV + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
+constexpr int kControlsSlot = TAB_SIM_TURF + 1;
+int wheel_rows[TAB_SIM_TURF + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
+int scrolled_to[TAB_SIM_TURF + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // (selection last brought into view)
+float scroll_want[TAB_SIM_TURF + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
@@ -1533,10 +1755,11 @@ ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
     c.confirm_dot = menu_keys::dot(pad_confirm), c.back_dot = menu_keys::dot(pad_back);
     c.paste_dot = menu_keys::dot(pad_paste);   // (longshot: a text field's Paste)
     c.s = ui::unit((float)h, opts.menu_size, &c.safe);
+    ui::set_theme(opts.menu_theme);   // (the Menu theme's palette, before anything is drawn)
     return c;
 }
 /// The banner's height
-float banner_h(const ui::Ctx& c) { return std::max(58 * c.s, c.safe + 40 * c.s); }
+float banner_h(const ui::Ctx& c) { return std::max(52 * c.s, c.safe + 36 * c.s); }
 
 /// (the Bug report's line under its help once saved, below: measure_help makes room for the longest)
 bool mic_help_row(const Row& r) {
@@ -1669,6 +1892,7 @@ float mic_help_font_size(ui::Ctx& c, const char* help, float width, float height
 }
 /// The help box from (x0, y0) to x1: a title, the help, a line set off by a bar, a gold line at its foot. min_h: its height at
 /// least (the tallest help the page can have, so it does not jump)
+constexpr float kHelpCentre = -1;   // (help_box's y0: the box centred in its room)
 void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const char* help, const char* hint, const char* gold_line,
               float min_h = 0, bool after_restart = false, float y_min = 0, float y_max = FLT_MAX, bool microphone = false) {
     // (y_max: the box ends above it, the prompt strip's top: moved up as far as y_min (under the banner) when it is taller than
@@ -1684,6 +1908,7 @@ void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const
     const float th = help ? ui::para(c, c.f.body, help_px, ImVec2(), 0, help, w, false) : 0;
     const float text_h = th + (hint ? 14 * s + hh : 0) + meter_h;
     float body = std::max(min_h, text_h);
+    if (y0 < 0) y0 = std::max(y_min, (y_min + y_max - fixed - body) * 0.5f);   // (kHelpCentre: centred between y_min and y_max)
     if (y0 + fixed + body > y_max) y0 = std::max(y_min, y_max - fixed - body);
     if (y0 + fixed + body > y_max) body = std::max(text_h, y_max - y0 - fixed);
     const float y1 = std::min(y0 + fixed + body, y_max);
@@ -1733,11 +1958,35 @@ void column(ui::Ctx& c, float x0, float x1, float top) {
 /// A row's name cell, selected or not, its tag (After restart) at its right end
 /// A row's name cell, selected or not; pending: a change that applies after a restart, a small gold diamond at its right end
 /// (the help says it in words)
-void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool pending = false, float px = 18.5f) {
+ImVec2 name_end(-1, -1);   // (the last name cell's top right: a value cell starting there joins it, in Modern dark one box)
+/// (Modern dark) One half of a row's box, the name's (left) or the value's: drawn whole, rounded, past the seam, and cut at it on
+/// a whole pixel, so neither half's anti-aliased fringe or edge falls on the seam (no line where the two meet)
+void half_box(ui::Ctx& c, ImVec2 a, ImVec2 b, ImU32 fill, bool left) {
+    const float s = c.s, r = ui::kRound * s, ext = r + 4 * s;
+    const float seam = std::floor((left ? b.x : a.x) + 0.5f);
+    if (left) c.d->PushClipRect(ImVec2(std::floor(a.x) - 2, a.y - 2), ImVec2(seam, b.y + 2), true);
+    else c.d->PushClipRect(ImVec2(seam, a.y - 2), ImVec2(std::ceil(b.x) + 2, b.y + 2), true);
+    const ImVec2 p = left ? a : ImVec2(seam - ext, a.y), q = left ? ImVec2(seam + ext, b.y) : b;
+    c.d->AddRectFilled(p, q, fill, r);
+    c.d->AddRect(p, q, ui::kEdge, r, 0, std::max(1.0f, s));
+    c.d->PopClipRect();
+}
+/// joined: a value cell follows at its right end (Modern dark: one box with it, its right end left open for it)
+void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool pending = false, float px = 18.5f, bool joined = true) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f;
-    c.d->AddRectFilled(a, b, sel ? ui::kCellNameSel : ui::kCellName);
-    c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
-    if (sel) c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi);
+    name_end = joined ? ImVec2(b.x, a.y) : ImVec2(-1, -1);
+    const bool open = joined && ui::kRound > 0;
+    const float r = ui::kRound * s;
+    if (open) half_box(c, a, b, sel ? ui::kCellNameSel : ui::kCellName, true);
+    if (sel && r > 0) {   // (Modern dark: a rounded cell, lit by a soft wash from its bar)
+        if (!open) c.d->AddRectFilled(a, b, ui::kCellNameSel, r);
+        c.d->AddRectFilledMultiColor(a + ImVec2(4 * s, 0), ImVec2((a.x + b.x) * 0.5f, b.y), ui::alpha(ui::kSelStart, 0.7f),
+                                     ui::alpha(ui::kSelStart, 0), ui::alpha(ui::kSelStart, 0), ui::alpha(ui::kSelStart, 0.7f));
+    } else if (sel)   // (selected: warmer at the gold bar, fading to the usual cell at its right)
+        c.d->AddRectFilledMultiColor(a, b, ui::kSelStart, ui::kCellNameSel, ui::kCellNameSel, ui::kSelStart);
+    else if (!open) c.d->AddRectFilled(a, b, ui::kCellName, r);
+    if (!open) c.d->AddRect(a, b, ui::kEdge, r, 0, std::max(1.0f, s));
+    if (sel) c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi, r, ImDrawFlags_RoundCornersLeft);
     float room = b.x - a.x - 36 * s;
     if (pending) {
         ui::diamond(c, ImVec2(b.x - 12 * s, mid), 4 * s, ui::kGoldHi);
@@ -1747,11 +1996,33 @@ void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool 
     const std::string shown = fit(c, f, px * s, room, name, false);
     ui::text_mid(c, f, px * s, a.x + 20 * s, mid, sel ? ui::kInkBright : ui::kInk, shown.c_str());
 }
+/// A value cell's frame. Classic: a dark cell with a fine edge. Modern dark: next to its row's name cell (name_end), the name's
+/// box carried on over it (its seam covered), the value in a dark well inset in it; on its own, a rounded dark cell
+void value_frame(ui::Ctx& c, ImVec2 a, ImVec2 b, bool sel) {
+    const float s = c.s, r = ui::kRound * s, in = 4 * s;
+    if (r <= 0) {
+        c.d->AddRectFilled(a, b, ui::kCellDark);
+        c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
+        return;
+    }
+    if (std::fabs(a.x - name_end.x) < 1 && std::fabs(a.y - name_end.y) < 1) {
+        half_box(c, a, b, sel ? ui::kCellNameSel : ui::kCellName, false);
+        c.d->AddRectFilled(a + ImVec2(in, in), b - ImVec2(in, in), ui::kCellDark, std::max(0.0f, r - s));
+    } else {
+        c.d->AddRectFilled(a, b, ui::kCellDark, r);
+        c.d->AddRect(a, b, ui::kEdge, r, 0, std::max(1.0f, s));
+    }
+}
+/// A value cell's selection: Classic, the ring around the cell; Modern dark, a crisp ring on its inner well
+void value_glow(ui::Ctx& c, ImVec2 a, ImVec2 b) {
+    const float s = c.s;
+    if (ui::kRound <= 0) return ui::glow(c, a, b);
+    c.d->AddRect(a + ImVec2(4 * s, 4 * s), b - ImVec2(4 * s, 4 * s), ui::kOutline, std::max(0.0f, (ui::kRound - 1) * s), 0, std::max(1.0f, 1.75f * s));
+}
 /// A value cell: a choice with arrows at its ends (left, right: whether it can go that way), gold when selected
 void choice_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const std::string& value, bool sel, bool left, bool right, bool fixed = false) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f, in = 4 * s, px = 18 * s;
-    c.d->AddRectFilled(a, b, ui::kCellDark);
-    c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
+    value_frame(c, a, b, sel);
     if (sel && !fixed) ui::gold(c, a + ImVec2(in, in), b - ImVec2(in, in));
     const ImU32 ink = sel && !fixed ? ui::kGoldInk : fixed ? ui::kDim : ui::kInk, arrow = sel && !fixed ? ui::kGoldInk : ui::kDim;
     if (left) ui::triangle(c, ImVec2(a.x + in + 11 * s, mid), 9 * s, 0, arrow);
@@ -1759,29 +2030,27 @@ void choice_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const std::string& value, bool 
     ImFont* f = sel ? c.f.strong : c.f.body;
     const std::string shown = fit(c, f, px, b.x - a.x - 2 * in - (left || right ? 48 : 16) * s, value, sel);   // (room for arrows)
     ui::text_mid_centre(c, f, px, (a.x + b.x) * 0.5f, mid, ink, shown.c_str());
-    if (sel) ui::glow(c, a, b);
+    if (sel) value_glow(c, a, b);
 }
 /// A value cell of two halves (a row of two values: On and Off), the chosen one filled
 void halves_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* lo, const char* hi, bool high, bool sel, bool fixed) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f, in = 4 * s, px = 18 * s, xm = (a.x + b.x) * 0.5f;
-    c.d->AddRectFilled(a, b, ui::kCellDark);
-    c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
+    value_frame(c, a, b, sel);
     const ImVec2 fa = high ? ImVec2(xm, a.y + in) : a + ImVec2(in, in), fb = high ? b - ImVec2(in, in) : ImVec2(xm, b.y - in);
     if (sel && !fixed) ui::gold(c, fa, fb);
-    else c.d->AddRectFilled(fa, fb, ui::kBronze);
+    else c.d->AddRectFilled(fa, fb, ui::kBronze, ui::kRound * s);
     const ImU32 on = sel && !fixed ? ui::kGoldInk : ui::kInk;
     ui::text_mid_centre(c, high ? c.f.body : c.f.strong, px, (a.x + xm) * 0.5f, mid, high ? ui::kDim : on, lo);
     ui::text_mid_centre(c, high ? c.f.strong : c.f.body, px, (xm + b.x) * 0.5f, mid, high ? on : ui::kDim, hi);
-    if (sel) ui::glow(c, a, b);
+    if (sel) value_glow(c, a, b);
 }
 /// A slider's value cell; a display-only meter omits adjustment arrows and mouse track bounds.
 void slider_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* value, int permille, bool sel, float* t0, float* t1, bool adjustable = true) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f, in = 4 * s, px = 18 * s;
-    c.d->AddRectFilled(a, b, ui::kCellDark);
-    c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
+    value_frame(c, a, b, sel);
     if (sel) ui::gold(c, a + ImVec2(in, in), b - ImVec2(in, in));
     const float x0 = a.x + in + 24 * s, x1 = b.x - in - 24 * s, xv = x0 + (x1 - x0) * permille / 1000.0f, ty = b.y - in - 5.5f * s;
-    const ImU32 track = sel ? ui::rgba(36, 24, 8, 80) : ui::rgba(255, 255, 255, 40), done = sel ? ui::kGoldInk : ui::kAccent;
+    const ImU32 track = sel ? ui::kTrackSel : ui::rgba(255, 255, 255, 40), done = sel ? ui::kGoldInk : ui::kAccent;
     c.d->AddRectFilled(ImVec2(x0, ty - 1.5f * s), ImVec2(x1, ty + 1.5f * s), track, 1.5f * s);
     c.d->AddRectFilled(ImVec2(x0, ty - 1.5f * s), ImVec2(xv, ty + 1.5f * s), done, 1.5f * s);
     ui::diamond(c, ImVec2(xv, ty), 4.5f * s, done);
@@ -1790,7 +2059,7 @@ void slider_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* value, int permille
         const ImU32 arrow = sel ? ui::kGoldInk : ui::kDim;
         ui::triangle(c, ImVec2(a.x + in + 11 * s, mid), 9 * s, 0, arrow), ui::triangle(c, ImVec2(b.x - in - 11 * s, mid), 9 * s, 1, arrow);
     }
-    if (sel) ui::glow(c, a, b);
+    if (sel) value_glow(c, a, b);
     *t0 = adjustable ? x0 : 0, *t1 = adjustable ? x1 : 0;
 }
 /// Read-only live meter in help, with no mouse-hit registration or adjustment arrows.
@@ -1806,8 +2075,7 @@ void mic_help_meter(ui::Ctx& c, ImVec2 a, ImVec2 b) {
 /// left to keep the caret in view
 void text_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const TextField& f, bool sel, bool typing, const char* placeholder) {
     const float s = c.s, mid = (a.y + b.y) * 0.5f, in = 4 * s, px = 18 * s, x0 = a.x + in + 12 * s, room = b.x - in - 12 * s - x0;
-    c.d->AddRectFilled(a, b, ui::kCellDark);
-    c.d->AddRect(a, b, ui::kEdge, 0, std::max(1.0f, s));
+    value_frame(c, a, b, sel);
     if (sel && !typing) ui::gold(c, a + ImVec2(in, in), b - ImVec2(in, in));
     ImFont* font = sel ? c.f.strong : c.f.body;
     const std::string t(f.text, (size_t)std::clamp(f.len, 0, (int)sizeof f.text - 1));
@@ -1824,7 +2092,7 @@ void text_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const TextField& f, bool sel, boo
         c.d->PopClipRect();
         c.d->AddRect(a + ImVec2(in * 0.5f, in * 0.5f), b - ImVec2(in * 0.5f, in * 0.5f), ui::kGoldHi, 0, 2.5f * s);
     }
-    if (sel) ui::glow(c, a, b);
+    if (sel) value_glow(c, a, b);
 }
 /// "Restart needed: " and the pending rows, on one line of width: the last ones as "and N more" when they do not fit
 std::string restart_line(ui::Ctx& c, float px, float width) {
@@ -1857,8 +2125,13 @@ constexpr DebugGroup debug_groups[] = {{"Player", 0, 6}, {"Travel", 6, 9}, {"Cam
 constexpr int kDebugGroups = sizeof debug_groups / sizeof debug_groups[0];
 constexpr int kDebugGeneralRows = 2;
 constexpr int kDebugTools = sizeof debug_tools_order / sizeof debug_tools_order[0];
+/// (the sections after the Developer one, a module's (menu/input_recording.cpp's Input recording): each heading's row and
+/// where its rows begin in debug_rows' list; debug_rows fills them)
+int debug_sections[8][2];
+int debug_section_count;
 /// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the tools in debug_tools_order while they
-/// are on, then the Developer rows; *dev where those start, *dev_head the Developer heading's row (-1 none). Their count
+/// are on, then the Developer rows and those of the sections after it (debug_sections); *dev where those start, *dev_head the
+/// Developer heading's row (-1 none). Their count
 int debug_rows(int* out, int* dev, int* dev_head) {
     const int count = tab_row_count(TAB_DEBUG);
     int n = 0;
@@ -1873,11 +2146,14 @@ int debug_rows(int* out, int* dev, int* dev_head) {
             if (debug_tools_order[t] == -1 ? r.value == &opts.damage_taken : r.cheat == debug_tools_order[t]) out[n++] = k;
         }
     *dev = n;
+    debug_section_count = 0;
     if (quick_debug) return n;
     for (int k = 0; k < count; ++k) {
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
-        if (r.heading) *dev_head = k;
-        else if (*dev_head >= 0 && r.cheat < 0 && r.value != &opts.debug_tools) out[n++] = k;
+        if (r.heading && *dev_head < 0) *dev_head = k;
+        else if (r.heading && debug_section_count < 8)   // (a section after Developer: its heading, where its rows begin)
+            debug_sections[debug_section_count][0] = k, debug_sections[debug_section_count++][1] = n;
+        else if (*dev_head >= 0 && !r.heading && r.cheat < 0 && r.value != &opts.debug_tools) out[n++] = k;
     }
     return n;
 }
@@ -1913,6 +2189,8 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
             return w + (tight ? 56 : 68) * s;
         }
         if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7 || r.value) return halves_w + pad;
+        if (!r.value && r.setting && r.setting->kind == menu::Kind::Page)   // (a page it opens: its text, room for the arrow)
+            return ui::size_of(c.f.strong, px, r.setting->text ? r.setting->text(0).c_str() : "").x + (tight ? 64 : 80) * s;
         if (!r.value && r.setting && !r.setting->choices.empty()) {   // (#1633: a module's button: the widest text its cell shows)
             float w = 0;
             for (const char* t : r.setting->choices) w = std::max(w, ui::size_of(c.f.strong, px, t).x);
@@ -1945,8 +2223,13 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
     int foot = std::max(next_row[0], next_row[1]);
     if (tools) foot++;
     const int dev_row = foot;
-    for (int i = dev; i < n; ++i) vrow[i] = dev_row + 1 + (i - dev);
-    const int visual_count = n > dev ? dev_row + 1 + (n - dev) : foot;
+    int extra = 0, sections = 0, section_row[8] = {};   // (a section after Developer: a gap, then its heading over its rows)
+    for (int i = dev; i < n; ++i) {
+        while (sections < debug_section_count && debug_sections[sections][1] == i)
+            extra += 2, section_row[sections++] = dev_row + (i - dev) + extra;
+        vrow[i] = dev_row + 1 + (i - dev) + extra;
+    }
+    const int visual_count = n > dev ? dev_row + 1 + (n - dev) + extra : foot;
     int sel_at = 0;
     for (int i = 0; i < n; ++i)
         if (order[i] == sel) sel_at = vrow[i];
@@ -1971,6 +2254,8 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
     for (int g = 0; tools && g < kDebugGroups; ++g)
         heading(head_col[g] ? mid + gap * .5f : left, !two || head_col[g] ? right : mid - gap * .5f, head_row[g], debug_groups[g].title);
     if (dev_head >= 0 && n > dev) heading(left, right, dev_row, rows[tab_row_to_global(TAB_DEBUG, dev_head)].name);
+    for (int k = 0; k < sections; ++k)   // (only those with a row shown: a heading over nothing is left out)
+        heading(left, right, section_row[k], rows[tab_row_to_global(TAB_DEBUG, debug_sections[k][0])].name);
     for (int i = 0; i < n; ++i) {
         const int k = order[i];
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
@@ -1991,6 +2276,9 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
                         row_fixed(r.value));
         } else if (r.setting && r.setting->kind == menu::Kind::Action && r.setting->text) {   // (#1633: a module's button's text)
             choice_cell(c, va, vb, r.setting->text(0), selected, false, false);
+        } else if (r.setting && r.setting->kind == menu::Kind::Page) {   // (a page it opens: its text, and the arrow, as elsewhere)
+            choice_cell(c, va, vb, r.setting->text ? r.setting->text(0) : "", selected, false, false);
+            ui::triangle(c, ImVec2(vb.x - 15 * s, (va.y + vb.y) * 0.5f), 10 * s, 1, selected ? ui::kGoldInk : ui::kInk);
         } else if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7) {
             halves_cell(c, va, vb, "Off", "On", cheat_value(r.cheat) == "On", selected, false);
         } else if (age_shown(r.cheat)) {   // (Link's age now: the other half switches)
@@ -2231,7 +2519,7 @@ void draw_mods(ui::Ctx& c, float cx0, float cx1, float hx0, float hx1, bool narr
         help_box(c, hx0, hx1, bottom + 8 * s, name, help.c_str(), hint.empty() ? nullptr : hint.c_str(), gold, 0, false, bottom + 8 * s,
                  bar_top - 10 * s);
     } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), name, help.c_str(), hint.empty() ? nullptr : hint.c_str(), gold, 0,
+        help_box(c, hx0, hx1, kHelpCentre, name, help.c_str(), hint.empty() ? nullptr : hint.c_str(), gold, 0,
                  false, hh + 18 * s, bar_top - 12 * s);
     }
     const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.62f;
@@ -2275,29 +2563,32 @@ void draw_options(ui::Ctx& c) {
     // the tabs in the banner: dark ink on the tan, the shown one light on a dark inset; the tab keys at their ends (a click there
     // is the previous or the next tab)
     float tw[TAB_COUNT], total = 0;
-    for (int i = 0; i < TAB_COUNT; i++) tw[i] = tab_shown(i) ? ui::size_of(c.f.heading, 23 * s, tab_titles[i]).x + 56 * s : 0, total += tw[i];
+    const float tab_px = 20 * s, tab_pad = 22 * s;   // (the tabs' ink and the room each side of it)
+    for (int i = 0; i < TAB_COUNT; i++) tw[i] = tab_shown(i) ? ui::size_of(c.f.heading, tab_px, tab_titles[i]).x + 2 * tab_pad : 0, total += tw[i];
     float x = (c.w - total) * 0.5f;
     const float ty = hh * 0.5f + s;
     const char* const keys[2] = {c.pad ? "L" : "Q", c.pad ? "R" : "E"};
     for (int i = 0; i < 2; i++) {
-        const float cw = 26 * s, cx = i ? x + total + 22 * s : x - 22 * s - cw;
+        const float cw = 23 * s, cx = i ? x + total + 18 * s : x - 18 * s - cw;
         const bool hover = hover_tab == TAB_COUNT + i;
-        c.d->AddRectFilled(ImVec2(cx, ty - 13 * s), ImVec2(cx + cw, ty + 13 * s), hover ? ui::kTabInset : ui::kBannerInk, 3 * s);
-        ui::text_mid_centre(c, c.f.strong, 14 * s, cx + cw * 0.5f, ty, ui::kInk, keys[i]);
+        c.d->AddRectFilled(ImVec2(cx, ty - 11.5f * s), ImVec2(cx + cw, ty + 11.5f * s), hover ? ui::kKeyCapHi : ui::kKeyCap, 4 * s);
+        ui::text_mid_centre(c, c.f.strong, 13 * s, cx + cw * 0.5f, ty, ui::kInk, keys[i]);
         hits.add(i ? cx - 10 * s : 0, 0, i ? c.w : cx + cw + 10 * s, hh, i ? menu_hit::kTabNext : menu_hit::kTabPrev, -1);
     }
     for (int i = 0; i < TAB_COUNT; i++) {
         // (the Motion page: under Controls; the FPS counter details: under Gameplay)
         if (!tab_shown(i)) continue;   // (the Mods tab without mods)
-        const bool shown = i == (cur_tab == TAB_MOTION ? TAB_CONTROLS : cur_tab == TAB_FPS_DEV ? TAB_GAMEPLAY : cur_tab);
+        const bool shown = i == (page_parent(cur_tab) >= 0 ? page_parent(cur_tab) : cur_tab);
         if (shown || i == hover_tab) {
-            c.d->AddRectFilled(ImVec2(x, 0), ImVec2(x + tw[i], hh - 3 * s), shown ? ui::kTabInset : ui::alpha(ui::kTabInset, 0.35f));
+            // (an inset from a little below the banner's top, its upper corners rounded; the shown one with a gold line under it)
+            const ImVec2 a(x + 2 * s, 7 * s), b(x + tw[i] - 2 * s, hh - 3 * s);
+            c.d->AddRectFilled(a, b, shown ? ui::kTabInset : ui::alpha(ui::kTabInset, 0.35f), 5 * s, ImDrawFlags_RoundCornersTop);
             if (shown) {
-                c.d->AddLine(ImVec2(x + 1, 0), ImVec2(x + 1, hh - 3 * s), ui::rgba(52, 34, 16), std::max(1.0f, s));
-                c.d->AddLine(ImVec2(x + tw[i] - 1, 0), ImVec2(x + tw[i] - 1, hh - 3 * s), ui::rgba(52, 34, 16), std::max(1.0f, s));
+                c.d->AddRect(a, b + ImVec2(0, 1), ui::kTabEdge, 5 * s, ImDrawFlags_RoundCornersTop, std::max(1.0f, s));
+                c.d->AddRectFilled(ImVec2(a.x + 6 * s, b.y - 3 * s), ImVec2(b.x - 6 * s, b.y), ui::kGoldHi, 1.5f * s);
             }
         }
-        ui::text_mid(c, c.f.heading, 23 * s, x + 28 * s, ty, shown ? ui::kInkBright : ui::kBannerInk, tab_titles[i]);
+        ui::text_mid(c, c.f.heading, tab_px, x + tab_pad, ty, shown ? ui::kInkBright : ui::kBannerInk, tab_titles[i]);
         hits.add(x, 0, x + tw[i], hh, menu_hit::kTab, i);
         x += tw[i];
     }
@@ -2387,7 +2678,7 @@ void draw_options(ui::Ctx& c) {
         } else {
             prompt_list[prompts_n++] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : selr.setting && selr.setting->verb ? selr.setting->verb : "Open"};
         }
-        if (cur_tab == TAB_MOTION || cur_tab == TAB_FPS_DEV) prompt_list[prompts_n++] = {ui::kBack, "Back"};   // (Esc: to Controls, or Gameplay)
+        if (page_parent(cur_tab) >= 0) prompt_list[prompts_n++] = {ui::kBack, "Back"};   // (Esc: to Controls, Audio, Gameplay or Debug)
         else {
             prompt_list[prompts_n++] = {ui::kTabs, "Tabs"}, prompt_list[prompts_n++] = {ui::kBack, "Close"};
         }
@@ -2402,7 +2693,7 @@ void draw_options(ui::Ctx& c) {
         help_box(c, hx0, hx1, bottom + 8 * s, selr.name, selr.help, hint, pending_line.empty() ? nullptr : pending_line.c_str(), help_tall,
                  after, bottom + 8 * s, bar_top - 10 * s, mic_help);
     } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), selr.name, selr.help, hint,
+        help_box(c, hx0, hx1, kHelpCentre, selr.name, selr.help, hint,
                  pending_line.empty() ? nullptr : pending_line.c_str(), help_tall, after, hh + 18 * s, bar_top - 12 * s, mic_help);
     }
     const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f;
@@ -2443,7 +2734,7 @@ void draw_options(ui::Ctx& c) {
 void draw_tune_bar(ui::Ctx& c) {
     if (cur_tab == TAB_MODS) {   // (the Mods tab has no rows of the bar's kind, its lines are the host's: its full page, the
                                  // game behind dimmed as under the full menu, which draw_menu leaves out for the bar)
-        c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));
+        c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::kShade);
         draw_options(c);
         return;
     }
@@ -2463,12 +2754,15 @@ void draw_tune_bar(ui::Ctx& c) {
     const float by0 = by1 - bh;
 
     // Dark panel with subtle edge
-    c.d->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1), ui::rgba(14, 10, 6, 235), 6 * s);
+    c.d->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1), ui::kPanel, 6 * s);
     c.d->AddRect(ImVec2(bx0, by0), ImVec2(bx1, by1), ui::alpha(ui::kEdge, 0.9f), 6 * s, std::max(1.0f, s));
 
     // Header strip inside card: Tab Name and restart status
     const char* cur_name = cur_tab == TAB_MOTION ? "Motion" : tab_title(cur_tab);
     if (cur_tab == TAB_FPS_DEV) cur_name = "FPS counter details";
+    if (cur_tab == TAB_RECORDINGS) cur_name = "Play recording";
+    if (cur_tab == TAB_SPEAKER) cur_name = "Controller speaker";
+    if (cur_tab == TAB_SIM_TURF) cur_name = "Simulated turf";
     const float header_y = by0 + 13 * s;
     ui::text_mid(c, c.f.heading, 14 * s, bx0 + 16 * s, header_y, ui::kGoldHi, cur_name);
 
@@ -2513,6 +2807,19 @@ void draw_tune_bar(ui::Ctx& c) {
     ui::prompts(c, ImVec2(px0, by1 - 32 * s), tune_prompts, 4, true);
 }
 
+void draw_reset_arrow(ui::Ctx& c, ImVec2 centre, ImU32 ink) {
+    const float start = 4.06f, end = -0.92f;   // screen angles, leaving a gap at the top
+    const float radius = 7.5f * c.s;
+    const ImVec2 radial(std::cos(end), std::sin(end));
+    const ImVec2 tangent(radial.y, -radial.x);
+    const ImVec2 head = centre + radial * radius;
+    c.d->PathArcTo(centre, radius, start, end, 20);
+    c.d->PathStroke(ink, ImDrawFlags_None, std::max(1.0f, 1.8f * c.s));
+    const ImVec2 base = head - tangent * (3.0f * c.s);
+    const ImVec2 wing = radial * (3.3f * c.s);
+    c.d->AddTriangleFilled(head + tangent * (3.3f * c.s), base + wing, base - wing, ink);
+}
+
 void draw_controls(ui::Ctx& c) {
     using enum menu_hit::CtlColumn;
     // (the page's own rows first, top_rows() of them (the layout preset, the button prompts), then a row per control and Reset to
@@ -2523,22 +2830,47 @@ void draw_controls(ui::Ctx& c) {
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
     column(c, cx0, cx1, hh);
     const int n = top_rows() + kControls + 1, sel_i = csel - top_rows();   // (sel_i: the control's, kControls Reset; negative: a page row)
-    const ui::Prompt idle[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Column"}, {ui::kConfirm, "Bind"}, {ui::kKey, "Clear", "Del"},
+    const int selected_col = sel_i >= 0 && sel_i < kControls && !control_column_enabled(sel_i, ccol) ? kCtlKeyboard : ccol;
+    const ui::Prompt idle[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Column"}, {ui::kConfirm, "Bind"}, {ui::kClear, "Clear"},
                                {ui::kBack, "Back"}};
     const ui::Prompt option[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kBack, "Back"}};
     const ui::Prompt wait[] = {{ui::kBack, "Cancel"}};
+    const ui::Prompt reset[] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Column"}, {ui::kConfirm, "Reset"},
+                                {ui::kBack, "Back"}};
     const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     const Row* page_row = sel_i < 0 ? &rows[tab_row_to_global(TAB_PAGE, csel)] : nullptr;
+    const bool l3_sprints = opts.sprint && sel_i >= 0 && sel_i < kControls && controls[sel_i].button == HOS_SW_LS &&
+                            (host->binding(HOS_BIND_PAD, HOS_KEY_SPRINT, 0) == HOS_PAD_LSTICK ||
+                             host->binding(HOS_BIND_PAD, HOS_KEY_SPRINT, 1) == HOS_PAD_LSTICK) &&
+                            host->binding(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 0) != HOS_PAD_LSTICK &&
+                            host->binding(HOS_BIND_PAD, HOS_KEY_TOGGLE_HUD, 1) != HOS_PAD_LSTICK;
     const char* title = page_row ? page_row->name : sel_i < kControls ? controls[sel_i].name : "Reset to defaults";
     const char* help = listening ? (listening == 1 ? "Press the gamepad button to use. Esc cancels." : "Press the key to use. Esc cancels.")
                        : page_row ? page_row->help
+                       : sel_i < kControls && selected_col == kCtlReset
+                           ? (blocked_reset_row == sel_i
+                                  ? "Another control uses one of these defaults. Clear that binding first."
+                                  : "Restore this control's default gamepad and keyboard bindings and its default Toggle (on for "
+                                    "Sprint, off for the others).")
+                       : sel_i < kControls && controls[sel_i].button == HOS_KEY_SPRINT && selected_col == kCtlToggle
+                           ? "Toggle for Sprint: On, a press of its key or button starts Sprint and the next ends it; Off, Link "
+                             "sprints only while you hold it. A toggled sprint ends when Link stops, attacks, targets with ZL, uses "
+                             "an item, talks, swims or climbs; a roll keeps it, and opening Insert, pausing or losing focus does not "
+                             "end it. On by default."
+                       : sel_i < kControls && controls[sel_i].button == HOS_KEY_SPRINT
+                           ? "Enable Sprint in the Controls tab to sprint without rolling. With Toggle off, hold the assigned input "
+                             "while moving. With Toggle on, press it to start or stop. Enabling Sprint moves L3 to Sprint if Sprint "
+                             "has no gamepad input and L3 is still the primary Switch left-stick-press binding."
                        : sel_i < kControls && controls[sel_i].button < HOS_SW_N && controls[sel_i].button != HOS_SW_PLUS &&
                          controls[sel_i].button != HOS_SW_MINUS && ccol == kCtlToggle
                            ? "Hold-to-toggle: press once to hold this Switch button, again to release it. Either gamepad input or a "
                              "bound key works. Opening Insert, pressing Plus or Minus, focus loss or rebinding releases it. Off by default."
-                           : "Either gamepad input or an assigned key presses the selected Switch button. Enter binds the "
-                             "selected input and Delete clears it. A button's only gamepad input stays with it: it does not move into "
-                             "another's empty Input 2. The game's button icons follow after a restart.";
+                       : l3_sprints
+                           ? "L3 is assigned to Sprint. Use the inputs shown on this row to press the Switch left stick. "
+                             "Enter binds the selected input and Delete clears it."
+                       : "Either gamepad input or an assigned key presses the selected Switch button. Enter binds the "
+                             "selected input and Delete clears it. Confirming a conflict removes the previous binding. "
+                             "The game's button icons follow after a restart.";
     const char* hint = page_row ? (page_row->hint ? page_row->hint(*page_row->value, -1) : nullptr)
                                 : "Gamepad: the D-pad moves, A binds, B goes back. Ocarina note keys are only notes while "
                                   "the ocarina waits for one; away from it they do their other jobs.";
@@ -2548,30 +2880,43 @@ void draw_controls(ui::Ctx& c) {
         help_box(c, hx0, hx1, bottom + 8 * s, nullptr, help, hint, nullptr, 0, page_row && restart_changed(*page_row), bottom + 8 * s,
                  bar_top - 10 * s);
     } else {
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), title, help, hint, nullptr, 0, page_row && restart_changed(*page_row),
+        help_box(c, hx0, hx1, kHelpCentre, title, help, hint, nullptr, 0, page_row && restart_changed(*page_row),
                  hh + 18 * s, bar_top - 12 * s);
     }
     const float rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, width = rx1 - rx0;
-    const float pad_x = rx0 + width * 0.28f, key_x = rx0 + width * 0.64f, toggle_x = rx0 + width * 0.87f;
-    const float col_x[] = {pad_x, (pad_x + key_x) * 0.5f, key_x, toggle_x, rx1};
-    float top = hh + 22 * s;
-    ui::text_mid_centre(c, c.f.body, 15 * s, col_x[kCtlAlternate], top + 8 * s, ui::kDim, "Gamepad");
-    ui::text_mid(c, c.f.body, 15 * s, rx0 + 20 * s, top + 27 * s, ui::kDim, "Button");
-    const char* titles[kCtlColumns] = {"Input 1", "Input 2", "Keyboard", "Toggle"};
-    for (int col = kCtlPrimary; col < kCtlColumns; col++)
-        ui::text_mid_centre(c, c.f.body, 15 * s, (col_x[col] + col_x[col + 1]) * 0.5f, top + 27 * s, ui::kDim, titles[col]);
-    top += 43 * s;
-    const float rh = 36 * s, pitch = 42 * s;
+    const float rh = 36 * s, pitch = 42 * s, gutter = 3 * s;
+    const float action_gap = std::min(8 * s, width * 0.015f);
+    const float reset_side = std::min(rh, width * 0.105f);
+    const float reset_x = rx1 - reset_side;
+    const float bindings_width = reset_x - gutter - action_gap - rx0;
+    const float pad_x = rx0 + bindings_width * (0.27f / 0.895f);
+    const float key_x = rx0 + bindings_width * (0.59f / 0.895f);
+    const float toggle_x = rx0 + bindings_width * (0.79f / 0.895f) + action_gap;
+    const float col_x[] = {pad_x, (pad_x + key_x) * 0.5f, key_x, toggle_x, reset_x - gutter, rx1};
+    const float top = hh + 22 * s, header_height = 43 * s;
     int shown = 0;
-    const float first = scroll_rows(kControlsSlot, n, csel, top, bottom, pitch, &shown);
-    scroll_bar(c, cx0 + 20 * s, top, top + shown * pitch - (pitch - rh), n, shown, first);
+    const float first = scroll_rows(kControlsSlot, n, csel, top + header_height, bottom, pitch, &shown);
+    const float header_top = top + std::max(0.0f, top_rows() - first) * pitch;
+    const float bindings_clip_top = header_top + header_height - 8 * s;
+    scroll_bar(c, cx0 + 20 * s, top, top + header_height + shown * pitch - (pitch - rh), n, shown, first);
     c.d->PushClipRect(ImVec2(cx0, top - 8 * s), ImVec2(cx1, bottom + 8 * s));
+    ui::text_mid_centre(c, c.f.body, 15 * s, col_x[kCtlAlternate], header_top + 8 * s, ui::kDim, "Gamepad");
+    ui::text_mid(c, c.f.body, 15 * s, rx0 + 20 * s, header_top + 27 * s, ui::kDim, "Button");
+    const char* titles[kCtlReset] = {"Input 1", "Input 2", "Keyboard", "Toggle"};
+    for (int col = kCtlPrimary; col < kCtlReset; col++) {
+        const float left = col_x[col];
+        const float right = col_x[col + 1] - (col == kCtlKeyboard ? action_gap : 0.0f);
+        const auto title = fit(c, c.f.body, 15 * s, right - left - 2 * gutter, i18n::tr(titles[col]), false);
+        ui::text_mid_centre(c, c.f.body, 15 * s, (left + right) * 0.5f, header_top + 27 * s, ui::kDim, title.c_str());
+    }
     for (int j = 0; j < n; j++) {
-        const float y = top + (j - first) * pitch;
-        if (y + rh < top - 8 * s || y > bottom + 8 * s) continue;
-        const bool sel = j == csel;
         const int i = j - top_rows();
-        const float y0 = std::max(y, top - 8 * s), y1 = std::min(y + rh, bottom + 8 * s);
+        if (i == 0) c.d->PushClipRect(ImVec2(cx0, bindings_clip_top), ImVec2(cx1, bottom + 8 * s), true);
+        const float clip_top = i < 0 ? top - 8 * s : bindings_clip_top;
+        const float y = top + (j - first) * pitch + (i < 0 ? 0.0f : header_height);
+        if (y + rh <= clip_top || y >= bottom + 8 * s) continue;
+        const bool sel = j == csel;
+        const float y0 = std::max(y, clip_top), y1 = std::min(y + rh, bottom + 8 * s);
         if (i < 0) {   // (one of the page's own rows: a name and a choice, as on the tabs)
             const Row& r = rows[tab_row_to_global(TAB_PAGE, j)];
             // (their names wider than a control's, as wide as the tabs' rows': "Button prompts" whole at any size)
@@ -2582,21 +2927,33 @@ void draw_controls(ui::Ctx& c) {
             continue;
         }
         if (i == kControls) {
-            ui::button(c, ImVec2(rx0, y), ImVec2(pad_x - 8 * s, y + rh), "Reset to defaults", sel);
-            hits.add(rx0, y0, pad_x - 8 * s, y1, menu_hit::kCtlRow, i);
+            const float end = col_x[kCtlKeyboard] - 3 * s;
+            choice_cell(c, ImVec2(rx0, y), ImVec2(end, y + rh), i18n::tr("Reset to defaults"), sel, false, false);
+            hits.add(rx0, y0, end, y1, menu_hit::kCtlRow, i);
             continue;
         }
         const Control& ctl = controls[i];
-        name_cell(c, ImVec2(rx0, y), ImVec2(pad_x, y + rh), ctl.name, sel, false, 17);
+        name_cell(c, ImVec2(rx0, y), ImVec2(pad_x, y + rh), ctl.name, sel, false, 17, false);   // (its cells stand apart)
         hits.add(rx0, y0, pad_x, y1, menu_hit::kCtlRow, i);
-        const bool keys = keys_only(i);
         for (int col = kCtlPrimary; col < kCtlColumns; col++) {
             const bool keyboard = col == kCtlKeyboard, toggle = col == kCtlToggle;
-            const bool disabled = (keys && !keyboard) || (toggle && (ctl.button >= HOS_SW_N || ctl.button == HOS_SW_PLUS || ctl.button == HOS_SW_MINUS));
-            const float a = col_x[col] + (col == kCtlPrimary ? 0 : 3 * s), b = col_x[col + 1] - (toggle ? 0 : 3 * s);
+            const bool disabled = !control_column_enabled(i, col);
+            if (col == kCtlReset) {
+                const float reset_y = y + (rh - reset_side) * 0.5f;
+                const ImVec2 va(reset_x, reset_y), vb(rx1, reset_y + reset_side);
+                const bool here = sel && !disabled && selected_col == kCtlReset;
+                choice_cell(c, va, vb, "", here, false, false, disabled);
+                draw_reset_arrow(c, (va + vb) * 0.5f, here ? ui::kGoldInk : disabled ? ui::kDim : ui::kInk);
+                const float hit_top = std::max(y0, va.y), hit_bottom = std::min(y1, vb.y);
+                if (!disabled && hit_top < hit_bottom)
+                    hits.add(va.x, hit_top, vb.x, hit_bottom, menu_hit::kCtlCell, i, 0, 0, 0, 0, col);
+                continue;
+            }
+            const float a = col_x[col] + (col == kCtlPrimary ? 0 : gutter);
+            const float b = col_x[col + 1] - gutter - (keyboard ? action_gap : 0.0f);
             const std::string v = disabled ? "-" : keyboard ? keys_text(ctl.button) : toggle
-                ? tx_onoff((opts.hold_toggle >> ctl.button) & 1) : pad_name(host->binding(HOS_BIND_PAD, ctl.button, col));
-            const bool here = sel && col == (keys ? kCtlKeyboard : ccol);
+                ? tx_onoff(toggle_on(ctl.button)) : pad_name(host->binding(HOS_BIND_PAD, ctl.button, col));
+            const bool here = sel && !disabled && col == selected_col;
             const ImVec2 va(a, y), vb(b, y + rh);
             if (here && listening) {   // (waiting for the new input: amber, the outline as a selected value's)
                 const float in = 4 * s;
@@ -2613,7 +2970,9 @@ void draw_controls(ui::Ctx& c) {
         }
     }
     c.d->PopClipRect();
-    (void)(listening ? ui::prompt_bar(c, wait, 1) : sel_i < 0 ? ui::prompt_bar(c, option, 3) : ui::prompt_bar(c, idle, 5));   // (the prompts, on top of the help and the rows)
+    c.d->PopClipRect();
+    (void)(listening ? ui::prompt_bar(c, wait, 1) : sel_i < 0 ? ui::prompt_bar(c, option, 3) :
+           sel_i == kControls || selected_col == kCtlReset ? ui::prompt_bar(c, reset, 4) : ui::prompt_bar(c, idle, 5));
 }
 
 /// A small square page arrow at a (its size side): dir 0 back, 1 on; dim when it cannot go that way
@@ -2900,47 +3259,101 @@ void draw_quick_debug(ui::Ctx& c) {
     ui::prompt_bar(c, prompts, 4);
 }
 
-void draw_debug_warning(ui::Ctx& c) {
-    const float s = c.s, width = std::min(600 * s, c.w - 2 * c.safe), height = 234 * s;
+void draw_confirmation(ui::Ctx& c, const char* title, const char* message, const char* accept, int choice) {
+    const float s = c.s, width = std::min(600 * s, c.w - 2 * c.safe);
+    const float body = ui::para(c, c.f.body, 18 * s, {}, ui::kInk, message, width - 48 * s, false);
+    const float height = std::max(234 * s, body + 142 * s);
     const ImVec2 a((c.w - width) * .5f, (c.h - height) * .5f), b = a + ImVec2(width, height);
     c.d->AddRectFilled(a, b, ui::kCellDark);
     c.d->AddRect(a, b, ui::kEdge, 0, 2 * s);
     c.d->AddRectFilled(a, ImVec2(b.x, a.y + 48 * s), ui::kBanner);
-    ui::text_mid_centre(c, c.f.heading, 23 * s, (a.x + b.x) * .5f, a.y + 24 * s, ui::kBannerInk, "Enable Debug Tools?");
-    ui::para(c, c.f.body, 18 * s, a + ImVec2(24 * s, 62 * s), ui::kInk,
-             "Debug tools can change your progress. Use a backup save. Enabling Debug tools turns off autosave. "
-             "You can turn it back on in the Debug tab.", width - 48 * s);
-    const char* labels[] = {"Cancel", "Enable Debug Tools"};
+    ui::text_mid_centre(c, c.f.heading, 23 * s, (a.x + b.x) * .5f, a.y + 24 * s, ui::kBannerInk, title);
+    ui::para(c, c.f.body, 18 * s, a + ImVec2(24 * s, 62 * s), ui::kInk, message, width - 48 * s);
+    const char* labels[] = {"Cancel", accept};
     const float button_w = (width - 60 * s) / 2;
     for (int i = 0; i < 2; ++i) {
         const ImVec2 p(a.x + 24 * s + i * (button_w + 12 * s), b.y - 66 * s);
         const ImVec2 q = p + ImVec2(button_w, 42 * s);
-        ui::button(c, p, q, labels[i], i == debug_warning_choice);
+        ui::button(c, p, q, labels[i], i == choice);
         hits.add(p.x, p.y, q.x, q.y, menu_hit::kButton, i);
     }
+}
+
+void draw_debug_warning(ui::Ctx& c) {
+    draw_confirmation(c, "Enable Debug Tools?",
+                      "Debug tools can change your progress. Use a backup save. Enabling Debug tools turns off autosave. "
+                      "You can turn it back on in the Debug tab.", "Enable Debug Tools", debug_warning_choice);
+}
+
+void draw_control_confirmation(ui::Ctx& c) {
+    const auto& ask = control_confirmation;
+    const char* title = "Reset bindings?", *accept = "Reset";
+    std::string message;
+    if (ask.action == ControlAction::ResetAll) {
+        message = i18n::tr("Restore the default bindings and toggles for all controls?");
+    } else {
+        const char* target = i18n::tr(controls[ask.row].name);
+        char text[2048];
+        if (ask.action == ControlAction::ResetRow) {
+            snprintf(text, sizeof text, i18n::tr("Restore the default bindings and toggle for %s?"), target);
+        } else {
+            title = "Binding already in use";
+            accept = "Rebind";
+            const char* input = i18n::tr(ask.set == HOS_BIND_PAD ? pad_name(ask.code) : key_name(ask.code));
+            std::string names;
+            for (const auto& control : controls) {
+                if (!(ask.conflicts >> control.button & 1)) continue;
+                if (!names.empty()) names += ", ";
+                names += i18n::tr(control.name);
+            }
+            snprintf(text, sizeof text, i18n::tr("%s is already bound to %s. Remove that assignment and bind it to %s?"),
+                     input, names.c_str(), target);
+        }
+        message = text;
+    }
+    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(0, 0, 0, 150));
+    hits.clear(0, 0, c.w, c.h);
+    draw_confirmation(c, title, message.c_str(), accept, ask.choice);
+}
+
+void rebind_control(int row, int set, int slot, int code, uint64_t approved = 0) {
+    if (host->version < 43 || !host->rebind_control) return;
+    uint64_t conflicts = 0;
+    if (host->rebind_control(set, controls[row].button, slot, code, approved, &conflicts)) {
+        if (set == HOS_BIND_PAD) opts.pad_layout = detect_pad_layout();
+        save();
+    } else if (conflicts) control_confirmation = {ControlAction::Rebind, row, set, slot, code, 0, conflicts};
 }
 
 void draw_ask(ui::Ctx& c) {
     const float s = c.s, W = 560 * s, H = 232 * s;
     const ImVec2 p((c.w - W) * 0.5f, (c.h - H) * 0.5f), q = p + ImVec2(W, H);
     ui::shadow(c, p, q, 30 * s, 1.0f, 8 * s);
-    c.d->AddRectFilled(p, q, ui::rgba(36, 28, 19, 250));
-    c.d->AddRect(p, q, ui::rgba(122, 98, 64, 230), 0, 2 * s);
+    c.d->AddRectFilled(p, q, ui::kBox, ui::kRound * 1.5f * s);
+    c.d->AddRect(p, q, ui::kBoxEdge, ui::kRound * 1.5f * s, 0, 2 * s);
     const float hb = 50 * s;   // (a tan title strip, as the banner, its title in dark ink)
     c.d->AddRectFilledMultiColor(p, ImVec2(q.x, p.y + hb), ui::kBannerTop, ui::kBannerTop, ui::kBanner, ui::kBanner);
     c.d->AddRectFilled(ImVec2(p.x, p.y + hb - 3 * s), ImVec2(q.x, p.y + hb), ui::kBannerEdge);
-    ui::text_mid_centre(c, c.f.heading, 23 * s, (p.x + q.x) * 0.5f, p.y + hb * 0.5f, ui::kBannerInk, "Restart Needed");
-    const std::string ask = i18n::tr("Restart to apply ") + restart_list(i18n::tr(" and ")) + "?";
-    ui::para(c, c.f.body, 19 * s, ImVec2(p.x + 28 * s, p.y + 64 * s), ui::kInk, ask.c_str(), W - 56 * s);
-    ui::text_mid(c, c.f.body, 16 * s, p.x + 28 * s, p.y + 124 * s, ui::kSoft, "Progress since your last save is lost.");
+    const bool preview = output_preview_countdown > 0;
+    ui::text_mid_centre(c, c.f.heading, 23 * s, (p.x + q.x) * 0.5f, p.y + hb * 0.5f, ui::kBannerInk,
+                       preview ? "Keep changes?" : "Restart Needed");
+    if (preview) {
+        char countdown[160];
+        snprintf(countdown, sizeof countdown, i18n::tr("Restoring in %d seconds."), output_preview_countdown);
+        ui::para(c, c.f.body, 19 * s, ImVec2(p.x + 28 * s, p.y + 64 * s), ui::kInk, countdown, W - 56 * s);
+    } else {
+        const std::string ask = i18n::tr("Restart to apply ") + restart_list(i18n::tr(" and ")) + "?";
+        ui::para(c, c.f.body, 19 * s, ImVec2(p.x + 28 * s, p.y + 64 * s), ui::kInk, ask.c_str(), W - 56 * s);
+        ui::text_mid(c, c.f.body, 16 * s, p.x + 28 * s, p.y + 124 * s, ui::kSoft, "Progress since your last save is lost.");
+    }
     const float bw = 210 * s, bh = 46 * s, gap = 24 * s, by = p.y + 160 * s, x0 = (p.x + q.x) * 0.5f - bw - gap * 0.5f;
-    const char* labels[2] = {"Later", "Restart Now"};
+    const char* labels[2] = {preview ? "No" : "Later", preview ? "Yes" : "Restart Now"};
     for (int i = 0; i < 2; i++) {
         const ImVec2 a(x0 + i * (bw + gap), by), b = a + ImVec2(bw, bh);
         ui::button(c, a, b, labels[i], i == ask_sel);
         hits.add(a.x, a.y, b.x, b.y, menu_hit::kButton, i);
     }
-    const ui::Prompt prompt_list[] = {{ui::kLeftRight, "Choose"}, {ui::kConfirm, "Confirm"}, {ui::kBack, "Later"}};
+    const ui::Prompt prompt_list[] = {{ui::kLeftRight, "Choose"}, {ui::kConfirm, "Confirm"}, {ui::kBack, preview ? "No" : "Later"}};
     ui::prompt_bar(c, prompt_list, 3);
 }
 
@@ -2997,7 +3410,12 @@ float menu_ox = 0;   // (the menu's column's left edge in the window: more than 
 /// middle (a window of 16:9 or narrower: the whole of it). The pages draw from 0 as on 16:9; their vertices and clip
 /// rectangles are moved over after, and menu_tick moves the mouse back by menu_ox before it tests the hits
 void draw_menu(ui::Ctx& c) {
-    if (!(tune_mode && page == 0)) c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));   // (the game behind, dimmed)
+    if (reshade_menu::comparing()) {
+        menu_ox = 0;
+        reshade_menu::draw_comparison(c, hits);
+        return;
+    }
+    if (!(tune_mode && page == 0)) c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::kShade);   // (the game behind, dimmed)
     ui::Ctx k = c;
     k.w = std::min(c.w, std::floor(c.h * 16.0f / 9.0f + 0.5f));
     menu_ox = std::floor((c.w - k.w) * 0.5f);
@@ -3005,7 +3423,10 @@ void draw_menu(ui::Ctx& c) {
     hits.clear(0, 0, k.w, k.h);
     if (debug_warning) draw_debug_warning(k);
     else if (page == 5) draw_ask(k);
-    else if (page == 1) draw_controls(k);
+    else if (page == 1) {
+        draw_controls(k);
+        if (control_confirmation.action != ControlAction::None) draw_control_confirmation(k);
+    }
     else if (page == 3) draw_teleport(k);
     else if (page == 4) draw_inventory(k);
     else if (quick_debug && cur_tab == TAB_DEBUG) draw_quick_debug(k);
@@ -3106,8 +3527,18 @@ static std::string hardware_gpu_name(std::string t) {
     return t;
 }
 
-static_assert(sizeof opts.fps_dev_show / sizeof *opts.fps_dev_show == fps_stats::kDevLines + 1,
-              "a details page toggle for each Dev line and the CPU and GPU lines");
+static_assert(sizeof opts.fps_dev_show / sizeof *opts.fps_dev_show == fps_stats::kDevLines + 2,
+              "a details page toggle for each Dev line and the footer's CPU, GPU and driver, and render lines");
+
+/// Whether the FPS counter's footer shows its render lines (Dev, or the version and hardware at every level, with the Render
+/// lines row on): vk_temporal.cpp and vk_draw.cpp note the gameplay upscale's sizes only then
+/// The FPS counter's footer lines under the driver: the gameplay upscale as it was last drawn (upscale_route.h, published by
+/// whichever path drew it, within the last half second), with the Upscaler and Render resolution rows for what was asked for
+static void fps_render_lines(std::string out[2]) {
+    upscale_route::Sample r;
+    const bool drawn = upscale_route::latest(&r, fps_stats::kSecond / 2);
+    upscale_route::footer_lines(drawn ? &r : nullptr, std::clamp(upscaler(), 0, ur::kUpscalers - 1), opts.resolution, out);
+}
 
 /// The FPS counter's scale (pixels per point): the menu's with Auto; else a fixed one, Small, Medium and Large the counter's
 /// size in a 720p, 1080p and 1440p window at the Medium menu size, at most what Auto gives at the Large menu size
@@ -3172,11 +3603,21 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     }
     if (level >= fs::kDev && dev_shown) h += 6 * s + dev_rows * lh;
     // (the footer, under everything: the version, the CPU, the GPU and its driver, what the counter ran on: at Dev, or at every
-    // level with Version and hardware at every level; the CPU and GPU lines row turns the last three off)
+    // level with Version and hardware at every level; the CPU, GPU and driver, and render rows turn theirs off)
     const bool footer = level >= fs::kDev || opts.fps_version_always;
-    const bool hw_lines = footer && opts.fps_dev_show[fs::kDevLines];
-    const int foot = (footer ? 1 : 0) + (hw_lines ? 3 : 0);
+    // (the footer's lines, by their toggles: 0 the version, 1 the CPU, 2-3 the GPU and its driver, 4-5 the render size and the
+    // upscaler (fps_render_lines))
+    int foot_lines[6], foot = 0;
+    if (footer) {
+        foot_lines[foot++] = 0;
+        if (opts.fps_dev_show[fs::kDevLines]) foot_lines[foot++] = 1, foot_lines[foot++] = 2, foot_lines[foot++] = 3;
+        if (opts.fps_dev_show[fs::kDevLines + 1]) foot_lines[foot++] = 4, foot_lines[foot++] = 5;
+    }
     if (foot) h += 6 * s + foot * lh;
+    // (a column taller than the window gives up the footer's last lines first, the render lines, then the hardware's: the
+    // counter's own numbers keep their place at either anchor)
+    while (foot > 1 && h > c.h - 2 * c.safe) foot--, h -= lh;
+    const bool render_lines = std::find(foot_lines, foot_lines + foot, 4) != foot_lines + foot;
     const float edge = left ? c.safe : c.w - c.safe;
     const float top = bottom ? c.h - c.safe - h : under_banner && !tune_mode && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe;
     // (x for a width at the column's edge)
@@ -3223,28 +3664,44 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     }
     if (foot) {   // (the footer, at the column's foot: the version, as the banner says it; at Dev the CPU, the GPU, its driver. A line
         // too long for the column's width loses its end)
-        static std::string cpu, gpu, drv, fit[4];
+        static std::string cpu, gpu, drv, fit[6], fit_lines[2];
         static const std::string ver = std::string("Longshot ") + version_text(LONGSHOT_VERSION);
         static float fit_w = 0;
         if (gpu.empty()) cpu = hardware_cpu_name(bug_report::cpu_name()), gpu = hardware_gpu_name(device_name_text()), drv = driver_text(), fit_w = 0;
+        const auto shorten = [&](std::string t, float room) {
+            if (lab.width(t.c_str()) <= room) return t;
+            while (!t.empty() && lab.width((t + "...").c_str()) > room) {
+                t.pop_back();
+                while (!t.empty() && ((unsigned char)t.back() & 0xC0) == 0x80) t.pop_back();
+            }
+            while (!t.empty() && t.back() == ' ') t.pop_back();
+            return t + "...";
+        };
         if (fit_w != gw) {
             fit_w = gw;
-            const auto shorten = [&](std::string t, float room) {
-                if (lab.width(t.c_str()) <= room) return t;
-                while (!t.empty() && lab.width((t + "...").c_str()) > room) {
-                    t.pop_back();
-                    while (!t.empty() && ((unsigned char)t.back() & 0xC0) == 0x80) t.pop_back();
-                }
-                while (!t.empty() && t.back() == ' ') t.pop_back();
-                return t + "...";
-            };
             fit[0] = shorten(ver, gw);
             fit[1] = shorten(cpu.empty() ? "-" : cpu, gw);
             fit[2] = shorten(gpu.empty() ? "-" : gpu, gw);
             fit[3] = shorten(drv.empty() ? "-" : drv, gw);
+            fit[4] = shorten(fit_lines[0], gw), fit[5] = shorten(fit_lines[1], gw);
+        }
+        if (render_lines) {   // (the render size and the upscaler change in play: made again when their text does)
+            upscale_route::want();   // (the drawing paths publish what they drew while this shows)
+            static int64_t render_at = 0;
+            const int64_t now_at = fps_clock();
+            if (!render_at || now_at < render_at || now_at - render_at >= fs::kSecond / 4) {
+                render_at = now_at;
+                std::string now[2];
+                fps_render_lines(now);
+                if (now[0] != fit_lines[0] || now[1] != fit_lines[1])
+                    fit_lines[0] = now[0], fit_lines[1] = now[1], fit[4] = shorten(now[0], gw), fit[5] = shorten(now[1], gw);
+            }
         }
         float fy = top + h - foot * lh;
-        for (int i = 0; i < foot; i++) lab.draw(c.d, at(lab.width(fit[i].c_str())), fy + 1 * s, soft, fit[i].c_str(), s), fy += lh;
+        for (int i = 0; i < foot; i++) {
+            const std::string& t = fit[foot_lines[i]];
+            lab.draw(c.d, at(lab.width(t.c_str())), fy + 1 * s, soft, t.c_str(), s), fy += lh;
+        }
     }
     if (level < fs::kGraph) return;
     // (the graph)
@@ -3474,8 +3931,8 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     c.d->AddLine(ImVec2(x0, std::floor(by + 3 * s) + 0.5f), ImVec2(x1, std::floor(by + 3 * s) + 0.5f), ui::rgba(255, 255, 255, 40), std::max(1.0f, s));
     by += 6 * s;
     const ImU32 red = ui::rgba(240, 100, 85);
-    cell(0, 0, false, "Shaders built (4 s)", fps_built_text, strcmp(fps_built_text, "0") ? red : dim);
-    cell(1, 0, false, "Draws left out (4 s)", fps_left_text, strcmp(fps_left_text, "0") ? red : dim);
+    cell(0, 0, false, i18n::tr("Shaders built"), fps_built_text, strcmp(fps_built_text, "0") ? red : dim);
+    cell(1, 0, false, i18n::tr("Draws left out"), fps_left_text, strcmp(fps_left_text, "0") ? red : dim);
     by += lh;
     if (level < fs::kDev || !dev_shown) return;
     // (Dev: the renderer's own numbers, for debugging; those the details page leaves on)
@@ -3493,7 +3950,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     }
 }
 
-/// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
+/// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on the Menu theme's dark. A little below the middle; what
 /// is under the logo at 0.86 of the logo's scale. startup_fade, 0 to 1, darkens it all to black as it ends
 void draw_startup(ui::Ctx& c) {
     StartupView v;
@@ -3502,21 +3959,20 @@ void draw_startup(ui::Ctx& c) {
         v = startup;
     }
     const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f, k = s * 0.86f;   // (k: the scale of what is under the logo)
-    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::rgba(14, 10, 6));
+    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), ui::kStartBg);
     const float lh = 112 * s, top = h * 0.5f - 176 * s;
-    for (int i = 40; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, top + lh * 0.5f + 70 * s), h * 0.021f * i, ui::rgba(46, 33, 18, 4), 128);
+    for (int i = 40; i >= 1; i--) c.d->AddCircleFilled(ImVec2(cx, top + lh * 0.5f + 70 * s), h * 0.021f * i, ui::kStartGlow, 128);
     float aspect = 1;
     ImTextureData* logo = ui::logo(&aspect);
     if (logo) c.d->AddImage(logo->GetTexRef(), ImVec2(cx - lh * aspect * 0.5f, top), ImVec2(cx + lh * aspect * 0.5f, top + lh));
     float y = top + lh + 16 * s;
-    ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, y), ui::rgba(246, 232, 204), "LONGSHOT", 6 * k);
-    ui::flourish(c, cx - 190 * k, cx + 190 * k, y + 66 * k, ui::kAccent);
-    ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y + 78 * k), ui::kDim, v.version.c_str());
+    ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, y), ui::kWordmark, "LONGSHOT", 6 * k);
+    ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y + 64 * k), ui::kDim, v.version.c_str());
     {   // (under it, as under the menu's version: a development run's name for what it tests, LONGSHOT_BUILD_NAME, so a
         // screenshot or a stream of the first start says which change it is)
         static const std::string run_name = getenv("LONGSHOT_BUILD_NAME") ? getenv("LONGSHOT_BUILD_NAME") : "";
         if (!run_name.empty())
-            ui::text_centre(c, c.f.body, 13 * k, ImVec2(cx, y + 96 * k), ui::alpha(ui::kDim, 0.8f), run_name.c_str());
+            ui::text_centre(c, c.f.body, 13 * k, ImVec2(cx, y + 82 * k), ui::alpha(ui::kDim, 0.8f), run_name.c_str());
     }
     if (!v.title.empty()) {
         y += 120 * k;
@@ -3530,8 +3986,10 @@ void draw_startup(ui::Ctx& c) {
         float under = by;
         if (v.fraction >= 0) {   // (the bar as a value cell: a dark cell, gold inside, the percentage on it)
             const float bh = 26 * k, in = 4 * k, fx = x0 + in + (x1 - x0 - 2 * in) * (float)std::min(v.fraction, 1.0);
-            c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark);
-            c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
+            // (its corners: square in Classic; in Modern dark rounded around the fill's, ui::gold's, the same gap all round)
+            const float r = ui::kRound > 0 ? ui::kRound * s + in : 0;
+            c.d->AddRectFilled(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kCellDark, r);
+            c.d->AddRect(ImVec2(x0, by), ImVec2(x1, by + bh), ui::kEdge, r, 0, std::max(1.0f, s));
             if (fx > x0 + in) ui::gold(c, ImVec2(x0 + in, by + in), ImVec2(fx, by + bh - in));
             // (the percentage in the middle of the whole bar, drawn twice: dark ink where the gold is under it, light where the
             // empty bar is, each clipped to its part, so every letter keeps its contrast as the edge passes through it)
@@ -3571,6 +4029,10 @@ void menu_row_top(const int* value, int hi) {
     for (Row& r : rows)
         if (r.value == value) r.hi = hi;
 }
+void menu_save_options() {
+    sim_turf_settings_flush();
+    save();
+}
 void menu_redraw() { menu_refresh = true; }
 const char* menu_version() { return LONGSHOT_VERSION; }
 /// (as the restart question's Restart now: the window closes, then the game starts again, host/hos_relaunch.c)
@@ -3587,6 +4049,70 @@ const char* motion_gyro_text(int v) { return tx_gyro(v); }
 void menu_rumble_test() {
     if (host && host->version >= 32 && host->rumble_test) host->rumble_test();
 }
+// (longshot, issue 1113) the input recordings' rows (menu/input_recording.cpp): the host's input_record, input_play and
+// input_status (host/input_movie.c)
+static const char* input_refused;
+static bool input_status_stale = true;   // (a start or a stop: asked again at once)
+MenuInputStatus menu_input_status() {
+    // (asked by many rows' cells and shown hooks each frame: the host's answer kept for 50 ms, its lock taken once)
+    static MenuInputStatus kept;
+    static std::chrono::steady_clock::time_point at;
+    const auto now = std::chrono::steady_clock::now();
+    if (!input_status_stale && now - at < std::chrono::milliseconds(50)) return kept;
+    input_status_stale = false, at = now;
+    MenuInputStatus s;
+    static char why[128];
+    if (host && host->version >= 42 && host->input_status) {
+        MkwVkInputStatus h{};
+        host->input_status(&h);
+        s.mode = h.mode, s.started = h.started, s.held = h.held, s.diverged = h.diverged;
+        s.frame = h.frame, s.end = h.end, s.syncs = h.syncs, s.largest = h.largest;
+        snprintf(s.path, sizeof s.path, "%s", h.path);
+        snprintf(why, sizeof why, "%s", h.why);
+    }
+    s.refused = input_refused ? input_refused : why[0] ? why : nullptr;   // (or why the host gave the last one up)
+    kept = s;
+    return s;
+}
+void menu_input_record(int start) {
+    if (!host || host->version < 42 || !host->input_record) return;
+    input_refused = nullptr, input_status_stale = true;
+    if (!host->input_record(start) && start) input_refused = "A recording or a playback is running: stop it first.";
+}
+/// The recordings folder's files, newest first, asked of the host at most once a second (the page draws every frame)
+const char* menu_input_recording(int index) {
+    static std::vector<std::string> files;
+    static std::chrono::steady_clock::time_point at;
+    static bool have;
+    const auto now = std::chrono::steady_clock::now();
+    if (!have || now - at > std::chrono::seconds(1)) {
+        files.clear();
+        char path[1024];
+        for (int i = 0; i < 32 && host && host->version >= 42 && host->input_recording && host->input_recording(i, path, sizeof path); i++)
+            files.emplace_back(path);
+        have = true, at = now;
+    }
+    return index >= 0 && index < (int)files.size() ? files[index].c_str() : nullptr;
+}
+static void input_play(int start, int index) {
+    if (!host || host->version < 42 || !host->input_play) return;
+    static const int syncs[] = {0, 1, 60, 300};   // (Drift correction: Off, every update, every second, every 5 s)
+    const char* path = index >= 0 ? menu_input_recording(index) : nullptr;
+    if (start && index >= 0 && !path) return;
+    const int r = host->input_play(start, syncs[std::clamp(opts.input_replay_sync, 0, 3)], path);
+    input_status_stale = true;
+    if (start && r == 1 && open_now.load()) {   // (the game in view while it plays: the compact bar, on Stop playback)
+        tune_mode = true;
+        if (cur_tab == TAB_RECORDINGS) tab_selected[TAB_RECORDINGS] = 0;
+        menu_refresh = true;
+    }
+    input_refused = !start || r == 1 ? nullptr
+                    : r == -1      ? "That recording could not be played (made from the game's start, or not a recording)."
+                    : r == -2      ? "That recording starts on a map no teleport goes to: go there first."
+                                   : "A recording or a playback is running: stop it first.";
+}
+void menu_input_play(int start) { input_play(start, -1); }
+void menu_input_play_file(int index) { input_play(1, index); }
 
 void startup_fade_to(float f) { startup_fade.store(f, std::memory_order_relaxed); }
 
@@ -3672,10 +4198,12 @@ void menu_init() {
                 *r.value = r.value == &opts.output_res ? parse_output(eq + 1) : std::min(std::max(v, r.lo), r.hi);
             }
             if (!strncmp(line, "toggle_", 7))
-                for (int i = 0; i < HOS_SW_N; i++)
-                    if (i != HOS_SW_PLUS && i != HOS_SW_MINUS && !strcmp(line + 7, bind_names[i])) {
-                        const int bit = 1 << i;
-                        opts.hold_toggle = atoi(eq + 1) == 1 ? opts.hold_toggle | bit : opts.hold_toggle & ~bit;
+                for (int i = 0; i < HOS_KEY_N; i++)
+                    if (has_toggle(i) && !strcmp(line + 7, bind_names[i])) {
+                        char* end;
+                        const long value = strtol(eq + 1, &end, 10);
+                        while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+                        toggle_set(i, end != eq + 1 && !*end && value == 1);
                     }
             has_resolution |= !strcmp(line, "resolution");
             has_vibration |= !strcmp(line, "vibration");   // (longshot)
@@ -3739,9 +4267,17 @@ void menu_init() {
             const float started = host->aspect_ratio();
             if (started > 1.0f && started < 16.0f / 9.0f * 0.99f) opts.ultrawide = 1;
         }
+        // (Sprint's Toggle is on by default from options_version 7: a file from before wrote toggle_sprint=0, the held
+        // default then, whether chosen or not)
+        if (version < 7) opts.sprint_toggle = 1;
     }
+    toggle_set(HOS_KEY_SPRINT, opts.sprint_toggle != 0);   // (the host's as loaded: the default with no line)
     first_start = !has_options;
+    sim_turf_settings_init();
+    menu_colour_vision_changed(opts.colour_vision);
+    menu_sync_hud_placement();
     sync_transition_autosave();
+    grass_distance_now.store(opts.grass_distance, std::memory_order_relaxed);
     const char* handheld_env = getenv("HOS_HANDHELD");   // (host/nn_applet.c handheld(): the environment over the file's)
     if (!has_output && !(handheld_env ? !env_value_off(handheld_env) : opts.handheld != 0)) {
         // (none chosen, a new install: the size host/nn_applet.c took at boot, the game's 2560x1440 or the main screen's where
@@ -3785,6 +4321,10 @@ void menu_init() {
         player_custom_output = custom_output;   // (parse_output replaces the player's own size with the environment's)
         env_override(&opts.output_res, parse_output(e));
     }
+    // (the FSR 4 model for this run: RX_VK_FSR4_MODEL over the saved row; the engine's live value follows the row)
+    const int fsr4_env = fsr4_model_env();
+    if (fsr4_env >= 0) env_override(&opts.fsr4_model, fsr4_env);
+    fsr4_set_model(opts.fsr4_model ? FSR4_MODEL_LITE : FSR4_MODEL_AUTO);
     outputs_sync();   // (the Aspect ratio follows the size read)
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
 }
@@ -3902,6 +4442,7 @@ void menu_set_gpu_count(int count) {
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
+int menu_grass_distance() { return grass_distance_now.load(std::memory_order_relaxed); }
 double menu_target_ms() { return fps_target_ms(); }   // (the performance summary's: perf_report.cpp)
 int menu_fps_cap() { return fps_cap_now(); }          // (likewise: its fps_cap label)
 bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
@@ -4044,6 +4585,28 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 // (the game's) and the control bridge's menu_setting and menu_setting_set (its own thread). Recursive: a setter reached from
 // inside menu_tick's frame on the same thread does not lock itself out
 std::recursive_mutex menu_mu;
+
+// The native window was rebuilt after Yes. The next valid stock frame supplies the running size.
+static void menu_output_rebuilt(uint32_t width, uint32_t height) {
+    const Out saved_custom = custom_output;
+    output_started = output_choice_of(width, height);
+    if (output_started == custom_index() && (saved_custom.w != width || saved_custom.h != height)) {
+        output_extras.push_back({width, height});
+        custom_output = saved_custom;
+        output_started = last_choice();
+    }
+    for (Row& r : rows) {
+        if (r.value != &opts.output_res) continue;
+        r.hi = last_choice();
+        const int slot = restart_slot_of(r);
+        const int running = (int)(width << 16 | height);
+        restart_state.restart_value(slot, running);
+        if (restart_changed(r)) restart_state.later = false;
+        break;
+    }
+    menu_refresh = true;
+}
+
 void menu_option_set(int id, int value) {
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
         if (link_age.exchange(value, std::memory_order_relaxed) != value && page == 0 && cur_tab == TAB_DEBUG) menu_refresh = true;
@@ -4078,7 +4641,7 @@ void menu_option_set(int id, int value) {
 bool bridge_row(int i) { return rows[i].value && !rows[i].heading && rows[i].cheat < 0 && row_shown(i); }
 void bridge_fill(int i, MkwVkSetting* out) {
     static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "nfc", "mods", "debug", "motion",
-                                       "gameplay", "controls"};
+                                       "audio", "gameplay", "debug", "graphics", "controls"};
     static_assert(sizeof tabs / sizeof tabs[0] == TAB_PAGE + 1, "a name for each MenuTab");
     const Row& r = rows[i];
     *out = MkwVkSetting{};
@@ -4223,6 +4786,7 @@ int menu_setting_set(const char* key, int value, MkwVkSetting* out) {
         if (!walk_to([&] { return std::pair(native() ? -1 : *r.value, opts.dlss); }, [&] { return *r.value == want && !native(); },
                      [&](int dir) { set_row(r, *r.value + dir * r.step, dir, false); }, 64)) {
             opts = opts_was;
+            toggle_set(HOS_KEY_SPRINT, opts.sprint_toggle != 0);
             std::copy(std::begin(env_was), std::end(env_was), env_overrides);
             restart_state = restart_was;
             samplers_changed();
@@ -4404,6 +4968,30 @@ void menu_tick() {
     fullscreen_tick();
     game_lang_tick();
     outputs_follow_screen();
+    sim_turf_settings_tick(prof_now());
+    if (const uint64_t size = output_preview_take_rebuilt_size())
+        menu_output_rebuilt((uint32_t)(size >> 32), (uint32_t)size);
+    if (output_preview_target.w) {
+        const int remaining = output_preview_seconds();
+        if (remaining == -2) answer_native_preview(false);
+        else if (remaining == 0) {
+            edit_end(false);
+            listening = 0;
+            unavailable_native_preview();
+        }
+        else if (remaining > 0) {
+            if (!output_preview_countdown) {
+                edit_end(false);
+                listening = 0;
+                page = 5;
+                ask_sel = 0;
+                open_now = true;
+                logf("menu: live output confirmation opened");
+            }
+            output_preview_countdown = remaining;
+            menu_refresh = true;
+        }
+    }
     enum { K_N = 18 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
@@ -4489,9 +5077,11 @@ void menu_tick() {
             }
         }
     }
+    const bool can_clear_control = page == 1 && listening == 0 && control_confirmation.action == ControlAction::None;
     if (open_now.load() && listening != 1) {
         press[1] |= pad(HOS_PAD_UP), press[2] |= pad(HOS_PAD_DOWN), press[3] |= pad(HOS_PAD_LEFT);
         press[4] |= pad(HOS_PAD_RIGHT), press[5] |= pad(pad_back), press[7] |= pad(pad_confirm);
+        press[8] |= can_clear_control && pad(pad_paste);
     }
     std::vector<uint32_t> scripted;   // (longshot: RX_VK_MENU_SCRIPT's typing, for the text field that has the keyboard)
     {   // RX_VK_MENU_SCRIPT (test runs, which never have the focus): timed menu keys, "<seconds>:<INS|UP|DOWN|LEFT|RIGHT|ESC|ENTER|TABL|TABR>,...";
@@ -4499,11 +5089,16 @@ void menu_tick() {
         // (longshot) TYPE:<text> types the text up to the next comma, as the keyboard would; while a text field has the
         // keyboard ENTER, ESC, LEFT, RIGHT, HOME, END, BACK (Backspace) and DEL are its keys, and the pad's confirm and back too
         static const char* next = getenv("RX_VK_MENU_SCRIPT");
-        static const int64_t start = prof_now();
+        static const bool at_confirmation = next && !strncmp(next, "confirm:", 8);
+        static int64_t start = at_confirmation ? 0 : prof_now();
+        if (at_confirmation && !start && output_preview_countdown) {
+            next += 8;
+            start = prof_now();
+        }
         double at;
         char key[8];
         int n = 0;
-        if (next && sscanf(next, "%lf:%7[A-Z]%n", &at, key, &n) == 2 && (prof_now() - start) / 1e9 >= at) {
+        if (next && start && sscanf(next, "%lf:%7[A-Z]%n", &at, key, &n) == 2 && (prof_now() - start) / 1e9 >= at) {
             static const char* names[] = {"INS", "UP", "DOWN", "LEFT", "RIGHT", "ESC", "", "ENTER", "", "", "TABL", "TABR"};
             static const struct { const char* name; int vk; } edit_keys[] = {
                 {"ENTER", VK_RETURN}, {"ESC", VK_ESCAPE}, {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT}, {"HOME", VK_HOME},
@@ -4520,6 +5115,7 @@ void menu_tick() {
             for (int p = 0; p < 4; p++)
                 if (!strcmp(key, pads[p]) && open_now.load() && listening != 1) {
                     press[5] |= p == pad_back, press[7] |= p == pad_confirm;
+                    press[8] |= can_clear_control && p == pad_paste;
                     if (editing && (p == pad_back || p == pad_confirm))
                         scripted.push_back(HOS_TEXT_KEY | (uint32_t)(p == pad_confirm ? VK_RETURN : VK_ESCAPE));
                     pad_last = true;
@@ -4576,7 +5172,12 @@ void menu_tick() {
     // control can be bound to Esc, so nothing in play changes; the window gives the captured mouse back on the close)
     const bool esc_opens = opts.menu_shortcut == 2 && press[5] && !open_now.load();
     if (esc_opens) press[5] = false;
-    const bool home_debug = press[15] && (!open_now.load() || (quick_debug && page == 0));
+    const bool comparing = open_now.load() && reshade_menu::comparing();
+    if (comparing && (press[0] || press[6] || press[17])) {
+        press[5] = true;
+        press[0] = press[6] = press[17] = false;
+    }
+    const bool home_debug = !comparing && press[15] && (!open_now.load() || (quick_debug && page == 0));
     if ((press[17] || home_debug) && !editing && !listening && !debug_warning && page != 5) {
         if (home_debug) press[15] = false;
         if (open_now.load() && quick_debug && page == 0) press[5] = true;
@@ -4595,8 +5196,13 @@ void menu_tick() {
     if ((press[0] || press[6]) && debug_warning) {
         debug_warning = false;
         changed = true;
+    } else if (output_preview_target.w && !output_preview_countdown &&
+               (press[0] || press[5] || press[6] || (open_now.load() && page == 0 && (ptr.pressed & HOS_MOUSE_RIGHT)))) {
+        answer_native_preview(false);
+        if (ptr.pressed & HOS_MOUSE_RIGHT) ptr.pressed &= ~HOS_MOUSE_RIGHT;
     } else if ((press[0] || press[6]) && open_now.load() && page == 5) {
-        later();
+        if (output_preview_countdown) answer_native_preview(false);
+        else later();
     } else if ((press[0] || press[6]) && open_now.load() && restart_ask()) {
         page = 5, ask_sel = 0, listening = 0, changed = true;
     } else if (press[0] || press[6] || esc_opens) {
@@ -4615,7 +5221,17 @@ void menu_tick() {
         if (open_now.load()) refresh_monitors();
         if (open_now.load()) refresh_nfc();    // (and the NFC tags of the player's folder)
     }
-    if (open_now.load() && debug_warning) {
+    if (control_confirmation.action != ControlAction::None && (!open_now.load() || page != 1 || !mine)) {
+        control_confirmation = {};
+        changed = true;
+    }
+    if (comparing) {
+        const auto click = mouse && (ptr.pressed & HOS_MOUSE_LEFT) ? hits.at((float)mx, (float)my) : menu_hit::Hit{};
+        const int horizontal = int(press[4]) - int(press[3]);
+        const int vertical = int(press[2] || tab_right) - int(press[1] || tab_left);
+        const bool cancel = press[5] || (mouse && (ptr.pressed & HOS_MOUSE_RIGHT));
+        changed |= reshade_menu::update_comparison(horizontal, vertical, press[7], cancel, click);
+    } else if (open_now.load() && debug_warning) {
         if (press[3] || press[4]) debug_warning_choice = 1 - debug_warning_choice, changed = true;
         if (mouse) {
             const auto hit = hits.at((float)mx, (float)my);
@@ -4670,7 +5286,9 @@ void menu_tick() {
             if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
         }
         if (press[1] || press[2] || press[3] || press[4] || tab_left || tab_right) ask_sel ^= 1, changed = true;
-        if (press[5] || (press[7] && ask_sel == 0)) {
+        if (output_preview_countdown && (press[5] || press[7])) {
+            answer_native_preview(!press[5] && ask_sel != 0);
+        } else if (press[5] || (press[7] && ask_sel == 0)) {
             later();
         } else if (press[7]) {   // (Restart now: everything saved, then the window closes as the player would close it)
             logf("menu: restart now, to apply %s", restart_list(", ").c_str());
@@ -4681,10 +5299,48 @@ void menu_tick() {
         }
     } else if (open_now.load() && page == 1) {   // (longshot) the Controls page
         using enum menu_hit::CtlColumn;
+        const int previous_row = csel, previous_column = ccol;
         if (!can_bind()) {
             static int warned;
             if (!warned) warned = 1, logf("menu: the Controls page asked for the host's bindings and got none");
             page = 0;
+        }
+        else if (control_confirmation.action != ControlAction::None) {
+            if (press[1] || press[2] || press[3] || press[4])
+                control_confirmation.choice ^= 1, changed = true;
+            if (mouse) {
+                const auto hit = hits.at((float)mx, (float)my);
+                if (hit.part == menu_hit::kButton) {
+                    if (moved || ptr.pressed) control_confirmation.choice = hit.index, changed = true;
+                    if (ptr.pressed & HOS_MOUSE_LEFT) press[7] = true;
+                }
+                if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
+            }
+            if (press[5] || press[7]) {
+                const auto ask = control_confirmation;
+                control_confirmation = {};
+                changed = true;
+                if (!press[5] && ask.choice == 1) {
+                    if (ask.action == ControlAction::Rebind)
+                        rebind_control(ask.row, ask.set, ask.slot, ask.code, ask.conflicts);
+                    else if (ask.action == ControlAction::ResetAll) {
+                        host->bind(HOS_BIND_PAD, -1, 0, 0);
+                        opts.pad_layout = 0;
+                        opts.hold_toggle = 0;
+                        toggle_set(HOS_KEY_SPRINT, toggle_default(HOS_KEY_SPRINT));
+                        if (opts.sprint) apply_sprint_layout(true);
+                        save();
+                    } else if (control_column_enabled(ask.row, kCtlReset)) {
+                        const int button = controls[ask.row].button;
+                        if (host->reset_binding(button)) {
+                            blocked_reset_row = -1;
+                            if (has_toggle(button)) toggle_set(button, toggle_default(button));
+                            opts.pad_layout = detect_pad_layout();
+                            save();
+                        } else blocked_reset_row = ask.row;
+                    }
+                }
+            }
         }
         else if (listening) {
             if (press[5] || prof_now() > listen_end) listening = 0, changed = true;   // (Esc, or nothing for a while)
@@ -4693,10 +5349,8 @@ void menu_tick() {
                 else if (const uint32_t p = pad_press & ~(1u << HOS_PAD_GUIDE) & ~(1u << HOS_PAD_TOUCHPAD)) {
                     int bit = 0;
                     while (!(p >> bit & 1)) bit++;
-                    host->bind(HOS_BIND_PAD, controls[csel - top_rows()].button, ccol, bit);
+                    rebind_control(csel - top_rows(), HOS_BIND_PAD, ccol, bit);
                     listening = 0, changed = true;
-                    opts.pad_layout = detect_pad_layout();
-                    save();
                 }
             } else {
                 int down = 0;
@@ -4707,10 +5361,8 @@ void menu_tick() {
                     }
                 if (!listen_armed) listen_armed = !down;
                 else if (down) {
-                    host->bind(HOS_BIND_KEY, controls[csel - top_rows()].button, 0, down);
-                    host->bind(HOS_BIND_KEY, controls[csel - top_rows()].button, 1, 0);
+                    rebind_control(csel - top_rows(), HOS_BIND_KEY, 0, down);
                     listening = 0, changed = true;
-                    save();
                 }
             }
         } else {
@@ -4718,23 +5370,26 @@ void menu_tick() {
                            // Reset resets; the wheel scrolls the page, a right click goes back)
                 const menu_hit::Hit hit = hits.at((float)mx, (float)my);
                 const bool option = hit.part == menu_hit::kCtlOption;
-                const bool on = option || hit.part == menu_hit::kCtlRow || hit.part == menu_hit::kCtlCell;
+                const bool cell = hit.part == menu_hit::kCtlCell && control_column_enabled(hit.index, hit.side);
+                const bool on = option || hit.part == menu_hit::kCtlRow || cell;
                 const int at = option ? hit.index : top_rows() + hit.index;   // (the page's row: its own rows first)
                 if (on && (moved || ptr.pressed)) {
                     if (at != csel) csel = at, changed = true;
-                    if (hit.part == menu_hit::kCtlCell && !keys_only(hit.index) && ccol != hit.side) ccol = hit.side, changed = true;
+                    if (cell && ccol != hit.side) ccol = hit.side, changed = true;
                 }
                 if (ptr.pressed & HOS_MOUSE_LEFT) {
                     if (option) press[hit.side < 0 ? 3 : 4] = true;   // (a value's halves: Left and Right; the name: Right)
-                    else if (hit.part == menu_hit::kCtlCell || (hit.part == menu_hit::kCtlRow && hit.index == kControls))
+                    else if (cell || (hit.part == menu_hit::kCtlRow && hit.index == kControls))
                         press[7] = true;   // (as Enter)
                 }
                 if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
                 if (ptr.wheel) wheel_rows[kControlsSlot] += ptr.wheel, changed = true;   // (scrolls; the selection stays)
             }
-            const int n = top_rows() + kControls + 1;
-            if (press[1]) csel = (csel + n - 1) % n, changed = true;
-            if (press[2]) csel = (csel + 1) % n, changed = true;
+            if (press[1] != press[2]) {
+                const int next = next_control_selection(csel, ccol, press[1] ? -1 : 1);
+                changed |= next != csel;
+                csel = next;
+            }
             const int i = csel - top_rows();   // (i: the control's, or reset's)
             if (press[5]) page = 0, changed = true;
             else if (i < 0 && (press[3] || press[4] || press[7])) {   // (the page's own rows: Enter as Right)
@@ -4742,30 +5397,26 @@ void menu_tick() {
                 set_row(r, *r.value + (press[3] ? -r.step : r.step), press[3] ? -1 : 1);
                 changed = true;
             } else if (i >= 0) {
-                const int columns = i < kControls && controls[i].button < HOS_SW_N &&
-                                    controls[i].button != HOS_SW_PLUS && controls[i].button != HOS_SW_MINUS ? kCtlColumns : kCtlToggle;
-                if (ccol >= columns) ccol = kCtlKeyboard;   // (no toggle on pause, map, stick directions or ocarina notes)
-                if ((press[3] || press[4]) && i < kControls && !keys_only(i)) {
-                    ccol = (ccol + columns + (press[3] ? -1 : 1)) % columns;
+                if (i < kControls && !control_column_enabled(i, ccol)) ccol = kCtlKeyboard, changed = true;
+                if ((press[3] || press[4]) && i < kControls) {
+                    do ccol = (ccol + kCtlColumns + (press[3] ? -1 : 1)) % kCtlColumns;
+                    while (!control_column_enabled(i, ccol));
                     changed = true;
                 }
-                const int col = keys_only(i) ? kCtlKeyboard : ccol;
+                if (csel != previous_row || ccol != previous_column) blocked_reset_row = -1;
+                const int col = ccol;
                 if (press[7]) {
-                    if (i == kControls) {
-                        host->bind(HOS_BIND_PAD, -1, 0, 0);
-                        opts.pad_layout = 0;
-                        opts.hold_toggle = 0;
-                        save();
-                    }
+                    if (i == kControls) control_confirmation = {ControlAction::ResetAll};
                     else if (col == kCtlToggle) {
-                        opts.hold_toggle ^= 1 << controls[i].button;
+                        toggle_set(controls[i].button, !toggle_on(controls[i].button));
                         save();
                     }
+                    else if (col == kCtlReset) control_confirmation = {ControlAction::ResetRow, i};
                     else listening = col == kCtlKeyboard ? 2 : 1, listen_armed = false, listen_end = prof_now() + 6000000000LL;
                     changed = true;
                 }
-                if ((press[8] || press[9]) && i < kControls) {
-                    if (col == kCtlToggle) opts.hold_toggle &= ~(1 << controls[i].button);
+                if (!press[7] && (press[8] || press[9]) && i < kControls && col != kCtlReset) {
+                    if (col == kCtlToggle) toggle_set(controls[i].button, false);
                     else if (col != kCtlKeyboard) {
                         host->bind(HOS_BIND_PAD, controls[i].button, col, -1);
                         opts.pad_layout = detect_pad_layout();
@@ -4884,15 +5535,24 @@ void menu_tick() {
         if (tune_toggle && listening == 0) tune_mode = !tune_mode, changed = true;
         if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         if (press[5] && cur_tab == TAB_FPS_DEV) cur_tab = TAB_GAMEPLAY, press[5] = false, changed = true;   // (back)
+        if (press[5] && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG, press[5] = false, changed = true;   // (back)
+        if (press[5] && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO, press[5] = false, changed = true;   // (back)
+        if (press[5] && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS, press[5] = false, changed = true;   // (back)
         if (press[5] && cur_tab == TAB_MODS && mods_grab >= 0) mods_grab = -1, press[5] = false, changed = true;   // (puts the mod down)
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
         else if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
         else if (press[5] && cur_tab == TAB_FPS_DEV) cur_tab = TAB_GAMEPLAY, press[5] = false, changed = true;   // (back)
+        else if (press[5] && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG, press[5] = false, changed = true;   // (back)
+        else if (press[5] && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO, press[5] = false, changed = true;   // (back)
+        else if (press[5] && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS, press[5] = false, changed = true;   // (back)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false, tune_mode = false, quick_debug = false;
         // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
         if ((tab_left || tab_right) && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS;
         if ((tab_left || tab_right) && cur_tab == TAB_FPS_DEV) cur_tab = TAB_GAMEPLAY;
+        if ((tab_left || tab_right) && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG;
+        if ((tab_left || tab_right) && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO;
+        if ((tab_left || tab_right) && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS;
         if (tab_left || tab_right) {   // (the tabs shown: the Mods tab only with mods)
             do cur_tab = (cur_tab + (tab_left ? TAB_COUNT - 1 : 1)) % TAB_COUNT;
             while (!tab_shown(cur_tab));
@@ -4945,6 +5605,10 @@ void menu_tick() {
             } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
             else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
             else if (press[7] && is_fps_dev_row(r)) cur_tab = TAB_FPS_DEV, tab_selected[TAB_FPS_DEV] = 0, press[7] = false, changed = true;
+            else if (press[7] && is_recordings_row(r))
+                cur_tab = TAB_RECORDINGS, tab_selected[TAB_RECORDINGS] = 0, press[7] = false, changed = true;
+            else if (press[7] && is_speaker_row(r)) cur_tab = TAB_SPEAKER, tab_selected[TAB_SPEAKER] = 0, press[7] = false, changed = true;
+            else if (press[7] && is_sim_turf_row(r)) cur_tab = TAB_SIM_TURF, tab_selected[TAB_SIM_TURF] = 0, press[7] = false, changed = true;
             else if (press[7] && r.setting && r.setting->on_activate &&   // (#1633: a module's button, unless locked)
                      !(r.setting->locked && r.setting->locked()))
                 r.setting->on_activate(), press[7] = false, changed = true;
@@ -4975,6 +5639,7 @@ void menu_tick() {
         if (!now_open) {
             tune_mode = false;
             if (drag_row >= 0) save();   // (a slider let go off the window: kept now)
+            sim_turf_settings_flush();
             hover_tab = -1, drag_row = -1, mouse_read = false;
             pending = nullptr;
             edit_end(false);   // (longshot: a text field being edited, its text as it was)
@@ -5012,7 +5677,7 @@ void menu_rumble_tick() {
     if (was >= 0 && opts.rumble != was && menu_is_open() && host && host->version >= 32 && host->rumble_test) host->rumble_test();
     was = opts.rumble;
 }
-void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, int colour_vision) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
@@ -5023,7 +5688,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
             ui::Ctx c = ui_ctx(w, h);
             prebake(c);
             ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
-            ui::record(cmd, index, w, h);
+            ui::record(cmd, index, w, h, colour_vision);
             return;
         }
         ui::idle();
@@ -5042,7 +5707,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
-    ui::record(cmd, index, w, h);
+    ui::record(cmd, index, w, h, colour_vision);
 }
 
 void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {

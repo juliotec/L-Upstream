@@ -665,6 +665,16 @@ def bridge_driving(tour, a, states, rec):
                 raise
         if sum(1 for r in fake.requests[n:] if r.get("cmd") == "teleport") != 5:
             fail("an unmoved teleport is not sent five times")
+        # the same with the usual 60 s for an arrival: a send the game did not take is waited for NOT_TAKEN_S, not 60 s
+        start = fake.frame
+        try:
+            drive.map_change(g, "teleport", lambda st: st["map"] == a["bancs"][other][0], 10 ** 9, arrive_s=60, to=other)
+            fail("a teleport that never moved arrived")
+        except drive.Failed as e:
+            if "five times" not in str(e):
+                raise
+        if fake.frame - start > 5 * 60 * (drive.NOT_TAKEN_S + 10):
+            fail("a send the game did not take waited %d frames over five sends: arrive_s, not NOT_TAKEN_S" % (fake.frame - start))
         fake.stuck.clear()
         fake.pending = None
         # the age: switched, reloaded, then the adult's map; asked again for the adult: nothing to do

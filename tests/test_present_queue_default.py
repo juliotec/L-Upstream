@@ -143,10 +143,19 @@ def main():
         sys.stdout.write(run.stdout)
         assert run.returncode == 0, "create_device's queue choice: the presents' own queue only when the Present queue row or RX_VK_PRESENT_QUEUE asks"
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    row = between(menu, '{TAB_DEBUG, "Present queue", &opts.present_queue, 0, 1, 1, tx_onoff,', "},", where="gpu/vk/vk_menu.cpp")
-    assert row.rstrip().endswith("true, true"),         "the Debug tab's Present queue row: Off or On, applied after a restart (restart), the Quality preset left alone"
+    # (the row is the threads module's, #1633: on the Debug tab, under its key)
+    module = (ROOT / "gpu" / "vk" / "menu" / "threads.cpp").read_text(encoding="utf-8")
+    assert 'MENU_MODULE(threads) {\n    menu::tab("debug")' in module, "gpu/vk/menu/threads.cpp: its rows on the Debug tab"
+    row = between(module, '.row({.key = "present_queue",', "}, menu::", where="gpu/vk/menu/threads.cpp")
+    assert all(f in row for f in ('.label = "Present queue"', ".kind = menu::Kind::Toggle", ".value = &opts.present_queue",
+                                  ".lo = 0, .hi = 1", ".restart = true", ".preset_exempt = true")), \
+        "the Debug tab's Present queue row: Off or On, applied after a restart (restart), the Quality preset left alone"
     assert "int present_queue = 0;" in (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8"),         "vk_menu.h: Options::present_queue, 0 Off by default"
-    assert 'if (const char* e = getenv("RX_VK_PRESENT_QUEUE"); e && *e) env_override(&opts.present_queue, !env_value_off(e));'         in menu and '(value == &opts.present_queue && getenv("RX_VK_PRESENT_QUEUE") && *getenv("RX_VK_PRESENT_QUEUE"))' in menu,         "vk_menu.cpp: with RX_VK_PRESENT_QUEUE set the row shows the switch's value and is fixed (as ASTC as RGBA8's)"
+    locked = between(module, "const char* hn_present_queue(int, int variant) {", "\n}\n", where="gpu/vk/menu/threads.cpp")
+    assert 'if (const char* e = getenv("RX_VK_PRESENT_QUEUE"); e && *e) env_override(&opts.present_queue, !env_value_off(e));' \
+        in menu and '.locked = []() -> const char* { return hn_present_queue(0, -1); }' in row and \
+        'getenv("RX_VK_PRESENT_QUEUE")' in locked and "e && *e ?" in locked, \
+        "with RX_VK_PRESENT_QUEUE set the row shows the switch's value and is fixed (as ASTC as RGBA8's)"
     arch = (ROOT / "docs" / "dev" / "reference" / "architecture.md").read_text(encoding="utf-8")
     rule = arch[arch.find("5. **A present waits on the queue it is made on.**"):]
     rule = " ".join(rule[:rule.find("\n6. ")].split())

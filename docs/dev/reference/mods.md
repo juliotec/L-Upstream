@@ -58,13 +58,15 @@ from a mod.
 - **Once.** Mods are indexed at start. A change, on the tab or on disk, applies at the next start.
 
 A path no mod supplies falls back to the game's file; a folder cannot replace a file. `HOS_FS_OVERLAY` (a test switch)
-is looked at after mods and wins over them.
+is looked at after mods and wins over them. Last, a texture an incomplete dump damages (zeros where its zstd frame
+starts) is read as the stand-in the builder would have put there (`host/oot_damaged_files.c`), whether a mod, the
+overlay or the game's romfs supplied it.
 
 ## Resource size table
 
 The game sets aside a fixed size per file in its `System/Resource/ResourceSizeTable.*.rsizetable.zs`
 (`ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs` in the current version). At a start with mod files,
-Longshot serves one table made from the button prompts' copy of the game's (else the game's), with every enabled mod's
+Longshot serves one table made from the game's own, with the button prompts' font entry raised in it, every enabled mod's
 own table merged in (the larger entry wins) and the entry of every file a mod serves raised to what its size needs; a
 file the game doesn't have gets an estimate unless a mod's table gives it. Two mods that each grow files load together.
 The table is written to `modcache/rsizetable.zs` in the game folder. A mod file whose path is in another case than the
@@ -73,6 +75,14 @@ game's takes the game's entry. A mod's table for another game version only raise
 If the table can't be made, the last enabled mod's own table is served, with `host/prompts.c` merging the button
 prompts' entries into it (the larger size of each), keyed by the game's own table name; a table it cannot merge is
 served as it is, and the game's own button icons are used.
+
+Without mods, `host/prompts.c` serves the table the game opens as the RomFS's own table of that name with the font's
+entry raised, written to `cache/prompts/rsizetable.zs` at the start. No table is made at the build: the RomFS can hold
+another version's tables beside the game's (a base dump with an update over it), or be another dump than the one the
+build read, and a table that isn't the game's own makes it drop files it needs at the start (a crash reading guest
+`0x1030`, #1109). When the RomFS has no table of the name the game opens, or no font entry in it, the game gets its own
+table and its own icons. The prompts' copies of the textures and layouts are left out the same way when they are not the
+size of the RomFS's files.
 
 `host/texts.c` rewords one of the game's texts for PC; a mod with its own copy of that file wins.
 

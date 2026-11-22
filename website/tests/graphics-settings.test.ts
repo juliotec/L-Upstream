@@ -32,6 +32,17 @@ test('CRT-line visibility has a badge and still requires its documented conditio
   assert.throws(() => readGraphicsSettings(undocumented, menu), /no condition for CRT lines/);
 });
 
+test('Custom HUD rows require their visibility condition and the registered reset action', () => {
+  const settings = readGraphicsSettings(page, menu).flatMap(group => group.settings);
+  for (const name of ['Hearts and magic horizontal', 'Reset HUD placement']) {
+    assert(settings.find(setting => setting.name === name).badges.includes('Custom HUD layout without a HOS_WIDE_UI override'));
+  }
+  assert.throws(() => readGraphicsSettings(page.replaceAll('shown with HUD layout set to Custom and no `HOS_WIDE_UI` override', 'Custom'), menu),
+    /no condition for Hearts and magic horizontal/);
+  assert.throws(() => readGraphicsSettings(page, menu.replace('MENU_HOOK(reset_hud_placement)', 'MENU_HOOK(other_action)')),
+    /coverage mismatch at Reset HUD placement/);
+});
+
 test('the registered fullscreen monitor selector retains its identity-backed choices; unsupported rows fail', () => {
   const setting = readGraphicsSettings(page, menu).flatMap(group => group.settings)
     .find(setting => setting.name === 'Fullscreen monitor');
@@ -80,7 +91,7 @@ test('registered text fields retain their choices and restart requirements; unkn
   const unregistered = menu.replace(/const FieldRow field_rows\[\][\s\S]*?;/, 'const FieldRow field_rows[] = {};');
   assert.notEqual(unregistered, menu);
   assert.throws(() => readGraphicsSettings(page, unregistered), /coverage mismatch at Custom output size/);
-  const wrongRestart = page.replace(/(\| \| Custom output size \|[^\n]*)\(after a restart\)/, '$1');
+  const wrongRestart = page.replace(/(\| \| Custom output size \|[^\n]*)\(most changes apply after a restart\)/, '$1');
   assert.notEqual(wrongRestart, page);
   assert.throws(() => readGraphicsSettings(wrongRestart, menu), /restart mismatch at Custom output size/);
 });
@@ -113,6 +124,14 @@ test('missing tables, incomplete cells, added/removed/reordered rows stop public
   assert.throws(() => readGraphicsSettings(page.replace('| 0%; a quality preset sets it |', '| |'), menu), /Incomplete/);
   assert.throws(() => readGraphicsSettings(page.replace('| | Sharpness |', '| | New cell | Sharpness |'), menu), /structure/);
   assert.throws(() => readGraphicsSettings(page, menu.replace('"Resolution and upscaling", nullptr', '"Resolution and upscaling", NULL')), /coverage mismatch/);
+});
+
+test('ReShade actions and user selector are accounted for', () => {
+  const settings = readGraphicsSettings(page, menu).flatMap(group => group.settings);
+  for (const name of ['Compare ReShade Preset', 'User preset file', 'Rescan ReShade presets'])
+    assert(settings.some(setting => setting.name === name));
+  assert.throws(() => readGraphicsSettings(page, menu.replace('MENU_HOOK(scan_presets)', 'MENU_HOOK(other_action)')), /coverage mismatch at Rescan ReShade presets/);
+  assert.throws(() => readGraphicsSettings(page.replaceAll('with User selected', 'when selected'), menu), /no condition for User preset file/);
 });
 
 test('the menu table reader joins C strings, reads escapes and skips comments', () => {
@@ -174,12 +193,13 @@ test('cards retain markup, stable anchors, conditions and a readable no-JS fallb
   assert(result.includes('only in builds with'));
   assert(result.includes('data-settings-filters hidden'));
   assert(result.includes('<li class="graphics-badge-restart">After a restart</li>'));
+  assert(result.includes('<li>Custom HUD layout without a HOS_WIDE_UI override</li>'));
   assert(result.includes('<p class="graphics-summary">Runs the game as the console docked or handheld.</p>'));
   assert(result.includes('<a href="#settings-hdr">HDR</a>') && result.includes('<a href="#settings-controls">'));
   const groups = readGraphicsSettings(page, menu);
   for (const group of groups) assert(result.includes(`href="#${group.id}"`) && result.includes(`id="${group.id}"`));
   const long = groups.flatMap(group => group.settings).filter(setting => setting.choices.length > SHORT_CHOICES).length;
-  assert.equal((result.match(/<details>/g) || []).length, long);
+  assert.equal((result.match(/<details><summary>Choices and requirements<\/summary>/g) || []).length, long);
   assert(long > 0 && long < groups.flatMap(group => group.settings).length / 2);
   assert(!result.includes('| Tab | Option | Choices | Default |'), 'the table is replaced by the cards');
   assert(result.includes('Writing the controls in longshot_options.ini yourself'), 'the text after the table stays');

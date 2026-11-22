@@ -12,6 +12,11 @@ const char* tx_menu_size(int v) {
     return v >= 1 && v <= 3 ? t[v - 1] : t[1];
 }
 MODULE_HINTS(hn_menu_size, 1, "Smaller, for a desk.", "The usual size.", "Larger, for a TV across the room.")
+const char* tx_menu_theme(int v) {
+    static const char* const t[] = {"Modern dark", "Classic"};
+    return t[std::clamp(v, 0, 1)];
+}
+MODULE_HINTS(hn_menu_theme, 0, "Slate greys with a soft blue for the selection.", "The game's own pause menu: tan and gold.")
 const char* tx_menu_shortcut(int v) {
     // (F1 is never turned off: the menu is always one key away. Esc as well, as a PC game's pause menu)
     static const char* const names[] = {"Insert or F1", "F1 only", "Insert, F1 or Esc"};
@@ -36,7 +41,15 @@ MENU_MODULE(menu_settings) {
               .lo = 1, .hi = 3,
               .preset_exempt = true,
               .text = [](int v) { return std::string(tx_menu_size(v)); },
-              .hint = hn_menu_size}, menu::before("bug_report").order(200));
+              .hint = hn_menu_size}, menu::before("bug_report").order(200))
+        .row({.key = "menu_theme",
+              .label = "Menu theme",
+              .help = "How this menu looks: Modern dark, or Classic, the game's own tan and gold.",
+              .value = &opts.menu_theme,
+              .lo = 0, .hi = 1,
+              .preset_exempt = true,
+              .text = [](int v) { return std::string(tx_menu_theme(v)); },
+              .hint = hn_menu_theme}, menu::before("bug_report").order(201));
     menu::tab("controls")
         .row({.key = "menu_shortcut",
               .label = "Menu shortcut",

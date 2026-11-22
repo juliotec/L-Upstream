@@ -2,7 +2,9 @@
 388: not read by default on Linux with NVIDIA's own driver, 20 GB of RAM or less and programs loaded at their create calls,
 where NVIDIA's own shader cache is on and its folder holds 512 MB or more; on Windows with NVIDIA's own driver and programs
 loaded at create, 20 GB of RAM or less, where %LOCALAPPDATA%/NVIDIA/GLCache holds 512 MB or more; read as before elsewhere;
-RX_VK_PCACHE_LOAD says either way.
+RX_VK_PCACHE_LOAD says either way. Read, too, where NVIDIA's cache may not grow to 4 GB (gpu/vk/nvidia_cache_limit.h: Windows'
+Shader Cache Size, 1 GB on the players' PCs whose caches sat at 1025 MB, or a smaller __GL_SHADER_DISK_CACHE_SIZE on Linux): a
+"warm" 1 GB cache drops the pipelines a start builds as it fills, and cannot answer them.
 
 Two parts, no game or GPU:
 - the rule's table (pcache_load::choose), compiled and run;
@@ -79,8 +81,18 @@ int main() {
     NEED(!needs_cache(1, false, true, false, pc16, true) && !needs_cache(-1, false, false, false, pc16, true) &&
          !needs_cache(-1, true, true, false, pc16, true), "Windows: the switch, a start or a preparation walk no folder");
     NEED(choose(-1, false, true, false, pc16, M, 1200, false).why == Why::kNotLinuxNvidia, "Windows AMD or Intel: read");
+    // a cache kept small (the 1 GB default players' logs show, 1025 MB "warm"): read, on Windows and Linux
+    c = choose(-1, false, true, false, pc16, M, 1025, true, 1024);
+    NEED(c.load && c.why == Why::kDriverCacheSmall, "Windows NVIDIA, 16 GB, a 1 GB Shader Cache Size: read");
+    NEED(choose(-1, false, true, true, pc16, M, 1025, false, 1024).why == Why::kDriverCacheSmall, "Linux NVIDIA, a 1 GB limit: read");
+    NEED(choose(-1, false, true, false, pc16, M, 1200, true, kDriverRoomMb - 1).why == Why::kDriverCacheSmall, "just under 4 GB: read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, kDriverRoomMb).load, "4 GB: not read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, 10240).load, "10 GB (what the launcher sets): not read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, 0xFFFFFFFFull).load, "Unlimited: not read");
+    NEED(!choose(-1, false, true, false, pc16, M, 1200, true, 0).load, "a limit not known: as before, not read");
+    NEED(!choose(0, false, true, false, pc16, M, 1200, true, 1024).load, "RX_VK_PCACHE_LOAD=0 wins over a small limit");
     for (Why w : {Why::kSwitch, Why::kPreparing, Why::kStart, Why::kNotLinuxNvidia, Why::kRam, Why::kDriverCacheOff,
-                  Why::kDriverCacheUnknown, Why::kColdDriverCache, Why::kSmallPc, Why::kWindowsNvidia})
+                  Why::kDriverCacheUnknown, Why::kColdDriverCache, Why::kSmallPc, Why::kWindowsNvidia, Why::kDriverCacheSmall})
         NEED(why_text(w)[0] != 0, "every reason has its words for the log");
     if (!fails) std::printf("ok\n");
     return fails != 0;
@@ -91,6 +103,7 @@ int main() {
 # (FAKE_AT_CREATE=0: before the title) and the RAM (FAKE_RAM_MB, through sysconf). Exit 10: not read, 11: read
 ADAPTER = r'''
 #include "pcache_load.h"
+#include "nvidia_cache_limit.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -125,6 +138,18 @@ static BOOL fake_memory_status(MEMORYSTATUSEX* m) {
 #endif
 enum VkDriverId { VK_DRIVER_ID_AMD_PROPRIETARY = 1, VK_DRIVER_ID_NVIDIA_PROPRIETARY = 4, VK_DRIVER_ID_MESA_NVK = 24 };
 struct { VkDriverId driver_id = VK_DRIVER_ID_NVIDIA_PROPRIETARY; } dev;
+// (NVIDIA's cache limit: Linux's __GL_SHADER_DISK_CACHE_SIZE read as vk_draw.cpp's nvidia_limit reads it; Windows' Shader Cache
+// Size, from the driver's settings there, stood in by FAKE_LIMIT_MB)
+static nvidia_cache_limit::Limit nvidia_limit() {
+#ifdef _WIN32
+    nvidia_cache_limit::Limit l;
+    l.where = "Shader Cache Size in the NVIDIA Control Panel";
+    if (const char* m = getenv("FAKE_LIMIT_MB")) l.mb = strtoull(m, nullptr, 10);
+    return l;
+#else
+    return nvidia_cache_limit::linux_limit(getenv("__GL_SHADER_DISK_CACHE_SIZE"));
+#endif
+}
 bool programs_load_at_create() { return !env_value_off(getenv("FAKE_AT_CREATE") ? getenv("FAKE_AT_CREATE") : "1"); }
 void logf(const char* fmt, ...) {
     va_list a;
@@ -157,8 +182,10 @@ def check_source(src):
     for needle, why in (
             ('#include "pcache_load.h"', "vk_draw.cpp does not include pcache_load.h"),
             ("dev.driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY", "NVIDIA's own driver is not told apart (NVK has Mesa's cache)"),
-            ("pcache_load::choose(sw, preparing, at_create, linux_nvidia, ram_mb, cache.cache, cache.bytes >> 20, windows_nvidia)",
-             "pcache_load_off does not decide through the rule (with Windows NVIDIA's arm)"),
+            ("pcache_load::choose(sw, preparing, at_create, linux_nvidia, ram_mb, cache.cache,\n"
+             "                                                               cache.bytes >> 20, windows_nvidia, limit_mb)",
+             "pcache_load_off does not decide through the rule (with Windows NVIDIA's arm and NVIDIA's cache limit)"),
+            ("looked ? nvidia_limit()", "pcache_load_off does not ask for NVIDIA's cache limit where it looks at the cache"),
             ('pcache_load::nvidia_cache_windows(getenv("LOCALAPPDATA")', "Windows does not look at NVIDIA's GLCache folder"),
             ("return !choice.load;", "pcache_load_off does not return the rule's answer"),
             ("static const bool off", "the answer is not decided once a run")):
@@ -186,6 +213,11 @@ def cases():
     small = {"FAKE_RAM_MB": "15757"}
     return [
         ("warm", dict(small, HOME="h"), {"h/" + nv: MB600}, [], 10, ["not read", "600 MB in", "RX_VK_PCACHE_LOAD=1 reads it"], []),
+        # (hos_main.c's 10 GiB, and a player's 1 GiB: a cache that drops what a start builds)
+        ("warm-10g", dict(small, HOME="h", __GL_SHADER_DISK_CACHE_SIZE="10737418240"), {"h/" + nv: MB600}, [], 10,
+         ["not read", "up to 10240 MB (__GL_SHADER_DISK_CACHE_SIZE)"], []),
+        ("warm-1g", dict(small, HOME="h", __GL_SHADER_DISK_CACHE_SIZE="1073741824"), {"h/" + nv: MB600}, [], 11,
+         ["read", "under 4 GB", "up to 1024 MB"], ["not read"]),
         # (the review's case: NVIDIA's folder empty and fresh, Mesa's full: the file is read)
         ("mesa-only", dict(small, HOME="h", __GL_SHADER_DISK_CACHE_PATH="p", MESA_SHADER_CACHE_DIR="m"),
          {"h/" + mesa: MB600, "m/part0/mesa_cache.db": MB600}, ["p/GLCache"], 11, ["read", "nearly empty", "0 MB in"], []),
@@ -233,6 +265,10 @@ def windows_cases():
     return [
         ("win-warm", dict(small, LOCALAPPDATA="l"), {"l/" + gl: MB600}, [], 10,
          ["not read", "Windows with NVIDIA's own driver", "15757 MB of RAM", "600 MB in", "RX_VK_PCACHE_LOAD=1 reads it"], []),
+        ("win-1gb", dict(small, LOCALAPPDATA="l", FAKE_LIMIT_MB="1024"), {"l/" + gl: MB600}, [], 11,
+         ["read", "under 4 GB", "up to 1024 MB (Shader Cache Size in the NVIDIA Control Panel)"], ["not read"]),
+        ("win-10gb", dict(small, LOCALAPPDATA="l", FAKE_LIMIT_MB="10240"), {"l/" + gl: MB600}, [], 10,
+         ["not read", "up to 10240 MB"], []),
         ("win-32gb", dict(LOCALAPPDATA="l", FAKE_RAM_MB="32000"), {"l/" + gl: MB600}, [], 11,
          ["read", "more than 20 GB", "32000 MB of RAM"], ["MB in"]),
         ("win-ram-unknown", dict(LOCALAPPDATA="l"), {"l/" + gl: MB600}, [], 11, ["read", "RAM not known"], ["MB in"]),

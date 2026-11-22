@@ -45,7 +45,7 @@ if [ ! -x "$tool_dir/bin/glslangValidator" ]; then
 fi
 echo "test-deps: glslang in $tool_dir/bin (on PATH, the shader checks use it)"
 python3 -m pip install --disable-pip-version-check --no-deps \
-  zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4
+  zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4 lz4==4.4.5 unicorn==2.1.4
 """
 
 [tasks.build-deps]

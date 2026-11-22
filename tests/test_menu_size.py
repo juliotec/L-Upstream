@@ -77,11 +77,11 @@ int main() {
         CHECK(g > 0 && rounding(g) <= 70);
     }
     float m = 0;
-    CHECK(unit(1080, 2, &m) == 1.5f && m == 1080 * 0.025f);    // (Medium)
-    CHECK(unit(1080, 0, &m) == 1.5f && m == 1080 * 0.025f);    // (an older file's Auto, or anything else: Medium)
-    CHECK(unit(1080, 7, &m) == 1.5f);
-    CHECK(unit(2160, 3, &m) == 2160 / 720.0f * 1.3f && m == 2160 * 0.05f);   // (Large)
-    CHECK(unit(720, 1, &m) == 0.85f);   // (Small)
+    CHECK(unit(1080, 2, &m) == 1080 / 720.0f * 0.9f && m == 1080 * 0.025f);    // (Medium)
+    CHECK(unit(1080, 0, &m) == 1080 / 720.0f * 0.9f && m == 1080 * 0.025f);    // (an older file's Auto, or anything else: Medium)
+    CHECK(unit(1080, 7, &m) == 1080 / 720.0f * 0.9f);
+    CHECK(unit(2160, 3, &m) == 2160 / 720.0f * 1.2f && m == 2160 * 0.05f);   // (Large)
+    CHECK(unit(720, 1, &m) == 720 / 720.0f * 0.78f);   // (Small)
     CHECK(!strcmp(tx_menu_size(1), "Small") && !strcmp(tx_menu_size(2), "Medium") && !strcmp(tx_menu_size(3), "Large"));
     CHECK(!strcmp(tx_menu_size(0), "Medium") && !strcmp(tx_menu_size(4), "Medium"));
     printf("menu size: Small, Medium, Large; Medium otherwise, whatever the input; the version shrinks to fit but at Large\n");

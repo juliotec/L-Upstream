@@ -21,7 +21,7 @@ int vibration_says() { return vibration_status_cache.load(std::memory_order_rela
 const char* vibration_cell() {
     static const char* t[] = {"No controller", "Off", "Motors", "HD rumble", "Fine haptics (cable)",
                               "Fine haptics (Bluetooth)", "Four motors", "HD rumble (RenHDrum)", "Motors: no sound card",
-                              "Motors: no RenHDrum", "Motors (Bluetooth)"};
+                              "Motors: no RenHDrum", "Motors (Bluetooth)", "Grips (RenHDrum)"};
     const int s = vibration_says();
     return (unsigned)s < sizeof t / sizeof t[0] ? t[s] : t[2];
 }
@@ -30,14 +30,16 @@ const char* vibration_why(int s) {
         "No controller is connected.", "Vibration is Off.", "Its two motors play the game's vibration.",
         "Its own HD rumble plays the game's vibration as it is.",
         "Its voice coils play the game's fine vibration, through its USB cable.",
-        "Its voice coils play the game's fine vibration over Bluetooth. Still being tested.",
-        "All four of its motors play, the triggers' too. Still being tested.",
-        "RenHDrum makes its HD rumble. Still being tested.",
+        "Its voice coils play the game's fine vibration over Bluetooth.",
+        "All four of its motors play, the triggers' too.",
+        "RenHDrum makes its HD rumble.",
         "Its fine haptics play through the sound card it has on a USB cable, which was not found: its motors play "
         "meanwhile.",
         "Its fine haptics need RenHDrum beside the game (renhdrum.dll, or renhdrum.so on Linux), which is not there: its "
         "motors play.",
-        "Over Bluetooth its motors play; on a USB cable, its voice coils play the game's fine vibration."};
+        "Its Bluetooth connection can't be written to here, so its motors play; on a USB cable, its voice coils play the "
+        "game's fine vibration.",
+        "Its grips play the game's fine vibration. Experimental: made from one person's measurements of the controller."};
     return (unsigned)s < sizeof t / sizeof t[0] ? t[s] : nullptr;
 }
 // (under Test vibration's help: what plays the controller now; every one, for the help's height)
@@ -77,9 +79,9 @@ MENU_MODULE(controller) {
               .text = [](int v) { return std::string(tx_stick_dead_zone(v)); }}, menu::before("@Controls").order(190))
         .row({.key = "vibration",
               .label = "Vibration",
-              .help = "How the controller vibrates. Auto plays the best it can: a DualSense on a USB cable its voice coils, a Switch "
-                      "controller its own HD rumble, every other controller its motors. Basic plays the motors on every controller. Off "
-                      "stops it.",
+              .help = "How the controller vibrates. Auto plays the best it can: a DualSense its voice coils, a Switch controller "
+                      "and an Xbox controller RenHDrum's HD rumble, a Steam Controller (2026) its grips, every other controller "
+                      "its motors. Basic plays the motors on every controller. Off stops it.",
               .value = &opts.vibration,
               .lo = 0, .hi = 2,
               .preset_exempt = true,
@@ -102,7 +104,16 @@ MENU_MODULE(controller) {
               .text = [](int) { return std::string(vibration_cell()); },   // (its cell: what plays the controller now)
               .hint = hn_vibration_test,   // (its help line: the same, in words; every one, for the help's height)
               .on_activate = MENU_HOOK(menu_rumble_test),
-              .verb = "Test"}, menu::before("@Controls").order(202));
+              .verb = "Test"}, menu::before("@Controls").order(202))
+        // (RenHDrum's HD Haptics for a DualSense it plays: host/rumble_renhdrum.c, HOS_OPT_DS_HD_HAPTICS)
+        .row({.key = "dualsense_hd_haptics",
+              .label = "DualSense HD Haptics",
+              .help = "A DualSense also taps its speaker and kicks back on L2 and R2 while you hold them, from the game's "
+                      "vibration, with deeper heavy hits. Off: its fine haptics alone, as before.",
+              .kind = menu::Kind::Toggle,
+              .value = &opts.ds_hd_haptics,
+              .lo = 0, .hi = 1,
+              .preset_exempt = true}, menu::before("@Controls").order(203));
 }
 
 } // namespace mkwvk

@@ -50,6 +50,7 @@
 // in it); =alternate: every other frame the game's own upscale (a test's reference beside the engine's). (The names are
 // DLSS's from before FSR came: they apply to every engine of the chain, FSR 3.1 on it too.)
 #include "vk_temporal.h"
+#include "upscale_route.h"   // (the FPS counter footer's record of the gameplay upscale as drawn)
 
 #include <algorithm>
 #include <atomic>
@@ -90,6 +91,7 @@
 #include "shaders/dlss_out_comp_spv.h"
 #include "shaders/dlss_out_rgba_comp_spv.h"
 #include "shaders/dlss_prep_comp_spv.h"
+#include "reshade/fx_runtime.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -165,8 +167,19 @@ struct Image {
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0, height = 0;
-    TemporalImage shown() const { return {image, view, format, width, height}; }
+    VkImageUsageFlags usage = 0;
+    TemporalImage shown() const { return {image, view, format, width, height, usage}; }
 };
+
+void stage_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                   VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    b.srcStageMask = src_stage, b.srcAccessMask = src_access;
+    b.dstStageMask = dst_stage, b.dstAccessMask = dst_access;
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.memoryBarrierCount = 1, di.pMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &di);
+}
 
 struct Camera {
     float current[16]{};      // (its view-projection)
@@ -180,6 +193,12 @@ struct Camera {
     VkFormat scene_format = VK_FORMAT_UNDEFINED;
     const Texture* color = nullptr;   // (longshot: the scene's colour target, for DLAA before the bloom: temporal_pre_bloom)
     bool valid = false;
+};
+
+struct SceneDepth {
+    Texture* texture = nullptr;
+    uint32_t width = 0, height = 0;
+    uint64_t generation = 0, frame = 0;
 };
 
 /// An engine as the chain keeps it: started once, failed for good once
@@ -219,6 +238,7 @@ struct State {
     bool psycho_last = false; // A tone mapper or input encoding change discards temporal history.
     VkFormat history_input = VK_FORMAT_UNDEFINED;
     Camera cam;               // (this frame's, since the last upscale)
+    SceneDepth reshade_depth; // The upscale consumes the camera before the post-processing pass can use its depth.
     // (the gameplay upscale's output, as last seen: the scene sizes the upscaler can take follow from it,
     // temporal_scene_size. Read on the game's draws without the lock)
     std::atomic<uint32_t> out_w{0}, out_h{0};
@@ -401,7 +421,7 @@ bool make_image(VkCommandBuffer cmd, Image& im, VkFormat format, uint32_t w, uin
         destroy_image(im.image, im.memory);
         return im = {}, false;
     }
-    im.format = format, im.width = w, im.height = h;
+    im.format = format, im.width = w, im.height = h, im.usage = ic.usage;
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};   // (UNDEFINED -> GENERAL, once)
     b.srcStageMask = VK_PIPELINE_STAGE_2_NONE, b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -832,7 +852,9 @@ int actor_motion(VkCommandBuffer cmd, const Camera& cam, const float* before, ui
     std::memcpy(head + 16, before, 64);
     head[32] = cam.jitter[0], head[33] = cam.jitter[1], head[34] = (float)rw, head[35] = (float)rh;
     flush_mapped(u.memory, dlss_actor::kHeadWords * 4);
-    full_barrier(cmd);   // (the poses copied)
+    stage_barrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_READ_BIT);   // (the poses copied)
     VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     ca.imageView = s.motion.view, ca.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     ca.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -946,7 +968,8 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     if (!color0 || !depth || !camera || camera_size < 0x230 || !temporal_scene_size(width, height)) return;
     // (with the Upscaler Off too: its stretch takes the fixed shares' networks only with the frame's scene as their input)
     // (and with no engine, for frame generation's inputs: temporal_fg_inputs)
-    if (!temporal_scene_format(color0->format) || (!temporal_wanted() && !temporal_off() && !temporal_fg_inputs())) return;
+    if (!temporal_scene_format(color0->format) || (!temporal_wanted() && !temporal_off() && !temporal_fg_inputs() &&
+                                                !reshade::depth_requested.load(std::memory_order_relaxed))) return;
     State& s = st();
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
@@ -974,6 +997,8 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     k.scene_format = color0->format;
     k.color = color0;
     k.valid = true;
+    if (reshade::depth_requested.load(std::memory_order_relaxed))
+        s.reshade_depth = {depth, width, height, k.depth_gen, now};
     // (longshot) DLAA before the bloom: the scene at the output's size (as last seen: a frame that changed it runs DLAA at the
     // network), and this frame's pass list started (temporal_pre_bloom)
     const bool pre = pre_bloom_wanted(temporal_mode()) && width == s.out_w.load(std::memory_order_relaxed) &&
@@ -1214,6 +1239,35 @@ bool temporal_scene_depth_is(const Texture* depth) {
     return depth && s.cam.valid && s.cam.depth == depth && s.cam.frame == texture_frame_no();
 }
 
+VkImageView temporal_reshade_depth(uint32_t width, uint32_t height) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    const auto& scene = s.reshade_depth;
+    static const char* previous = nullptr;
+    const auto missing = [](const char* reason) -> VkImageView {
+        if (reason != previous) {
+            previous = reason;
+            logf("vk: ReShade: waiting for gameplay depth (%s)", reason);
+        }
+        return {};
+    };
+    // As in temporal_upscale, a present between replay batches can advance the frame counter here.
+    if (!scene.texture || texture_frame_no() - scene.frame > 1) return missing("no current camera");
+    if (scene.generation != texture_destroy_generation()) return missing("texture generation changed");
+    auto* depth = scene.texture;
+    if (!depth->image || !(depth->usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||
+        !(depth->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) || depth->samples != VK_SAMPLE_COUNT_1_BIT ||
+        depth->width != scene.width || depth->height != scene.height) return missing("depth attachment not sampleable");
+    if (!dlss_checks::scene_size_fits(scene.width, scene.height, width, height) ||
+        std::abs(double(scene.width) / width - double(scene.height) / height) > 0.02)
+        return missing("depth does not cover the output");
+    const auto view = depth_view(depth);
+    if (!view) return missing("cannot make a depth-only view");
+    depth->last_frame = texture_frame_no();
+    depth->last_value = std::max(depth->last_value, vk_retirement_value());
+    return view;
+}
+
 void temporal_note_skinned_draw(const SkinnedDraw& k) {
     if ((!temporal_wanted() && !temporal_fg_inputs()) || !k.depth || !k.bones || k.bones_size < 48 || !k.object ||
         k.object_size < 0x4c)
@@ -1308,6 +1362,14 @@ bool stretch_record(VkCommandBuffer cmd, VkImageView in_view, const Texture* out
     return true;
 }
 
+/// (the FPS counter's footer, upscale_route.h) An engine or Off's stretch recorded the picture: rw x rh of the 3D into ow x oh
+static void route_drawn(upscale_route::Route route, int engine, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh) {
+    if (!upscale_route::wanted()) return;
+    upscale_route::Sample r;
+    r.route = route, r.engine = engine, r.in_w = rw, r.in_h = rh, r.out_w = ow, r.out_h = oh;
+    upscale_route::publish(r);
+}
+
 /// The Upscaler's Off: the gameplay upscale's input stretched into its output, in place of the network (temporal_upscale's
 /// dispatches, found the same way). known: one of the gameplay networks by its key; else a network of that shape, taken only
 /// when its input is this frame's scene (the camera temporal_note_scene_draw took) and its output the picture. true: written
@@ -1343,6 +1405,7 @@ bool stretch(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImage
         logf("vk: upscaler: Off: network %016llx left out, its input stretched linearly (%ux%u -> %ux%u), %s output",
              (unsigned long long)key, in->width, in->height, ow, oh, rgba ? "RGBA16F" : "packed");
     }
+    route_drawn(upscale_route::Route::Stretch, ur::OFF, in->width, in->height, ow, oh);
     return true;
 }
 
@@ -1650,16 +1713,30 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
         vkCmdPushConstants(cmd, prep_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
         vkCmdDispatch(cmd, (rw + 7) / 8, (rh + 7) / 8, 1);
     };
-    full_barrier(cmd);   // (the scene's colour and depth, written before)
+    stage_barrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT |
+                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+                      VK_ACCESS_2_TRANSFER_READ_BIT);   // (the scene's colour, depth, and actor buffers, written before)
     prep();
-    full_barrier(cmd);
+    stage_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                      VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                  VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+                      VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                      VK_ACCESS_2_TRANSFER_READ_BIT);
     // (what moves by itself: the skinned draws drawn again over the camera's motion, with their own)
     const int actors = actor_motion(cmd, cam, previous, rw, rh, dview, motion, s.last_frame);
-    if (actors) full_barrier(cmd);
+    if (actors)
+        stage_barrier(cmd, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                      VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
     if (show_motion && actors) {   // (RX_VK_DLSS_DEBUG=motion: the motion as it is now, the actors' in it)
         pc.flags = 4;
         prep();
-        full_barrier(cmd);
+        stage_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                      VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
     }
     TemporalFrame f;
     f.color = s.color.shown(), f.depth = s.depth.shown(), f.motion = s.motion.shown(), f.output = s.output.shown();
@@ -1677,7 +1754,7 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
              cam.far_z, cam.fov_y * 57.29578f);
     }
     if (!engine.e->evaluate(cmd, f)) {
-        if (engine.e->retry) {   // (longshot: this frame only, TemporalEngine::retry; a new history next)
+        if (engine.e->retry || (engine.e->retry_evaluation && engine.e->retry_evaluation())) {
             s.last_frame = 0;
             return no("its evaluation failed this frame");
         }
@@ -1685,7 +1762,6 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
         engine.failed = true;
         return false;   // (the network writes its output over whatever the evaluation did)
     }
-    full_barrier(cmd);
     {
         const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
         const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
@@ -1722,6 +1798,7 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
         if (route_told(s, engine.e, true))
             logf("vk: NVIDIA DLAA draws before the game's bloom and tone map: %ux%u, at program %016llx", rw, rh,
                  (unsigned long long)key);
+        route_drawn(upscale_route::Route::Engine, mode, rw, rh, rw, rh);
         return true;
     }
     if (s.reason) logf("vk: %s draws the upscale again (frame %llu)", engine.e->name, (unsigned long long)now);
@@ -1733,6 +1810,7 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
     if (route_told(s, engine.e, false))
         logf("vk: %s draws OoT's upscale: %ux%u -> %ux%u%s", name_of(mode), rw, rh, ow, oh,
              show_motion ? " (its motion shown)" : "");
+    route_drawn(upscale_route::Route::Engine, mode, rw, rh, ow, oh);
     return true;
 }
 }  // namespace

@@ -12,7 +12,7 @@ to automatic sending, below). Crash records and logs themselves are covered in [
 | [`host/hos_crash_dialog.h`](../../../host/hos_crash_dialog.h) | Every decision, testable alone: addresses, when to offer sending, the report's fields and limits, the release flag, the answer |
 | [`gpu/vk/vk_crash_window.cpp`](../../../gpu/vk/vk_crash_window.cpp) | The window, in `longshot_vk`, drawn like the Insert menu; entry point `mkwvk_crash_page` ([`crash_window_api.h`](../../../gpu/vk/crash_window_api.h)) |
 | [`gpu/vk/compat/longshot_redact.h`](../../../gpu/vk/compat/longshot_redact.h) | The one redaction rule for logs, the crash report and the Insert menu's Bug report |
-| [`nx2/addresses.ini`](../../../nx2/addresses.ini) | `crash_reports` (the telemetry endpoint) and `crash_issue` (the issue reports are posted on) |
+| [`nx2/addresses.ini`](../../../nx2/addresses.ini) | `crash_reports` (the telemetry endpoint, which keeps the reports where only the team reads them) |
 | `longshot_crash.ini` | In the game folder, written by the launcher: `send=1` sends reports without asking |
 
 ## How it runs
@@ -26,19 +26,21 @@ to automatic sending, below). Crash records and logs themselves are covered in [
    Linux it prefers X11 (XWayland on Wayland, where SDL has no software renderer); `SDL_VIDEO_DRIVER` still overrides.
    Without the window it falls back to SDL's message box, then Windows' own.
 4. **Report automatically** shows the full report, every field as sent (**Show all of it**), and posts it on **Send**.
-   The answer is kept in `bug-reports/sent/<record>`, so the same crash is not offered again.
+   The Sent page says the team has it and links nowhere: the reports are kept where only the team can read them (an
+   older relay's `comment` link in the answer is ignored). The answer's status is kept in `bug-reports/sent/<record>`, so
+   the same crash is not offered again.
 5. **Report manually** puts a redacted text report on the clipboard, saves it as `bug-reports/pending/report-<UTC>.txt`
    and opens the issue form in the browser.
 
 With `send=1` in `longshot_crash.ini` (the launcher's **Send crash reports automatically**), the helper posts the same
-report with no window, appends `[hos crash] sent on its own (longshot_crash.ini): <link or reason>` to the run's log,
+report with no window, appends `[hos crash] sent on its own (longshot_crash.ini): <Sent or the reason>` to the run's log,
 and keeps a copy of what it sent in `bug-reports/sent/`. If sending fails, the window shows as usual.
 
 A crash record that no helper showed (`bug-reports/shown.txt` lists those shown) is shown at the next start
 (`longshot --crash-show <record> <game folder> <log> <options>`).
 
 **Report automatically** is offered only for a crash record (not an unclean end), only when `longshot_version.txt` has
-`crash_reports=` and `crash_issue=`, and only until sent. `nx2/make_game.py` writes those, and `source=`, only in a
+`crash_reports=`, and only until sent. `nx2/make_game.py` writes it, and `source=`, only in a
 build from packaged tools; a build from a checkout has no Report automatically.
 
 Posting uses the system's `curl`: `--disable` (ignores `.curlrc`), `--proto =https`, no redirects, 10 s to connect and

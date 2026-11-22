@@ -56,23 +56,39 @@ int main() {
     CHECK(menu::diagnostics().empty());
     // (HDR: its section right after Screen's rows, before Detail, its rows in order)
     const std::string g = order("graphics", false);
-    const size_t hdr = g.find("#hdr hdr hdr_paper_white hdr_peak_brightness hdr_contrast hdr_tone_mapper #detail");
+    const size_t hdr = g.find("#hdr hdr hdr_paper_white hdr_peak_brightness hdr_contrast hdr_tone_mapper #accessibility colour_vision #post_processing");
     CHECK(hdr != std::string::npos && g.find("#screen") < hdr);
     opts.hdr = 0;
     std::string shown = order("graphics", true);
-    CHECK(shown.find("#hdr hdr #detail") != std::string::npos);
+    CHECK(shown.find("#hdr hdr #accessibility colour_vision #post_processing reshade_preset reshade_compare #detail") != std::string::npos);
     opts.hdr = 1, opts.hdr_white = 200, opts.hdr_peak = 1000, opts.hdr_contrast = 100;
     shown = order("graphics", true);
-    CHECK(shown.find("#hdr hdr hdr_paper_white hdr_peak_brightness hdr_contrast #detail") != std::string::npos);
+    CHECK(shown.find("#hdr hdr hdr_paper_white hdr_peak_brightness hdr_contrast #accessibility colour_vision #post_processing") != std::string::npos);
     CHECK(value_of("graphics", "hdr") == "Expanded" && value_of("graphics", "hdr_paper_white") == "200 nits" &&
           value_of("graphics", "hdr_peak_brightness") == "1000 nits" && value_of("graphics", "hdr_contrast") == "100%");
     opts.hdr = 2, opts.hdr_tonemap = 1;
     shown = order("graphics", true);
-    CHECK(shown.find("#hdr hdr hdr_paper_white hdr_peak_brightness hdr_contrast hdr_tone_mapper #detail") != std::string::npos);
+    CHECK(shown.find("#hdr hdr hdr_paper_white hdr_peak_brightness hdr_contrast hdr_tone_mapper #accessibility colour_vision #post_processing") != std::string::npos);
+    CHECK(value_of("graphics", "reshade_preset") == "Off");
+    opts.reshade = 3;
+    CHECK(order("graphics", true).find("reshade_preset reshade_compare reshade_user_pick reshade_rescan #detail") != std::string::npos);
+    const auto* compare = menu::find("reshade_compare");
+    CHECK(compare && compare->kind == menu::Kind::Action);
+    const auto* preset = menu::find("reshade_preset");
+    CHECK(preset && preset->hi == 26 && preset->choices.size() == 27);
+    CHECK(value_of("graphics", "reshade_preset") == "User");
+    // (the numbers saved in longshot_options.ini, gpu/vk/reshade/fx_builtin.h: the Clarity looks from 7, the last at 26)
+    opts.reshade = 4;
+    CHECK(value_of("graphics", "reshade_preset") == "HDR Vibrance");
+    opts.reshade = 7;
+    CHECK(value_of("graphics", "reshade_preset") == "Serfrost (Recommended)");
+    opts.reshade = 26;
+    CHECK(value_of("graphics", "reshade_preset") == "Clarity Base");
     CHECK(value_of("graphics", "hdr") == "Native (the game's)" && value_of("graphics", "hdr_tone_mapper") == "PsychoV35");
     CHECK(!strcmp(tx_hdr(0), "Off") && !strcmp(tx_hdr(2), "Native (the game's)"));
     for (const char* key : {"hdr", "hdr_paper_white", "hdr_peak_brightness", "hdr_contrast", "hdr_tone_mapper"})
         CHECK(menu::find(key) && menu::find(key)->preset_exempt && !menu::find(key)->restart);
+    CHECK(menu::find("colour_vision") && menu::find("colour_vision")->preset_exempt && !menu::find("colour_vision")->restart);
     if (failures) {
         fprintf(stderr, "the Graphics tab as built: %s\n", g.c_str());
         return 1;

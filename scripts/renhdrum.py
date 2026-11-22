@@ -5,8 +5,11 @@ with, built from its source in third_party/renhdrum.
                                         [--cache <folder>] [--out <file>]
     python -I scripts/renhdrum.py check <file>
 
-`build` compiles third_party/renhdrum (RenHDrum v0.4.0, MIT OR Apache-2.0, no crate dependencies) with a pinned Rust (RUST
-below: each part's SHA-256 checked, kept in --cache):
+`build` compiles third_party/renhdrum (RenHDrum v0.5.0, MIT OR Apache-2.0) with a pinned Rust (RUST below: each part's
+SHA-256 checked, kept in --cache). Its one build dependency, the cc crate (and the two crates cc needs), is downloaded from
+crates.io and checked by the SHA-256 its Cargo.lock records; nothing else is asked of the network. Its build.rs compiles
+libopus 1.5.2 into the library, from third_party/opus (the same release as RenHDrum's own vendor/opus, which
+third_party/renhdrum leaves out), with the same C compiler that links it:
 - windows (the default on Windows): x86_64-pc-windows-gnullvm, linked by llvm-mingw, the one the game is built with
   (--llvm-mingw, else LONGSHOT_MINGW), its unwinder linked in and the C runtime Windows' own UCRT, as the game's;
 - linux (the default elsewhere): x86_64-unknown-linux-gnu, linked by --linker (default cc) on the system it is for (the
@@ -42,9 +45,8 @@ BUILT = {"windows": "renhdrum.dll", "linux": "librenhdrum.so"}   # (cargo's name
 NAMES = {"windows": "renhdrum.dll", "linux": "renhdrum.so"}      # (the game's)
 RUST_VERSION = "1.99.1"
 DIST = "https://static.rust-lang.org/dist/"
-# (the parts of a Rust that compiles a crate with no dependencies: rustc and cargo for this system, and the target's
-# standard library. No build script or proc macro is involved, so this system's own standard library is not needed
-# unless it is the target's)
+# (the parts of a Rust that compiles the crate: rustc and cargo for this system, the target's standard library, and this
+# system's own when it is not the target's, for build.rs, which runs here)
 RUST = {
     "linux": [
         ("rustc-%s-x86_64-unknown-linux-gnu" % RUST_VERSION, "2ff05ff9c08a90861e7f6e4065b40a8b87463b4576186fd613871c3e37f2091f"),
@@ -64,7 +66,11 @@ RUST_STD = {
 # (host/rumble_renhdrum.c's RH_FUNCS, each with the renhdrum_ prefix)
 EXPORTS = tuple("renhdrum_" + n for n in (
     "version", "set_nx2_mode", "dualsense_dsp_create", "dualsense_dsp_destroy", "dualsense_dsp_set_half_target",
-    "dualsense_dsp_fill_f32", "dualsense_dsp_build_bt_report", "xbox_rumble_create", "xbox_rumble_destroy",
+    "dualsense_dsp_fill_f32", "dualsense_dsp_build_bt_report", "dualsense_dsp_set_speaker",
+    "dualsense_dsp_build_bt36_report", "tri_trigger_create", "tri_trigger_destroy", "tri_trigger_update",
+    "tri_trigger_note_action", "hd_haptics_speaker_block", "hd_haptics_trigger_block", "valve_grip_dsp_create_ex",
+    "valve_grip_build_report", "valve_grip_mode_tick", "valve_grip_mode_off", "xbox_rumble_create",
+    "xbox_rumble_destroy",
     "xbox_rumble_push_half_sample", "xbox_rumble_tick", "engine_create", "engine_destroy", "engine_push_half_sample",
     "engine_tick"))
 # (Windows' own: present on every Windows 10 and 11, as they are for longshot.exe, which llvm-mingw links to the UCRT too)
@@ -72,6 +78,11 @@ SYSTEM_IMPORT = re.compile(r"^(kernel32|ntdll|advapi32|bcrypt|bcryptprimitives|u
                            r"api-ms-win-[a-z0-9-]+)\.dll$")
 # (every Linux system's own: the C library's parts, and GCC's unwinder, which every desktop system carries)
 SYSTEM_NEEDED = re.compile(r"^(libc|libm|libdl|libpthread|librt|libgcc_s|ld-linux-x86-64)\.so\.\d+$")
+CRATES = "https://static.crates.io/crates/"
+OPUS = os.path.join(ROOT, "third_party", "opus")
+# (third_party/opus's files that RenHDrum's vendor/opus does not have: build.rs compiles every .c of celt/, and this one
+# is a program of its own, with a main)
+OPUS_LEFT_OUT = ("celt/opus_custom_demo.c",)
 
 
 def shown(path):
@@ -253,7 +264,7 @@ def unpack_component(archive, name, prefix):
 
 def toolchain(cache, target):
     """The pinned Rust for target, unpacked once under cache (a folder named by the parts' hashes): its bin/ folder"""
-    parts = RUST[host()] + [RUST_STD[target]]
+    parts = RUST[host()] + [RUST_STD[target]] + ([RUST_STD[host()]] if host() != target else [])
     key = hashlib.sha256("".join(h for _, h in parts).encode()).hexdigest()[:16]
     prefix = os.path.join(cache, "rust-%s-%s" % (RUST_VERSION, key))
     done = os.path.join(prefix, ".complete")
@@ -267,6 +278,51 @@ def toolchain(cache, target):
     return os.path.join(prefix, "bin")
 
 
+def locked_crates(lock):
+    """[(name, version, sha256)] of Cargo.lock's crates.io packages (the build's dependencies; the crate itself has none)"""
+    out = []
+    for block in lock.split("[[package]]")[1:]:
+        f = dict(re.findall(r'^(name|version|source|checksum) = "([^"]*)"', block, re.M))
+        if f.get("source", "").startswith("registry+"):
+            if not re.fullmatch(r"[0-9a-f]{64}", f.get("checksum", "")):
+                fail("Cargo.lock's %s %s has no checksum" % (f.get("name"), f.get("version")))
+            out.append((f["name"], f["version"], f["checksum"]))
+        elif "source" in f:
+            fail("Cargo.lock's %s comes from %s, not crates.io" % (f.get("name"), f["source"]))
+    return out
+
+
+def vendor_crates(cache, into):
+    """Cargo.lock's crates, each downloaded once into cache and checked by its SHA-256, unpacked into into/ as a cargo
+    directory source (the .cargo-checksum.json cargo asks for, with the package's checksum, which --locked compares)"""
+    with open(os.path.join(SRC, "Cargo.lock"), encoding="utf-8") as f:
+        crates = locked_crates(f.read())
+    os.makedirs(into)
+    for name, version, want in crates:
+        archive = os.path.join(cache, "crates", "%s-%s.crate" % (name, version))
+        if not (os.path.isfile(archive) and helpers.sha256_file(archive) == want):
+            print("renhdrum: downloading the %s %s crate" % (name, version), flush=True)
+            os.makedirs(os.path.dirname(archive), exist_ok=True)
+            try:
+                helpers.download("%s%s/%s-%s.crate" % (CRATES, name, name, version), archive, want, timeout=300)
+            except (OSError, ValueError) as e:
+                fail(str(e))
+        helpers.extract(archive, into)   # (a gzipped tar of <name>-<version>/; checked by its SHA-256 above)
+        with open(os.path.join(into, "%s-%s" % (name, version), ".cargo-checksum.json"), "w", encoding="utf-8") as f:
+            f.write('{"files":{},"package":"%s"}' % want)
+    return crates
+
+
+def copy_opus(into):
+    """third_party/opus's sources as build.rs reads them from vendor/opus (celt, silk, src, include, its licence)"""
+    for sub in ("celt", "silk", "src", "include"):
+        shutil.copytree(os.path.join(OPUS, sub), os.path.join(into, sub),
+                        ignore=lambda d, names: [n for n in names
+                                                 if os.path.relpath(os.path.join(d, n), OPUS).replace(os.sep, "/")
+                                                 in OPUS_LEFT_OUT])
+    shutil.copy2(os.path.join(OPUS, "COPYING"), into)
+
+
 def cmd_build(a):
     target = a.target or host()
     triple = TARGETS[target]
@@ -276,10 +332,12 @@ def cmd_build(a):
         linker = os.path.join(mingw, "bin", "x86_64-w64-mingw32-clang" + exe)
         if not mingw or not os.path.isfile(linker):
             fail("no llvm-mingw: pass --llvm-mingw <folder> or set LONGSHOT_MINGW (%s is not there)" % (linker or "its clang"))
+        archiver = os.path.join(mingw, "bin", "llvm-ar" + exe)
     else:
         linker = shutil.which(a.linker or "cc")
         if not linker:
             fail("no %s to link with: pass --linker <cc>" % (a.linker or "cc"))
+        archiver = shutil.which("ar") or "ar"
     cache = os.path.abspath(a.cache or os.path.join(ROOT, "build", "renhdrum-rust"))
     bin_dir = toolchain(cache, target)
     out = os.path.abspath(a.out or os.path.join(SRC, NAMES[target]))
@@ -290,24 +348,40 @@ def cmd_build(a):
     try:
         crate = os.path.join(work, "renhdrum")
         os.makedirs(crate)
-        for f in ("Cargo.toml", "Cargo.lock"):
+        for f in ("Cargo.toml", "Cargo.lock", "build.rs"):
             shutil.copy2(os.path.join(SRC, f), crate)
         shutil.copytree(os.path.join(SRC, "src"), os.path.join(crate, "src"))
+        copy_opus(os.path.join(crate, "vendor", "opus"))
+        # (cargo reads crates.io from the downloaded crates only: a cargo directory source, set in its home's config)
+        home = os.path.join(work, "cargo-home")
+        vendor_crates(cache, os.path.join(work, "crates"))
+        os.makedirs(home)
+        with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as f:
+            f.write('[source.crates-io]\nreplace-with = "pinned"\n\n[source.pinned]\ndirectory = "%s"\n'
+                    % os.path.join(work, "crates").replace("\\", "/"))
         # (no path of this machine in it. Windows: crt-static links llvm-mingw's unwinder in, not libunwind.dll, which a
-        # player does not have, the C runtime staying Windows' UCRT; no time stamp in the PE header. Linux: no build id)
+        # player does not have, the C runtime staying Windows' UCRT; no time stamp in the PE header. Linux: no build id.
+        # libopus's C: the same compiler, its file names relative to the work folder)
         flags = "--remap-path-prefix=%s=renhdrum" % crate
         flags += (" -C target-feature=+crt-static -C link-arg=-Wl,--no-insert-timestamp" if target == "windows"
                   else " -C link-arg=-Wl,--build-id=none")
+        under = triple.replace("-", "_")
         env = dict(os.environ)
         env.update({
-            "PATH": bin_dir + os.pathsep + env.get("PATH", ""),
+            # (llvm-mingw's bin/ too on Windows: build.rs, built for this system, links with its clang there)
+            "PATH": os.pathsep.join([bin_dir] + ([os.path.dirname(linker)] if target == "windows" else [])
+                                    + [env.get("PATH", "")]),
             "RUSTC": os.path.join(bin_dir, "rustc" + exe),
-            "CARGO_HOME": os.path.join(work, "cargo-home"),
+            "CARGO_HOME": home,
             "CARGO_TARGET_DIR": os.path.join(work, "target"),
-            "CARGO_TARGET_%s_LINKER" % triple.upper().replace("-", "_"): linker,
+            "CARGO_TARGET_%s_LINKER" % under.upper(): linker,
             "RUSTFLAGS": flags,
+            "CC_" + under: linker,
+            "AR_" + under: archiver,
+            "CFLAGS_" + under: "-ffile-prefix-map=%s=renhdrum" % work,
         })
-        for k in ("RUSTUP_TOOLCHAIN", "CARGO_BUILD_TARGET", "CARGO_ENCODED_RUSTFLAGS"):
+        for k in ("RUSTUP_TOOLCHAIN", "CARGO_BUILD_TARGET", "CARGO_ENCODED_RUSTFLAGS", "CC", "AR", "CFLAGS",
+                  "TARGET_CC", "TARGET_AR", "TARGET_CFLAGS", "CRATE_CC_NO_DEFAULTS"):
             env.pop(k, None)
         cmd = [os.path.join(bin_dir, "cargo" + exe), "build", "--release", "--locked", "--offline", "--lib",
                "--target", triple]

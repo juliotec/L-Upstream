@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
-from menu_model_fixture import menu_model_prelude, menu_model_member, menu_text, unbroken  # noqa: E402
+from menu_model_fixture import menu_model_prelude, menu_text, unbroken  # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +44,7 @@ FIXTURE = r'''
 #include "upscaler_rows.h"
 #include "auto_settings.h"
 #include "monitor_choice.h"
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -74,9 +75,11 @@ void menu_debug_rows(int, int) { CHECK(false); }
 /* OPTIONS */
 /* AUTO_PRESET */
 Options opts;
+std::mutex options_save_mu;
 bool debug_warning = false;
 int debug_warning_choice = 0;
 void sync_transition_autosave() {}
+std::atomic<int> grass_distance_now{0};   // (vk_menu.cpp: the Grass distance row's value for the renderer)
 
 /* TABS */
 /* ROW */
@@ -93,6 +96,10 @@ const std::vector<Out>& outputs() {
 }
 int custom_index() { return 0; }
 int output_choice(int v) { return v; }
+struct Picture { unsigned w, h; };
+Picture output_preview_target{};
+Picture picture_for(int) { return {}; }
+bool request_native_preview(Picture) { return false; }
 int parse_output(const char*) { return 0; }
 int step_output_choice(int v, int dir) { return v + dir; }
 int output_for_aspect(int) { return opts.output_res; }
@@ -137,12 +144,16 @@ std::string mic_key(const char* v) { return v; }
 void mic_tell_host() {}
 void refresh_mics() {}
 int rumble_step(int v) { return v; }
-constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
-constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;
+constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1, HOS_BIND_SPRINT_AUTO = 2;
+constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1, HOS_KEY_TOGGLE_HUD = 1, HOS_KEY_SPRINT = 1;   /* outside the stub's one row */
 const char* bind_names[1] = {"a"};
 struct Host { int (*binding)(int, int, int); float (*aspect_ratio)(); void (*audio_output_select)(const char*);
               void (*monitor_select)(const char*); } *host = nullptr;
 bool can_bind() { return false; }
+// (the Controls page's Toggle column, as vk_menu.cpp's: the Switch's buttons but Plus and Minus; the stub's Sprint is past them)
+bool has_toggle(int b) { return b < HOS_SW_N && b != HOS_SW_PLUS && b != HOS_SW_MINUS; }
+bool toggle_on(int b) { return ((opts.hold_toggle >> b) & 1) != 0; }
+void toggle_set(int b, bool on) { if (b == HOS_KEY_SPRINT) opts.sprint_toggle = on; else opts.hold_toggle = on ? opts.hold_toggle | (1 << b) : opts.hold_toggle & ~(1 << b); }
 // No hardware profile or measured tuning owns the manual round trips.
 uint64_t auto_for = 0, auto_fp = 0, auto_tuned = 0;
 #include "gpu_choice.h"   // (the GPU device row saved as the card itself, which save() writes)

@@ -54,6 +54,14 @@ static inline int steam_pads_without_valve(const char *in, char *out, size_t cap
     return dropped;
 }
 
+/* Whether a pad is the Steam Deck's built-in controls: Valve's, the Deck's product id, and no Steam Input handle (a
+   stand-in pad's). Its buttons are then the controls' own, so the mouse interface those controls also expose must not
+   count as gameplay input: in the Deck's desktop layout R2 arrives there as a left click, and the pad's own buttons
+   already carry that action. Known and sampled once a poll, not on connection (host/pad_sdl.c). */
+static inline int steam_pads_deck_builtin(unsigned vendor, unsigned product, unsigned long long steam_handle) {
+    return vendor == STEAM_PADS_VALVE && product == STEAM_PADS_DECK && !steam_handle;
+}
+
 /* Whether a pad gives its motion only: a real Valve pad (vendor 0x28de and no Steam Input handle) while a Steam
    stand-in pad (one with a handle) is open */
 static inline int steam_pads_motion_only(unsigned vendor, unsigned long long steam_handle, int stand_in_open) {

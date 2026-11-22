@@ -150,9 +150,16 @@ def walk(root, parts, key):
             yield from walk(os.path.join(root, n), parts[1:], key)
 
 
+def in_save_work(path):
+    return any(part.lower() == "save-work" for name in (os.path.abspath(path), os.path.realpath(path))
+               for part in name.replace("\\", "/").split("/"))
+
+
 def find_saves(root):
     """The game's save folders under root, as {profile id: path}; root may be the save folder itself."""
     norm = os.path.normpath(os.path.abspath(root))
+    if in_save_work(norm):
+        return {}
     title_folder = os.path.basename(norm).upper() == TITLE
     if is_save_folder(norm) or title_folder and "0" not in subdirs(norm):
         key = norm
@@ -174,7 +181,7 @@ def find_saves(root):
             for k, path in walk(norm, layout[start:], key):
                 # A folder named by the layout (the title id folder) counts as soon as it is there: the game may not
                 # have saved yet. A profile folder counts only when it holds a save (Eden's profile folders do not).
-                if (layout[-1] != "<id>" or is_save_folder(path)) and k not in found and path not in found.values():
+                if (layout[-1] != "<id>" or is_save_folder(path)) and not in_save_work(path) and k not in found and path not in found.values():
                     found[k] = path
     return found
 
@@ -417,6 +424,13 @@ def save_problems(path):
 
 
 def copy_saves(src, dst, backup, keep_settings, dry_run):
+    for path in (src, dst):
+        if in_save_work(path):
+            raise Fail("save-work is a working copy: copy only the committed save/ folder")
+        parent = os.path.dirname(os.path.abspath(path))
+        journal = os.path.join(os.path.dirname(parent), "save-work", os.path.basename(path) + ".journal")
+        if os.path.basename(parent).lower() == "save" and os.path.lexists(journal):
+            raise Fail("a save commit is waiting in %s: start the game and close it before copying" % journal)
     target_path = os.path.normcase(os.path.realpath(dst))
     backup_path = os.path.normcase(os.path.realpath(backup))
     try:

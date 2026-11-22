@@ -107,8 +107,8 @@ MODULE_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the bot
              "D-pad too, whatever was bound before), and the Switch's button icons.",
              "Bindings of your own, from the Controls page.")
 MODULE_HINTS(hn_prompts, 0,
-             "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput "
-             "alone).",
+             "Those of the first controller, from its type and name (SDL's). With none, the keyboard's (the Switch's "
+             "with XInput alone).",
              "The Switch's buttons.", "An Xbox controller's.", "A PlayStation 4 controller's.", "A PlayStation 5 controller's.",
              "A Steam Deck's.", "The keys and mouse buttons your controls put each action on.")
 } // namespace

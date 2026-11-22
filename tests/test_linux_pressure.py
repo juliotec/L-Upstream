@@ -7,7 +7,7 @@ nearly full and earlyoom killed the process. Checked here without a GPU or game:
 - linux_pressure.h parses /proc/meminfo's MemAvailable, SwapFree, SwapTotal and MemTotal and computes the shortfall below
   RX_VK_AVAIL_RESERVE_MB (1536 MB) and RX_VK_COMMIT_RESERVE_MB (2560 MB);
 - texture_frame() samples /proc/meminfo every 30 frames, cuts the texture budget on integrated GPUs with PressureHold, drains
-  the target pool (pool_pressed), wakes VRAM compaction at its pressed thresholds (compact.pressed), frees idle staging arenas
+  the target pool (pool_pressure 2), wakes VRAM compaction at its pressed thresholds (compact.pressed), frees idle staging arenas
   on entry and after 5 s idle, and checks malloc_trim every 600 frames;
 - imports_give_back() acts once per sample, trims spare capture buffers to 32 MB and unpins idle unmirrored guest-pool imports
   for the shortfall less dead_import_bytes and evicted_import_bytes;
@@ -61,9 +61,10 @@ def check_source():
           "const bool igpu = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;",
           "budget = std::min(budget, held);",
           "rule_budget = std::min(rule_budget, held);",
-          "pool_pressed = true;",
+          "pool_pressure = 2;",
           "compact.pressed = true;",
-          "stale || linux_entered_pressure",
+          "const int64_t wait_s = linux_pressed && idle_s > 5 ? 5 : idle_s;",   # (idle 5 s while pressed: stale)
+          "|| linux_entered_pressure)) {",   # (every idle arena as the pressure begins)
           "const bool log_malloc = frame_no % 1800 == 0;",
           "const bool check_malloc = log_malloc || (linux_pressed && frame_no % 600 == 0);",
           "textures' budget is not cut on a discrete GPU",

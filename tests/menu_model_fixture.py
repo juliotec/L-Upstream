@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from srccut import block  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-TABS = ["TAB_GRAPHICS", "TAB_AUDIO", "TAB_GAMEPLAY", "TAB_CONTROLS", "TAB_NFC", "TAB_MODS", "TAB_DEBUG", "TAB_MOTION", "TAB_FPS_DEV", "TAB_PAGE"]
+TABS = ["TAB_GRAPHICS", "TAB_AUDIO", "TAB_GAMEPLAY", "TAB_CONTROLS", "TAB_NFC", "TAB_MODS", "TAB_DEBUG", "TAB_MOTION", "TAB_SPEAKER", "TAB_FPS_DEV", "TAB_RECORDINGS", "TAB_SIM_TURF", "TAB_PAGE"]
 
 # (an item of a page as built: heading, its key (a section's id), label, shown (a module's row with a shown() of its own, which
 # can hide it), and value: the core row's value expression in vk_menu.cpp ("&opts.x", "nullptr"), "" for a module's)
@@ -55,7 +55,8 @@ def menu_sources(root=None):
 
 
 TAB_OF_PAGE = {"graphics": "TAB_GRAPHICS", "audio": "TAB_AUDIO", "gameplay": "TAB_GAMEPLAY", "controls": "TAB_CONTROLS",
-               "nfc": "TAB_NFC", "mods": "TAB_MODS", "debug": "TAB_DEBUG", "motion": "TAB_MOTION", "fps_details": "TAB_FPS_DEV",
+               "nfc": "TAB_NFC", "mods": "TAB_MODS", "debug": "TAB_DEBUG", "motion": "TAB_MOTION", "controller_speaker": "TAB_SPEAKER",
+               "fps_details": "TAB_FPS_DEV", "recordings": "TAB_RECORDINGS", "sim_turf_settings": "TAB_SIM_TURF",
                "controls_page": "TAB_PAGE"}
 
 
@@ -278,8 +279,8 @@ int main() {
     mkwvk::menu::set_log([](const char*) {});
     mkwvk::menu::build();
     for (const auto& d : mkwvk::menu::diagnostics()) printf("D\t%s\n", d.c_str());
-    for (const char* page : {"graphics", "audio", "gameplay", "controls", "nfc", "mods", "debug", "motion", "fps_details",
-                             "controls_page"})
+    for (const char* page : {"graphics", "audio", "gameplay", "controls", "nfc", "mods", "debug", "motion", "controller_speaker", "fps_details",
+                             "sim_turf_settings", "controls_page"})
         for (const auto& it : mkwvk::menu::layout(page))
             printf("I\t%s\t%d\t%s\t%s\t%d\n", page, it.heading ? 1 : 0, it.key ? it.key : "", it.label ? it.label : "",
                    it.setting && it.setting->shown ? 1 : 0);

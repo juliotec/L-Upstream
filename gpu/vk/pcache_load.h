@@ -30,6 +30,9 @@
 // ~40 loads themselves against 11-18. So on Windows, as on Linux, only with 20 GB of RAM or less, where the gigabyte is what
 // pushes the game into paging; the driver is NVIDIA's and its GLCache folder holds at least kWarmMb (not a --prepare-shaders
 // run); read as before everywhere else (more RAM, AMD, Intel, a folder nearly empty or not readable).
+// Read, too, where NVIDIA's cache is kept under kDriverRoomMb (nvidia_cache_limit.h: Windows' Shader Cache Size, 1 GB by default
+// on the drivers players' logs show, or Linux's __GL_SHADER_DISK_CACHE_SIZE set smaller by the player): a 1 GB cache is "warm"
+// (1025 MB in the logs) yet cannot hold a start's ~2 GB, and the driver drops pipelines as it fills, so it cannot answer them.
 // RX_VK_PCACHE_LOAD=0 or 1 (or off/on): not read or read, whatever these say, a --prepare-shaders run included.
 #pragma once
 #include <cstdint>
@@ -41,13 +44,15 @@ namespace pcache_load {
 
 constexpr uint32_t kSmallRamMb = 20480;
 constexpr uint64_t kWarmMb = 512;
+/// The size NVIDIA's cache must be allowed to grow to before it is left to answer (nvidia_cache_limit.h kRoomMb)
+constexpr uint64_t kDriverRoomMb = 4096;
 
 /// NVIDIA's own shader cache as the rule sees it: measured (its folder walked, or not there: 0), turned off, or not known (its
 /// folder could not be walked through)
 enum class Cache { kMeasured, kOff, kUnknown };
 
 enum class Why { kSwitch, kPreparing, kStart, kNotLinuxNvidia, kRam, kDriverCacheOff, kDriverCacheUnknown, kColdDriverCache, kSmallPc,
-                 kWindowsNvidia };
+                 kWindowsNvidia, kDriverCacheSmall };
 struct Choice {
     bool load;
     Why why;
@@ -60,9 +65,10 @@ constexpr bool needs_cache(int sw, bool preparing, bool load_at_create, bool lin
                            bool windows_nvidia = false) {
     return sw < 0 && !preparing && load_at_create && (linux_nvidia || windows_nvidia) && ram_mb && ram_mb <= kSmallRamMb;
 }
-/// cache, cache_mb: NVIDIA's own cache (nvidia_cache, nvidia_cache_windows), looked at only where needs_cache()
+/// cache, cache_mb: NVIDIA's own cache (nvidia_cache, nvidia_cache_windows), looked at only where needs_cache(). limit_mb: the
+/// size the driver lets that cache grow to (nvidia_cache_limit.h; 0: not known, as before)
 constexpr Choice choose(int sw, bool preparing, bool load_at_create, bool linux_nvidia, uint32_t ram_mb, Cache cache,
-                        uint64_t cache_mb, bool windows_nvidia = false) {
+                        uint64_t cache_mb, bool windows_nvidia = false, uint64_t limit_mb = 0) {
     if (sw >= 0) return {sw == 1, Why::kSwitch};
     if (preparing) return {true, Why::kPreparing};
     if (!load_at_create) return {true, Why::kStart};
@@ -71,6 +77,7 @@ constexpr Choice choose(int sw, bool preparing, bool load_at_create, bool linux_
         if (cache == Cache::kOff) return {true, Why::kDriverCacheOff};
         if (cache != Cache::kMeasured) return {true, Why::kDriverCacheUnknown};
         if (cache_mb < kWarmMb) return {true, Why::kColdDriverCache};
+        if (limit_mb && limit_mb < kDriverRoomMb) return {true, Why::kDriverCacheSmall};
         return {false, Why::kWindowsNvidia};
     }
     if (!linux_nvidia) return {true, Why::kNotLinuxNvidia};
@@ -78,6 +85,7 @@ constexpr Choice choose(int sw, bool preparing, bool load_at_create, bool linux_
     if (cache == Cache::kOff) return {true, Why::kDriverCacheOff};
     if (cache != Cache::kMeasured) return {true, Why::kDriverCacheUnknown};
     if (cache_mb < kWarmMb) return {true, Why::kColdDriverCache};
+    if (limit_mb && limit_mb < kDriverRoomMb) return {true, Why::kDriverCacheSmall};
     return {false, Why::kSmallPc};
 }
 
@@ -96,6 +104,9 @@ constexpr const char* why_text(Why w) {
         case Why::kWindowsNvidia:
             return "Windows with NVIDIA's own driver, 20 GB of RAM or less, programs loaded at create: NVIDIA's own shader cache "
                    "answers them";
+        case Why::kDriverCacheSmall:
+            return "NVIDIA's own shader cache is kept under 4 GB (Shader Cache Size, or __GL_SHADER_DISK_CACHE_SIZE): it drops "
+                   "pipelines as it fills and cannot answer them";
     }
     return "";
 }

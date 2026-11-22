@@ -1,10 +1,11 @@
 """RX_VK_READBACK_LATE's rules (gpu/vk/readback_late.h; no game or GPU needed), and that vk_replay.cpp's invalidate asks them.
 
-Unset: default_sizes(), the culling camera block's 0x3980 bytes, read without its wait on every PC, every other readback
-waiting for its write-back; =0 (or words that are no rule): no rule, every readback waits. `newest` names the ranges whose
-writer is the newest submission handed out, a hex size the ranges of exactly that many bytes; either rule is enough. The
-rules as vk_replay.cpp's readback_late_wanted reads the switch are run from its source, in a process each (unset, =0,
-=newest, =c0). The by-range
+Unset: default_sizes(), the culling camera block's 0x3980 bytes, read without its wait on every PC, and on a handheld
+(device_policy.h readback_late_newest) the newest submission's ranges too, every other readback waiting for its write-back;
+=0 (or words that are no rule): no rule, every readback waits. `newest` names the ranges whose writer is the newest
+submission handed out, a hex size the ranges of exactly that many bytes; either rule is enough. The rules as vk_replay.cpp's
+readback_late_wanted reads the switch are run from its source, in a process each (unset, =0, =newest, =c0), on a handheld
+and on any other PC. The by-range
 log that finds such ranges has a switch of its own, RX_VK_LOG_READBACK_RANGES, so nothing is noted or logged without it.
 The wait itself, with and without a rule, is run in tests/test_readback_part.py.
 
@@ -66,6 +67,9 @@ WANTED = r"""
 #include <cstdlib>
 #include "readback_late.h"
 static void logf(const char*, ...) {}
+// (dev.policy's one field readback_late_wanted reads: device_policy.h sets it on a handheld, tests/test_device_policy.py
+// checks that; here TEST_HANDHELD says it)
+static struct { struct { bool readback_late_newest; } policy; } dev = {{std::getenv("TEST_HANDHELD") != nullptr}};
 @@WANTED@@
 int main(int argc, char** argv) {
     if (argc != 3) return 2;
@@ -73,13 +77,15 @@ int main(int argc, char** argv) {
     return 0;
 }
 """
-# (RX_VK_READBACK_LATE, or None unset; the size in hex, newest; read late)
+# (RX_VK_READBACK_LATE, or None unset; a handheld; the size in hex, newest; read late)
 WANTED_CASES = [
-    (None, "3980", 0, 1), (None, "3980", 1, 1), (None, "8b040", 1, 0), (None, "40", 1, 0),
-    ("", "3980", 0, 1),   # (set to nothing: as unset)
-    ("0", "3980", 0, 0), ("0", "3980", 1, 0),   # (no rule: every readback waits)
-    ("newest", "3980", 0, 0), ("newest", "40", 1, 1),
-    ("c0", "c0", 0, 1), ("c0", "3980", 1, 0),
+    (None, 0, "3980", 0, 1), (None, 0, "3980", 1, 1), (None, 0, "8b040", 1, 0), (None, 0, "40", 1, 0),
+    ("", 0, "3980", 0, 1), ("", 0, "40", 1, 0),   # (set to nothing: as unset)
+    # (a handheld, unset: the newest submission's ranges too, of any size; an older one's only the culling camera block)
+    (None, 1, "3980", 0, 1), (None, 1, "8b040", 1, 1), (None, 1, "40", 1, 1), (None, 1, "40", 0, 0), ("", 1, "40", 1, 1),
+    ("0", 0, "3980", 0, 0), ("0", 0, "3980", 1, 0), ("0", 1, "40", 1, 0),   # (no rule: every readback waits)
+    ("newest", 0, "3980", 0, 0), ("newest", 0, "40", 1, 1),
+    ("c0", 0, "c0", 0, 1), ("c0", 0, "3980", 1, 0), ("c0", 1, "40", 1, 0),   # (a rule set: no default added on a handheld)
 ]
 
 
@@ -95,7 +101,7 @@ def main():
     start = replay.index(marker)
     wanted = replay[start:replay.index("\n}\n", start) + 3]
     for needle in ('readback_late::parse(e)', 'getenv("RX_VK_READBACK_LATE")', "return readback_late::wanted(rules, size, newest);",
-                   "if (!e || !*e) r.sizes = readback_late::default_sizes();"):
+                   "if (!e || !*e) {", "r.sizes = readback_late::default_sizes();", "r.newest = dev.policy.readback_late_newest;"):
         if needle not in wanted:
             raise SystemExit("vk_replay.cpp readback_late_wanted no longer has: " + needle)
     # (a range is read late only when its write-back is still pending and the rule names it; the wait is the other branch)
@@ -123,14 +129,18 @@ def main():
         src.write_text(WANTED.replace("@@WANTED@@", wanted), encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "gpu/vk"), str(src), "-o", str(exe)],
                        check=True)
-        base = {k: v for k, v in os.environ.items() if k != "RX_VK_READBACK_LATE"}
-        for value, size, newest, want in WANTED_CASES:
+        base = {k: v for k, v in os.environ.items() if k not in ("RX_VK_READBACK_LATE", "TEST_HANDHELD")}
+        for value, handheld, size, newest, want in WANTED_CASES:
             env = dict(base) if value is None else dict(base, RX_VK_READBACK_LATE=value)
+            if handheld:
+                env["TEST_HANDHELD"] = "1"
             r = subprocess.run([str(exe), size, str(newest)], env=env, text=True, capture_output=True, timeout=20)
             if r.returncode or r.stdout.strip() != str(want):
-                raise SystemExit("FAIL: readback_late_wanted(0x%s, newest %d) with RX_VK_READBACK_LATE %s: %s, expected %d"
-                                 % (size, newest, "unset" if value is None else "=" + value, (r.stdout + r.stderr).strip(), want))
-        print("PASS: readback_late_wanted: the culling camera block read late by default, =0 none, the rules over it when set")
+                raise SystemExit("FAIL: readback_late_wanted(0x%s, newest %d) with RX_VK_READBACK_LATE %s%s: %s, expected %d"
+                                 % (size, newest, "unset" if value is None else "=" + value, " on a handheld" if handheld else "",
+                                    (r.stdout + r.stderr).strip(), want))
+        print("PASS: readback_late_wanted: the culling camera block read late by default, on a handheld the newest submission's "
+              "too, =0 none, the rules over it when set")
 
 
 if __name__ == "__main__":

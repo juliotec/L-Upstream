@@ -41,7 +41,7 @@ It sets these defaults; a switch you set yourself keeps your value (`RX_VK_PASS_
 | `HOS_PRESENT_TRACE` | `presents.csv`: the game's presents |
 | `RX_VK_FRAME_TRACE=1` | `frames.csv`: the frame trace (below) |
 | `HOS_PROFILE_EVERY=5`, `HOS_THREAD_TIMES=5` | busiest threads and each thread's CPU, in the log every 5 s |
-| `HOS_FPS_LOG=1` | the frame limiter and the game clock's speed, in the log |
+| `HOS_FPS_LOG=1` | the frame limiter, the game's pacing mode (`+0x24f`) and the game clock's speed, in the log |
 | `RX_VK_PASS_TIMING=1` | GPU time per pass, in the log every 600 presents |
 | `RX_VK_SLOW_LOG=50` | the replay's times for each frame over 50 ms, in the log |
 
@@ -88,6 +88,8 @@ Read the GPU numbers as shares, not as an unprofiled frame's time, and never tak
 - the game's main thread in the frame: on the CPU (`main_cpu_ms`), blocked (`main_blocked_ms`), waiting for a virtual
   core (`main_vcore_ms`); the rest is time runnable but off the CPU;
 - `at_ns` (the present on the host's clock) and `ab_side` ([an A/B within one run](../developing.md#an-ab-within-one-run)).
+
+Texture step columns `create_ms`, `reuse_ms`, `astc_stage_ms`, `astc_record_ms`, `astc_view_ms`, and `astc_flush_ms` are CPU wall-time deltas in milliseconds since the preceding present; `astc_flushes` and `create_n` are count deltas. View and flush time are excluded from record time. Pool columns `pool_reused` (exact images), `pool_resized` (new images on pooled memory), `pool_new` (new allocations for pool-eligible images), `pool_put`, `pool_idle`, and `pool_destroyed` are count deltas. `pool_holds` and `dead_waiting` are image-count snapshots, and `compact_pass` is a 0/1 snapshot.
 
 `RX_VK_FRAME_LOG=<csv>` is a lighter alternative: frame, seconds and frame time per present (it works headless too).
 
@@ -254,7 +256,9 @@ user name, saves, logs, game files or IDs are sent.
 A summary goes every `RX_VK_PERF_INTERVAL` seconds of play (default 300, 60 to 840) and at exit, holds at most 16 maps,
 and stays under 60 KiB (`perf_report::kMaxBody`; samples are thinned to fit). The log says `vk: performance statistics
 on (...)` at the first frame. `RX_VK_PERF_TEST_CURL=<path>` (test builds only) replaces curl in the checks.
-The stand-in sender reads its own switches: `LONGSHOT_PERF_URL`, `LONGSHOT_PERF_TIMEOUT`, `LONGSHOT_PERF_MAX_SENDS`,
+The stand-in sender reads its own switches: `LONGSHOT_PERF_URL`, `LONGSHOT_PERF_TIMEOUT`, `LONGSHOT_PERF_MAX_SENDS`
+(at most 5 a start by default: the ingest route takes 6 a minute with a burst of 6 per address — the two numbers live together, if you
+raise one, raise the other; one sender at a time, holding `perf_pending/.sending`, a lease it renews while it sends),
 `LONGSHOT_PERF_BACKOFF`, `LONGSHOT_PERF_KEEP_SENT`.
 
 ## Tools

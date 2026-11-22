@@ -159,7 +159,11 @@ struct DescWriter { std::vector<VkWriteDescriptorSet> writes; } descriptor_write
 DescWriter& dw() { return descriptor_writes; }
 struct Pushed;
 std::array<Pushed, 2>& pushed();
-struct Recording { VkDescriptorPool pool{}; std::vector<VkDescriptorPool> extra; uint32_t pool_sets = 0, pool_descs[6] = {}; } recording;
+struct Recording {   // (vk_draw.cpp's RecordingRes: its pools, and what the recording took of them)
+    VkDescriptorPool pool{};
+    std::vector<VkDescriptorPool> extra;
+    uint32_t pool_sets = 0, pool_descs[6] = {};
+} recording;
 Recording* cur = &recording;
 std::atomic<uint64_t> pools_extra{0};
 bool g_fine = false;
@@ -259,7 +263,8 @@ VkSampler use(int id) {
 // sampler goes before the GPU is past the last recording that took it
 bool limit_case(const std::string& test) {
     if (test == "limit") {   // (300 recordings on two threads, each drawing with 10 samplers every recording uses and 20 of a window
-        // that moves 5 a recording: 1525 in all. The GPU 2 recordings behind)
+        // that moves 5 a recording: 1525 in all. The GPU 2 recordings behind. The threads take turns, as one thread records at a
+        // time (the render thread, or the game's submitting thread with it off), each keeping its own tables)
         lod_per_id = true; dev.props.limits.maxSamplerAllocationCount = 80;
         Worker worker;
         for (uint64_t r = 0; r < 300; r++) {
@@ -268,7 +273,7 @@ bool limit_case(const std::string& test) {
                 for (int id = 0; id < 10; id++) use(id);
                 for (int id = 100 + 5 * (int)r; id < 120 + 5 * (int)r; id++) use(id);
             };
-            worker.start(draws); draws(); worker.join();
+            worker.start(draws); worker.join(); draws();
             frame_no++;   // (a present)
         }
         // (each made once: none retired while recordings still drew with it, the 10 of every recording kept throughout)

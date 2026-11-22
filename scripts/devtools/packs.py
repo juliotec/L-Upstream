@@ -21,8 +21,9 @@ PC's shared bases through the queue; the Test Farm runs them on its own, so thei
         (module_changed), and every other file of the game folder that differs.
     dev.py packs rt DIR RUNTIME [PACK...]
         A game folder to run: the base's (romfs hard-linked, none for a --romfs-in-place base; the rest copied, as clones where the file system has them: the
-        game writes its caches), the packs' files over it, the shaders prepared again when a pack changed the translator
-        or the shader seed. A runtime this made before is refreshed in place: only the files that differ are replaced,
+        game writes its caches), the packs' files over it, the shaders prepared again when a pack changed the translator,
+        the program cache's format (kProgramCacheFormat) or the shader seed. A runtime this made before is refreshed in
+        place: only the files that differ are replaced,
         the ones no longer wanted removed, and its caches, logs, saves and settings kept.
     dev.py packs warm DIR --run "CMD with {runtime}" [--run ...]
         Play a runtime with no pack once per command (split as a POSIX shell would), copy the caches play made or grew
@@ -65,8 +66,12 @@ CACHES = ("longshot_programs.bin", "longshot_programs.idx", "longshot_programs.z
           "longshot_pipelines.bin.built",
           "longshot_computes.bin", "longshot_compute_variants.bin", "longshot_pipeline_states.bin",
           "longshot_pipeline_states_v1.bin", "longshot_prepared.bin", "longshot_vk_pipelines.bin", "longshot_vk_pipelines.stamp",
+          # (the size of the cache's one translator's pipelines, which bounds what another translator carries: pcache_stamp.h)
+          "longshot_vk_pipelines.base",
           # (the textures a draw has sampled, for RX_VK_TEX_AHEAD: gpu/vk/texture_ahead.h)
-          "longshot_textures_drawn.bin")
+          "longshot_textures_drawn.bin",
+          # (AMD FSR 4's unrolled layers' own pipeline cache: gpu/vk/vk_fsr4.cpp own_cache)
+          "longshot_fsr4_pipelines.bin")
 PLAY_FILES = re.compile(r"longshot_vk_pipelines_play_[0-9]+\.bin")   # (what play adds to the pipeline cache: gpu/vk/vk_draw.cpp play_path)
 # (what the game writes into its folder at run time, never a build's output: the caches (and the button prompts it makes) in
 # cache/, the logs in logs/ (host/game_layout.c)
@@ -120,6 +125,31 @@ def translator_changed(tree, changed):
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return any(m.stamped(p) or p == TRANSLATOR_FILES for p in changed)
+
+
+PROGRAM_CACHE = "gpu/vk/vk_progcache.cpp"
+CACHE_FORMAT = re.compile(r"constexpr\s+uint32_t\s+kProgramCacheFormat\s*=\s*(\d+)")
+
+
+def cache_format_changed(tree, commit, changed):
+    """Whether the checkout's program cache format (kProgramCacheFormat, which the game's program_cache_stamp holds beside the
+    translator's stamp) differs from the base commit's: the caches a runtime copies from the base are then dropped at its first
+    start, so it prepares again as a translator change does"""
+    if PROGRAM_CACHE not in changed:
+        return False
+    try:
+        old = vcs.show(tree, commit, PROGRAM_CACHE)
+    except (subprocess.CalledProcessError, OSError):
+        old = ""
+    try:
+        with open(os.path.join(tree, *PROGRAM_CACHE.split("/")), encoding="utf-8") as f:
+            new = f.read()
+    except OSError:
+        new = ""
+    def fmt(text):
+        m = CACHE_FORMAT.search(text)
+        return m.group(1) if m else None
+    return fmt(old) != fmt(new)
 
 
 def load_make_game(root=ROOT):
@@ -650,7 +680,7 @@ def cmd_pack(a):
             dst = os.path.join(pack, "files", rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             clone(os.path.join(w["game_out"], rel), dst)
-    prepare = translator_changed(tree, changed) or SEED in extra
+    prepare = translator_changed(tree, changed) or cache_format_changed(tree, b["commit"], changed) or SEED in extra
     with open(os.path.join(pack, "pack.json"), "w", encoding="utf-8") as f:
         json.dump({"base": b["commit"], "tree": tree, "head": head(tree), "changed": sorted(changed),
                    "route": how, "game_only": game_only, "files": files, "generated": extra, "deleted": gone, "prepare": prepare,

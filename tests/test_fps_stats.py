@@ -66,21 +66,21 @@ def main():
         need(use in draw, "draw_fps does not use %s" % use)
 
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
-    present = body(replay, "void present(const nvn_tex* t, const int crop[4])")
+    present = body(replay, "void present_tagged(const nvn_tex* t, const int crop[4], uint64_t generation)")
     need("fps_presented();" in present.split("\n")[1], "present does not stamp the frame first, on the presenting thread")
     need("FpsRender" in body(replay, "void submit_q("), "the submits' replay is not timed as the renderer's")
     need("st_wait_ns +=" in body(replay, "Recording& begin_recording(") and "slot_wait_ns()" in body(
         (vk / "vk_fps.cpp").read_text(encoding="utf-8"), "void fps_presented()"), "the recording slot's wait is not a GPU wait")
-    need("fps_wait(fps_stats::kPace" in body(replay, "void present_image("), "the swapchain's acquire is not the pacing's")
+    need("fps_wait(fps_stats::kPace" in body(replay, "void present_image_with_trial(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkImageView view, bool source_srgb, bool allow_scale, OutputTrialSource trial) {"), "the swapchain's acquire is not the pacing's")
     # (a present that returned only once the frame's copy, not done when it was called, was done waited for the GPU, not vsync:
     # NVIDIA on Linux; read with two fence reads, nothing waited for)
-    out = body(replay, "static bool present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {")
+    out = body(replay, "static bool present_out(uint32_t index, std::unique_lock<decltype(dev.present_mu)>& qk, OutputTrialSource trial, bool preview_path) {")
     need("copy_was_done" in out and "waited_gpu ? fps_stats::kGpuWait : fps_stats::kPace" in out,
          "the present's wait is not split into the GPU's (the copy not done before, done after) and the pacing's")
     need("(::vkx::vkWaitForFences)(dev.device, 1, &copy, VK_TRUE, 0)" in out and out.count("vkWaitForFences") == 1,
          "present_out waits for the copy to time it (only a wait of no time, its state): the Breakdown would change the present")
     need("presenter.copy_done_at" in body(replay, "bool presenter_wait_idle(") and "presenter_wait_idle(lk)" in body(
-        replay, "void present_hand_off(uint32_t index, VkFence done, uint64_t reflex_id) {"), "the wait for the presenter thread is not split at the end of its wait for the copy")
+        replay, "void present_hand_off(uint32_t index, VkFence done, uint64_t reflex_id, OutputTrialFrame trial) {"), "the wait for the presenter thread is not split at the end of its wait for the copy")
     fps = (vk / "vk_fps.cpp").read_text(encoding="utf-8")
     # (off and FPS: nothing measured; the Breakdown's timers only while it shows)
     pres = body(fps, "void fps_presented()")

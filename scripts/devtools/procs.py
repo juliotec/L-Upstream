@@ -81,6 +81,21 @@ def proc_start(pid):
     return 0
 
 
+def running(pid, start):
+    """The process pid, started at start (proc_start), runs: not ended, not a zombie waiting for its parent, not a pid used
+    again"""
+    now = proc_start(pid)
+    if now is None or now != start:
+        return False
+    if common.WINDOWS:
+        return True
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return f.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+    except (OSError, IndexError):
+        return sys.platform != "linux"   # (no /proc: running as far as can be told)
+
+
 def _win_start(pid):
     W = _win()
     h = W.k.OpenProcess(0x1000, False, pid)   # (PROCESS_QUERY_LIMITED_INFORMATION)

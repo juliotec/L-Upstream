@@ -129,9 +129,10 @@ class Fetch(unittest.TestCase):
     def test_which_sources(self):
         r = str(ROOT)
         for rel in ("third_party/opus/celt/celt.c", "third_party/zstd/lib/common/xxhash.c", "third_party/imgui/imgui.cpp",
-                    "third_party/zbic/zstd.c", "gpu/vk/eden/x.cpp", "gpu/vk/sirit/src/sirit.cpp"):
+                    "third_party/zbic/zstd.c", "gpu/vk/eden/x.cpp", "gpu/vk/sirit/src/sirit.cpp",
+                    "third_party/reshade_fx/source/effect_codegen_spirv.cpp"):
             self.assertTrue(tpo.is_third_party(os.path.join(r, rel), r), rel)
-        for rel in ("gpu/vk/vk_draw.cpp", "gpu/vk/vk_vma.cpp", "host/hos_main.c", "gpu/render/rx_core.cpp",
+        for rel in ("gpu/vk/vk_draw.cpp", "gpu/vk/vk_vma.cpp", "gpu/vk/reshade/fx_runtime.cpp", "host/hos_main.c", "gpu/render/rx_core.cpp",
                     "gpu/third_party/suyu/video_core/textures/astc.cpp",   # (the Vulkan back end's own, with its play profile)
                     "third_party/a64-kit/rt/a64.c", "work/sa/gen/code_001.c"):
             self.assertFalse(tpo.is_third_party(os.path.join(r, rel), r), rel)

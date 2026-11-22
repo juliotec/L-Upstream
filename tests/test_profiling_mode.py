@@ -13,6 +13,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -171,7 +172,10 @@ def sources():
     main = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
     need(main.count("    load_longshot_env();\n    hos_profiling_env();") == 2, "HOS_PROFILE=1 is not read after longshot_env.txt "
          "in both mains")
-    need('{"HOS_RECORD_STUTTERS", "HOS_PROFILE=1' in main, "HOS_RECORD_STUTTERS does not name what took its place")
+    # (a switch done with is a GONE row of the switches' table, #1309: what a run that still sets it is told)
+    gone = (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8")
+    need(re.search(r'^GONE\(HOS_RECORD_STUTTERS, "[^"]*", "[^"]*HOS_PROFILE=1', gone, re.M),
+         "HOS_RECORD_STUTTERS does not name what took its place")
     need("record_stutters_env" not in main, "HOS_RECORD_STUTTERS is still read")
     prof = (ROOT / "host/profiling.c").read_text(encoding="utf-8")
     env = block(prof, "void hos_profiling_env(void)")

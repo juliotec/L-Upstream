@@ -229,7 +229,11 @@ HLE(_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe28SetResumeNotificationEnabledEb) {}
 HLE(_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb) {}
 /* No system notifications ever arrive: TryPop says none, Pop waits forever (as it would on a quiet console). */
-HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { RET(0); }
+extern void nvn_output_preview_poll(Ctx *c);
+HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) {
+    nvn_output_preview_poll(c);
+    RET(0);
+}
 HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); }
 
 /* ---- nn::account: one user ------------------------------------------------------------------------------------ */

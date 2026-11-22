@@ -103,7 +103,8 @@ class NupCacheHarness(unittest.TestCase):
                 for path in self.out.rglob("*") if path.is_file() and ".game" not in path.parts}
 
     def run_to_lift(self, nup, failure=None, supported=True, include_romfs=True, update=False, folders=None,
-                    romfs_files=None, start_files=True, romfs_from=None, overlap=False, replace_package=False):
+                    romfs_files=None, start_files=True, romfs_from=None, overlap=False, replace_package=False,
+                    kept_only=False):
         self.assert_owned_fixture()
         real_run = make_game.run
 
@@ -158,6 +159,9 @@ class NupCacheHarness(unittest.TestCase):
         argv = ["make_game.py", "--work", str(self.work)]
         if update:
             argv += ["--update", str(self.out)]
+        elif kept_only:   # (RecompLauncher's prepare.keeps_copy run: no copy given)
+            self.addCleanup(setattr, make_game, "PREPARE", False)
+            argv += ["--prepare", "--out", str(self.out)]
         elif folders:
             argv += ["--romfs", str(folders[0]), "--exefs", str(folders[1]), "--out", str(self.out)]
         else:
@@ -323,6 +327,22 @@ class NupCacheTests(NupCacheHarness):
                          ["resolved-v2"] + before[".longshot_romfs"].decode().splitlines())
         self.assertEqual(after, before)
         self.assertEqual((scratch / "main").read_bytes(), (self.out / ".longshot_exefs/main").read_bytes())
+
+    def test_a_launcher_run_without_the_copy_builds_from_what_the_folder_kept(self):
+        # (RecompLauncher's prepare.keeps_copy: the player's copy is gone, so --prepare comes with no --game)
+        with self.assertRaises(Prepared):
+            self.run_to_lift(None, kept_only=True)
+        self.assertEqual(self.extractions, [])
+        self.assertEqual((self.work / "exefs" / "main").read_bytes(), (self.out / ".longshot_exefs/main").read_bytes())
+        self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
+
+    def test_a_launcher_run_without_the_copy_or_what_it_kept_says_so(self):
+        # (the launcher asks the player for their copy when this stops)
+        shutil.rmtree(self.out / ".longshot_exefs")
+        with self.assertRaises(SystemExit):
+            self.run_to_lift(None, kept_only=True)
+        self.assertIn("error This game folder has no copy of the game files to build from.", self.output.splitlines())
+        self.assertEqual(self.extractions, [])
 
     def test_changed_source_replaces_romfs_and_exefs_together(self):
         with self.assertRaises(Prepared):

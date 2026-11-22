@@ -16,6 +16,9 @@ environment a job gets.
 - Two exclusive jobs run one after the other, two shared ones together (a real queue in a temporary folder).
 - Windows: a cancelled job's command and its children end, so do those of a runner killed outright (the job object), and a
   command that ends by itself leaves what it started running.
+- Linux: a cancelled job's processes end too, its command's and those that left its tree (a game whose supervisor a
+  SIGTERM ended, one in a session of its own), never another job's; a command that ends by itself leaves what it started
+  running.
 - Windows protects a player as Linux does: a longshot.exe with no LONGSHOT_JOB is someone playing (a timed job waits,
   status names it), one under a job or preparing shaders is not, one whose memory can't be read counts as nobody's;
   a build outside the queue is a python running nx2/build.py or make_game.py, backslashes or not. Checked on a made-up
@@ -363,6 +366,100 @@ class WindowsTree(unittest.TestCase):
         self.assertEqual(runner.wait(30), 0)
         time.sleep(1)
         self.assertIsNotNone(procs._win_start(self.grand), "the job's end took what its command left running")
+
+
+@unittest.skipIf(os.name == "nt", "Linux's processes (Windows: WindowsTree)")
+class PosixTree(unittest.TestCase):
+    """On Linux a cancelled job's processes end too, wherever they went (a real queue in a temporary folder). The command
+    stands in for longshot_bridge.py's supervisor: a python that a SIGTERM ends before it stops the game it started. Main
+    stopped the runner and its command only, so the game ran on as an orphan, its job gone from the queue, holding the GPU
+    and memory the next job waited for. A game in a session of its own ends as well; a process of another job, and what a
+    command that ended by itself left running, go on"""
+    GRAND = ("import os, sys, time; open(sys.argv[1] + '.tmp', 'w').write(str(os.getpid())); "
+             "os.replace(sys.argv[1] + '.tmp', sys.argv[1]); time.sleep(120)")
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.env = dict(os.environ, LONGSHOT_QUEUE_DIR=os.path.join(self.d, "q"), LONGSHOT_QUEUE_STATE=os.path.join(self.d, "s"),
+                        LONGSHOT_QUEUE_SCOPE="0", LONGSHOT_QUEUE_MIN_FREE_GB="0", LONGSHOT_QUEUE_MAX_PRESSURE="100",
+                        LONGSHOT_QUEUE_MAX_SWAP_GB="100000", LONGSHOT_QUEUE_MIN_DISK_GB="0")
+        for k in [k for k in self.env if k == "LONGSHOT_JOB" or k.startswith("LONGSHOT_JOB_")]:
+            del self.env[k]
+        self.pidfile = os.path.join(self.d, "grandchild")
+        self.kids = []   # ((pid, start) to end after the test, whatever it found)
+
+    def tearDown(self):
+        for pid, born in self.kids:
+            if procs.proc_start(pid) == born:
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def start(self, waits=True, detach=False):
+        """A runner whose command starts a game (a grandchild, in a new session when detach), then waits for it (waits) or
+        ends at once; the runner, and the grandchild's (pid, start)"""
+        inner = "import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', %r, %r], start_new_session=%r)%s" % (
+            self.GRAND, self.pidfile, detach, "; p.wait()" if waits else "")
+        runner = subprocess.Popen([sys.executable, "-I", SCRIPT, "queue", "run", "tree", "--mode", "light", "--",
+                                   sys.executable, "-c", inner], env=self.env, stderr=subprocess.DEVNULL)
+        for _ in range(200):
+            if os.path.exists(self.pidfile):
+                break
+            time.sleep(0.1)
+        with open(self.pidfile) as f:
+            grand = int(f.read())
+        self.kids.append((grand, procs.proc_start(grand)))
+        return runner, self.kids[-1]
+
+    @staticmethod
+    def running(pid, born):
+        """The process is there and not a zombie (one that ended and waits for its parent)"""
+        try:
+            with open("/proc/%d/stat" % pid) as f:
+                state = f.read().rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            return False
+        return state not in ("Z", "X") and procs.proc_start(pid) == born
+
+    def gone(self, grand):
+        for _ in range(150):
+            if not self.running(*grand):
+                return True
+            time.sleep(0.1)
+        return False
+
+    def cancel(self, runner):
+        subprocess.run([sys.executable, "-I", SCRIPT, "queue", "cancel", "tree"], env=self.env, capture_output=True, check=True)
+        runner.wait(30)
+
+    def test_cancel_ends_the_game_its_supervisor_started(self):
+        runner, grand = self.start()
+        self.cancel(runner)
+        self.assertTrue(self.gone(grand), "the cancelled job's game still runs")
+
+    def test_cancel_ends_a_game_in_a_session_of_its_own(self):
+        runner, grand = self.start(detach=True)
+        self.cancel(runner)
+        self.assertTrue(self.gone(grand), "the cancelled job's game, in a session of its own, still runs")
+
+    def test_cancel_leaves_another_jobs_process(self):
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                 env=dict(self.env, LONGSHOT_JOB="1", LONGSHOT_JOB_NAME="tree"))
+        self.kids.append((other.pid, procs.proc_start(other.pid)))
+        runner, grand = self.start()
+        self.cancel(runner)
+        self.assertTrue(self.gone(grand), "the cancelled job's game still runs")
+        self.assertIsNone(other.poll(), "cancel ended another job's process")
+        other.kill()
+        other.wait()
+
+    def test_a_command_that_ends_leaves_what_it_started(self):
+        runner, grand = self.start(waits=False)
+        self.assertEqual(runner.wait(30), 0)
+        time.sleep(1)
+        self.assertTrue(self.running(*grand), "the job's end took what its command left running")
 
 
 if __name__ == "__main__":

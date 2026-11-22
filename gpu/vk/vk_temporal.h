@@ -70,6 +70,7 @@ void temporal_note_skinned_draw(const SkinnedDraw& k);
 int temporal_hidden_mesh_mode();
 /// (longshot) Whether `depth` is the depth target of the scene the chain has taken in this frame (its camera's)
 bool temporal_scene_depth_is(const Texture* depth);
+VkImageView temporal_reshade_depth(uint32_t width, uint32_t height);
 
 /// (longshot) NVIDIA DLAA before the game's bloom and tone map (pre_bloom.h has where and why): with DLAA and the
 /// Upscaler's DLAA before the bloom row on only (RX_VK_DLSS_PRE_BLOOM over it); off, DLAA stays at the gameplay upscale.
@@ -140,6 +141,7 @@ struct TemporalImage {
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0, height = 0;
+    VkImageUsageFlags usage = 0;
 };
 /// One frame's evaluation. color: the scene as the network samples it (tonemapped, square-root encoded: LDR, RGBA16F; linear
 /// light past 1 with the game's native HDR for an engine whose hdr() says it takes that, its output then linear as well);
@@ -188,6 +190,8 @@ struct TemporalEngine {
     /// (longshot) An evaluation that fails is for that frame only (the network draws it, and the next frame starts a new
     /// history), not for good: FSR 3.1, whose constants come from the frame's stream
     bool retry = false;
+    /// Whether the most recent failed evaluation can be retried on the next frame.
+    bool (*retry_evaluation)() = nullptr;
 };
 /// Runs f a few frames on, to free what work in flight may still use. Called by the engines with the chain's lock held
 void temporal_later(std::function<void()> f);

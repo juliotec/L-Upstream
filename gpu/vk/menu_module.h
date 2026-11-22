@@ -22,6 +22,14 @@ namespace mkwvk {
 const char* tx_hdr(int v);   // (menu/hdr.cpp: the HDR row's choice, also on the pipeline share's line)
 const char* tx_vsync(int v);   // (menu/display.cpp: V-Sync's choice, also Threaded rendering's)
 
+/// (an input recording now, the host's input_status: menu/input_recording.cpp's rows; refused: why the last start was not)
+struct MenuInputStatus {
+    int mode = 0, started = 0, held = 0, diverged = 0;   // (mode 0 nothing, 1 recording, 2 playing)
+    unsigned frame = 0, end = 0, syncs = 0;
+    float largest = 0;
+    char path[512] = {};
+    const char* refused = nullptr;
+};
 // ---- what modules ask the renderer: vk_menu.cpp defines these; tests/menu_model_fixture.py stands in for them ----
 const char* hdr_sdr_hint(int v, int variant);   // (the HDR row's hint: why HDR on stays SDR, which the device knows)
 const char* display_vsync_env();   // (the V-Sync switch set for this run, RX_VK_FIFO or RX_VK_IMMEDIATE, or nullptr)
@@ -40,9 +48,15 @@ void bug_report_save();   // (the Bug report: gathered from the whole menu, writ
 void menu_restart_game();   // (the game started again: its window closes, host/hos_relaunch.c starts it; the menu saved first)
 void menu_quit_game();      // (the game's window closed, as the player would; the menu saved first)
 const char* menu_version();   // (this build's version: nx2/build.py gives it to gpu/vk/vk_version.cpp alone)
+void menu_save_options();
 void menu_redraw();   // (the menu drawn again at its next frame: a list it shows changed)
 bool menu_on_tab(const char* tab);   // (the menu is open on this tab (its id), not on a page of it)
 void menu_rumble_test();   // (Test vibration: a short buzz on the controller used last, the host's rumble_test)
+MenuInputStatus menu_input_status();
+void menu_input_record(int start);   // (Record input: start 1, stop 0; the host's input_record)
+void menu_input_play(int start);   // (the last recording played with Drift correction's choice, start 0 stops: input_play)
+void menu_input_play_file(int index);   // (the folder's index-th newest recording played, likewise)
+const char* menu_input_recording(int index);   // (the folder's index-th newest recording's path, nullptr past the last)
 namespace i18n {   // (vk_menu_i18n.h: the languages the language rows choose between)
 int lang_count();
 const char* lang_name(int index);

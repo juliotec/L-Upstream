@@ -9,6 +9,8 @@
     python -I nx2/make_game.py --game <.nup or folder> --prepare   (RecompLauncher: --out defaults to ~/Games/Longshot; no window,
                                                                     "progress <0..1> <text>" lines and an "error <text>" line on stdout,
                                                                     exit 0 when the game is built; with --check, its "check ok|bad" line)
+    python -I nx2/make_game.py --prepare --out <folder>            (RecompLauncher with the player's copy gone, prepare.keeps_copy:
+                                                                    built again from the game files the folder keeps, as --update)
 
 The folder holds the executable and all it needs, started with a double click: nothing goes back into the repository, and no game
 data ever comes with the tools. Lines the app reads, each on its own line of stdout:
@@ -61,6 +63,7 @@ import toolchain as _toolchain
 import disk as _disk
 import object_store as _object_store
 import lift_store as _lift_store
+import build_jobs as _build_jobs
 import game_title
 import log_redact as _log_redact
 # (longshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (LONGSHOT_MINGW, or llvm-mingw
@@ -698,7 +701,8 @@ def link_problem(src_romfs, probe):
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
     leaves out the walls and floors that use them (the Water Temple). Only in a romfs this builder unpacked (its
-    .longshot_romfs stamp), and once per unpack: .longshot_romfs_checked holds the stamp it was checked under"""
+    .longshot_romfs stamp), and once per unpack: .longshot_romfs_checked holds the stamp it was checked under. A romfs it
+    did not unpack keeps them: the game reads the same stand-ins in their place (host/oot_damaged_files.c)"""
     good = os.path.join(out, ".longshot_romfs")
     checked = os.path.join(out, ".longshot_romfs_checked")
     if not os.path.isfile(good) or not os.path.isdir(romfs):
@@ -937,17 +941,8 @@ def check_linux_prerequisites(work=None):
 
 
 def requested_jobs(value):
-    """The builder's explicit worker override, or None to keep its automatic selection."""
-    if value is None or value == "":
-        return None
-    error = "LONGSHOT_JOBS must be a whole number: use 1 or more, or 0 for automatic."
-    try:
-        jobs = int(value)
-    except ValueError:
-        raise ValueError(error) from None
-    if jobs < 0:
-        raise ValueError(error)
-    return jobs or None
+    """The builder's explicit worker override, or None to keep its automatic selection (nx2/build_jobs.py requested)"""
+    return _build_jobs.requested(value)
 
 
 def default_jobs():
@@ -960,6 +955,14 @@ def default_jobs():
     print("build: up to %d compilers at once (one per CPU thread but one), as the memory allows; LONGSHOT_JOBS=<n> to change" % jobs,
           flush=True)
     return jobs
+
+
+def requested_jobs_or_none(value):
+    """requested_jobs, None for a value that is no count (chosen_jobs says so and stops the build)"""
+    try:
+        return requested_jobs(value)
+    except ValueError:
+        return None
 
 
 def chosen_jobs(given):
@@ -1598,6 +1601,9 @@ NOT_PREPARED = "the shaders were not prepared now"
 # step near the end can sit at 99% for minutes)
 PREPARE_SILENCE = 15 * 60
 GAME_ENV_DROP = ("LONGSHOT_", "PYTHON", "APPDIR", "APPIMAGE", "ARGV0", "OWD")
+# (the game's own switches among the LONGSHOT_ ones: kept, so the shaders are prepared where the game plays them. The shader
+# store, gpu/vk/spirv_pack.h: prepared in one store and played with another, the game folder's cache would start over)
+GAME_ENV_KEEP = ("LONGSHOT_SHADER_STORE",)
 
 
 def span(seconds):
@@ -1608,7 +1614,8 @@ def game_env(environ=None):
     """The environment the game runs in when the tools start it: without what the AppImage runtime and the tools put there (their
     libraries first on the search path, Python's settings, the LONGSHOT_ build switches), so it loads its own SDL and the system's
     Vulkan, as when the player starts it. The Linux builder's Play button uses it too; builder/linux/longshot-launch drops the same"""
-    env = {k: v for k, v in (os.environ if environ is None else environ).items() if not k.startswith(GAME_ENV_DROP)}
+    env = {k: v for k, v in (os.environ if environ is None else environ).items()
+           if k in GAME_ENV_KEEP or not k.startswith(GAME_ENV_DROP)}
     env.pop("LD_LIBRARY_PATH", None)
     return env
 
@@ -1687,8 +1694,10 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds (then stopped), or
     any other failure leaves the work to the first start: never a failed build. Returns its exit code (None: stopped)"""
     try:
-        code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
-                   base=game_env(), silence=silence)
+        # (a count asked for: the game started on that many CPUs, which its preparation's pools follow; nx2/build_jobs.py)
+        with _build_jobs.children_on_cpus(_build_jobs.asked()):
+            code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
+                       base=game_env(), silence=silence)
     except OSError as e:
         not_prepared(str(e))
         return 1
@@ -2143,7 +2152,7 @@ LIFT_ENV_PREFIXES = ("A64_", "SUYU_RECOMP_")
 LIFT_ENV_NAMES = ("RX_TARGET", "OOT_EXEFS_PATCHES_SHA1")   # (RX_TARGET, toolchain.py: the target the emitter and its tables are made for)
 LIFT_PATH_ENV = ("OOT_WORK", "OOT_EXEFS", "OOT_ROMFS", "OOT_DUMP", "A64_HOT_FUNCS", "OOT_EXEFS_PATCHES")
 LIFT_ENV_NOT_OUTPUT = {   # (read by the lift's sources, and no change to what it writes)
-    "LONGSHOT_LIFT_JOBS": "how many processes", "LONGSHOT_LIFT_NO_FORK": "how they are started", "RX_JOBS": "how many processes",
+    "LONGSHOT_LIFT_JOBS": "how many processes", "LONGSHOT_JOBS": "how many processes (nx2/build_jobs.py)", "LONGSHOT_LIFT_NO_FORK": "how they are started", "RX_JOBS": "how many processes",
     "EMSDK": "where the compiler is", "LONGSHOT_MINGW": "where the compiler is",
     "A64_SITE_PROFILE": "the game's runtime (a64_rt.c), at play",
     "HOS_NO_FASTFP": "the game's runtime (FASTFP_HEADER in nx2/fastfp.py, read by the lifted C at play)",
@@ -2805,6 +2814,10 @@ def parse_args():
             a.nup = a.game
         else:
             fail("Your copy of the game was not found: %s" % a.game)
+    # (RecompLauncher's prepare.keeps_copy: with the player's copy gone, it runs the step again with no --game. The game folder
+    # keeps the game files it was built from, so it is built again from those, as the game's update offer does)
+    if a.prepare and not (a.game or a.nup or a.romfs or a.exefs or a.update):
+        a.update = a.out
     if a.romfs_in_place and (a.nup or a.update or not a.romfs):
         fail("--romfs-in-place reads a romfs folder where it is: give it with --romfs and --exefs, not a .nup or --update.")
     if a.romfs_in_place is None:   # (scripts/dev_packs.py sets it for the builds it runs; a tree from before ignores it and links)
@@ -3004,7 +3017,10 @@ def main(a=None):
         a = parse_args()
     if a.jobs is not None and a.jobs < 0:
         fail("--jobs must be 1 or more, or 0 for automatic.")
+    given = a.jobs or requested_jobs_or_none(os.environ.get("LONGSHOT_JOBS"))
     a.jobs = chosen_jobs(a.jobs)
+    if given:   # (every step that runs work side by side takes at most this many, not only the compile: nx2/build_jobs.py)
+        os.environ["LONGSHOT_JOBS"] = str(a.jobs)
     os.makedirs(a.work, exist_ok=True)
     no_throttle()
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
@@ -3061,6 +3077,8 @@ def main(a=None):
     kept = os.path.join(out, ".longshot_exefs")   # (the game's code as read, kept in the folder: what an update builds from again)
     if a.update:
         if not os.path.isdir(kept) or not os.path.isdir(romfs):
+            if PREPARE:   # (RecompLauncher's run with no copy: the launcher asks the player for theirs when this stops)
+                fail("This game folder has no copy of the game files to build from.")
             fail("This game folder has no copy of the game files to update from: it was built before updates came in. Choose your game files "
                  "in Longshot Builder and build into the same folder once; updates after that work by themselves.")
         check_cache_paths(out, (kept, romfs))
@@ -3249,9 +3267,11 @@ def main(a=None):
                     write_lift_key(work, key)
                 else:
                     inputs = lift_key(exefs, work, env, planning=False)   # (what the lift reads and does not write, as it starts)
+                    lift_started = time.monotonic()
                     run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env, lift_progress(work))
                     if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
                         run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+                    print("lift and split: %.1fs wall time" % (time.monotonic() - lift_started), flush=True)
                     # (the lift writes inputs of the next one: split_hot's kept pieces, image/hot_pieces.txt, which the key hashes. Its key is
                     # taken again now, from what the next build reads: taken before, in a fresh work folder (no hot_pieces.txt yet) it never
                     # matches the next build's, which translates the game again for nothing). Only when nothing else it reads changed while it ran: a
@@ -3388,6 +3408,11 @@ def main(a=None):
         src = os.path.join(built, n)
         if os.path.exists(src):
             staged.append((src, os.path.join(game_dir, n)))
+    for vendor, licence in (("reshade_fx", "LICENSE.md"), ("stb_image", "LICENSE")):
+        licence_dir = os.path.join(out, "licenses", vendor)
+        os.makedirs(licence_dir, exist_ok=True)
+        for name in (licence, "PROVENANCE.md"):
+            staged.append((os.path.join(ROOT, "third_party", vendor, name), os.path.join(licence_dir, name)))
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
     if launcher:
         staged.append((launcher, os.path.join(out, BESIDE[0])))
@@ -3503,12 +3528,12 @@ def main(a=None):
             f.write("source=%s\n" % _version.fingerprint(ROOT))
             if os.environ.get("LONGSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["LONGSHOT_BUILDER_EXE"])
-            # (where the crash window's Report automatically posts the report, and the issue its Sent page may link to: the game
-            # sends it itself, with the system's curl (host/hos_crash_dialog.c). Either left out of nx2/addresses.ini: no Send)
+            # (where the crash window's Report automatically posts the report: the game sends it itself, with the system's
+            # curl (host/hos_crash_dialog.c). Left out of nx2/addresses.ini: no Send)
             import addresses as _addresses
-            reports, issue = _addresses.address("crash_reports"), _addresses.address("crash_issue")
-            if reports.startswith("https://") and issue.startswith("https://"):
-                f.write("crash_reports=%s\ncrash_issue=%s\n" % (reports, issue))
+            reports = _addresses.address("crash_reports")
+            if reports.startswith("https://"):
+                f.write("crash_reports=%s\n" % reports)
             # (the game sends its own perf summaries to this address; the launcher only configures it, as for crash reports)
             perf = _addresses.address("perf_reports")
             if perf.startswith("https://"):
@@ -3547,6 +3572,9 @@ def main(a=None):
     print("\n".join(PHASES.table()), flush=True)
     print("the build took %s, compiled in %s%s" % (clock(total_seconds), clock(compile_seconds),
                                                     "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
+    executable = os.path.join(game_dir, BESIDE[0])
+    if os.path.isfile(executable):
+        print("executable size: %d bytes" % os.path.getsize(executable), flush=True)
     say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
     # (after the times: they stay comparable from build to build, without a GPU's minutes that can be switched off)
     if getattr(a, "compile_shaders", None):   # (the choice kept in the folder: the game's own preparations at a start follow it)

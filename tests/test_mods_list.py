@@ -81,6 +81,7 @@ uint8_t *hos_zs_read(const char *path, size_t *n, size_t limit) { (void)path; (v
 uint64_t hos_zs_content_size(const char *path) { (void)path; return 0; }
 int hos_zs_write(const char *path, const uint8_t *data, size_t n) { (void)path; (void)data; (void)n; return 0; }
 int hos_prompts_romfs(const char *key, const char *mod, char *out, size_t cap) { (void)key; (void)mod; (void)out; (void)cap; return 0; }
+uint32_t hos_prompts_font_entry(uint32_t entry) { (void)entry; return 0; }   /* (prompts.c: no prompts' font) */
 int hos_texts_romfs(const char *key, const char *mod, char *out, size_t cap) { (void)key; (void)mod; (void)out; (void)cap; return 0; }
 void hos_mods_init(const char *image_path);
 int hos_mod_info(int i, const char **name, const char **detail, const char **note, int *enabled);

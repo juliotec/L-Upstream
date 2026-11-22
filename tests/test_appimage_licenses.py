@@ -23,6 +23,10 @@ WANT = {
     "licenses/fidelityfx/PROVENANCE.md": "third_party/fidelityfx/PROVENANCE.md",
     "licenses/fidelityfx-sdk/LICENSE.txt": "third_party/fidelityfx-sdk/LICENSE.txt",
     "licenses/fidelityfx-sdk/PROVENANCE.md": "third_party/fidelityfx-sdk/PROVENANCE.md",
+    "licenses/reshade_fx/LICENSE.md": "third_party/reshade_fx/LICENSE.md",
+    "licenses/reshade_fx/PROVENANCE.md": "third_party/reshade_fx/PROVENANCE.md",
+    "licenses/stb_image/LICENSE": "third_party/stb_image/LICENSE",
+    "licenses/stb_image/PROVENANCE.md": "third_party/stb_image/PROVENANCE.md",
 }
 
 

@@ -87,12 +87,27 @@ struct Texture {   // (the fields the code cut out uses, as gpu/vk/vk_texture.h 
     uint32_t release_gen = 0;
     uint64_t last_written = 0, first_written = 0, bytes = 0;
     uint32_t id = 0;
-    uint64_t first_seen = 0;
+    uint64_t first_seen = 0, pool_key = 0, last_value = 0;
 };
-struct nvn_tex { uint64_t gpu = 0; };
-std::unordered_map<uint32_t, std::unique_ptr<Texture>> textures;
+struct nvn_tex { uint64_t gpu = 0; bool output_preview = false; struct { uint64_t size = 0; } L; };
+struct TextureKey {
+    uint64_t gpu;
+    uint32_t id;
+    auto operator<=>(const TextureKey&) const = default;
+};
+std::map<TextureKey, std::unique_ptr<Texture>> textures;
 std::unordered_multimap<uint64_t, Texture*> by_gpu;
-uint64_t frame_no = 1, rec_value = 0;
+uint64_t frame_no = 1, rec_value = 0, completed_value = 0;
+std::map<uint64_t, std::pair<uint64_t, uint64_t>> gpu_owned;
+std::vector<Texture*> rendered_targets;
+Texture* present_source = nullptr;
+uint64_t vk_retirement_value() { return rec_value; }
+void destroy_later(Texture&, uint64_t) {}
+void forget_gpu(Texture* texture) {
+    auto [first, last] = by_gpu.equal_range(texture->gpu);
+    for (auto it = first; it != last; ++it)
+        if (it->second == texture) { by_gpu.erase(it); break; }
+}
 void logf(const char*, ...) {}
 enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };   // (the leveled log, vk_internal.h)
 void logf_at(LogLevel, const char*, ...) {}
@@ -214,7 +229,7 @@ Texture* make(uint64_t gpu, uint64_t guest, uint64_t size) {
     for (uint64_t off = 0; gpu >= (1ull << 40) && off < size; off += 0x10000) vpages[gpu + off] = guest + off;
     Texture* p = t.get();
     by_gpu.emplace(gpu, p);
-    textures[p->id] = std::move(t);
+    textures[{gpu, p->id}] = std::move(t);
     return p;
 }
 void finalize(Texture* t) {   // (the game finalizes it: texture_released, as the replay calls it)

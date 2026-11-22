@@ -56,6 +56,7 @@ export default defineConfig({
       { label: 'About', items: [
         { label: 'About Longshot', slug: 'about' },
         { label: 'Team MagicBean', slug: 'about/team' },
+        { label: 'Privacy', slug: 'privacy' },
       ] },
     ],
   })],

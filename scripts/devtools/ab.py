@@ -4,9 +4,10 @@
     dev.py ab --env NAME=VALUE [...]            a switch, set against unset, on one runtime (no build)
     dev.py ab --a NAME=VALUE --b NAME=VALUE     a switch, two values
     dev.py ab                                   this checkout's committed change (its pack) against its base (main)
-       [--scene NAME | --save FOLDER [--slot NN]] [--seconds 60] [--runs 3] [--warmup 10] [--options FILE]
+       [--scene NAME | --save FOLDER [--slot NN] | --route ROUTE [--sync N]] [--seconds 60] [--runs 3] [--warmup 10]
+       [--options FILE] [--dynamic]
        [--set NAME=VALUE] [--framegen] [--vsync] [--headless] [--runtime DIR] [--separate] [--allow KEY] [--dirty]
-       [--dry-run] [--scenes]
+       [--threads] [--dry-run] [--scenes]
 
 What it does:
   - builds (a change): `dev.py base` (only when missing), `dev.py pack` (the pack layer builds only what changed), and the
@@ -15,14 +16,21 @@ What it does:
     `dev.py queue run --mode timing`), started once, from a save in a user folder of the run's own, the title skipped by
     the game's Skip title screen row, the scene reached with the Debug tab's teleport and age switch, then a warm-up
     until no frame waits for a pipeline or a shader, then --seconds measured from the frame trace (RX_VK_FRAME_TRACE);
+  - --route ROUTE (assets/routes/, scripts/devtools/routes.py): the route's repository save instead of a scene, and after
+    the warm-up the route played over the control bridge (its `play`, put back at every --sync-th update, 1 by default):
+    the measured stretch is the route, the same moving input on both sides; a run whose replay diverged (Link past 1 m
+    from the route) or missed one of its loads is refused;
   - runs interleaved A, B, A, B, every one from a copy of one pinned options file (cap off: HOS_FPS_MAX=1000; V-Sync
-    and frame generation off unless asked), and refused when the runs differ in what ran (the menu's settings, the
+    and frame generation off unless asked; the Render resolution at 67 % where the file leaves it at Auto, the game's
+    dynamic resolution, unless --dynamic), and refused when the runs differ in what ran (the menu's settings, the
     switches set, the renderer, the window) in anything but the compared thing (a compared switch's own menu row, as
     gpu/vk/switches.def names its options-file key, counts as the compared thing; --allow KEY names another);
   - a switch whose reader takes HOS_AB (host/hos_ab.c: a hos_ab_value("NAME", ...) call in host/ or gpu/) and whose
     values are whole numbers is flipped within each run instead (scripts/perf.py ab's reader), unless --separate;
-  - writes plan.json, results.json and measurements.md (Verdict, Setup, the table, the log lines) to the development
-    folder's runs/ab/<time>-<what>/ and prints the section. Exit status: 0, 1 a run failed, 3 the sides differed.
+  - --threads is temporarily unavailable until CPU samples can be matched safely to the measured frames;
+  - writes plan.json, results.json and measurements.md (Verdict, Setup, the table, the Spread line, the log lines) to
+    the development folder's runs/ab/<time>-<what>/, and prints where the job's time went (each run's phases are in
+    results.json), then the section. Exit status: 0, 1 a run failed, 3 the sides differed.
 """
 import argparse
 import csv
@@ -34,7 +42,7 @@ import statistics
 import sys
 import time
 
-from . import build, common, packs, vcs
+from . import build, common, packs, routes, vcs
 
 WHO = "dev.py ab"
 # (the scenes: a repository save (assets/saves) to start from, then the Debug tab's teleport to a destination of
@@ -58,6 +66,12 @@ COMMON_ENV = {"HOS_FPS_MAX": "1000", "RX_VK_FRAME_TRACE": "1", "HOS_AUDIO_MUTE":
               "HOS_WINDOW_NOACTIVATE": "1"}
 # (the pinned options file's rows set for every run: the title skipped (host/oot_autoload.c), V-Sync Off, frame generation Off)
 SKIP_TITLE, VSYNC_OFF, FRAMEGEN_OFF = ("skip_title_screen", 1), ("vsync", 2), ("frame_generation", 0)
+# (and the Render resolution at 67 %, DLSS's and FSR's Quality share (gpu/vk/upscaler_rows.h kPercent[3]), where the options
+# file leaves it at Auto: the game's dynamic resolution sizes the 3D to the GPU's load, so a change that saves GPU time comes
+# out as a larger picture, not as frames, and each run settles at a size of its own. One switch, Hyrule Field at 4K on an
+# RTX 3090, came out +6.0 % and then -6.5 % at Auto, every run of one side past every run of the other both times; at 67 %
+# it was +1.1 %, each side's three runs within 1 %. --dynamic keeps Auto)
+FIXED_RESOLUTION = ("resolution", 3)
 # (a frame is still warming up while one of these frame-trace columns is over its limit: pipelines waited for or made,
 # shaders translated)
 COLD = {"pipe_waits": 0, "pipelines_ms": 1.0, "translate_ms": 1.0}
@@ -67,6 +81,7 @@ NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 WIRED = re.compile(r'hos_ab_value\("([A-Z0-9_]+)"')
 INT = re.compile(r"-?\d+")
 AB_LINE = re.compile(r"\bab: ")   # (host/hos_ab.c's lines)
+SLOW_MS = 50.0   # (a frame this long or longer is a hitch a player sees)
 SWITCHES_LINE = re.compile(r"vk: switches set(?: \(\d+\))?: (.*)$")
 # (the settings a Setup line names, by their options-file keys)
 SETUP_KEYS = ("quality_preset", "upscaler", "resolution", "output_res", "frame_generation", "vsync")
@@ -252,13 +267,14 @@ def window(rows, start_ns, seconds):
 
 
 def frame_stats(ms):
-    """fps (1000 / the mean frame time), mean, median and p99 frame time, the 1 % low (1000 / p99)"""
+    """fps (1000 / the mean frame time), mean, median and p99 frame time, the 1 % low (1000 / p99), and how many frames
+    took SLOW_MS or longer"""
     from profiling import ab as abtrace
     s = sorted(ms)
     mean = sum(s) / len(s)
     p99 = abtrace.percentile(s, 99)
     return {"frames": len(s), "fps": 1000.0 / mean, "mean_ms": mean, "median_ms": abtrace.percentile(s, 50),
-            "p99_ms": p99, "low1_fps": 1000.0 / p99 if p99 else 0.0}
+            "p99_ms": p99, "low1_fps": 1000.0 / p99 if p99 else 0.0, "n50": sum(1 for x in s if x >= SLOW_MS)}
 
 
 def in_run_stats(rows, name):
@@ -316,16 +332,30 @@ def differences(ran, version_counts=False):
 # ---- the verdict and the write-up ----
 
 def verdict(a_fps, b_fps):
-    """("gain" | "loss" | "within spread", text) of B's runs against A's, by fps: a gain or a loss only when the runs do
-    not overlap"""
+    """("gain" | "loss" | "within spread" | "too few runs", text) of B's runs against A's, by fps: a gain or a loss only
+    when the runs do not overlap, and never from one run a side, which has no spread to compare with"""
     ma, mb = statistics.median(a_fps), statistics.median(b_fps)
     pct = 100 * (mb / ma - 1)
+    if len(a_fps) < 2 or len(b_fps) < 2:
+        return "too few runs", ("one run a side cannot tell a difference from noise: %+.1f%% fps (%.1f against %.1f); "
+                                "--runs 2 or more" % (pct, mb, ma))
     if min(b_fps) > max(a_fps):
         return "gain", "faster: %+.1f%% fps (median %.1f against %.1f), every B run above every A run" % (pct, mb, ma)
     if max(b_fps) < min(a_fps):
         return "loss", "slower: %+.1f%% fps (median %.1f against %.1f), every B run below every A run" % (pct, mb, ma)
     return "within spread", ("no difference shown: %+.1f%% fps (median %.1f against %.1f), within the runs' spread "
                              "(A %.1f to %.1f, B %.1f to %.1f)" % (pct, mb, ma, min(a_fps), max(a_fps), min(b_fps), max(b_fps)))
+
+
+def spread_line(results):
+    """The observed fps ranges, not a prediction of detection probability."""
+    ok = [r for r in results["runs"] if not r.get("error") and r.get("stats")]
+    fps = {s: [r["stats"]["fps"] for r in ok if r["side"] == s] for s in ("A", "B")}
+    if min(len(fps["A"]), len(fps["B"])) < 2:
+        return "**Spread:** fewer than 2 runs on a side; variability cannot be estimated."
+    return ("**Spread:** observed fps ranges: A %.1f to %.1f; B %.1f to %.1f. "
+            "These ranges do not predict what another run will show." %
+            (min(fps["A"]), max(fps["A"]), min(fps["B"]), max(fps["B"])))
 
 
 def verdict_in_run(pooled):
@@ -368,18 +398,46 @@ def table(plan, results):
             else:
                 delta = ""
             rows.append("| %s | %s | %s | %s |" % (label, fmt % s0.get(k, 0), fmt % s1.get(k, 0), delta))
+        periods = [p for r in results.get("runs", []) for p in r.get("periods", [])]
+        rates = []
+        for side in (0, 1):
+            ms = [v for p in periods if p["side"] == side for v in p["ms"]]
+            rates.append(60000 * sum(v >= SLOW_MS for v in ms) / sum(ms) if ms and sum(ms) else None)
+        if all(v is not None for v in rates):
+            rows.append("| frames of 50 ms or more per minute | %.2f | %.2f | %+.2f |" %
+                        (rates[0], rates[1], rates[1] - rates[0]))
+        else:
+            rows.append("| frames of 50 ms or more per minute | unavailable | unavailable | |")
         return "\n".join(rows)
     by = {s: [r["stats"] for r in results["runs"] if r["side"] == s and r.get("stats")] for s in ("A", "B")}
-    for label, k, fmt, pct in (("fps (each run)", "fps", "%.1f", True), ("1% low fps (1000 / p99)", "low1_fps", "%.1f", True),
-                               ("median frame time", "median_ms", "%.2f ms", False), ("p99 frame time", "p99_ms", "%.2f ms", False)):
+    for label, k, fmt, kind in (("fps (each run)", "fps", "%.1f", "pct"), ("1% low fps (1000 / p99)", "low1_fps", "%.1f", "pct"),
+                                ("median frame time", "median_ms", "%.2f ms", "ms"), ("p99 frame time", "p99_ms", "%.2f ms", "ms"),
+                                ("frames of 50 ms or more (median)", "n50", "%g", "count")):
         va, vb = [s[k] for s in by["A"]], [s[k] for s in by["B"]]
         ma, mb = statistics.median(va), statistics.median(vb)
-        delta = "%+.1f%%" % (100 * (mb / ma - 1)) if pct else "%+.2f ms" % (mb - ma)
+        if kind == "pct":
+            delta = "%+.1f%%" % (100 * (mb / ma - 1))
+        else:
+            delta = ("%+.2f ms" if kind == "ms" else "%+g") % (mb - ma)
         if k == "fps":
             rows.append("| %s | %s (median %.1f) | %s (median %.1f) | %s |" % (label, cells(va, fmt), ma, cells(vb, fmt), mb, delta))
         else:
             rows.append("| %s | %s | %s | %s |" % (label, fmt % ma, fmt % mb, delta))
     return "\n".join(rows)
+
+
+def window_text(runs, ran):
+    """The effective display modes recorded for the runs."""
+    modes = []
+    for r in runs:
+        w = (r.get("ran") or {}).get("window")
+        mode = "headless" if r.get("headless") else ("window %sx%s" % (w.get("width"), w.get("height")) if w else "window size unavailable")
+        if mode not in modes:
+            modes.append(mode)
+    if modes:
+        return ", ".join(modes)
+    w = ran.get("window")
+    return "window %sx%s" % (w.get("width"), w.get("height")) if w else "headless"
 
 
 def setup_line(plan, results, system=None):
@@ -389,7 +447,7 @@ def setup_line(plan, results, system=None):
     return ("**Setup:** %s, %s; %s (%s); %s; uncapped (HOS_FPS_MAX=1000)%s; the frame trace, %d s each after a warm-up "
             "until no frame waited for a pipeline, %s; `dev.py ab`" % (
                 system or results.get("system", "?"), results.get("gpu") or "?", plan["scene"]["about"],
-                ran.get("window") and "window %sx%s" % (ran["window"].get("width"), ran["window"].get("height")) or "headless",
+                window_text(results.get("runs", []), ran),
                 settings or "the options file's settings", ", frame generation off" if "frame_generation" not in opts else "",
                 plan["seconds"], "%d runs, the switch flipped every %d s within each (HOS_AB)" % (plan["runs"], AB_PERIOD_S)
                 if plan["how"] == "in-run" else "%d interleaved pairs, the median" % plan["runs"]))
@@ -409,7 +467,10 @@ def measurements(plan, results):
     if plan["what"] == "switch":
         out += ["**Baseline:** both columns are one build, %s (not main): the switch set against unset on it." %
                 ((results.get("ran") or {}).get("version") or "?"), ""]
-    out += [table(plan, results), "", "```"]
+    out += [table(plan, results), ""]
+    if plan["how"] != "in-run":
+        out += [spread_line(results), ""]
+    out.append("```")
     out += [r["line"] for r in results["runs"]]
     out += sorted({l for r in results["runs"] for l in r.get("log_lines", [])})
     out.append("```")
@@ -489,13 +550,62 @@ def default_runtime():
 
 # ---- a run ----
 
-def pin_options(src, path, framegen, vsync):
+def dynamic_resolution(path):
+    """Whether the options file at path (None: no file) leaves the Render resolution at Auto, the game's dynamic resolution:
+    no resolution= line, or 0"""
+    if not path:
+        return True
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            key, eq, value = line.strip().partition("=")
+            if eq and key.strip() == FIXED_RESOLUTION[0]:
+                return value.strip() in ("", "0")
+    return True
+
+
+def pin_options(src, path, framegen, vsync, dynamic=False):
     """The options file every run starts from a copy of: src's (or none: every row at its default) with the title skipped,
-    V-Sync and frame generation off unless asked"""
+    V-Sync and frame generation off unless asked, and the Render resolution fixed where it was Auto unless dynamic is asked"""
     from pipeline_tour import set_ini
     if src:
         shutil.copyfile(src, path)
-    set_ini(path, [SKIP_TITLE] + ([] if vsync else [VSYNC_OFF]) + ([] if framegen else [FRAMEGEN_OFF]))
+    fixed = [] if dynamic or not dynamic_resolution(src) else [FIXED_RESOLUTION]
+    set_ini(path, [SKIP_TITLE] + ([] if vsync else [VSYNC_OFF]) + ([] if framegen else [FRAMEGEN_OFF]) + fixed)
+
+
+def new_clock():
+    return {"_at": time.monotonic()}
+
+
+def lap(clock, phase):
+    """Adds the time since the last lap to phase, in seconds; lap(clock, None) ends the clock and returns the phases"""
+    now = time.monotonic()
+    if phase is None:
+        clock.pop("_at", None)
+        return clock
+    clock[phase] = round(clock.get(phase, 0.0) + now - clock["_at"], 1)
+    clock["_at"] = now
+    return clock
+
+
+TIMING_ORDER = ("start", "title and load", "teleport", "warm-up", "measured", "stop", "copy and analysis", "cleanup")
+
+
+def timing_summary(runs, job_s, before_runs_s=0, batch_s=0):
+    """Where the job's time went: its length and each phase's median over the runs (a failed one's too)"""
+    phases = {}
+    for r in runs:
+        for k, v in (r.get("timing") or {}).items():
+            phases.setdefault(k, []).append(v)
+    return {"job_s": round(job_s, 1), "before_runs_s": round(before_runs_s, 1), "batch_s": round(batch_s, 1), "runs": len(runs),
+            "median_s": {k: statistics.median(phases[k]) for k in TIMING_ORDER if k in phases}}
+
+
+def timing_text(t):
+    """The time through the batch and summary, including preparation, and the runs' phase medians."""
+    return "the job took %.1f min through analysis (%d runs; preparation %.1f min, run batch %.1f min); a run's median: %s" % (
+        t["job_s"] / 60, t["runs"], t["before_runs_s"] / 60, t["batch_s"] / 60,
+        ", ".join("%s %.0f s" % kv for kv in t["median_s"].items()))
 
 
 def run_one(plan, side, k, pinned):
@@ -520,14 +630,19 @@ def run_one(plan, side, k, pinned):
     desc = "%s: %s · %s" % (side, s["label"], scene["name"])
     wrapper = [sys.executable, "-I", os.path.join(common.SCRIPTS, "dev.py"), "queue", "run", "ab-%s%d" % (side, k),
                "--mode", "timing", "--desc", desc, "--"]
-    r = {"side": side, "k": k, "folder": d, "seconds": plan["seconds"], "warm": False}
+    r = {"side": side, "k": k, "folder": d, "seconds": plan["seconds"], "warm": False,
+         "headless": env.get("HOS_HEADLESS", "").strip(" \t\r\n").lower() not in ("", "0", "false", "off", "no")}
     session = None
+    clock = new_clock()   # (where the run's time goes: results.json, and the line after the runs)
+    phase = "start"
     try:
         say("%s%d: queued (timing); %s" % (side, k, desc))
         session = longshot_bridge.start_session(
             s["runtime"], romfs=packs.runtime_romfs(s["runtime"]),   # (a --romfs-in-place base's runtime has none)
             run=os.path.join(d, "game"), user=os.path.join(d, "user"), save=scene["folder"], slot=scene["slot"],
             repo_save=scene["save"], env=env, ready="present", timeout=1800, wrapper=wrapper)
+        lap(clock, "start")   # (the queue's wait, the boot, to the first frame)
+        phase = "title and load"
         g = drive.Game(session.connect(30), d, "", live=live)
         end = time.monotonic() + 300   # (the title skipped by the game: its presses start 20 s after the first controller read)
         while True:
@@ -537,7 +652,9 @@ def run_one(plan, side, k, pinned):
             if time.monotonic() > end:
                 raise drive.Failed("not in play 300 s after the first frame (is Skip title screen on? last state %s)" % st)
             time.sleep(1)
-        if scene["age"] and st["age"] != scene["age"]:
+        lap(clock, "title and load")
+        phase = "teleport"
+        if scene["age"] and st["age"] != scene["age"] and not scene.get("route"):
             drive.switch_age(g, scene["age"])
         if scene["dest"]:
             drive.teleport(g, scene["dest"][0], scene["dest"][1], scene["age"])
@@ -545,20 +662,39 @@ def run_one(plan, side, k, pinned):
             g.cheat(route.TIME_ACTION + scene["hour"])
         status = g.must("status")
         options = g.must("option_get", timeout=30).get("options") or []
+        lap(clock, "teleport")
+        phase = "warm-up"
         t0 = time.monotonic()
         while time.monotonic() - t0 < WARM_MAX_S:
             time.sleep(1)
             if time.monotonic() - t0 >= plan["warmup"] and settled(read_trace(trace)):
                 r["warm"] = True
                 break
+        lap(clock, "warm-up")
+        phase = "measured"
         rows = read_trace(trace)
         if not rows:
             raise drive.Failed("no frame trace at %s (RX_VK_FRAME_TRACE)" % trace)
         start = num(rows[-1], "at_ns")
-        time.sleep(plan["seconds"] + 3)   # (3 s more: the trace is flushed every 60 frames)
+        if scene.get("route"):   # (the route played from where the save loaded Link: measured while it plays)
+            g.must("play", timeout=30, path=scene["route"]["path"], sync=scene["route"]["sync"])
+            rows = read_trace(trace)
+            start = num(rows[-1], "at_ns") if rows else start
+            end = time.monotonic() + plan["seconds"] + 120
+            while (g.must("status").get("recorder") or {}).get("mode") not in ("off", None):
+                if time.monotonic() > end:
+                    raise drive.Failed("the route did not end within %d s of its length" % 120)
+                time.sleep(0.5)
+        else:
+            time.sleep(plan["seconds"])
+        time.sleep(3)   # (the trace is flushed every 60 frames)
+        lap(clock, "measured")
+        phase = "stop"
         if session.info()["state"] != "running":
             raise drive.Failed("the game ended while measured")
         info = session.stop(timeout=30)
+        lap(clock, "stop")
+        phase = "copy and analysis"
         if info.get("exit_code"):
             raise drive.Failed("the game exited %s" % info["exit_code"])
         shutil.copyfile(trace, os.path.join(d, "frames.csv"))
@@ -566,7 +702,15 @@ def run_one(plan, side, k, pinned):
         if not rows or num(rows[-1], "at_ns") < start + 0.9 * plan["seconds"] * 1e9:
             raise drive.Failed("the frame trace covers less than 90 %% of the %d s measured" % plan["seconds"])
         with open(info["log"], encoding="utf-8", errors="replace") as f:
-            facts = log_facts(f.read())
+            text = f.read()
+        facts = log_facts(text)
+        if scene.get("route"):   # (a route's replay that went another way measured another run: refused)
+            gone = re.search(r"input: the replay diverged at frame (\d+): ([^\n]*)", text)
+            if gone:
+                raise drive.Failed("the route's replay diverged at frame %s: %s" % gone.groups())
+            met = re.search(r"input: (\d+) of (\d+) anchors met", text)
+            if met and met.group(1) != met.group(2):
+                raise drive.Failed("the route's replay met %s of its %s loads" % met.groups())
         skip = set(plan["compared"]) | set(plan["allow"]) | {"HOS_AB"}
         r.update(ran=dict(what_ran(status, options, facts, skip), version=facts["version"]), gpu=facts["gpu"],
                  cold=sum(1 for x in rows if cold(x)), log_lines=[l for l in [facts["switches_line"]] + facts["ab_lines"] if l])
@@ -576,13 +720,19 @@ def run_one(plan, side, k, pinned):
                 raise drive.Failed("%s was never read during the A/B: both sides ran the same" % plan["compared"][0])
         else:
             r["stats"] = frame_stats([num(x, "ms") for x in rows])
+        lap(clock, phase)
+        phase = None
     except (drive.Failed, longshot_bridge.Failed, OSError) as e:
         r["error"] = str(e)
+        if phase:
+            lap(clock, phase)
         if session is not None:
             try:
                 session.stop(timeout=15, terminate=True)
             except longshot_bridge.Failed:
                 pass
+        lap(clock, "cleanup")
+    r["timing"] = lap(clock, None)
     r["line"] = run_line(r)
     say(r["line"])
     return r
@@ -615,6 +765,7 @@ def summarise(plan, runs):
 # ---- the command ----
 
 def cmd_ab(a):
+    called = time.monotonic()
     if a.scenes:
         for n, (save, to, age, hour, about) in SCENES.items():
             print("%-20s %s%s" % (n, about, "  (default)" if n == DEFAULT_SCENE else ""))
@@ -632,12 +783,23 @@ def cmd_ab(a):
         die("--set names a compared switch: %s" % ", ".join(sorted(clash)))
     if a.runs < 1 or a.seconds < 10:
         die("--runs 1 or more, --seconds 10 or more")
-    scene = scene_of(a.scene, a.save, a.slot)
+    if a.route:
+        if a.save:
+            die("--route or --save, not both: a route starts from its own repository save")
+        r = routes.read_route(routes.route_file(a.route))
+        if r["seconds"] < 10:
+            die("the route %s is %.1f s: 10 s or more to measure" % (r["name"], r["seconds"]))
+        scene = {"name": "route-" + r["name"], "save": r["save"], "folder": None, "slot": None, "to": None, "age": None,
+                 "hour": None, "about": "the route %s (%.0f s from %s, %s)" % (r["name"], r["seconds"], r["save"], r["map"]),
+                 "route": {"path": r["path"], "sync": a.sync, "frames": r["frames"]}}
+        a.seconds = int(r["seconds"])
+    else:
+        scene = scene_of(a.scene, a.save, a.slot)
     for p in (a.options, scene["folder"]):
         if p and not os.path.exists(p):
             die("no such file or folder: %s" % p)
     from tours import route
-    scene["dest"] = destination(scene, route.actions())
+    scene["dest"] = None if scene.get("route") else destination(scene, route.actions())
     common_env = dict(COMMON_ENV, **both)
     if a.headless:
         common_env["HOS_HEADLESS"] = "1"
@@ -646,6 +808,12 @@ def cmd_ab(a):
         ok, why = in_run(a_env, b_env, wired_switches())
         how = "in-run" if ok and not a.separate else "separate"
         why = "" if ok and not a.separate else why if not ok else "--separate"
+    if a.threads:
+        if "HOS_THREAD_TIMES" in set(both) | set(a_env) | set(b_env):
+            die("--threads cannot be combined with HOS_THREAD_TIMES overrides")
+        if how == "in-run":
+            die("--threads cannot sample an in-run comparison; use --separate (thread comparisons are currently unavailable)")
+        die("--threads is currently unavailable: CPU samples cannot be safely matched to measured frames")
     label = "change" if change else "-".join(differing(a_env, b_env)).lower()
     folder = os.path.join(common.dev_path("runs"), "ab", time.strftime("%Y%m%d-%H%M%S-") + label + "-" + scene["name"])
     if change:
@@ -667,6 +835,9 @@ def cmd_ab(a):
     plan = make_plan(a_env, b_env, change, scene, a.seconds, a.runs, a.warmup, common_env, how, why, hashes, rts, folder,
                      a.allow or ())
     print(plan_text(plan), flush=True)
+    if not a.dynamic and dynamic_resolution(a.options):
+        say("the Render resolution at 67 % in every run: the options file leaves it at Auto, the game's dynamic resolution, "
+            "whose 3D size follows the GPU's load (--dynamic keeps Auto)")
     if a.dry_run:
         return 0
     os.makedirs(folder)
@@ -678,12 +849,17 @@ def cmd_ab(a):
         for k in leaked:
             del os.environ[k]
     pinned = os.path.join(folder, "options.ini")
-    pin_options(a.options, pinned, a.framegen, a.vsync)
+    pin_options(a.options, pinned, a.framegen, a.vsync, a.dynamic)
+    began = time.monotonic()
     runs = [run_one(plan, side, k, pinned) for side, k in plan["order"]]
+    batch_end = time.monotonic()
     res = summarise(plan, runs)
+    res["timing"] = timing_summary(runs, time.monotonic() - called, began - called, batch_end - began)
+    say(timing_text(res["timing"]))
+    text = measurements(plan, res) if res["verdict"] is not None else None
     for r in runs:   # (the analysis' own lists: results.json keeps the numbers)
         r.pop("periods", None)
-    with open(os.path.join(folder, "results.json"), "w", encoding="utf-8") as f:   # (first: kept if the write-up fails)
+    with open(os.path.join(folder, "results.json"), "w", encoding="utf-8") as f:
         json.dump(res, f, indent=1)
     if res["verdict"] is None:
         say("no write-up: %s" % ("; ".join(res["problems"][:12])))
@@ -693,7 +869,6 @@ def cmd_ab(a):
                 % ", ".join(rows))
         say("the runs: %s" % folder)
         return 1 if any(r.get("error") for r in runs) else 3
-    text = measurements(plan, res)
     with open(os.path.join(folder, "measurements.md"), "w", encoding="utf-8") as f:
         f.write(text)
     print("\n" + text, flush=True)
@@ -713,11 +888,17 @@ def add_commands(sub):
     p.add_argument("--scenes", action="store_true", help="list the scenes")
     p.add_argument("--save", metavar="FOLDER", help="start from this save folder instead of the scene's repository save")
     p.add_argument("--slot", help="with --save: that slot alone")
+    p.add_argument("--route", metavar="ROUTE", help="measure while a route (assets/routes/ or a file) plays, from its save")
+    p.add_argument("--sync", type=int, default=1, help="with --route: put Link and the camera back at every N-th update "
+                                                       "(0 never; default %(default)s)")
     p.add_argument("--seconds", type=int, default=60, help="measured a run (default %(default)s)")
     p.add_argument("--runs", type=int, default=3, help="pairs of runs, or HOS_AB runs (default %(default)s)")
     p.add_argument("--warmup", type=int, default=10, help="seconds of warm-up at least, then until no frame waits for a "
                                                             "pipeline (at most %d)" % WARM_MAX_S)
     p.add_argument("--options", metavar="FILE", help="the options file to pin (default: none, every row at its default)")
+    p.add_argument("--dynamic", action="store_true", help="keep the Render resolution at Auto, the game's dynamic resolution "
+                                                          "(default: 67%% where the options file leaves it at Auto, so the "
+                                                          "3D is the same size in every run)")
     p.add_argument("--framegen", action="store_true", help="keep the options file's frame generation")
     p.add_argument("--vsync", action="store_true", help="keep the options file's V-Sync")
     p.add_argument("--headless", action="store_true", help="no window (HOS_HEADLESS=1): not what players see")
@@ -726,5 +907,6 @@ def add_commands(sub):
     p.add_argument("--allow", action="append", metavar="KEY", help="a menu row (its options-file key) or switch the runs "
                                                                     "may differ in (a row the change adds)")
     p.add_argument("--dirty", action="store_true", help="measure a change with uncommitted files")
+    p.add_argument("--threads", action="store_true", help="thread CPU comparison (currently unavailable)")
     p.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
     p.set_defaults(func=cmd_ab)

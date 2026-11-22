@@ -100,7 +100,12 @@ void logf(const char*, ...) {}
 '''
 
 FIXTURE = COMMON + r'''
-struct { VkDevice device = nullptr; bool occlusion_precise = true; int driver_id = 5; struct { int deviceType = 2; } props; } dev;
+// (policy.occ_copy: the copies on, as device_policy.h has them for Intel's Windows driver on a discrete GPU)
+struct {
+    VkDevice device = nullptr;
+    bool occlusion_precise = true;
+    struct { bool occ_copy = true; } policy;
+} dev;
 struct NvnState {
     bool render_enabled = true, raster_discard = false;
     uint64_t occ_next = 0, occ_first = 0, occ_limit = 0;
@@ -801,7 +806,8 @@ def check_wiring(replay, draw):
     assert "occ_collect();" in block(replay, "Recording& begin_recording(uint64_t value)")
     # RX_VK_OCC_COPY: a recording's queries copied after its end barrier (its draws done), before it is submitted; every
     # recording's end forgets them, so none is copied by a later recording than its own
-    for marker, c in (("void maybe_split(VkCommandBuffer& cmd) {", "cmd"), ("void finish_recording(uint64_t value) {", "r.cmd")):
+    # (a part's end: split_part, which maybe_split and early_split end a part with)
+    for marker, c in (("void split_part(VkCommandBuffer& cmd) {", "cmd"), ("void finish_recording(uint64_t value) {", "r.cmd")):
         body = block(replay, marker)
         end = body.index('full_barrier(%s, "barrier (recording end)");' % c)
         assert end < body.index("occ_copy_part(%s);" % c) < body.index("submit_recording("), marker

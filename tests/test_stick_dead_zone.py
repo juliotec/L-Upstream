@@ -54,7 +54,7 @@ def main():
     settings = (ROOT / "docs" / "user" / "graphics-and-controls.md").read_text(encoding="utf-8")
 
     check(not re.search(r"HOS_OPT_\w+ = 11\b", api), "a HOS_OPT_ enum also takes option 11")
-    pads = block(hid, "static void pads_read(")
+    pads = block(hid, "static void xinput_poll(")   # (XInput's pads, read off the game's thread)
     check("rx_option(11, 0)" in pads and "hos_filter_stick(thumb[0], thumb[1], zone, v)" in pads and
           "hos_filter_stick(thumb[2], thumb[3], zone, v + 2)" in pads,
           "XInput must filter both sticks with the menu's dead zone")

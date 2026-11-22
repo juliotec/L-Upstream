@@ -5,7 +5,7 @@ CPUs and memory, and a timed run is only worth its numbers when nothing else run
     dev.py queue run NAME [--mode MODE] -- CMD...   CMD when the queue lets it; exits with CMD's status
     dev.py queue status                             who plays, what runs, what waits and why, memory and disk
     dev.py queue history                            the last 20 jobs: waited, ran, status, a timed run's noise
-    dev.py queue cancel ID|NAME                     stop a job (Windows: its whole process tree, by its job object)
+    dev.py queue cancel ID|NAME                     stop a job and every process it started (Windows: by its job object)
 
 MODE (MODES below):
     build       a build or anything heavy on CPU and memory: LONGSHOT_QUEUE_BUILD_SLOTS (2) at once, never beside a timed run
@@ -242,6 +242,71 @@ def heavy_procs(s, skip=()):
             if not env.get("LONGSHOT_JOB"):
                 out.append(pid)
     return out
+
+
+def job_procs(t):
+    """{pid: start} of a job's processes but its runner (Linux): its command's tree, and every process that carries its
+    LONGSHOT_JOB and LONGSHOT_JOB_NAME wherever it went. A game whose parent ended (longshot_bridge.py's supervisor, which a
+    SIGTERM ends before it stops its game) or that left in a session of its own is in no tree any more, but keeps the
+    environment it started with. A process of another job carries another runner's pid; this process is never in it"""
+    found = {}
+    child, me = t.get("child"), os.getpid()
+    if child and procs.running(child, t.get("child_start", procs.proc_start(child))):
+        for p in procs.tree(child):
+            found[p] = procs.proc_start(p)
+    job, name = str(t["pid"]), t.get("name")
+    for pid in procs.exes():
+        if pid in found or pid in (me, t["pid"]):
+            continue
+        env = procs.env_of(pid)
+        if env and env.get("LONGSHOT_JOB") == job and env.get("LONGSHOT_JOB_NAME", name) == name:
+            found[pid] = procs.proc_start(pid)
+    return {p: st for p, st in found.items() if st is not None and p not in (me, t["pid"])}
+
+
+def _signal(found, sig):
+    for pid, st in found.items():
+        if procs.running(pid, st):   # (the process that was found: never a pid used again)
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+
+
+def _scope(t, sig):
+    """sig to every process left in the job's systemd scope (run() puts the command in one): one that dropped its
+    LONGSHOT_JOB too"""
+    if common.WINDOWS or not shutil.which("systemctl"):
+        return
+    try:
+        subprocess.run(["systemctl", "--user", "kill", "--signal=%s" % sig,
+                        "longshot-job-%s-%d.scope" % (safe(t.get("name") or ""), t["pid"])],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def end_job(t, found=None, grace=10.0, scope=True):
+    """Linux: SIGTERM to every process of job t but its runner (job_procs, and found: those seen before the runner was
+    stopped; with scope, its systemd scope's too), SIGKILL to what still runs after grace seconds. Returns how many it
+    found"""
+    found = dict(found or {})
+    found.update(job_procs(t))
+    _signal(found, signal.SIGTERM)
+    if scope:
+        _scope(t, "SIGTERM")
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        more = {p: st for p, st in job_procs(t).items() if found.get(p) != st}   # (started since: a crash watcher)
+        _signal(more, signal.SIGTERM)
+        found.update(more)
+        if not any(procs.running(p, st) for p, st in found.items()):
+            break
+        time.sleep(0.2)
+    _signal(found, signal.SIGKILL)
+    if scope:
+        _scope(t, "SIGKILL")
+    return len(found)
 
 
 # ---- memory and disk ----
@@ -562,7 +627,7 @@ def run(name, mode, cmd, environ=None, s=None, cwd=None, desc=None):
           "cpu": cpu, "prio": "normal", "t": time.time(), "state": "waiting", "ready": True, "idle": False, "group": "",
           "cmd": " ".join(cmd), "cwd": cwd}
     lock = os.path.join(qdir, ".lock")
-    said, last_idle, child, job = None, 0.0, None, None
+    said, last_idle, child, job, scoped = None, 0.0, None, None, False
     noise = Noise()
     if cpu == "heavy":
         free = common.disk_free_gb(cwd)
@@ -620,6 +685,7 @@ def run(name, mode, cmd, environ=None, s=None, cwd=None, desc=None):
             props = ["-p", "MemorySwapMax=0"] if cpu == "quiet" and s["LONGSHOT_QUEUE_NO_SWAP"] != "0" else []
             run_cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
                        "--unit=longshot-job-%s-%d" % (safe(name), me["pid"])] + props + ["--"] + run_cmd
+            scoped = True
         stop = threading.Event()
         if common.WINDOWS:
             child = subprocess.Popen(run_cmd, cwd=cwd, env=env, creationflags=procs.CREATE_SUSPENDED)
@@ -648,11 +714,15 @@ def run(name, mode, cmd, environ=None, s=None, cwd=None, desc=None):
     finally:
         ended = child is None or child.poll() is not None
         if not ended:
-            child.terminate()
+            if common.WINDOWS:   # (the rest of its tree: the job object, at win_job_release)
+                child.terminate()
+            else:   # (everything the job started: a game whose supervisor a SIGTERM ends would run on)
+                end_job(me, scope=scoped)
             try:
                 child.wait(10)
             except subprocess.TimeoutExpired:
                 child.kill()
+                child.wait()
         if job is not None:
             procs.win_job_release(job, keep_running=ended)
         try:
@@ -754,12 +824,22 @@ def cancel(s, what):
     if not hits:
         sys.exit("dev.py queue: no job %s in the queue" % what)
     for t in hits:
+        if t.get("ns") and t["ns"] != procs.pidns():   # (its pids name other processes here)
+            say("could not stop %s: it runs in another pid namespace (a sandbox's): cancel it from there or outside" % t["name"])
+            continue
         try:
             if common.WINDOWS and procs.win_kill_tree(t["pid"]):   # (the runner and its command's whole tree, for a runner without a job object too)
                 say("stopped %s (pid %d) and every process it started" % (t["name"], t["pid"]))
                 continue
+            # (Linux: the job's processes are found before its runner stops, then ended here too, whatever the runner's
+            # version: one that ends only its command leaves a game whose supervisor a SIGTERM ends running)
+            found = {} if common.WINDOWS else job_procs(t)
             os.kill(t["pid"], signal.SIGTERM)
-            say("stopped %s (pid %d)" % (t["name"], t["pid"]))
+            if common.WINDOWS:
+                say("stopped %s (pid %d)" % (t["name"], t["pid"]))
+                continue
+            n = end_job(t, found, scope=s["LONGSHOT_QUEUE_SCOPE"] != "0")
+            say("stopped %s (pid %d) and %d process%s of its job" % (t["name"], t["pid"], n, "" if n == 1 else "es"))
         except OSError as e:
             say("could not stop %s: %s" % (t["name"], e))
     return 0

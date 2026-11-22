@@ -58,6 +58,9 @@ def main():
         'namespace Shader {',
         block(info_h, 'enum class HandleOp : u32 {'),
         block(info_h, 'template <typename ReadCbuf, typename ReadStorage>\nstd::optional<u32> EvaluateHandleProgram('),
+        # (the simulated-turf private storage buffers' encoding, which stage_storage_base reads through)
+        info_h[info_h.index('inline constexpr u32 kSimTurfStorageBit'):info_h.index('[[nodiscard]] constexpr u32 SimTurfStorageOrig(')],
+        block(info_h, '[[nodiscard]] constexpr u32 SimTurfStorageOrig('),
         '}',
         'namespace Shader::Optimization {',
         block(texture_pass, 'size_t HandleOperands(HandleOp op)'),
@@ -80,7 +83,7 @@ def main():
 #include <vector>
 using u32 = uint32_t; using s32 = int32_t; using u64 = uint64_t;
 namespace Shader {
-struct StorageBufferDescriptor { u32 cbuf_index, cbuf_offset; };
+struct StorageBufferDescriptor { u32 cbuf_index, cbuf_offset, count = 1; };
 struct Info {
  static constexpr size_t MAX_SSBOS{64};
  std::vector<StorageBufferDescriptor> storage_buffers_descriptors;

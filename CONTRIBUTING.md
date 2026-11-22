@@ -20,7 +20,10 @@ will. That includes:
   (perf or Tracy captures), frame dumps, and the game folder's `cache/` (`longshot_programs.bin` and its `.idx`,
   `longshot_pipelines.bin`, `longshot_vk_pipelines.bin`). The play profiles in `assets/profiles/` (the hot list and the
   renderer's profile) are not on this list: they hold no game code or data and are committed
-  ([their README](assets/profiles/README.md));
+  ([their README](assets/profiles/README.md)). Nor are the routes in `assets/routes/`: input recordings made with
+  `HOS_INPUT_ROUTE=1` that hold the input, Link's positions and the camera's angles as numbers, no guest words and no
+  addresses, checked by `dev.py route check` ([their README](assets/routes/README.md)). Any other input recording
+  (`HOS_INPUT_RECORD`, the Insert menu's Record input) holds the game's memory words and stays on your PC;
 - saves (`user/`), `longshot_options.ini`, `longshot_env.txt` and `language.txt`. The one exception: scrubbed saves
   under `assets/saves/` ([the rules](assets/saves/README.md)): one slot each (`progress.sav` and `caption.sav` only),
   its picture made grey and its date reset by `scripts/longshot_saves.py scrub`, passing `check-repo-saves`, made fresh

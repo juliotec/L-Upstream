@@ -41,14 +41,22 @@ def fixture(source):
     names = dict((member, name) for name, member in re.findall(r'\{TAB_\w+, "([^"]+)", &opts\.(\w+),', menu))
     controls = "\n".join(definition(menu, signature) for signature in (
         "void apply_preset", "void apply_auto"))
-    auto_members = sorted(set(re.findall(r"opts\.(\w+)\s*=", controls)) & names.keys())
+    defaults = dict((member, int(value)) for member, value in re.findall(r"\bint (\w+)\s*=\s*(-?\d+);", options))
+    # (a row the controls only put back to its built-in default, as a preset does Shadow resolution's Auto, is no row Auto
+    # chooses for: at its default, a report lists it nowhere)
+    sets = {}
+    for member, value in re.findall(r"opts\.(\w+)\s*=\s*([^;,=][^;,]*)", controls):
+        sets.setdefault(member, set()).add(value.strip())
     text_functions = {
         "ultrawide": "tx_ultrawide", "output_res": "tx_output_res", "resolution": "tx_resolution",
         "dlss": "tx_upscaler", "dlss_model": "tx_dlss_model", "preset": "tx_preset", "gpu_device": "tx_gpu", "mic": "tx_mic",
     }
     # (the rows a preset sets whose texts are fixed: the built-in defaults for a Custom player Auto never chose for)
     preset_rows = ["sharpness", "pace", "realtime", "handheld"]
-    members = list(dict.fromkeys(["ultrawide", "output_res", "resolution", "dlss", *auto_members, *preset_rows,
+    reset_members = sorted(member for member, values in sets.items() if member in names and member in defaults
+                           and member not in preset_rows and values == {str(defaults[member])})
+    auto_members = sorted(set(sets) & names.keys() - set(reset_members))
+    members = list(dict.fromkeys(["ultrawide", "output_res", "resolution", "dlss", *auto_members, *reset_members, *preset_rows,
                                  "framegen_by", "game_lang", "dlss_model", "gpu_device", "mic", "fov"]))
     rows = "\n".join('    {TAB_GRAPHICS, "%s", &opts.%s, 0, 100, 1, %s, nullptr},' %
                      (names[member], member, text_functions.get(member, "tx_number")) for member in members)
@@ -58,7 +66,6 @@ def fixture(source):
     known = definition(menu, "int report_default") if "int report_default(" in menu else ""
     auto_for = re.search(r"^uint64_t auto_for = 0;", menu, re.M)
     auto_for = auto_for.group() if auto_for else "uint64_t auto_for = 0;"
-    defaults = dict((member, int(value)) for member, value in re.findall(r"\bint (\w+)\s*=\s*(-?\d+);", options))
     # (each preset row moved off its built-in default, and the line a report gives it then)
     moved = dict((member, 1 if defaults[member] == 0 else 0) for member in preset_rows)
     custom_set = " ".join("opts.%s = %d;" % (member, moved[member]) for member in preset_rows)
@@ -73,6 +80,9 @@ def fixture(source):
     unchanged = " && ".join("opts.%s == before.%s" % (member, member) for member in re.findall(r"\bint (\w+)\s*=", options))
     auto_checks = "\n".join('        CHECK(pc.find("%s: ") != std::string::npos, "Auto-controlled %s missing");' %
                             (names[member], member) for member in auto_members)
+    auto_checks += "".join('\n        CHECK(changed.find("%s: ") == std::string::npos && pc.find("%s: ") == std::string::npos, '
+                           '"%s, put back to its default, listed");' % (names[member], names[member], member)
+                           for member in reset_members)
     return r'''#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif

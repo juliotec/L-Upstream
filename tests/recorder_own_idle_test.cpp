@@ -428,6 +428,7 @@ int main(int argc, char** argv) {
     vkx::vkResetDescriptorPool = seen_reset_descriptor_pool;
     vkx::vkEndCommandBuffer = seen_end;
     const int mode = rec::mode();   // (first: it reads the switches)
+    rec::g_parts = false;   // (RX_VK_RECORDER_PARTS: these switches' cases are of the drains; tests/recorder_parts_test.cpp has its own)
     std::printf("mode %d own %d idle_wait %d\n", mode, (int)rec::g_own, (int)rec::g_idle_wait);
     if (c == "env") pass(c);   // (the switches as the renderer reads them: the Python side checks the line)
     if (rec::mode() != rec::THREAD) fail("RX_VK_RECORDER=thread expected");

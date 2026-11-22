@@ -12,7 +12,8 @@ and the upscalers' libraries (NVIDIA NGX, AMD FidelityFX, Intel XeSS), which rec
 are counted as other work by hand. The counts are each recording thread's own (the render thread's, any other recording thread's).
 
 Checked:
- - the sources: each vkCmd* macro in vk_work.h counts and then calls the driver, as work or other work by the list above;
+ - the sources: each vkCmd* macro in vk_work.h counts and then calls the driver (through the recorder's packer,
+   vk_recorder.h), as work or other work by the list above, and the state-only and uncounted ones it wraps count nothing;
    every vkCmd* a file that includes vk_work.h calls is wrapped, or sets state only, or is one of the few known to write
    nothing a pass reads (timestamps, query resets, AMD's breadcrumbs); vk_work.h is that file's last include; no header
    calls vkCmd*; the files that call vkCmd* without it are the known ones; every library recording (NGX's create and
@@ -71,6 +72,12 @@ UNWRAPPED_OK = {
                     "menu_record): no pass of the game's after them",
 }
 
+# (files whose ::vkx::vkCmd* calls are the driver's, made from behind vk_work.h's macros, so counted already)
+DRIVER_CALLS_OK = {
+    "vk_recorder.h": "the recorder's packers (rx_*), which each vkCmd* macro of vk_work.h calls after its count: they call the "
+                     "driver now, or defer the call in order (RX_VK_RECORDER)",
+}
+
 C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
 NGX_RECORD_CALL = re.compile(r"\bNGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)\s*\(")   # (NVIDIA NGX's create/evaluate: DLSS's, frame generation's)
 FFX_RECORD_CALL = re.compile(r"\bl\s*\.\s*dispatch\s*\(")   # (AMD FidelityFX's ffxDispatch, through its loaded pointer)
@@ -114,13 +121,19 @@ def check_sources():
     bad = []
     work = (VK / "vk_work.h").read_text(encoding="utf-8")
     macros = dict(re.findall(r"^#define (vkCmd\w+)\(\.\.\.\) (.*)$", work, re.M))
-    if set(macros) != DRAW_PASS | OTHER_WORK:
+    # (vk_work.h also wraps the state-only calls and the few NOT_COUNTED, for the recorder and the call counts: no count)
+    unsorted = sorted(f for f in set(macros) - DRAW_PASS - OTHER_WORK - set(NOT_COUNTED) if not STATE_ONLY.match(f))
+    if unsorted or not DRAW_PASS | OTHER_WORK <= set(macros):
         bad.append("vk_work.h's vkCmd* macros changed: only there %s, only here %s (say here which count each new one is)"
-                   % (sorted(set(macros) - DRAW_PASS - OTHER_WORK), sorted((DRAW_PASS | OTHER_WORK) - set(macros))))
+                   % (unsorted, sorted((DRAW_PASS | OTHER_WORK) - set(macros))))
     for f, body in macros.items():
-        count = "note_work" if f in DRAW_PASS else "note_other_work"
-        if body.strip() != "(::mkwvk::%s(), ::vkx::%s(__VA_ARGS__))" % (count, f):
-            bad.append("vk_work.h: %s is not counted as %s, then the driver's call: %s" % (f, count, body))
+        count = "note_work" if f in DRAW_PASS else "note_other_work" if f in OTHER_WORK else None
+        # (the count, then the diagnostics' call count and GPU profile glue span, which record nothing, then the recorder's
+        # packer, vk_recorder.h rx_*: the driver's call, now or deferred in order)
+        shape = re.fullmatch(r"\((?:::mkwvk::(note_work|note_other_work)\(\), )?(?:::mkwvk::call_count\(::mkwvk::CK_\w+\), )?"
+                             r"(?:MKWVK_GLUE\(\"%s\", __VA_ARGS__\), )?::mkwvk::rec::rx_%s\(__VA_ARGS__\)\)" % (f, f), body.strip())
+        if not shape or shape.group(1) != count:
+            bad.append("vk_work.h: %s is not counted as %s, then the driver's call: %s" % (f, count or "nothing", body))
     for want in ("extern thread_local uint64_t work_epoch;", "extern thread_local bool other_work_since_barrier;",
                  "inline void note_work() { work_epoch++; }",
                  "inline void note_other_work() { work_epoch++, other_work_since_barrier = true; }"):
@@ -142,6 +155,8 @@ def check_sources():
         text = code(path.read_text(encoding="utf-8", errors="replace"))
         includes_work = '#include "vk_work.h"' in text
         calls = C_COMMENT_OR_STRING.sub(lambda m: "" if m.group(0)[0] in "\"'" else m.group(0), text)   # (and no strings)
+        if path.name in DRIVER_CALLS_OK:   # (its ::vkx:: calls are the driver's, behind vk_work.h's counts; any other is not)
+            calls = re.sub(r"::\s*vkx\s*::\s*vkCmd\w+\s*\(", "(", calls)
         used = sorted(set(re.findall(r"\b(vkCmd\w+)\s*\(", calls)))
         if path.suffix == ".h":
             if used:
@@ -233,8 +248,26 @@ void vkCmdDispatch(VkCommandBuffer, uint32_t, uint32_t, uint32_t) {}
 void vkCmdCopyBuffer(VkCommandBuffer, VkBuffer, VkBuffer, uint32_t, const VkBufferCopy*) {}
 void vkCmdFillBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, uint32_t) {}
 }
+namespace mkwvk::rec {   // (vk_recorder.h's packers, which vk_work.h's macros call after their count: the recorder off)
+void rx_vkCmdPipelineBarrier2(VkCommandBuffer c, const VkDependencyInfo* d) { vkx::vkCmdPipelineBarrier2(c, d); }
+void rx_vkCmdBeginRendering(VkCommandBuffer c, const VkRenderingInfo* r) { vkx::vkCmdBeginRendering(c, r); }
+void rx_vkCmdEndRendering(VkCommandBuffer c) { vkx::vkCmdEndRendering(c); }
+void rx_vkCmdDraw(VkCommandBuffer c, uint32_t a, uint32_t b, uint32_t d, uint32_t e) { vkx::vkCmdDraw(c, a, b, d, e); }
+void rx_vkCmdClearAttachments(VkCommandBuffer c, uint32_t n, const VkClearAttachment* a, uint32_t m, const VkClearRect* r) {
+    vkx::vkCmdClearAttachments(c, n, a, m, r);
+}
+void rx_vkCmdBeginQuery(VkCommandBuffer c, VkQueryPool p, uint32_t q, VkQueryControlFlags f) { vkx::vkCmdBeginQuery(c, p, q, f); }
+void rx_vkCmdEndQuery(VkCommandBuffer c, VkQueryPool p, uint32_t q) { vkx::vkCmdEndQuery(c, p, q); }
+void rx_vkCmdDispatch(VkCommandBuffer c, uint32_t x, uint32_t y, uint32_t z) { vkx::vkCmdDispatch(c, x, y, z); }
+void rx_vkCmdCopyBuffer(VkCommandBuffer c, VkBuffer s, VkBuffer d, uint32_t n, const VkBufferCopy* r) { vkx::vkCmdCopyBuffer(c, s, d, n, r); }
+void rx_vkCmdFillBuffer(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkDeviceSize n, uint32_t v) { vkx::vkCmdFillBuffer(c, b, o, n, v); }
+}
 namespace mkwvk {
 @@WORK@@
+// (the macros' glue span of the GPU profile, vk_gprof.cpp: off, as when RX_VK_PASS_TIMING is under 3)
+bool gprof_glue_on() { return false; }
+GprofGlue::GprofGlue(VkCommandBuffer c, const char* l) : cmd(c), label(l) {}
+GprofGlue::~GprofGlue() {}
 }
 @@MACROS@@
 namespace mkwvk {
@@ -311,9 +344,11 @@ int main(int argc, char** argv) {
 def fixture_source():
     work = (VK / "vk_work.h").read_text(encoding="utf-8")
     texture = (VK / "vk_texture.cpp").read_text(encoding="utf-8")
-    work_ns = between(work, "namespace mkwvk {", "} // namespace mkwvk")[len("namespace mkwvk {"):]
-    macros = "\n".join(line for line in work.splitlines() if line.startswith("#define vkCmd"))
-    barriers = between(texture, "thread_local uint64_t work_epoch = 0;", "void texture_begin_recording(")
+    work_ns = between(work, "namespace mkwvk {\nextern thread_local uint64_t work_epoch;", "} // namespace mkwvk")[len("namespace mkwvk {"):]
+    macros = "\n".join(line for line in work.splitlines() if line.startswith(("#define MKWVK_", "#define vkCmd")))
+    # (the last full barrier's command buffer is declared further up, before upload_astc_gpu, which forgets it)
+    barriers = (between(texture, "thread_local VkCommandBuffer last_barrier_cmd = VK_NULL_HANDLE;", "\n") + "\n" +
+                between(texture, "thread_local uint64_t work_epoch = 0;", "void texture_begin_recording("))
     for want in ("void full_barrier(VkCommandBuffer cmd, const char* why) {", "void pass_start_barrier(VkCommandBuffer cmd) {"):
         if want not in barriers:
             raise SystemExit("FAIL: vk_texture.cpp: %s is no longer between the counts and texture_begin_recording" % want)

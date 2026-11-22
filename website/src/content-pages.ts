@@ -12,6 +12,7 @@ export const contentPages: Record<string, string> = {
   'help': 'docs/user/common-issues.md',
   'help/report': 'docs/user/reporting-and-contributing.md',
   'help/performance': 'docs/user/performance-report.md',
+  'privacy': 'docs/user/privacy.md',
   'contributing': 'CONTRIBUTING.md',
 };
 

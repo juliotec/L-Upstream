@@ -119,7 +119,8 @@ A frame is one of the game's own presents (frame generation's do not count). An 
 read after its request, plus `at` frames, and is held for `frames` frames (1 to 216000; `at` 0 to 216000).
 
 - **Names** are `HOS_INPUT_SCRIPT`'s: buttons `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`; stick directions
-  `LUP LDOWN LLEFT LRIGHT RUP RDOWN RLEFT RRIGHT`; axes `LX= LY= RX= RY=` from -32767 to 32767 (positive y is up). Give
+  `LUP LDOWN LLEFT LRIGHT RUP RDOWN RLEFT RRIGHT`; axes `LX= LY= RX= RY=` from -32767 to 32767 (positive y is up);
+  `SPRINT`, the Sprint control's key held (with the Controls tab's Sprint row on; never a button the game sees). Give
   them as `"A+B"` or `["A", "B"]`, any case.
 - **Mixing:** the bridge's buttons add to the player's. On the axes it sets, its sticks replace an input script's; the
   player's pad, keys and mouse still count (larger deflection wins) unless `"exclusive": true`, which shuts them out
@@ -127,6 +128,13 @@ read after its request, plus `at` frames, and is held for `frames` frames (1 to 
 - **Reply:** once the input is over, with `start` and `end` (the first frame without it). With `"wait": false`, at once:
   `{"queued": 1, "frames": 8}` (`frames`: the longest step's `at` plus its frames). A no-wait input outlives its client; a waited-on one is let go when its client leaves.
 - **Default `timeout`:** 30 s plus the inputs' frames at 10 fps.
+
+For a Sprint change, record the exact revision and build used for any bridge run. Compare the base and updated head
+using a physical Xbox controller and keyboard on Windows, and a controller on Linux or Steam Deck. With Sprint Off and
+On, check release while steering, the player's own A press while sprinting, and the left stick's press in a
+conversation; capture the menu before and after. Report the
+Linux build, applicable Tier 1 coverage, lint and CI on the updated head, and identify any suite failures also present
+on the baseline. A bridge input does not replace the physical-device comparison.
 
 ## Commands
 
@@ -151,6 +159,8 @@ listed.
 | `saves` | none | `path`, `account`, `option`, `slots` |
 | `quit` | none | `quitting` |
 | `relaunch` | none | `relaunching` |
+| `record` | `action` (`start` default, or `stop`); `path` (default: the player's `recordings/` folder), `route` (`false`: a [route](input.md#routes) holds no guest words) | `path`; with `stop`, `written` (`false`: it had not started yet, or the file could not be written) |
+| `play` | `action` (`start` default, or `stop`); `path` (default: the last recording made), `sync` (1: updates between corrections, 0 none), `sync_max` (1 m) | none; errors `busy`, `not_found`, `wrong_map` (it starts on a map no teleport goes to). Link is taken to the recording's age and map first, so a start can take a load: wait on `status`'s `recorder` |
 | `mem_read` | `addr`, `size`, `format` (`hex` or `base64`), `timeout` (10) | `format`, `addr`, `size`, `data` |
 | `mem_read_many` | `ranges` (list of `{addr, size}`), `format`, `timeout` (10) | `format`, `ranges` (each `addr`, `size`, `data`); a single range replies like `mem_read` |
 | `mem_write` | `addr`, `hex` or `base64`, `timeout` (10) | `wrote`, `addr` |
@@ -161,7 +171,8 @@ listed.
 
 ```
 < {"id":1,"ok":true,"frame":5321,"protocol":1,"fps":59.8,"state":"play","stalled":false,"draws":2410.3,
-   "replayed":5320,"window":{"width":1280,"height":720},"uptime":95.2,"clients":1,
+   "replayed":5320,"window":{"width":1280,"height":720},
+   "game_picture":{"texture_width":2560,"texture_height":1440,"width":1920,"height":1080},"uptime":95.2,"clients":1,
    "input":{"queued":0,"exclusive":false},"map":"KokiriForest_Child",
    "game":{"event":false,"loading":false,"age":"child",...},"version":"...","renderer":"Vulkan: ..."}
 ```
@@ -174,6 +185,11 @@ listed.
 | `stalled` | No frame for a second |
 | `map` | The last map known (`Sequence_CurrentBanc`), read every 250 ms in Link's update; kept through loads; `null` until Link is first seen |
 | `game` | The game's snapshot from Link's update (below), or `null` |
+| `recorder` | The [input recording](input.md#input-recordings) now: `mode` (`off`, `recording`, `playing`), `started`, `waiting` (a replay waiting for a load), `frame` and `end`, `link_apart` of `link_checked` updates, `syncs` and the `largest` correction in metres, `diverged`, `anchors` met of `anchors_wanted`, and `path` (with `off`, the last recording made) |
+
+`game_picture` records the last native game's present texture dimensions and its crop dimensions. With no crop, both
+pairs are the texture extent. The value is `null` until the first valid sample. Interpolated frames leave it unchanged.
+`window` gives the swapchain extent. Confirming that a specific frame reached the screen requires a presentation receipt.
 
 `state` is a guess from draws a frame; a new state must hold 300 ms before it is taken (leaving `boot` or `unknown`
 happens at once):
@@ -240,6 +256,11 @@ Custom where the menu would, a restart noted, saved to `longshot_options.ini`. R
 Render resolution, output resolution) are stepped until they reach `value`; if no step does, nothing changes and the
 reply is `failed`. A `fixed` row also replies `failed`. For Render resolution, `value` is the saved scale choice and
 `text` the active upscaler's supported size.
+
+For a Grass distance farm run, leave `RX_VK_GRASS_DISTANCE` unset so it does not override the row. With `CTL` and
+`HOS_CONTROL` set as in the client example below, use `$CTL option set grass_distance 1` for 2x or
+`$CTL option set grass_distance 0` for Game's, then `$CTL option get grass_distance` and check both `value` and `text`.
+Values 2 and 3 select 3x and 4x. The row is saved, so restore the previous value after the run.
 
 The first `option_get` or `option_set` after start can wait about 3 s for the upscalers' start-up check, holding up
 other replies meanwhile.
@@ -310,8 +331,9 @@ needing `HOS_CONTROL_MEM`. `unavailable` until the game has opened its saves.
 ```
 
 Slots come newest first; `newest` is what Continue loads. Times are Unix seconds. `caption` appears only when
-`caption.sav` has the known layout; its thumbnail is the JPEG at that offset. A slot being written may show
-in-between sizes.
+`caption.sav` has the known layout; its thumbnail is the JPEG at that offset. Publication replaces files one at a
+time. The bridge waits for publication to finish and refuses the request while recovery is pending or the save is
+mounted in place. Other programs reading the save folder can observe intermediate states.
 
 ### quit and relaunch
 

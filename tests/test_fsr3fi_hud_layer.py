@@ -92,6 +92,7 @@ static bool operator==(vec3 a, vec3 b) { return a.r == b.r && a.g == b.g && a.b 
 static bool operator==(vec4 a, vec4 b) { return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w; }
 static float dot(vec3 a, vec3 b) { return a.r * b.r + a.g * b.g + a.b * b.b; }
 static vec3 abs(vec3 a) { return {std::fabs(a.r), std::fabs(a.g), std::fabs(a.b)}; }
+using std::abs;   // (GLSL's abs of a float, not the C library's of an int)
 static float clamp(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 static vec3 clamp(vec3 v, float lo, float hi) { return {clamp(v.r, lo, hi), clamp(v.g, lo, hi), clamp(v.b, lo, hi)}; }
 static float min(float a, float b) { return a < b ? a : b; }

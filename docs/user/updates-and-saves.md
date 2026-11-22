@@ -69,8 +69,9 @@ The build reads your game and never changes it.
 
 ## What Longshot connects to
 
-Longshot uploads nothing about you or your PC, and reads no browser data, passwords or keys. This is everything it does
-on the network or with other programs:
+Longshot sends nothing about you or your PC unless you choose to, and reads no browser data, passwords or keys. This is
+everything it does on the network or with other programs. What the reports hold, who reads them and how long they are
+kept: [privacy](privacy.md).
 
 - **Downloads from git.magicbean.dev:** the launcher reads the release lists, downloads a version's files and checks
   each against the SHA-256 in the release's signed `SHA256SUMS`. The builder's tools come from the links in `tools.lock`,
@@ -82,6 +83,9 @@ on the network or with other programs:
   game counts how its frames, hitches and movies went on each map, with Link's position rounded to 100 units, and the
   launcher sends them to the team with your GPU, driver, CPU and OS, but no paths, user name or ID. Unticking it deletes
   what hasn't been sent.
+- **Crash reports**, only when you press **Send** in the crash window after a crash, or on their own if you tick **Send
+  crash reports automatically** in the launcher (off by default). **Failed build reports**, only when you press **Send
+  to the team** on the launcher's problem page. Both go to the team, and only the team can read them.
 - **Files outside the game folder:** the launcher's folder, the settings and the saves (above), and shortcuts if you ask
   for them. **Bug report** and **Save my pipeline list** write files for you to send yourself: nothing is sent for you.
 

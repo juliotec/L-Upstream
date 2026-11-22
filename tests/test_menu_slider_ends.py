@@ -5,7 +5,7 @@ and a scale stops there: a Slider (the model's rule, menu_model.cpp step) or a r
 slider that has always gone round, 100% to 0%: it says so with wraps. The rows that stop are the ones that stopped
 before the menu was a model (vk_menu.cpp's stops_at_ends list then: Microphone gain, Aspect ratio, Mouse sensitivity,
 Vibration strength, Motion sensitivity X and Y, Volume, Camera speed, Field of view), and the ImGui menu and the model
-both follow the rows' own flags.
+both follow the rows' own flags. The Custom HUD position and size sliders stop at their limits too.
 
     python -I -B tests/test_menu_slider_ends.py
 """
@@ -17,8 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves t
 from menu_model_fixture import module_rows  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-STOPS = {"microphone_gain", "ultrawide", "mouse_sensitivity", "rumble_strength", "motion_sensitivity_x",
-         "motion_sensitivity_y", "volume", "camera_speed", "field_of_view"}
+STOPS = {"microphone_gain", "pad_speaker_volume", "pad_speaker_sync", "pad_speaker_headphone_volume",
+         "ultrawide", "mouse_sensitivity", "rumble_strength", "motion_sensitivity_x",
+         "motion_sensitivity_y", "volume", "camera_speed", "field_of_view",
+         "hud_health_x", "hud_health_y", "hud_health_scale", "hud_buttons_x", "hud_buttons_y", "hud_buttons_scale",
+         "hud_minimap_x", "hud_minimap_y", "hud_minimap_scale"}
 WRAPS = {"sharpness"}
 
 
@@ -43,7 +46,7 @@ def main():
     model = (ROOT / "gpu/vk/menu_model.cpp").read_text(encoding="utf-8")
     if "if ((s.kind == Kind::Slider && !s.wraps) || s.stops_at_ends) return std::clamp(next, s.lo, s.hi);" not in model:
         fail("menu_model.cpp: a step does not hold a Slider at its ends unless it wraps")
-    print("PASS: %d rows stop at their ends, as before; Sharpness goes round" % len(stops))
+    print("PASS: %d rows stop at their ends; Sharpness goes round" % len(stops))
 
 
 if __name__ == "__main__":
