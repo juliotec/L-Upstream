@@ -456,9 +456,19 @@ def github_page_header(tag, product, names, channel, repo=None):
         "**Don't download the files below:** they're the builder the launcher installs for you.", "", "---", ""])
 
 
+GITHUB_BODY_LIMIT = 120000   # (under GitHub's 125000-character release body limit, with room to spare)
+
+
 def release_page(tag, product, notes_text, names, repo=None):
-    """The release page's text: the header, then git-cliff's notes"""
-    return page_header(tag, product, names, repo) + "\n" + notes_text.strip() + "\n"
+    """The release page's text: the header, then git-cliff's notes. GitHub refuses a body over its limit, so the notes are
+    cut to fit, the newest first (a nightly's "Earlier changes" runs back to the fork and outgrows it)"""
+    header = page_header(tag, product, names, repo)
+    notes = notes_text.strip()
+    tail = "\n\n... (the notes are longer than GitHub's release page allows; the rest is in the repository's history)\n"
+    budget = GITHUB_BODY_LIMIT - len(header) - len(tail) - 2
+    if len(notes) > budget:
+        notes = notes[:budget].rstrip() + tail
+    return header + "\n" + notes + "\n"
 
 
 # ---- keys and signatures ----
