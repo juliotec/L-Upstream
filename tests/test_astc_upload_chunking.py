@@ -167,6 +167,9 @@ struct {
             uint32_t maxComputeWorkGroupCount[3] = {65535, 65535, 65535};
         } limits;
     } props;
+    struct {
+        bool bc_copy_per_layer = false;
+    } policy;
 } dev;
 
 static VkPipeline_T pipe_astc_obj{1}, pipe_bc_obj{2}, pipe_bc7_obj{3};

@@ -428,7 +428,6 @@ static bool gpu_card_missing;
 static bool can_bind() { return host && host->binding; }
 static void logf(const char*, ...) {}
 static void apply_sprint_layout(bool) {}
-static std::mutex options_save_mu;   // (save()'s one writer at a time)
 // SAVE
 static void reset_controls() {
     // RESET_CONTROLS

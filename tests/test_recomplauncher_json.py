@@ -45,14 +45,15 @@ class RecompLauncherJsonTests(unittest.TestCase):
 
     def test_builds_again_from_what_the_game_folder_kept(self):
         # (RecompLauncher's prepare.keeps_copy: with the player's copy gone, it runs the step again leaving out every argument
-        # with {game} in it. What is left must still build into the same folder: make_game then builds from the files it kept)
+        # with {input:game} in it. What is left must still build into the same folder: make_game then builds from the files
+        # it kept)
         manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
         prepare = manifest["prepare"]
         self.assertTrue(prepare["keeps_copy"])
-        with_copy = [arg for arg in prepare["args"] if "{game}" in arg]
-        self.assertEqual(with_copy, ["--game={game}"])
+        with_copy = [arg for arg in prepare["args"] if "{input:game}" in arg]
+        self.assertEqual(with_copy, ["--game={input:game}"])
         out = manifest["folders"]["game"][0]["path"]
-        without_copy = [arg for arg in prepare["args"] if "{game}" not in arg]
+        without_copy = [arg for arg in prepare["args"] if "{input:game}" not in arg]
         self.assertEqual(without_copy[:4], ["--cli", "--prepare", "--out", out])
 
     def test_the_work_folder_is_in_the_game_folder(self):
@@ -76,32 +77,26 @@ class RecompLauncherJsonTests(unittest.TestCase):
         self.assertIn('[ -f "$folder/image.bin" ]', (ROOT / "builder" / "linux" / "longshot-launch").read_text(encoding="utf-8"))
 
     def test_appimage_carries_it(self):
-        # (the release's copy, with its own prepare.version: release_manifest)
-        self.assertIn('"$PY" -I scripts/builder_package.py manifest "$VERSION" --out "$APPDIR/recomplauncher.json"',
+        # (the file as it is: nothing in it changes per release)
+        self.assertIn('cp recomplauncher.json "$APPDIR/recomplauncher.json"',
                       (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8"))
 
-    def test_a_release_asks_for_a_new_build(self):
-        # (RecompLauncher keeps a game set up through an update and builds it again only when prepare.version changes: each
-        # release's copy carries its own version, and nothing else of the file changes)
-        bp = self.builder_package()
-        shipped = json.loads(bp.release_manifest("v3.2.1").decode("utf-8"))
+    def test_the_copy_is_the_input_game(self):
+        # (RecompLauncher's named input game: the .nup or the extracted folder, refused when its build ID isn't the one
+        # Longshot is made from)
         manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
-        self.assertEqual(shipped["prepare"]["version"], "v3.2.1")
-        manifest["prepare"]["version"] = "v3.2.1"
-        self.assertEqual(shipped, manifest)
+        self.assertNotIn("game", manifest)
+        copy = manifest["inputs"][0]
+        self.assertEqual((copy["id"], copy["role"]), ("game", "game"))
+        self.assertEqual([f["type"] for f in copy["formats"]], ["file", "folder"])
+        self.assertEqual(copy["check"], {"nup_build_id": "e0f3ccfa"})
 
-    def test_a_release_rebuilds_without_the_copy(self):
-        # (the new build an update asks for runs from what the game folder kept, so the player isn't asked for the copy)
-        shipped = json.loads(self.builder_package().release_manifest("v3.2.1").decode("utf-8"))
-        self.assertTrue(shipped["prepare"]["keeps_copy"])
-
-    @staticmethod
-    def builder_package():
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("builder_package", ROOT / "scripts" / "builder_package.py")
-        bp = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(bp)
-        return bp
+    def test_a_release_asks_for_a_new_build_by_itself(self):
+        # (RecompLauncher builds the game again whenever the release it installed changes: no prepare.version to stamp, and
+        # no timeout, which it no longer reads)
+        prepare = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))["prepare"]
+        self.assertNotIn("version", prepare)
+        self.assertNotIn("timeout", prepare)
 
     def test_windows_zip_carries_it(self):
         # (scripts/builder_package.py zip: the setup as LongshotBuilder.exe, the builder, tools.lock and VERSION, and this
@@ -128,8 +123,8 @@ class RecompLauncherJsonTests(unittest.TestCase):
                 self.assertEqual(z.read("VERSION"), b"v3.0.0\n")
                 # (and where the builder and the game read it: without it a release's game logged "longshot unknown")
                 self.assertEqual(z.read("LongshotBuilder/tools/version.txt"), b"v3.0.0\n")
-                # (and in the setup step's version, so RecompLauncher builds the game again after the update)
-                self.assertEqual(json.loads(z.read("recomplauncher.json"))["prepare"]["version"], "v3.0.0")
+                # (and this file as it is)
+                self.assertEqual(z.read("recomplauncher.json"), (ROOT / "recomplauncher.json").read_bytes())
         manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
         self.assertIn("LongshotBuilder.exe", manifest["start"]["program"])
         self.assertIn("LongshotBuilder.exe", manifest["prepare"]["program"])

@@ -204,7 +204,7 @@ again. `RX_VK_UPSCALE_LOD_BIAS=0` adds none; `RX_VK_DLSS_LOD_OFFSET=<steps>` set
 | FSR 3.1 and FSR 3.1 interpolation take their constants from a slice of the recording's upload stream (`uniform_upload`), never a ring sized by CPU frames. No room means the evaluation is rejected before it touches history | `vk_fsr3.cpp`, `vk_fsr3fi.cpp` |
 | Images from an old size are retired on the GPU timeline (`vk_retirement_value()`), freed once `vk_timeline_completed()` passes it. A zero ticket (no timeline) is never freed early | `drop_image`, `free_dead` |
 | Engine resources released while work may be in flight go through `temporal_later` | `vk_temporal.h` |
-| A failed DLSS feature creation is not retried until a DLSS setting changes (`dlss_retry`) | `vk_dlss.cpp` `prepare` |
+| A failed DLSS feature creation is not retried until a DLSS setting changes (`dlss_retry`), except one refused for want of video memory: it is tried again after 600 frames, at most three creations, then the refusal stays; any other result is final at once | `vk_dlss.cpp` `prepare`, `dlss_checks.h` `retry` |
 | `prepare` returning -1, or a failed `evaluate` without `retry`, disables the engine for the run; the game's network draws from then on | `draw_engine` |
 | DLSS and FSR 3.1 set `retry`: a failed evaluation drops that frame to the network and resets history. DLSS remakes its feature after 30 failures in a row | `kEngine`, `kChainEngine` |
 

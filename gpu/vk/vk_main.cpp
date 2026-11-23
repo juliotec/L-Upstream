@@ -65,17 +65,21 @@ VKX_DEVICE3(VKX_DEFINE)
 static PFN_vkGetInstanceProcAddr get_instance_proc;
 
 bool load_global() {
-#ifdef _WIN32   // (longshot: the loader from System32 only, not from the current folder or PATH)
-    // (longshot) The drivers are the loader's to find: it reads the ones in use from the display adapters. Nothing here
-    // sets VK_ICD_FILENAMES or VK_DRIVER_FILES, which make the loader take the named files and no other driver: DriverStore
-    // keeps the packages of drivers no longer in use, and one of those named can list no GPU at all.
-    // pick_device chooses the GPU; RX_VK_DEVICE or the GPU row choose another
-    HMODULE m = LoadLibraryExA("vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+#ifdef _WIN32
+    // Windows Vulkan shims can intercept the executable's imports but miss calls from this DLL.
+    if (mkwvk::host && mkwvk::host->vulkan_loader_proc) {
+        get_instance_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(mkwvk::host->vulkan_loader_proc());
+    } else {
+        // Older hosts leave System32 loader resolution to the renderer. The loader chooses the drivers in use.
+        HMODULE m = LoadLibraryExA("vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!m) return false;
+        get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
+    }
 #else
     HMODULE m = LoadLibraryA("vulkan-1.dll");   // (linux: libvulkan.so.1, host/posix/win32_posix.c)
-#endif
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
+#endif
     if (!get_instance_proc) return false;
 #define VKX_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
     VKX_GLOBAL(VKX_LOAD)
@@ -1226,6 +1230,11 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         ci.pQueueFamilyIndices = sharing;
     }
     ci.clipped = VK_TRUE;
+#ifdef _WIN32
+    // Streamline can release the old swapchain's images inside its create hook.
+    // Retire explicitly on NVIDIA so the game and overlay release their views first.
+    if (dev.props.vendorID == 0x10de) retire_swapchain();
+#endif
     ci.oldSwapchain = dev.swapchain;
     // (longshot) an sRGB swapchain (some drivers list no UNORM format) made mutable when the driver can: the overlays draw
     // through UNORM views, their colours as they are, as on a UNORM swapchain. Without it, vk_imgui.cpp makes them linear
@@ -2117,6 +2126,7 @@ static const MkwVkRenderer* init_body(const MkwVkHost* h) {
         h->version < 35 ? offsetof(MkwVkHost, mod_info) :
         h->version < 36 ? offsetof(MkwVkHost, ab_value) :
         h->version < 41 ? offsetof(MkwVkHost, output_preview_request) :
+        h->version < 45 ? offsetof(MkwVkHost, vulkan_loader_proc) :
         sizeof(MkwVkHost);
     std::memcpy(&host_storage, h, std::min(sizeof(host_storage), copy_size));
     host = &host_storage;

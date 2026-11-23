@@ -474,7 +474,7 @@ constexpr size_t kSimTurfPrivateMax = 8, kSimTurfSamplesPerRecording = 256;
 std::mutex sim_turf_mu;
 std::vector<SimTurfPrivate> sim_turf_private[2];   // [0] the blade lists, [1] the pools
 std::vector<SimTurfRetired> sim_turf_retired;
-thread_local std::vector<SimTurfBound> sim_turf_bound;   // private creators bound for the dispatch being recorded
+TLS_OBJECT(sim_turf_bound, std::vector<SimTurfBound>)   // private creators bound for the dispatch being recorded
 thread_local bool sim_turf_monitor_ready = false;   // this recording can observe demand; otherwise private lists fail closed
 bool sim_turf_adaptive() {
     static const bool on = env_on_or("RX_VK_SIM_TURF_ADAPTIVE", 1);
@@ -551,7 +551,7 @@ void sim_turf_tally_log(uint64_t frame) {
 }
 VkDescriptorBufferInfo sim_turf_bound_result(SimTurfPrivate& g, uint64_t addr, uint32_t enc, bool pool, bool creator) {
     if (creator && g.buf)
-        sim_turf_bound.push_back({addr, enc & 0xffffu, g.policy.capacity(), pool, g.buf});
+        sim_turf_bound().push_back({addr, enc & 0xffffu, g.policy.capacity(), pool, g.buf});
     return {g.buf, 0, g.size};
 }
 VkDescriptorBufferInfo sim_turf_private_binding(uint64_t addr, uint32_t enc, uint64_t salign) {
@@ -4996,7 +4996,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             // are read once
             static thread_local std::vector<uint32_t> table;
             const bool is_table = d.handle_program != ~0U && d.count > 1;
-            if (is_table) table.resize(d.count), stage_handles(s, st, d.handle_program, d.count, table.data());
+            if (is_table) table.resize(d.count), stage_handles(s, st, d.handle_program, d.count, table.data(), p.key);
             uint32_t prev_handle = 0;
             VkImageView prev_view = VK_NULL_HANDLE;
             Texture* prev_tex = nullptr;
@@ -6955,10 +6955,11 @@ void sim_turf_sample_demand(VkCommandBuffer cmd, const NvnState& s, const Progra
                 const BufferRef source = gpu_buffer_bind(base, prefix + 16, false);
                 if (source) demand.push_back({source, addr, pool});
             }
-            const auto bound = std::find_if(sim_turf_bound.begin(), sim_turf_bound.end(), [&](const SimTurfBound& b) {
+            const std::vector<SimTurfBound>& bound_now = sim_turf_bound();
+            const auto bound = std::find_if(bound_now.begin(), bound_now.end(), [&](const SimTurfBound& b) {
                 return b.addr == addr && b.orig == off && b.pool == pool;
             });
-            if (bound == sim_turf_bound.end()) continue;
+            if (bound == bound_now.end()) continue;
             const uint32_t stock = pool ? Shader::Optimization::kSimTurfPoolCap : Shader::Optimization::kSimTurfBladeCap;
             const uint32_t stride = pool ? 48u : 8u;
             const bool reverse = !pool || off == 0x70;
@@ -12549,7 +12550,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     dclock.t_pipe = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     end_pass(cmd);
     grid_patch_want = indirect, grid_patch_at = UINT64_MAX;
-    sim_turf_bound.clear();
+    sim_turf_bound().clear();
     ub_prog_key = p.key;   // (the Grass distance row: uniform_range)
     build_descriptors(s, p);
     ub_prog_key = 0;
@@ -12821,7 +12822,29 @@ int64_t draw_slotgen_saves() {   // (Descriptor reuse: of those, what the global
 }
 
 void pipeline_cache_play() {
+    pcache_init();
     play_cache_begin();
+    // (longshot) When precompile_run() did not run (RX_VK_PRECOMPILE=0 or dev build), still index kept programs and notes
+    // for RX_VK_LOAD=create (zero compilation) so create calls load kept programs and noted pipelines from caches ahead of
+    // first use instead of discarding them before the index is ready.
+    if (!precompile_wanted() && !env_on("LONGSHOT_PREPARE_ONLY") && !env_on("RX_VK_NO_PROGRAM_CACHE") &&
+        programs_load_at_create() && !program_cache_kept_keys().empty()) {
+        std::vector<NoteRef> refs = start_note_refs(true);
+        {
+            std::lock_guard lk(note_mu);
+            if (!note_file) {
+                for (const NoteRef& r : refs) noted.insert(r.key);
+                const std::vector<std::unique_ptr<PipeNote>> none;
+                notes_open_locked(&none);
+            }
+        }
+        if (!env_on("RX_VK_NO_STATE_LIST")) {
+            std::lock_guard lk(state_mu);
+            if (!state_file) state_open_locked();
+        }
+        const ComputePlan plan = computes_plan(precompile_computes_which(), !env_on("RX_VK_NO_STATE_LIST"));
+        programs_index(std::move(refs), plan.none ? std::unordered_set<uint64_t>{} : plan.keys);
+    }
     programs_play_begin();   // (the census: what is made from here on is made in play)
 #ifdef __linux__
     // (longshot) On Linux with <= 20 GB of RAM (the Steam Deck's 16 GB shared memory and 16 GB PCs) or when memory pressure is

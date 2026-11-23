@@ -23,6 +23,8 @@ environment a job gets.
   status names it), one under a job or preparing shaders is not, one whose memory can't be read counts as nobody's;
   a build outside the queue is a python running nx2/build.py or make_game.py, backslashes or not. Checked on a made-up
   process table on any OS (the Windows code, its process reads stood in for), and on Windows with real processes.
+- Windows: procs.proc_start sends no Ctrl+C, with common.WINDOWS patched off too, as Environment's test does (os.kill(pid,
+  0) there is a Ctrl+C to the whole console: it ended run_all.py and the shell around it at once, without a word).
 
 python -I -B tests/test_job_queue.py
 """
@@ -460,6 +462,28 @@ class PosixTree(unittest.TestCase):
         self.assertEqual(runner.wait(30), 0)
         time.sleep(1)
         self.assertTrue(self.running(*grand), "the job's end took what its command left running")
+
+
+@unittest.skipUnless(os.name == "nt", "Windows' consoles")
+class WindowsConsole(unittest.TestCase):
+    """proc_start, with common.WINDOWS off as Environment's test patches it, in a python started the way run_all.py starts a
+    check (the same console), under a python with a hidden console of its own that stands in for run_all.py and its shell:
+    that one says whether a Ctrl+C reached it"""
+    CALLER = ("import os, sys; sys.path.insert(0, sys.argv[1]); from devtools import common, procs; common.WINDOWS = False; "
+              "procs.proc_start(os.getpid())")
+    BYSTANDER = ("import signal, subprocess, sys, time; got = []; signal.signal(signal.SIGINT, lambda *_: got.append(1)); "
+                 "subprocess.run([sys.executable, '-I', '-c', sys.argv[3], sys.argv[1]]); time.sleep(1); "
+                 "open(sys.argv[2], 'w').write('ctrl-c' if got else 'quiet')")
+
+    def test_proc_start_sends_no_ctrl_c(self):
+        with tempfile.TemporaryDirectory() as d:
+            said = os.path.join(d, "said")
+            hidden = subprocess.STARTUPINFO()
+            hidden.dwFlags |= subprocess.STARTF_USESHOWWINDOW   # (wShowWindow 0: SW_HIDE)
+            subprocess.run([sys.executable, "-I", "-c", self.BYSTANDER, os.path.join(ROOT, "scripts"), said, self.CALLER],
+                           creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=hidden, timeout=60, check=True)
+            with open(said) as f:
+                self.assertEqual(f.read(), "quiet", "proc_start sent a Ctrl+C to every process of its console")
 
 
 if __name__ == "__main__":

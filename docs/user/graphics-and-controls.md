@@ -178,7 +178,7 @@ after a restart, only on some GPUs or builds, only while HDR is on, or set for y
 | | Player: Damage taken | Half, Normal, Double, Quadruple (live, while Debug tools is on; Half rounds damage up to a quarter heart; Heart protection wins) | Normal |
 | | Developer: Save my pipeline list | Saves a zip of the pipelines your play built into Downloads ([send your pipeline list](reporting-and-contributing.md#send-your-pipeline-list)) | |
 | | Developer: Frame pacing | Off, On | Off; a quality preset turns it on |
-| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 6 or more processor cores for the game, and the render thread alone with 4 or 5 | Auto |
+| | Developer: Threaded rendering | Auto, On, Off (after a restart). Auto is On with 4 or more processor cores for the game, Off with fewer or where it is not safe | Auto |
 | | Developer: Descriptor reuse | Off, On (changes at once) | On |
 | | Developer: Sampler cache | Off, On (changes at once) | Off |
 | | Developer: Robust buffers | Auto, Off, On (after a restart) | Auto |
@@ -262,8 +262,10 @@ helper asks you to.
   remembered as that card, not its place in the list.
 - **Threaded rendering:** On draws the picture on threads of its own (a render thread and a recorder thread) while the
   game goes on to its next frame, for a higher frame rate on a processor with cores to spare; it can still show
-  flashes. Auto counts the processor's cores for the game: both threads with 6 or more, the render thread alone with 4
-  or 5, Off with fewer. It applies after a restart.
+  flashes. Auto counts the processor's cores for the game: both threads with 4 or more, Off with fewer or where it is
+  not safe (for one, an integrated GPU such as the Steam Deck's, whose memory is not mirrored by default). The count is of
+  the cores the game may run on: a launcher or tool that limits the game to some logical processors limits it too (two
+  cores' four threads count as 2). Where the cores can't be read, it counts logical processors. It applies after a restart.
 - **Robust buffers** drops a read past a buffer's end instead of stopping the GPU: Auto is on, on every card.
   **ASTC as RGBA8** is the [AMD texture workaround](common-issues.md#amd-blocky-textures-solid-rectangles-in-the-sky-or-dark-courtyard-surfaces).
   **Intel shader compiles** (Intel graphics on Windows): One at a time is the safe choice; Side by side builds faster
@@ -285,13 +287,13 @@ helper asks you to.
   ears. **Microphone** is what the game hears when its own microphone option is on; **Test microphone**
   shows its level.
 - **Controller speaker** (a page on the Audio tab) plays chosen kinds of the game's sounds on a DualSense's own speaker:
-  Navi's voice and her flight, Z-targeting, the ocarina, pick-ups, items, fairies, the menus' sounds, the Stone of Agony,
+  the companion's voice and flight, Z-targeting, the instrument, pick-ups, items, fairies, the menus' sounds, the Stone of Agony,
   the low-health alarm, fishing and bottles, each Off, Controller only (no longer on the TV) or Controller + TV, with a
   volume for the speaker. **Controller sync** lines the two up: below 0 the TV's copy of the Controller + TV sounds waits
   for a controller that plays later, above 0 the controller waits for a TV that plays later. With headphones in the
   controller's jack, **Headphones on the controller** decides: All sound (as on the console) plays the whole game on them
   and the TV is silent, Controller sounds sends them only what would play on the speaker, Off leaves them out; they have
-  their own volume. While an ocarina sound plays on the speaker the vibration is at half, as the motors would shake it into
+  their own volume. While an instrument's sound plays on the speaker the vibration is at half, as the motors would shake it into
   crackling. With **DualSense HD Haptics** on, its taps play on the speaker together with these sounds; off, the speaker
   plays these sounds alone. On Windows, the controller must be on a USB cable and Windows must identify its sound card as
   belonging to it. The speaker is unavailable when the two cannot be matched, including on Linux for now; the vibration

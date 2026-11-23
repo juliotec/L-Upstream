@@ -877,12 +877,12 @@ uint32_t bc_layers() {
 /// them (Hyrule Field's entry on an RX 9070 XT: 51 ms an array at one layer a run, 15 ms at 8; #1720). 36 MB (32 for the
 /// image, 4 more of the output buffer), beside the 2048 x 2048 scratch's 20; on a card of small VRAM
 /// (low_vram_texture_mips) it is kBcTinyDim a side; not made where it would land in system memory. Its layers: 8 on
-/// RADV and NVIDIA's driver, 1 (no small scratch, every run one layer, and no groups of levels) on every other
-/// (device_policy.h bc_small_runs); RX_VK_BC_SMALL_LAYERS=<n> over that. One layer a run (ec89f92e) was for grid lines
-/// on the far ground, layers after a run's first wrong at the small levels on an RX 6600, and they came back with this
-/// scratch on AMD's Windows driver (#2006); they stayed with the copy out of the encoder's buffer giving the layers'
-/// pitch (#2015, bc_encode_into; #2107). The cause is still not found.
-/// Runs still never hold a repacked level (upload_astc_gpu)
+/// RADV, NVIDIA's driver and AMD's Windows driver, 1 (no small scratch, every run one layer, and no groups of levels) on
+/// every other (device_policy.h bc_small_runs); RX_VK_BC_SMALL_LAYERS=<n> over that. On AMD's Windows driver (diagnosed
+/// on RDNA 2: RX 6700 XT, RX 6600), a multi-layer VkBufferImageCopy into a non-4-aligned compressed mip tail (e.g. 5x5
+/// mip 8) truncates to floor(w/4) x floor(h/4) blocks, leaving edge blocks zeroed (Hyrule Field's grid lines: ec89f92e,
+/// #2006, #2107, #2110); dev.policy.bc_copy_per_layer splits those copies into one region per layer in bc_encode_into so
+/// 8-layer runs stay clean across AMD's Windows driver. Runs still never hold a repacked level (upload_astc_gpu)
 constexpr uint32_t kBcSmallDim = 1024;
 /// (longshot) The small scratch on a card of small VRAM (low_vram_texture_mips), where the 1024 x 1024 one (36 MB) was not
 /// made at all: 256 x 256 and bc_small_layers() layers, 2 MB with its share of the output buffer. Such a card keeps all its large ASTC
@@ -1145,11 +1145,27 @@ void bc_encode_into(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t n, Tex
     vkCmdDispatch(cmd, (pc.blocks_x + 7) / 8, (pc.blocks_y + 7) / 8, n);
     full_barrier(cmd);
     // (the buffer's rows and layers given in whole blocks, as the encoder wrote them: blocks_x * blocks_y blocks a layer.
-    // Left at 0, the driver worked the layers' pitch out from the extent, and a level not a multiple of 4 leaves that to
-    // its rounding: the terrain's material arrays are 1365 x 1365, and on AMD's Windows driver (an RX 6700 XT; an RX 6600
-    // before, ec89f92e) every layer after a run's first came out wrong, Hyrule Field's ground in a grid of dark lines, #2006)
-    const VkBufferImageCopy c{0, pc.blocks_x * 4, pc.blocks_y * 4, {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, n}, {dx, dy, 0}, {w, h, 1}};
-    vkCmdCopyBufferToImage(cmd, bc_out, dst.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    // On AMD's Windows driver (diagnosed on RDNA 2: RX 6700 XT, RX 6600; #2006, #2015), a single multi-layer
+    // VkBufferImageCopy (layerCount > 1) into a compressed mip-tail level whose extent is not a multiple of 4 (e.g. 5x5
+    // mip 8 on the 1365 x 1365 x 90 terrain arrays) truncates the copy to floor(w/4) x floor(h/4) blocks per layer, leaving
+    // the right and bottom edge blocks zeroed (pure black). When dev.policy.bc_copy_per_layer is on (AMD's Windows driver),
+    // emit one single-layer region per layer in the same vkCmdCopyBufferToImage call, keeping 8-layer decode/encode runs
+    // intact and leaving every other driver on the single-region path.)
+    if (dev.policy.bc_copy_per_layer && n > 1 && ((w & 3) || (h & 3))) {
+        const uint64_t layer_bytes = (uint64_t)pc.blocks_x * pc.blocks_y * 16;
+        for (uint32_t i0 = 0; i0 < n;) {
+            VkBufferImageCopy regions[8];
+            const uint32_t m = n - i0 < 8 ? n - i0 : 8;
+            for (uint32_t j = 0; j < m; ++j)
+                regions[j] = {(uint64_t)(i0 + j) * layer_bytes, pc.blocks_x * 4, pc.blocks_y * 4,
+                              {VK_IMAGE_ASPECT_COLOR_BIT, level, layer + i0 + j, 1}, {dx, dy, 0}, {w, h, 1}};
+            vkCmdCopyBufferToImage(cmd, bc_out, dst.image, VK_IMAGE_LAYOUT_GENERAL, m, regions);
+            i0 += m;
+        }
+    } else {
+        const VkBufferImageCopy c{0, pc.blocks_x * 4, pc.blocks_y * 4, {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, n}, {dx, dy, 0}, {w, h, 1}};
+        vkCmdCopyBufferToImage(cmd, bc_out, dst.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    }
     full_barrier(cmd);   // (the scratch and the buffer are the next part's)
 }
 

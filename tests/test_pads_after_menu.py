@@ -84,7 +84,7 @@ static LONG hud_bind_generation;
 static uint64_t oc_consumed_pads;
 static volatile LONG pad_count_now;
 static int sprint_now;   /* (Sprint's gamepad input, read with the pads: tests/test_sprint.py) */
-enum { SPRINT_PAD = 2 };
+enum { SPRINT_KEY = 1, SPRINT_PAD = 2, SPRINT_L3 = 4 };   /* (nn_hid.c's: L3, the gamepad input held is the left stick's press) */
 static int sprint_read(void) { return sprint_now; }
 """
 
@@ -116,7 +116,7 @@ int main(void) {
     menu_open = 0; CHECK(game(s) == 0 && sprint_now == 0 && s[0] == 30000);
     CHECK(game(s) == 0 && sprint_now == 0);
     pads_down = 0; CHECK(game(s) == 0 && sprint_now == 0);
-    pads_down = PAD(LSTICK); CHECK(game(s) == 0 && sprint_now == SPRINT_PAD);
+    pads_down = PAD(LSTICK); CHECK(game(s) == 0 && sprint_now == (SPRINT_PAD | SPRINT_L3));
     pads_down = 0; pads_stick[0] = 0; CHECK(game(s) == 0);
 
     /* A trigger that stays down through the menu (worn, or past its rest), the menu closed with East (A) */

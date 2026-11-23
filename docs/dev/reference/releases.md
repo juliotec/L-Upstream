@@ -290,15 +290,16 @@ launcher: `/download/launcher/<os>` for the best channel there is (stable, else 
 `linux`. There are no links to the builder files: only the launcher downloads them.
 
 **RecompLauncher** can also run both builders through their `recomplauncher.json`
-([recomplauncher.json](../../../recomplauncher.json), `tests/test_recomplauncher_json.py`): `--cli --prepare
+([recomplauncher.json](../../../recomplauncher.json), `tests/test_recomplauncher_json.py`). The player's copy is its
+input `game` (the .nup or the extracted folder, checked by its build ID), and the builders run with `--cli --prepare
 --game=<copy> --out <the game folder> --work <the install folder>/recompdata/cache/work`, then `--play`. The work folder
 is in the install folder, so it moves and uninstalls with the game, and RecompLauncher's backups leave its `cache` out.
 The build is finished when the folder has its `image.bin` (*prepare*'s `done`). With *prepare*'s `keeps_copy`, a player
 who deleted their copy isn't asked for it again: the launcher runs the same line without `--game`, and the game is built
-from the game files its folder kept, as an update is. RecompLauncher keeps a game set up through an update and builds it
-again only when *prepare*'s `version` changes, so each release's copy of the file carries the release's version there
-(`scripts/builder_package.py` `release_manifest`, for the zip and the AppImage): after an update, the next Play builds
-the game again, from what the folder kept.
+from the game files its folder kept, as an update is. RecompLauncher builds the game again whenever the release it
+installed changes, so the zip and the AppImage carry the file as it is, with nothing stamped per release: after an
+update, the next Play builds the game again, from what the folder kept. This needs RecompLauncher 0.90 Beta 68 or
+newer; older ones don't read a `check` on an input.
 
 ## One-time setup
 

@@ -109,14 +109,14 @@ def main():
         src, exe = Path(temp) / "small.cpp", Path(temp) / "small.exe"
         src.write_text(FIXTURE, encoding="utf-8")
         subprocess.run([cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-I", temp, str(src), "-o", str(exe)], check=True)
-        # (runs of 8: RADV or NVIDIA's driver, "1"; any other, AMD's Windows driver among them, "0")
+        # (runs of 8: RADV, NVIDIA's driver, or AMD's Windows driver, "1"; any other, "0")
         for runs, value, want in (("1", None, "8"), ("0", None, "1"), ("1", "1", "1"), ("1", "4", "4"), ("1", "99", "8"),
                                   ("1", "0", "1"), ("0", "8", "8"), ("0", "4", "4"), ("0", "1", "1")):
             env = {k: v for k, v in os.environ.items() if k != "RX_VK_BC_SMALL_LAYERS"}
             if value is not None:
                 env["RX_VK_BC_SMALL_LAYERS"] = value
             got = subprocess.run([str(exe), runs], text=True, capture_output=True, timeout=20, env=env, check=True).stdout.split()[0]
-            pc = "RADV or NVIDIA's driver" if runs == "1" else "another driver (AMD's Windows driver: Hyrule Field's grid lines)"
+            pc = "RADV, NVIDIA's or AMD's Windows driver" if runs == "1" else "another driver"
             need(got == want, f"{pc}, RX_VK_BC_SMALL_LAYERS={value}: {got} layers a run, wanted {want}")
         # (the groups, and a small-VRAM card's 256 x 256 scratch with them: on unless 0)
         for name, at, cases in (("RX_VK_BC_LEVELS", 1, ((None, "1"), ("1", "1"), ("0", "0"))),):
@@ -127,7 +127,7 @@ def main():
                 got = subprocess.run([str(exe), "1"], text=True, capture_output=True, timeout=20, env=env, check=True).stdout.split()[at]
                 need(got == want, f"{name}={value}: {got}, wanted {want}")
     print("PASS: levels of 1024 or less re-encode to BC 8 layers a run, through a small scratch of their own (256 on a small-VRAM "
-          "card), on RADV and NVIDIA's driver; one layer a run, with no small scratch and no groups, on every other")
+          "card), on RADV, NVIDIA's and AMD's Windows drivers; one layer a run, with no small scratch and no groups, on every other")
 
 
 if __name__ == "__main__":
