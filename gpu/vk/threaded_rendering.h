@@ -12,9 +12,12 @@
 //          cores_of below), in two tiers:
 //            kAutoCores (4) or more: the render thread and the recorder thread, as On;
 //            fewer: off, as Off.
-//          And off where the mode is not safe, whatever the CPU (the caller says so: the capture off, pools with no
-//          mirrors, RX_VK_LOW_SPEC, a frame dump, a benchmark replay). All of that behind kAutoEnabled, below, which is on:
-//          turned off, Auto is Off on every PC.
+//          Where only buffer-pool mirrors are absent (integrated GPUs where !f.discrete(), or RX_VK_MIRROR=0), the render
+//          thread stays off while without_mirrors() runs the recorder thread alone with serial replay at
+//          kAutoRecorderOnlyCores (6) or more physical cores, and leaves 4- and 5-core systems off.
+//          And off where the mode is not safe, whatever the CPU (the caller says so: the capture off, RX_VK_LOW_SPEC, a
+//          frame dump, a benchmark replay). All of that behind kAutoEnabled, below, which is on: turned off, Auto is Off on
+//          every PC.
 //
 // The tiers as first measured (18 Nov 2026: a Ryzen 9 9950X3D with SMT off, held to N cores by its affinity, Castle Town's
 // market entrance, two runs each; fps, then the share of frames of 16.7 ms or more):
@@ -76,6 +79,12 @@ constexpr bool kAutoEnabled = true;
 /// affinity mask, not the PC's cores: a 4-core, 8-thread CPU held to 2 cores' 4 siblings counts 2. Where the core masks
 /// cannot be read, usable_cores counts logical processors instead (its fallback, older than this tier)
 constexpr unsigned kAutoCores = 4;
+/// (longshot) Physical-core threshold for running the recorder thread alone under Auto when buffer-pool mirrors are absent
+/// (integrated GPUs where !f.discrete(), or RX_VK_MIRROR=0): only the render thread runs a frame ahead of replay and needs
+/// buffer-pool mirrors, while the recorder thread replays synchronously under replay_mu and offloads only Vulkan command
+/// recording and submits (RX_VK_RECORDER_PARTS). Holding this tier at 6 physical cores leaves 4- and 5-core non-mirrored
+/// handhelds (such as the Steam Deck) unchanged until tested on that hardware
+inline constexpr unsigned kAutoRecorderOnlyCores = 6;
 
 enum class Why {
     On,                 // the row says On
@@ -83,9 +92,11 @@ enum class Why {
     AutoGate,           // Auto, kAutoEnabled off: off everywhere
     AutoUnsafe,         // Auto, and the mode is not safe on this run
     AutoFewCores,       // Auto, fewer than kAutoCores cores (or their count unknown: 0): off
+    AutoRecorderOnly,   // Auto, kAutoRecorderOnlyCores or more, pools have no mirrors: recorder thread alone
     AutoBothThreads,    // Auto, kAutoCores or more: the render thread and the recorder thread
 };
-/// The row's answer in two halves, each read by its own reader. The recorder thread never comes without the render thread
+/// The row's answer in two halves, each read by its own reader. With buffer-pool mirrors both threads come together; without
+/// mirrors, without_mirrors() can pick the recorder thread alone at kAutoRecorderOnlyCores or more physical cores
 struct Choice {
     bool render_thread;     // the render thread, RX_VK_ASYNC=1's (vk_replay.cpp render_thread_mode; the host's poll by it)
     bool recorder_thread;   // the recorder thread, RX_VK_RECORDER=thread's (vk_recorder.h mode_from_env)
@@ -113,6 +124,17 @@ constexpr Choice choose(int setting, unsigned cores, bool unsafe, bool auto_enab
 /// mirrors), is asked only then
 constexpr bool auto_picked(const Choice& c) { return c.why == Why::AutoBothThreads; }
 
+/// (longshot) Auto's fallback when buffer-pool mirrors are absent (integrated GPUs where !f.discrete(), or RX_VK_MIRROR=0):
+/// only the render thread runs a frame ahead of replay and needs mirrors, whereas the recorder thread replays synchronously
+/// under replay_mu and offloads only Vulkan command recording and submits (RX_VK_RECORDER_PARTS). Keep the render thread off;
+/// at kAutoRecorderOnlyCores (6) or more physical cores run the recorder thread alone, and below that turn both off (leaving
+/// 4- and 5-core non-mirrored handhelds such as the Steam Deck unchanged)
+constexpr Choice without_mirrors(const Choice& c, unsigned cores) {
+    if (c.why != Why::AutoBothThreads) return c;
+    if (cores >= kAutoRecorderOnlyCores) return {false, true, Why::AutoRecorderOnly};
+    return {false, false, Why::AutoUnsafe};
+}
+
 /// (longshot) Auto's count: the physical cores among the logical processors the process may run on. `core_masks`: one mask
 /// a physical core, of its logical processors (GetLogicalProcessorInformation's RelationProcessorCore entries, an SMT core's
 /// two siblings in one mask; on Linux host/posix's, from sysfs core_id and physical_package_id), `n` of them; `usable`: the
@@ -138,6 +160,11 @@ inline void describe(char* out, size_t size, const Choice& c, unsigned cores, un
     case Why::AutoFewCores:
         std::snprintf(out, size, "Auto: off (%u cores of %u logical processors; the render thread and the recorder thread "
                       "from %u cores)", cores, cpus, kAutoCores);
+        return;
+    case Why::AutoRecorderOnly:
+        std::snprintf(out, size,
+                      "Auto: the recorder thread only (%u cores of %u logical processors; the render thread off: %s)",
+                      cores, cpus, unsafe ? unsafe : "?");
         return;
     case Why::AutoBothThreads:
         std::snprintf(out, size, "Auto: on, the render thread and the recorder thread (%u cores of %u logical processors)",

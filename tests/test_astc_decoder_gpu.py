@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Game-free Vulkan ASTC decoder verification against Longshot's CPU ASTC reference.
+"""Game-free check that the GPU ASTC decoder (gpu/vk/host_shaders/astc_decoder.comp) decodes exactly as ARM's astcenc does.
 
-Default mode (used by run_all.py, no GPU or Vulkan loader required):
-  Compiles tests/astc_decoder_gpu.cpp against gpu/vk/host_shaders/astc_decoder_comp_spv.h
-  and gpu/third_party/suyu/video_core/textures/astc.cpp, validates the embedded SPIR-V
-  header, and runs the CPU ASTC reference across all 14 ASTC block sizes.
+Reference: gpu/vk/texdecode/astc.cpp (texdecode), equal to astcenc 6.0.0 byte for byte; tests/texdecode_astc_vectors.vec holds
+4,694 blocks with astcenc's answers. Nothing here depends on suyu's decoder, which is wrong on some blocks.
 
-GPU mode (--gpu or --gpu-device <substr>):
-  Dispatches the real compiled ASTC_DECODER_COMP_SPV compute shader on Vulkan across all
-  14 ASTC block sizes (4x4..12x12), odd image dimensions, linear and Switch 2 native
-  tiling, 1-4 partitions, dual-plane (all 4 secondary channels), void-extent LDR, and
-  error blocks, comparing every decoded RGBA8 pixel against the CPU reference
-  (0 tolerance on replicated-byte void-extent and error blocks; <=1 LSB on
-  interpolated LDR to account for astc.cpp's 255*C/65536 vs Vulkan UNORM8 C/65535 rounding).
+Default mode (run_all.py; no GPU or Vulkan loader needed): compiles tests/astc_decoder_gpu.cpp against the checked-in SPIR-V header
+and texdecode; checks the vectors against astcenc's answers on the CPU, that the hand-built blocks mean what they were built to,
+that the level builder lays blocks out as texdecode's block-linear layout does, and that the SPIR-V header is valid.
+
+GPU mode (--device NAME, or --gpu; tests/run_vulkan_fixtures.py runs it on lavapipe with validation): dispatches the real compiled
+shader, as the renderer does (the swizzled blocks as a storage buffer, its push constants, a storage view of an R8G8B8A8_UNORM
+image), over every vector block in linear and sRGB mode, whole levels (layers, edge blocks, GOB tiles, a short binding) and the
+hand-built blocks, and demands every texel equal to texdecode's. An illegal block is transparent black (the renderer's colour), a
+partition with an HDR endpoint mode magenta (as texdecode and astcenc). On a failure it prints a table of how many blocks of each
+class are equal, one step off and further off; --table prints it always.
+
+python -I -B tests/test_astc_decoder_gpu.py --headers <Vulkan headers> [--device llvmpipe] [--table]
 """
 import argparse
 import os
@@ -32,57 +35,41 @@ def main():
     parser.add_argument("--cxx", default=os.environ.get("CXX") or shutil.which("clang++") or shutil.which("g++") or "g++")
     parser.add_argument("--headers", type=Path, required=True, help="path to Vulkan-Headers include directory")
     parser.add_argument("--gpu", action="store_true", help="dispatch astc_decoder_comp_spv.h on a Vulkan device")
-    parser.add_argument("--gpu-device", help="case-insensitive device-name substring for --gpu")
+    parser.add_argument("--gpu-device", "--device", dest="device", help="case-insensitive device-name substring (implies --gpu)")
+    parser.add_argument("--table", action="store_true", help="print the per-class table even when everything is equal")
     args = parser.parse_args()
-    args.gpu = args.gpu or bool(args.gpu_device)
+    args.gpu = args.gpu or bool(args.device)
 
-    fixture_cpp = ROOT / "tests/astc_decoder_gpu.cpp"
-    astc_cpu_cpp = ROOT / "gpu/third_party/suyu/video_core/textures/astc.cpp"
-    inc_flags = [
-        "-I", str(args.headers),
-        "-I", str(ROOT / "gpu/vk"),
-        "-I", str(ROOT / "gpu/compat"),
-        "-I", str(ROOT / "gpu/third_party/suyu"),
-        "-I", str(ROOT / "gpu/vk/compat"),
-    ]
-
+    texdecode = ROOT / "gpu/vk/texdecode"
+    sources = [ROOT / "tests/astc_decoder_gpu.cpp", texdecode / "astc.cpp", texdecode / "block_linear.cpp"]
     with tempfile.TemporaryDirectory(prefix="longshot-astc-gpu-") as directory:
-        tmp = Path(directory)
-        astc_obj = tmp / "astc_cpu.o"
-        exe = tmp / ("astc_decoder_gpu.exe" if os.name == "nt" else "astc_decoder_gpu")
-
-        # Compile third_party CPU ASTC reference with -DNDEBUG so error-block cases return FillError zeros.
-        subprocess.run(
-            [args.cxx, "-std=c++20", "-O1", "-DNDEBUG", *inc_flags, "-c", str(astc_cpu_cpp), "-o", str(astc_obj)],
-            check=True,
-        )
-
+        exe = Path(directory) / ("astc_decoder_gpu.exe" if os.name == "nt" else "astc_decoder_gpu")
         link_flags = ["-pthread"]
         if os.name == "nt" and "mingw" in args.cxx.lower():
             link_flags += ["-static"]
-        libraries = ["-ldl"] if os.name != "nt" else []
-
+        libraries = ["-ldl"] if os.name != "nt" else ["-lshell32"]
         subprocess.run(
-            [args.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
-             *inc_flags, str(fixture_cpp), str(astc_obj), "-o", str(exe), *link_flags, *libraries],
-            check=True,
-        )
-
+            [args.cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
+             "-I", str(args.headers), "-I", str(ROOT / "gpu/vk"), "-I", str(ROOT / "tests"),
+             *map(str, sources), "-o", str(exe), *link_flags, *libraries],
+            check=True, timeout=300)
         env = os.environ.copy()
         if os.name == "nt":
             cxx_dir = str(Path(args.cxx).resolve().parent)
             if Path(cxx_dir).is_dir():
                 env["PATH"] = cxx_dir + os.pathsep + env.get("PATH", "")
-
-        cmd = [str(exe)]
+        cmd = [str(exe), str(ROOT / "tests/texdecode_astc_vectors.vec")]
         if args.gpu:
             cmd.append("--gpu")
-            if args.gpu_device:
-                cmd += ["--device", args.gpu_device]
+            if args.device:
+                cmd += ["--device", args.device]
         else:
             cmd.append("--cpu-only")
-
-        subprocess.run(cmd, check=True, timeout=60 if args.gpu else 20, env=env)
+        if args.table:
+            cmd.append("--table")
+        result = subprocess.run(cmd, timeout=600 if args.gpu else 60, env=env)
+        if result.returncode:
+            raise SystemExit(result.returncode)
     return 0
 
 

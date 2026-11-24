@@ -93,7 +93,7 @@ def main():
     layout = block(tex, "bool bc_scratch_layout(")
     need("bs.image = bc_small;" in layout and "bc_small ? 2 : 1" in layout, "the small scratch's first layout is never set")
     idle = block(tex, "void bc_scratch_idle(")
-    need("bc_small = VK_NULL_HANDLE" in idle and "bc_small_view}" in idle, "the small scratch is kept when the first is given back")
+    need("bc_small = VK_NULL_HANDLE" in idle and "bc_small_view, bc_small_uview}" in idle, "the small scratch is kept when the first is given back")
 
     need("(uint64_t)(bc_small_px / 4) * (bc_small_px / 4) * bc_small_layers() * 16) / 8;" in upload,
          "a group of levels isn't bounded by the output buffer as it was made")

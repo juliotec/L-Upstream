@@ -7516,8 +7516,9 @@ bool async_on() {
 }
 // (the recorder's half of the Threaded rendering row: with RX_VK_RECORDER unset, vk_recorder.h's mode_from_env asks the row
 // through this, set before anything runs; the checks that build vk_recorder.h alone leave it null, the recorder off. The
-// recorder thread's half (menu_recorder_thread: On, or Auto from 4 cores), not the render thread's: the rule gives both
-// halves alike today, and each reader keeps its own so that the rule alone decides)
+// recorder thread's half (menu_recorder_thread: On, Auto from 4 cores with mirrored pools, or Auto alone with 6 or more cores
+// when only buffer-pool mirrors are absent), not the render thread's: each reader keeps its own half so the rule alone
+// decides)
 [[maybe_unused]] const bool rec_setting_hooked = (rec::g_setting_thread = menu_recorder_thread, true);
 
 void readback_fell_back(int what) {

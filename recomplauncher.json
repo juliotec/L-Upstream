@@ -98,17 +98,23 @@
     }
   ],
   "saves": [
-    "{local}/longshot",
-    "{install}/Longshot/user"
+    "{install}/Longshot/user/save",
+    "{install}/Longshot/user/mouse_sens.txt",
+    "{local}/longshot/save",
+    "{local}/longshot/mouse_sens.txt"
   ],
   "folders": {
     "saves": [
       {
-        "path": "{install}/Longshot/user",
-        "if": "{install}/Longshot/user"
+        "path": "{install}/Longshot/user/save",
+        "if": "{install}/Longshot/user/save"
       },
       {
-        "path": "{local}/longshot"
+        "path": "{local}/longshot/save",
+        "if": "{local}/longshot/save"
+      },
+      {
+        "path": "{install}/Longshot"
       }
     ],
     "game": [

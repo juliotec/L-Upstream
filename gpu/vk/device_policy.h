@@ -122,10 +122,11 @@ inline bool native_fadd_listed(VkDriverId driver, uint32_t device, uint32_t vers
 /// Intel's Windows driver needs 64 units on older/integrated families where depth and colour programs do not match to the
 /// last bit (issue 17, Arc B390). On discrete Battlemage (0xE2xx, e.g. Arc B570 / B580) the margin's LESS_OR_EQUAL lets
 /// alpha-tested Z-prepass cutouts (fallen leaves, Link's hair, distant tree cards) pass depth where the prepass
-/// discarded them, rendering opaque rectangles (issue #1413); keep it 0 there.
+/// discarded them, rendering opaque rectangles (issue #1413); keep it 0 there. Lunar Lake (0x64xx, Arc 140V, 101.8991) the
+/// same: the ivy, leaves and grass of Kokiri Forest drew their whole quads, and with the game's EQUAL the ground has no holes.
 inline float equal_depth_bias(VkDriverId driver, uint32_t device) {
     if (driver != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS) return 0.0f;
-    if ((device & 0xFF00u) == 0xE200u) return 0.0f;
+    if ((device & 0xFF00u) == 0xE200u || (device & 0xFF00u) == 0x6400u) return 0.0f;
     return 64.0f;
 }
 
@@ -314,11 +315,12 @@ struct DevicePolicy {
     // pass the same position. By the vendor, so NVK goes without them as NVIDIA's own compiler does: whether Mesa's
     // compiler needs them wants a run on NVK. RX_VK_NO_INVARIANT turns them off. Read (vk_coopmat.cpp coopmat_init)
     bool position_invariant = false;
-    // Intel's Windows driver (except discrete Battlemage, 0xE2xx): a colour pass tests EQUAL against what another
+    // Intel's Windows driver (except Battlemage, 0xE2xx, and Lunar Lake, 0x64xx): a colour pass tests EQUAL against what another
     // program wrote, and its compiler does not give the two the same position to the last bit (holes in the ground,
     // issue 17, Arc B390); 64 units towards the camera. Not Mesa's (Iris Xe, Mesa 26.2.7: Kakariko, the Death Mountain
     // gate and trail without a hole) and not Battlemage (Arc B570, 101.9175: Castle Town Market and Hyrule Field without
-    // a hole), where the margin's LESS_OR_EQUAL passes discarded alpha-tested Z-prepass cutouts as opaque rectangles
+    // a hole) or Lunar Lake (Arc 140V, 101.8991: Kokiri Forest foliage cut out and ground without holes with the margin
+    // off), where the margin's LESS_OR_EQUAL passes discarded alpha-tested Z-prepass cutouts as opaque rectangles
     // (issue #1413) or draws terrain in front of rocks. RX_VK_EQ_BIAS=<units>, 0 off. Read (vk_draw.cpp dynamic_state)
     float equal_depth_bias = 0;
     // AMD but RADV: task and mesh programs built without the driver's optimizer, which hangs the GPU; on RADV they
@@ -539,8 +541,9 @@ struct DevicePolicy {
     // The preparation's workers in play (policy_rule::program_workers_in_play). No switch. Read (vk_draw.cpp prepare_run)
     unsigned program_workers_in_play = 2;
     // Threaded rendering's Auto by the cores the process may use alone (threaded_rendering.h auto_picks): the render thread
-    // and the recorder thread from 4 cores. The menu still turns Auto off where the mode is not safe on the run (no mirrors,
-    // the capture off, ...), which these flags do not say. Site (vk_menu.cpp), step 7
+    // and the recorder thread from 4 cores. The menu still turns Auto off where the mode is not safe on the run (the capture
+    // off, ...), and without buffer-pool mirrors keeps only the recorder thread at 6 or more cores (without_mirrors), which
+    // these flags do not say. Site (vk_menu.cpp), step 7
     bool threaded_auto_render = false, threaded_auto_recorder = false;
     // Linux with 20 GB of RAM or less: the shader modules are let go after the precompile (1.5-1.8 GB); a memory shortfall
     // then does the same on any PC, at the site. RX_VK_DROP_MODULES, RX_VK_KEEP_MODULES. Site (vk_draw.cpp), step 2

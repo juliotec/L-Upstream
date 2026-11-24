@@ -4,7 +4,10 @@ the rule, the count and the readers, plus source checks; no game, no GPU.
 
 The rule is one function every reader shares: On is the render thread and the recorder thread together, Off neither, and
 Auto picks by the physical cores among the logical processors the process may run on (a core's SMT siblings counted
-once): 4 or more cores both threads, fewer off. The tiers were three on 18 Nov 2026 (a Ryzen 9 9950X3D with SMT off held
+once): 4 or more cores both threads, fewer off. Where only buffer-pool mirrors are absent (integrated GPUs or
+RX_VK_MIRROR=0), the render thread stays off and without_mirrors() runs the recorder thread alone with serial replay
+at 6 or more physical cores (kAutoRecorderOnlyCores), leaving 4- and 5-core non-mirrored systems off. The tiers were
+three on 18 Nov 2026 (a Ryzen 9 9950X3D with SMT off held
 to N cores, Castle Town's market: the render thread alone on 4 or 5, both threads 60.9 / 62.1 fps there against 67.6 /
 67.9); on the code after #1763 and #1866 (22 Nov 2026, a Ryzen 7 5700X3D held to 4 of its 8 cores by an affinity mask,
 Hyrule Field) both threads were the faster on 4 cores with and without SMT, and the render thread's tier was taken out.
@@ -12,9 +15,9 @@ Auto is off where the mode is not safe, and all of Auto is behind one constant, 
 turned off, Auto is Off on every PC and the row changes nobody's default.
 
 Checked:
- - the rule, compiled: the tiers at every count to 256 (both threads at 4 and 5 cores), the recorder thread never without
-   the render thread, On and Off whatever the CPU, the unsafe gate and the gate over Auto, the start's log line for each
-   answer;
+ - the rule, compiled: the tiers at every count to 256 (both threads at 4 and 5 cores), without_mirrors() across 0..16
+   cores (off below 6, recorder thread alone at 6 or more, never the render thread), On and Off whatever the CPU, the
+   unsafe gate and the gate over Auto, the start's log line for each answer;
  - the count, compiled: threaded::cores_of on a Steam Deck's 4 cores / 8 threads (4), one sibling of each core usable, the
    Linux and the Windows numbering of siblings, a hybrid CPU, SMT off; and usable_cores itself, cut from vk_progcache.cpp,
    on a stand-in GetLogicalProcessorInformation and affinity mask: the SMT siblings once, the fall-backs to the logical
@@ -173,6 +176,25 @@ int main() {
     CHECK(same(choose(AUTO, 6, false), true, true, Why::AutoBothThreads));
     CHECK(same(choose(AUTO, 6, true), false, false, Why::AutoUnsafe) && same(choose(AUTO, 4, true), false, false, Why::AutoUnsafe));
 
+    // (no buffer-pool mirrors: the render thread requires mirrors and stays off; at kAutoRecorderOnlyCores (6) or more
+    // physical cores the recorder thread runs alone with serial replay; 4- and 5-core non-mirrored handhelds stay off)
+    CHECK(kAutoRecorderOnlyCores == 6);
+    for (unsigned cores = 0; cores <= 16; cores++) {
+        const Choice base = choose(AUTO, cores, false, true);
+        const Choice nm = without_mirrors(base, cores);
+        CHECK(!nm.render_thread);
+        if (cores < kAutoCores) CHECK(same(nm, false, false, Why::AutoFewCores));
+        else if (cores < kAutoRecorderOnlyCores) CHECK(same(nm, false, false, Why::AutoUnsafe));
+        else CHECK(same(nm, false, true, Why::AutoRecorderOnly));
+    }
+    for (const unsigned cores : {0u, 2u, 4u, 5u, 6u, 8u, 16u}) {
+        CHECK(same(without_mirrors(choose(ON, cores, true, true), cores), true, true, Why::On));
+        CHECK(same(without_mirrors(choose(OFF, cores, false, true), cores), false, false, Why::Off));
+        CHECK(same(without_mirrors(choose(AUTO, cores, true, true), cores), false, false, Why::AutoUnsafe));
+        CHECK(same(without_mirrors(choose(AUTO, cores, false, false), cores), false, false, Why::AutoGate));
+        CHECK(same(without_mirrors(Choice{false, true, Why::AutoRecorderOnly}, cores), false, true, Why::AutoRecorderOnly));
+    }
+
     // (the count: the physical cores among the usable logical processors, a core's SMT siblings once)
     {
         const uint64_t deck[] = {0x3, 0xC, 0x30, 0xC0};   // (4 cores, 8 threads, Windows' numbering: a core's siblings side by side)
@@ -253,6 +275,16 @@ int main() {
     CHECK(line_of(choose(AUTO, 8, true), 8, 8, "RX_VK_DUMP") == "Auto: off (not safe on this run: RX_VK_DUMP)");
     CHECK(line_of(Choice{false, false, Why::AutoUnsafe}, 6, 12, "the buffer pools have no mirrors") ==
           "Auto: off (not safe on this run: the buffer pools have no mirrors)");
+    CHECK(line_of(without_mirrors(choose(AUTO, 4, false), 4), 4, 8, "the buffer pools have no mirrors") ==
+          "Auto: off (not safe on this run: the buffer pools have no mirrors)");
+    CHECK(line_of(without_mirrors(choose(AUTO, 5, false), 5), 5, 10, "the buffer pools have no mirrors") ==
+          "Auto: off (not safe on this run: the buffer pools have no mirrors)");
+    CHECK(line_of(without_mirrors(choose(AUTO, 6, false), 6), 6, 12, "the buffer pools have no mirrors") ==
+          "Auto: the recorder thread only (6 cores of 12 logical processors; the render thread off: the buffer pools have no mirrors)");
+    CHECK(line_of(without_mirrors(choose(AUTO, 8, false), 8), 8, 16, "the buffer pools have no mirrors") ==
+          "Auto: the recorder thread only (8 cores of 16 logical processors; the render thread off: the buffer pools have no mirrors)");
+    CHECK(line_of(without_mirrors(choose(AUTO, 8, false), 8), 8, 16, nullptr) ==
+          "Auto: the recorder thread only (8 cores of 16 logical processors; the render thread off: ?)");
     CHECK(line_of(choose(AUTO, 2, false), 2, 4, nullptr) ==
           "Auto: off (2 cores of 4 logical processors; the render thread and the recorder thread from 4 cores)");
     CHECK(line_of(choose(AUTO, 4, false), 4, 8, nullptr) ==
@@ -291,8 +323,11 @@ inline bool (*g_setting_thread)() = nullptr;
 }
 @@RENDER_THREAD_MODE@@
 int main(int argc, char** argv) {
-    if (argc != 4) return 2;
-    row = mkwvk::threaded::choose(std::atoi(argv[1]), (unsigned)std::atoi(argv[2]), std::atoi(argv[3]) != 0);
+    if (argc != 5) return 2;
+    const unsigned cores = (unsigned)std::atoi(argv[2]);
+    row = mkwvk::threaded::choose(std::atoi(argv[1]), cores, std::atoi(argv[3]) != 0);
+    if (mkwvk::threaded::auto_picked(row) && std::atoi(argv[4]) == 0)
+        row = mkwvk::threaded::without_mirrors(row, cores);
     if (std::atoi(argv[1]) == @@SPLIT@@)   // (a row with its halves apart: the render thread alone, which no answer of the
         row = mkwvk::threaded::Choice{true, false, mkwvk::threaded::Why::On};   // rule gives now, so each reader's own half shows)
     rec::g_setting_thread = @@HOOK@@;
@@ -305,35 +340,48 @@ int main(int argc, char** argv) {
 REC_OFF, SYNC, DEFER, THREAD = 0, 1, 2, 3   # (vk_recorder.h's Mode)
 AUTO, ON, OFF = 0, 1, 2                     # (the row's values)
 SPLIT = -2                                  # (not a row's value: the fixture's row with the render thread alone)
-# (the row's setting, cores, unsafe, the environment's switches; then the render thread, the recorder's mode, refused)
+# (the row's setting, cores, unsafe, mirrored, the environment's switches; then the render thread, the recorder's mode, refused)
 READER_CASES = [
-    (AUTO, 2, 0, {}, 0, REC_OFF, 0),
-    (AUTO, 3, 0, {}, 0, REC_OFF, 0),
-    (AUTO, 4, 0, {}, 1, THREAD, 0),      # (both threads from 4 cores)
-    (AUTO, 5, 0, {}, 1, THREAD, 0),
-    (AUTO, 6, 0, {}, 1, THREAD, 0),
-    (AUTO, 16, 0, {}, 1, THREAD, 0),
-    (AUTO, 8, 1, {}, 0, REC_OFF, 0),     # (not safe)
-    (AUTO, 4, 1, {}, 0, REC_OFF, 0),
-    (ON, 2, 1, {}, 1, THREAD, 0),
-    (OFF, 16, 0, {}, 0, REC_OFF, 0),
+    (AUTO, 2, 0, 1, {}, 0, REC_OFF, 0),
+    (AUTO, 3, 0, 1, {}, 0, REC_OFF, 0),
+    (AUTO, 4, 0, 1, {}, 1, THREAD, 0),      # (both threads from 4 cores)
+    (AUTO, 5, 0, 1, {}, 1, THREAD, 0),
+    (AUTO, 6, 0, 1, {}, 1, THREAD, 0),
+    (AUTO, 16, 0, 1, {}, 1, THREAD, 0),
+    (AUTO, 3, 0, 0, {}, 0, REC_OFF, 0),     # (no mirrors, <4 cores: off)
+    (AUTO, 4, 0, 0, {}, 0, REC_OFF, 0),     # (no mirrors, 4 cores, e.g. Steam Deck: off)
+    (AUTO, 5, 0, 0, {}, 0, REC_OFF, 0),     # (no mirrors, 5 cores: off)
+    (AUTO, 6, 0, 0, {}, 0, THREAD, 0),      # (no mirrors, 6+ cores: recorder thread alone)
+    (AUTO, 8, 0, 0, {}, 0, THREAD, 0),
+    (AUTO, 16, 0, 0, {}, 0, THREAD, 0),
+    (AUTO, 8, 1, 1, {}, 0, REC_OFF, 0),     # (not safe)
+    (AUTO, 8, 1, 0, {}, 0, REC_OFF, 0),     # (not safe overrides no-mirror recorder-only)
+    (AUTO, 4, 1, 1, {}, 0, REC_OFF, 0),
+    (ON, 2, 1, 1, {}, 1, THREAD, 0),
+    (ON, 4, 0, 0, {}, 1, THREAD, 0),        # (explicit ON ignores mirror gate)
+    (OFF, 16, 0, 1, {}, 0, REC_OFF, 0),
+    (OFF, 8, 0, 0, {}, 0, REC_OFF, 0),      # (explicit OFF)
     # (the switches over their halves)
-    (AUTO, 4, 0, {"RX_VK_RECORDER": "thread"}, 1, THREAD, 0),
-    (AUTO, 4, 0, {"RX_VK_RECORDER": "off"}, 1, REC_OFF, 0),   # (the way back for a 4-core PC the new Auto does not suit)
-    (AUTO, 5, 0, {"RX_VK_RECORDER": "0"}, 1, REC_OFF, 0),
-    (AUTO, 3, 0, {"RX_VK_RECORDER": "thread"}, 0, THREAD, 0),
-    (AUTO, 6, 0, {"RX_VK_RECORDER": "sync"}, 1, SYNC, 0),
-    (AUTO, 6, 0, {"RX_VK_RECORDER": "off"}, 1, REC_OFF, 0),
-    (AUTO, 6, 0, {"RX_VK_RECORDER": "defer"}, 1, DEFER, 0),
-    (AUTO, 6, 0, {"RX_VK_ASYNC": "0"}, 0, THREAD, 0),
-    (AUTO, 4, 0, {"RX_VK_ASYNC": "0"}, 0, THREAD, 0),
-    (AUTO, 2, 0, {"RX_VK_ASYNC": "1"}, 1, REC_OFF, 0),
-    (OFF, 16, 0, {"RX_VK_ASYNC": "1", "RX_VK_RECORDER": "thread"}, 1, THREAD, 0),
-    (ON, 16, 0, {"RX_VK_ASYNC": "0", "RX_VK_RECORDER": "sync"}, 0, SYNC, 0),
+    (AUTO, 4, 0, 1, {"RX_VK_RECORDER": "thread"}, 1, THREAD, 0),
+    (AUTO, 4, 0, 1, {"RX_VK_RECORDER": "off"}, 1, REC_OFF, 0),   # (the way back for a 4-core PC the new Auto does not suit)
+    (AUTO, 5, 0, 1, {"RX_VK_RECORDER": "0"}, 1, REC_OFF, 0),
+    (AUTO, 3, 0, 1, {"RX_VK_RECORDER": "thread"}, 0, THREAD, 0),
+    (AUTO, 6, 0, 1, {"RX_VK_RECORDER": "sync"}, 1, SYNC, 0),
+    (AUTO, 6, 0, 1, {"RX_VK_RECORDER": "off"}, 1, REC_OFF, 0),
+    (AUTO, 6, 0, 1, {"RX_VK_RECORDER": "defer"}, 1, DEFER, 0),
+    (AUTO, 8, 0, 0, {"RX_VK_RECORDER": "off"}, 0, REC_OFF, 0),   # (switch overrides Auto recorder-only)
+    (AUTO, 8, 0, 0, {"RX_VK_RECORDER": "0"}, 0, REC_OFF, 0),
+    (AUTO, 8, 0, 0, {"RX_VK_RECORDER": "sync"}, 0, SYNC, 0),
+    (AUTO, 8, 0, 0, {"RX_VK_ASYNC": "1"}, 1, THREAD, 0),
+    (AUTO, 6, 0, 1, {"RX_VK_ASYNC": "0"}, 0, THREAD, 0),
+    (AUTO, 4, 0, 1, {"RX_VK_ASYNC": "0"}, 0, THREAD, 0),
+    (AUTO, 2, 0, 1, {"RX_VK_ASYNC": "1"}, 1, REC_OFF, 0),
+    (OFF, 16, 0, 1, {"RX_VK_ASYNC": "1", "RX_VK_RECORDER": "thread"}, 1, THREAD, 0),
+    (ON, 16, 0, 1, {"RX_VK_ASYNC": "0", "RX_VK_RECORDER": "sync"}, 0, SYNC, 0),
     # (each reader its own half: with the halves apart, the render thread on and the recorder off)
-    (SPLIT, 8, 0, {}, 1, REC_OFF, 0),
-    (SPLIT, 8, 0, {"RX_VK_RECORDER": "thread"}, 1, THREAD, 0),
-    (SPLIT, 8, 0, {"RX_VK_ASYNC": "0"}, 0, REC_OFF, 0),
+    (SPLIT, 8, 0, 1, {}, 1, REC_OFF, 0),
+    (SPLIT, 8, 0, 1, {"RX_VK_RECORDER": "thread"}, 1, THREAD, 0),
+    (SPLIT, 8, 0, 1, {"RX_VK_ASYNC": "0"}, 0, REC_OFF, 0),
 ]
 SWITCHES = ("RX_VK_ASYNC", "RX_VK_RECORDER")
 
@@ -384,8 +432,14 @@ CHOICE_CASES = [
     (AUTO, 5, 1, {}, 1, 1, 1, "Auto: on, the render thread and the recorder thread (5 cores of 10 logical processors)"),
     (AUTO, 3, 1, {}, 0, 0, 0, "Auto: off (3 cores of 6 logical processors; "),
     (AUTO, 3, 0, {}, 0, 0, 0, "Auto: off (3 cores of 6 logical processors; "),   # (the mirrors asked only where Auto picked)
-    (AUTO, 4, 0, {}, 0, 0, 1, "Auto: off (not safe on this run: the buffer pools have no mirrors)"),   # (the Deck, an iGPU)
-    (AUTO, 8, 0, {}, 0, 0, 1, "Auto: off (not safe on this run: the buffer pools have no mirrors)"),
+    (AUTO, 4, 0, {}, 0, 0, 1, "Auto: off (not safe on this run: the buffer pools have no mirrors)"),   # (the Deck, 4-core iGPU)
+    (AUTO, 5, 0, {}, 0, 0, 1, "Auto: off (not safe on this run: the buffer pools have no mirrors)"),
+    (AUTO, 6, 0, {}, 0, 1, 1, "Auto: the recorder thread only (6 cores of 12 logical processors; the render thread off: the buffer pools have no mirrors)"),
+    (AUTO, 8, 0, {}, 0, 1, 1, "Auto: the recorder thread only (8 cores of 16 logical processors; the render thread off: the buffer pools have no mirrors)"),
+    (AUTO, 8, 0, {"RX_VK_CAPTURE": "0"}, 0, 0, 0, "Auto: off (not safe on this run: RX_VK_CAPTURE)"),
+    (AUTO, 8, 0, {"RX_VK_LOW_SPEC": "1"}, 0, 0, 0, "Auto: off (not safe on this run: RX_VK_LOW_SPEC)"),
+    (AUTO, 8, 0, {"RX_VK_DUMP": "1"}, 0, 0, 0, "Auto: off (not safe on this run: RX_VK_DUMP)"),
+    (AUTO, 8, 0, {"RX_VK_BENCH": "1"}, 0, 0, 0, "Auto: off (not safe on this run: RX_VK_BENCH)"),
     (AUTO, 4, 1, {"RX_VK_CAPTURE": "0"}, 0, 0, 0, "Auto: off (not safe on this run: RX_VK_CAPTURE)"),
     (AUTO, 4, 1, {"RX_VK_CAPTURE": "1"}, 1, 1, 1, "Auto: on, "),
     (AUTO, 4, 1, {"RX_VK_LOW_SPEC": "1"}, 0, 0, 0, "Auto: off (not safe on this run: RX_VK_LOW_SPEC)"),
@@ -433,6 +487,9 @@ def check_sources(s):
     auto_cores = constant(rule, "kAutoCores")
     if auto_cores is None:
         return ["threaded_rendering.h: no kAutoCores, Auto's tier"]
+    rec_only_cores = constant(rule, "kAutoRecorderOnlyCores")
+    if rec_only_cores is None:
+        return ["threaded_rendering.h: no kAutoRecorderOnlyCores, Auto's no-mirror recorder-only threshold"]
     # (the render thread's tier, 4 or 5 cores to 22 Nov 2026, taken out: nothing names it or says it)
     for key in ("rule", "menu", "menu_h", "replay", "recorder", "policy", "switches", "settings", "docs"):
         if re.search(r"\b(AutoRenderThread|kAutoRenderCores|kAutoRecorderCores)\b", s[key]):
@@ -469,7 +526,8 @@ def check_sources(s):
     hint = block(menu, "const char* hn_threaded(int v, int variant) {")
     end = hint.find(': "The same as Off, on every PC."')
     auto_line = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', hint[:end])) if end > 0 else ""
-    for need in ("On with %d or more processor cores" % auto_cores, "Off with fewer"):
+    for need in ("On with %d or more processor cores" % auto_cores, "Off with fewer",
+                 "%d or more" % rec_only_cores, "mirrors"):
         if need not in auto_line:
             bad.append("vk_menu.cpp: hn_threaded's Auto line does not say " + need)
     if "render thread alone" in auto_line:
@@ -481,12 +539,16 @@ def check_sources(s):
     resolved = block(menu, marker) if marker in menu else ""
     if not resolved:
         bad.append("vk_menu.cpp: no threaded_choice(), the row resolved once")
+    doc_start = menu.find("The Threaded rendering row, resolved once")
+    doc_end = menu.find(marker)
+    if doc_start >= 0 and doc_end > doc_start and "GCN" in menu[doc_start:doc_end]:
+        bad.append("vk_menu.cpp: threaded_choice() comment still lists GCN among unmirrored GPUs (discrete GCN has mirrors)")
     for need in ("static const threaded::Choice choice = [] {", "menu_init();", "const unsigned cpus = usable_cpus(), cores = usable_cores();",
                  "threaded::choose(opts.threaded_rendering, cores, unsafe != nullptr)",
                  'const char* capture = getenv("RX_VK_CAPTURE");',
                  'capture && atoi(capture) == 0 ? "RX_VK_CAPTURE" :', '"RX_VK_LOW_SPEC"',
                  '"RX_VK_DUMP"', '"RX_VK_BENCH"', "if (threaded::auto_picked(c) && !pools_mirrored()) {",
-                 "c = threaded::Choice{false, false, threaded::Why::AutoUnsafe};",
+                 "c = threaded::without_mirrors(c, cores);",
                  "threaded::describe(line, sizeof line, c, cores, cpus, unsafe);", 'logf("vk: Threaded rendering: %s", line);'):
         if resolved and need not in resolved:
             bad.append("vk_menu.cpp: threaded_choice() lost " + need + " (resolved once, from the cores the process may run on, "
@@ -561,17 +623,19 @@ def check_sources(s):
     else:
         for where, text in (("the option table", table[0]), ("the paragraph", para)):
             if "%d or more" % auto_cores not in text or "Off with fewer" not in text or "12 or more" in text or \
-                    "render thread alone" in text:
-                bad.append("docs/user/graphics-and-controls.md: %s does not say Auto's tier (%d or more cores, Off with fewer)"
-                           % (where, auto_cores))
+                    "render thread alone" in text or "%d or more" % rec_only_cores not in text or "mirror" not in text:
+                bad.append("docs/user/graphics-and-controls.md: %s does not say Auto's tiers (%d or more cores, recorder alone at %d or more without mirrors, Off with fewer)"
+                           % (where, auto_cores, rec_only_cores))
     rows = [line for line in docs.splitlines() if line.startswith("| `threaded_rendering` |")]
     if len(rows) != 1 or "threaded::kAutoEnabled" not in rows[0]:
         bad.append("docs/dev/reference/switches.md: no threaded_rendering row in the options file's keys, or it does not name the gate")
     elif "%d or more cores, the render thread and the recorder thread" % auto_cores not in rows[0] or \
-            "fewer, Off" not in rows[0] or "render thread alone" in rows[0] or "usable_cores" not in rows[0]:
-        bad.append("docs/dev/reference/switches.md: the threaded_rendering row does not say Auto's tier by cores (usable_cores)")
+            "fewer, Off" not in rows[0] or "render thread alone" in rows[0] or "usable_cores" not in rows[0] or \
+            "%d or more" % rec_only_cores not in rows[0] or "kAutoRecorderOnlyCores" not in rows[0]:
+        bad.append("docs/dev/reference/switches.md: the threaded_rendering row does not say Auto's tiers by cores (usable_cores, kAutoRecorderOnlyCores)")
     for name, need in (("RX_VK_ASYNC", "on from %d physical cores" % auto_cores),
-                       ("RX_VK_RECORDER", "Auto from %d physical cores" % auto_cores)):
+                       ("RX_VK_RECORDER", "Auto from %d physical cores" % auto_cores),
+                       ("RX_VK_RECORDER", "%d or more physical cores" % rec_only_cores)):
         m = re.search(r'^SW\(%s, \w+, \w+, "([^"]*)"' % name, s["switches"], re.M)
         if not m or need not in m.group(1):
             bad.append("switches.def: %s's default does not say %s" % (name, need))
@@ -619,15 +683,16 @@ def check_readers(cxx, s, tmp, name="readers"):
                             .replace("@@HOOK@@", hook.group(1) if hook else "nullptr") \
                             .replace("@@SPLIT@@", str(SPLIT))
     base = {k: v for k, v in os.environ.items() if k not in SWITCHES}
-    runs = [([setting, cores, unsafe], dict(base, **environment)) for setting, cores, unsafe, environment, *_ in READER_CASES]
+    runs = [([setting, cores, unsafe, mirrored], dict(base, **environment))
+            for setting, cores, unsafe, mirrored, environment, *_ in READER_CASES]
     built, out = compile_and_run(cxx, source, with_rule(s, tmp, name), tmp, name, runs)
     if not built:
         return "build: " + out
-    for (setting, cores, unsafe, environment, render, recorder, refused), run in zip(READER_CASES, out):
+    for (setting, cores, unsafe, mirrored, environment, render, recorder, refused), run in zip(READER_CASES, out):
         want = "render=%d recorder=%d refused=%d" % (render, recorder, refused)
         if run.returncode or run.stdout.strip() != want:
-            return "the row %d, %d cores, unsafe %d, %s: %s, expected %s" % (setting, cores, unsafe, environment or "no switch",
-                                                                            (run.stdout + run.stderr).strip(), want)
+            return "the row %d, %d cores, unsafe %d, mirrored %d, %s: %s, expected %s" % (
+                setting, cores, unsafe, mirrored, environment or "no switch", (run.stdout + run.stderr).strip(), want)
     return None
 
 
@@ -733,8 +798,25 @@ BROKEN = [
      "if (threaded::auto_picked(c) && !pools_mirrored() && false) {", "choice"),
     ("the mirrors asked before the cores", "menu", "if (threaded::auto_picked(c) && !pools_mirrored()) {",
      "if (!pools_mirrored() && threaded::auto_picked(c)) {", "choice"),
-    ("the unsafe run given the threads", "menu", "c = threaded::Choice{false, false, threaded::Why::AutoUnsafe};",
+    ("the unsafe run given the threads", "menu", "c = threaded::without_mirrors(c, cores);",
      "c = threaded::Choice{true, true, threaded::Why::AutoUnsafe};", "choice"),
+    # (no-mirror recorder-only rule mutations)
+    ("without_mirrors enables the render thread", "rule", "return {false, true, Why::AutoRecorderOnly};",
+     "return {true, true, Why::AutoRecorderOnly};", "rule"),
+    ("without_mirrors enables recorder on 4-core non-mirrored handhelds", "rule",
+     "inline constexpr unsigned kAutoRecorderOnlyCores = 6;",
+     "inline constexpr unsigned kAutoRecorderOnlyCores = 4;", "rule"),
+    ("without_mirrors leaves recorder off at 6+ cores", "rule",
+     "if (cores >= kAutoRecorderOnlyCores) return {false, true, Why::AutoRecorderOnly};",
+     "if (false && cores >= kAutoRecorderOnlyCores) return {false, true, Why::AutoRecorderOnly};", "rule"),
+    ("threaded_choice passes logical processors to without_mirrors", "menu",
+     "c = threaded::without_mirrors(c, cores);", "c = threaded::without_mirrors(c, cpus);", "choice"),
+    ("the row's help omits no-mirror recorder-only tier", "menu",
+     "recorder thread alone with 6 or more when buffer pools have no mirrors",
+     "recorder thread off when buffer pools have no mirrors", "source"),
+    ("switches.def omits no-mirror recorder-only tier", "switches",
+     "and Auto alone with 6 or more physical cores when only buffer-pool mirrors are absent",
+     "and off without mirrors", "source"),
 ]
 
 

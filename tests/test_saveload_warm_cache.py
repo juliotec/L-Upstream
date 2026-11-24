@@ -183,10 +183,10 @@ static ComputePlan stub_compute_plan;
 
 int stub_build_calls = 0;
 static int stub_build_probe_calls = 0;
-static int stub_build_probe_ask_start_first = 0;
+[[maybe_unused]] static int stub_build_probe_ask_start_first = 0;
 static int stub_jobs_pushed = 0;
-static int stub_predicted_use_calls = 0;
-static int stub_predicted_use_how = 0;
+[[maybe_unused]] static int stub_predicted_use_calls = 0;
+[[maybe_unused]] static int stub_predicted_use_how = 0;
 int64_t st_link_us = 0, st_links = 0;
 static int fake_pipe_token = 1;
 
@@ -310,15 +310,20 @@ inline Waits waits_verdict(double long_ms, bool struck_before) {
     return Waits::kFine;
 }
 inline bool caches_lacked(long long n) { return n > kNotInCacheMost; }
+enum class Marker { kLacked };
+inline bool marker_counts(Marker, uint32_t) { return true; }
 inline bool strike_write(const std::string&, double) { ++stub_strike_writes; return true; }
 inline bool marker_write(const std::string&, double, double) { ++stub_marker_writes; return true; }
 inline bool marker_write_lacked(const std::string&, long long) { ++stub_lacked_writes; return true; }
 } // namespace load_default
 
 static std::string load_fallback_path() { return "longshot_load_start.txt"; }
+static uint32_t ram_total_mb() { return 16384; }
 static std::atomic<bool> struck_last_session{false};
 static std::atomic<int64_t> wait_worst_ns{0}, wait_long_ns{0};
-static std::atomic<bool> wait_marked{false}, wait_struck{false};
+static std::atomic<bool> wait_struck{false};
+static std::mutex marker_mu;
+static bool wait_marked = false, lacked_marked = false;
 
 #include "load_wait_note.inc"
 #include "programs_frames_note.inc"
@@ -468,7 +473,7 @@ int main() {
     stub_load_at_create = true;
     census.load_pipes_cold = 500;
     census.load_computes_cold = 50;
-    wait_worst_ns = 0; wait_long_ns = 0; wait_marked = false; wait_struck = false;
+    wait_worst_ns = 0; wait_long_ns = 0; wait_marked = false; lacked_marked = false; wait_struck = false;
     stub_marker_writes = 0; stub_strike_writes = 0; stub_lacked_writes = 0;
     programs_frames_note();
     load_wait_note(3000LL * 1000000LL);
