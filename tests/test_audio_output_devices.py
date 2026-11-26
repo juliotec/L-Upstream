@@ -16,7 +16,8 @@ def source_contracts():
     menu = (ROOT / 'gpu/vk/vk_menu.cpp').read_text(encoding='utf-8')
     audio = (ROOT / 'host/nn_audio.c').read_text(encoding='utf-8')
     api = (ROOT / 'gpu/vk/vk_api.h').read_text(encoding='utf-8')
-    build = (ROOT / 'nx2/build.py').read_text(encoding='utf-8')
+    compile_lib = (ROOT / 'builder/crates/build-compile/src/lib.rs').read_text(encoding='utf-8')
+    plan = (ROOT / 'builder/crates/build-compile/src/plan.rs').read_text(encoding='utf-8')
     devices = (ROOT / 'host/audio_output_devices.c').read_text(encoding='utf-8')
     # (the rows: vk_menu.cpp's and its modules', #1633: the Audio tab's are gpu/vk/menu/audio.cpp's)
     rows = menu_text(ROOT)
@@ -38,7 +39,7 @@ def source_contracts():
     assert 'hos_game_path_a' not in devices
     assert re.search(r'\{TAB_AUDIO, "Speaker layout", &opts\.audio_output, 0, 3,', rows)
     assert 'audio_mono(pcm, FRAME, out_channels, rx_option(HOS_OPT_AUDIO_OUTPUT, 0) == 3);' in audio
-    assert 'translator_files.stamp(vk)' in build and 'LONGSHOT_SHADER_STAMP' in build
+    assert 'shader_stamp::stamp(&o.root.join("gpu/vk"))' in compile_lib and '-DLONGSHOT_SHADER_STAMP=' in plan
     assert 'DRV_QUERYFUNCTIONINSTANCEID' in devices and 'calloc(total ? total : 1' in devices
     assert 'waveOutOpen' not in devices and 'SDL_OpenAudio' not in devices
     mixer = audio[audio.index('static DWORD WINAPI renderer_main'):]

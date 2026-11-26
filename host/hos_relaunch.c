@@ -3,8 +3,8 @@
    the very end of that, instead of only exiting, the game is started again:
      Linux: the process becomes the game again (execve) with the arguments and the environment it started with
      (/proc/self/cmdline and /proc/self/environ: longshot_env.txt's lines are read again, not kept), so whatever waits
-     for it (the launcher, a stream, a test) still has it. The game is bin/longshot on disk, never run from inside the
-     AppImage (longshot-launch starts it with the AppImage's variables taken away), so /proc/self/exe is the game;
+     for it (the launcher, a stream, a test) still has it. The game is the game folder's longshot on disk (bin/longshot
+     in a folder an older builder made), never run from inside a packed program, so /proc/self/exe is the game;
      argv[0] on the PATH if that is gone (the folder built again meanwhile).
      Windows: a new process of this executable (GetModuleFileNameW) with this one's command line (GetCommandLineW), in
      the same folder, with the environment this one started with (kept by hos_relaunch_keep_env before longshot_env.txt
@@ -190,6 +190,8 @@ void hos_close_finish(void) {
     hos_pad_speaker_shutdown();
     void hos_fs_wait_writes(void);   /* (nn_fs.c: a file the game is writing, up to 3 s) */
     hos_fs_wait_writes();
+    void hos_sdl_vibration_shutdown(void);
+    hos_sdl_vibration_shutdown();
     hos_log("stop: close work done (a file the game was writing waited for, at most 3 s)");
     hos_ab_end();   /* (longshot) HOS_AB: the sides' sums in the log (host/hos_ab.c) */
     hos_log_flush();

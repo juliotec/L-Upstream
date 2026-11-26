@@ -9,6 +9,9 @@
 #include <limits.h>
 #include "audio_output_devices.h"
 #include "fullscreen_monitor.h"
+#ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/longshot_env.h"
+#endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #ifdef _WIN32
@@ -36,6 +39,7 @@ static struct {
     void *PadHasSensor, *PadSensorEnable, *PadSensorData;   /* (motion: optional, NULL in an SDL without them) */
     void *PadVendor, *PadProduct, *PadSteamHandle, *SetHintPriority;   /* (Steam's stand-in pads: optional, host/steam_pads.h; PadProduct also for vibration.h's Steam Controller (2026)) */
     void *JoystickGUID, *PadMapping;   /* (optional connection diagnostics: no serial number or device path) */
+    void *JoystickVirtual;   /* SDL3, or SDL2 by device index at open */
     void *PadWireless;   /* (optional: a pad's transport, SDL_GetJoystickConnectionState) */
     /* (optional, host/pad_sdl.c's vibration: an Xbox pad's trigger motors; a pad's HID device, written beside SDL for a
        DualSense's Bluetooth haptics. Without them those pads keep their two motors) */
@@ -84,6 +88,7 @@ static int get_all(HMODULE m, int three) {
     GET2(PadRumble, "SDL_RumbleGamepad", "SDL_GameControllerRumble");
     /* (SDL2 2.0.12 and 2.0.16 on, SDL3 3.2 on: without them every pad keeps the motor rumble) */
     *(FARPROC *)&f.PadType = GetProcAddress(m, three ? "SDL_GetGamepadType" : "SDL_GameControllerGetType");
+    *(FARPROC *)&f.JoystickVirtual = GetProcAddress(m, three ? "SDL_IsJoystickVirtual" : "SDL_JoystickIsVirtual");
     *(FARPROC *)&f.PadEffect = GetProcAddress(m, three ? "SDL_SendGamepadEffect" : "SDL_GameControllerSendEffect");
     /* (longshot, vibration: SDL2 2.0.14 / 2.0.18 / 2.24 on, every SDL3) */
     *(FARPROC *)&f.PadTriggers = GetProcAddress(m, three ? "SDL_RumbleGamepadTriggers" : "SDL_GameControllerRumbleTriggers");
@@ -156,6 +161,16 @@ int hos_sdl_load(void) {
         if (m && get_all(m, 1)) version = 3;
         else if ((m = load_one("SDL2.dll")) && get_all(m, 0)) version = 2;
         hos_log(version ? "sdl: SDL%d" : "sdl: no SDL3 or SDL2 found: no window, sound or SDL controllers", version);
+        /* (no window: nothing reads SDL's quit event, and SDL's own SIGINT/SIGTERM handlers turned a timeout's or a service
+           manager's SIGTERM into it: the run went on until SIGKILL. SDL installs them when its first subsystem starts
+           (sound, video and the controllers each start its events) and reads this hint only then, so it is set here,
+           before any: in a headless run the sound starts first, for the Insert menu's list of outputs
+           (gpu/vk/vk_menu.cpp menu_init). Without them the signals end the run as usual. With a window, the window's
+           loop reads the quit event) */
+        if (version && env_on("HOS_HEADLESS")) {
+            if (version == 3) CALL(_Bool (*)(const char *, const char *), SetHint)("SDL_NO_SIGNAL_HANDLERS", "1");
+            else CALL(int (*)(const char *, const char *), SetHint)("SDL_NO_SIGNAL_HANDLERS", "1");
+        }
         InterlockedExchange(&state, 2);
     }
     while (state != 2) Sleep(0);
@@ -888,7 +903,7 @@ int hos_sdl_audio_channels(void) {
     return n > 0 ? n : 2;
 }
 
-/* ---- (longshot) microphones: SDL3's recording devices, or SDL2's capture devices (the Linux AppImage carries SDL2): a
+/* ---- (longshot) microphones: SDL3's recording devices, or SDL2's capture devices (a Linux build puts SDL2 beside the game): a
    stream each opened, in the format asked for, read as the game asks ---- */
 static struct {
     void *GetDevices, *DeviceName, *Available, *GetData, *Clear, *Destroy;   /* (SDL3) */
@@ -1136,6 +1151,11 @@ void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms) {
     else CALL(int (*)(void *, uint16_t, uint16_t, uint32_t), PadRumble)(pad, low, high, ms);
 }
 int hos_sdl_pad_type(void *pad) { return f.PadType ? CALL(int (*)(void *), PadType)(pad) : 0; }
+int hos_sdl_pad_virtual(int32_t id, int open_index) {
+    if (!f.JoystickVirtual) return 0;
+    if (version == 3) return CALL(_Bool (*)(uint32_t), JoystickVirtual)((uint32_t)id);
+    return CALL(int (*)(int), JoystickVirtual)(open_index) != 0;
+}
 int hos_sdl_pad_has_effect(void) { return f.PadEffect != NULL; }
 int hos_sdl_pad_effect(void *pad, const void *data, int size) {
     if (!f.PadEffect) return 0;

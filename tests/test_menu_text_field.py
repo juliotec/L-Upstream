@@ -112,6 +112,8 @@ int ask_sel = 0, preview_seconds = -1, listening = 0;
 std::atomic<bool> open_now{true};
 bool restart_ask() { int now[mr::kMax] = {}; restart_values(now); return restart_state.ask(now); }
 bool module_locked(const int*) { return false; }
+// (the row a preview in play locks besides row_fixed's own list, Frame generation multiplier: not among these rows)
+bool preview_locked(const int*) { return false; }
 bool filter_needed() { return true; }
 bool framegen_by_fixed() { return false; }
 @@ROW_FIXED@@

@@ -199,7 +199,7 @@ def calm_after(g, want, start, limit_frames):
     return g.calm(want, max(60, limit_frames - (g.frame - start)))
 
 
-# what in a refusal's message says that asking again will never do (host/hos_main.c oot_teleport's teleport.why: no map for
+# what in a refusal's message says that asking again will never do (game/oot_tools.c oot_teleport's teleport.why: no map for
 # Link's age there, no such destination, a request the game could not build, Link's age not in its data, an input recording
 # playing, which takes its own and none of the bridge's: host/input_movie.c); the rest (an event playing, a map loading,
 # another teleport in the last 8 s, the event manager not there yet) pass
@@ -318,12 +318,16 @@ def start_game(game, run_dir, data, env, prefix=(), timeout=900):
         raise SystemExit("pipeline_tour: %s is too long for a socket: give a shorter --out" % sock)
     live = os.path.join(run_dir, "live.txt")
     open(live, "w").close()
-    user = os.path.join(data, "user")   # (the saves: the run's own, whatever the folder's user/ is or links to)
+    user = os.path.join(data, "user")   # (the run's own user folder, whatever the folder's user/ is or links to)
     os.makedirs(user, exist_ok=True)
+    # (the profile the game plays, the run's own: its saves (none: a new game) and its settings (none: the game copies
+    # the game folder's longshot_options.ini into it at its start), host/longshot_profile.h)
+    profile = longshot_bridge.make_profile(os.path.join(data, "profile"), "tour")
     no_env = os.path.join(run_dir, "empty-env.txt")   # (HOS_ENV_FILE: not the folder's longshot_env.txt, as longshot_bridge's test profile)
     open(no_env, "w").close()
     full = run_environ(os.environ, env)
-    full.update({"XDG_DATA_HOME": data, "HOS_INPUT_LIVE": live, "HOS_CONTROL": sock, "HOS_ENV_FILE": no_env})
+    full.update({"XDG_DATA_HOME": data, "HOS_INPUT_LIVE": live, "HOS_CONTROL": sock, "HOS_ENV_FILE": no_env,
+                 "LONGSHOT_PROFILE": profile})
     exe = longshot_bridge.game_exe(game)
     with open(os.path.join(run_dir, "log.txt"), "wb") as logf:   # (the game has its own copy of the handle)
         proc = subprocess.Popen(list(prefix) + [exe, "--user", user], cwd=game, env=full, stdout=logf, stderr=subprocess.STDOUT,

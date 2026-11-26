@@ -4,7 +4,7 @@ Measurements is one line, docs/dev/standards.md's example measurements, and a de
 template. Each rule refuses what it should (a section missing, empty or left as the template; Testing's Tested and
 Still to test, each item saying who runs it; Measurements' verdict, columns named by commit, a Baseline: line, a perf
 change's table; the Ready for review boxes whole and ticked, the When it applies boxes kept ticked), the warnings
-come when they should, a work-in-progress PR passes with a notice, and the names Tooling's forge.py and ci.yml use are
+come when they should, a work-in-progress PR passes with a notice, and the names Tooling's forge.py and pr-description.yml use are
 there.
 
 python -I -B tests/test_check_pr_description.py
@@ -328,7 +328,7 @@ class Running(unittest.TestCase):
 
 
 class ForTooling(unittest.TestCase):
-    """The names Tooling's forge.py and .forgejo/workflows/ci.yml read from this file"""
+    """The names Tooling's forge.py and .forgejo/workflows/pr-description.yml read from this file"""
 
     def test_the_names(self):
         for name in ("APPLIES", "boxes", "checklist", "EVERYONE", "farm_items", "is_draft", "keep_applicable",
@@ -343,11 +343,13 @@ class ForTooling(unittest.TestCase):
             self.assertTrue(check.TITLE.match(good), good)
         for bad in ("Fix walls", "fix walls", "fix:walls", "wip: x", "WIP: fix: x"):
             self.assertFalse(check.TITLE.match(bad), bad)
-        ci = (ROOT / ".forgejo" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertIn('spec_from_file_location("check", "scripts/check_pr_description.py")', ci)   # (the title job)
+        wf = (ROOT / ".forgejo" / "workflows" / "pr-description.yml").read_text(encoding="utf-8")
+        self.assertIn('spec_from_file_location("check", "scripts/check_pr_description.py")', wf)   # (the title's step)
+        self.assertIn('json.load(f)["pull_request"]["title"]', wf)   # (from the event's file, not the shell's text)
 
     def test_game_paths(self):
-        for path in ("gpu/vk/vk_draw.cpp", "host/hos.c", "nx2/lift.py"):
+        for path in ("gpu/vk/vk_draw.cpp", "host/hos.c", "builder/crates/lift/src/lib.rs",
+                     "game/crates/oot/src/fov.rs", "longshot-rs/src/lib.rs"):
             self.assertTrue(path.startswith(check.GAME_PATHS), path)
         for path in ("docs/dev/reference/switches.md", "scripts/release.py", "tests/run_all.py"):
             self.assertFalse(path.startswith(check.GAME_PATHS), path)

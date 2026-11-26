@@ -20,8 +20,8 @@ spec = importlib.util.spec_from_file_location("run_all", ROOT / "tests" / "run_a
 run_all = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run_all)
 
-TOOLS = {"cc": None, "cxx": None, "vulkan_headers": None, "spirv_headers": None, "spirv_val": None, "glslang": None, "dotnet": None,
-         "dav1d": None}
+TOOLS = {"cc": None, "cxx": None, "clang": None, "vulkan_headers": None, "spirv_headers": None, "spirv_val": None, "glslang": None,
+         "dav1d": None, "cargo": None, "llvm_mc": None, "cmake": None}
 
 
 class Reader(unittest.TestCase):
@@ -45,7 +45,7 @@ class Reader(unittest.TestCase):
 
     def test_nothing_declared(self):
         self.assertEqual(self.read('"""RUN_ALL_ARGS in the docstring is not a declaration"""\nimport os\n'),
-                         {"args": [], "modules": [], "skip": {}, "unparsed": None})
+                         {"args": [], "modules": [], "skip": {}, "alone": False, "unparsed": None})
 
     def test_all_three(self):
         d = self.read('''
@@ -88,6 +88,8 @@ class Reader(unittest.TestCase):
         self.bad('RUN_ALL_ARGS = ("--cxx", "{cxx}")\n', "list of strings")
         self.bad('RUN_ALL_MODULES = ["zstandard", 1]\n', "list of strings")
         self.bad('RUN_ALL_SKIP = ["windows"]\n', "dict of OS -> reason")
+        self.bad('RUN_ALL_ALONE = 1\n', "RUN_ALL_ALONE must be True")
+        self.assertTrue(self.read('RUN_ALL_ALONE = True\n')["alone"])
         self.bad('RUN_ALL_SKIP = ({"windows"}, "why")\n', "dict of OS -> reason")
         self.bad('RUN_ALL_SKIP = {"windows": ""}\n', "dict of OS -> reason")
 
@@ -153,20 +155,18 @@ class Runner(unittest.TestCase):
 
     def test_bad_declaration_stops_the_run(self):
         with tempfile.TemporaryDirectory() as root:
-            for d in ("tests", "nx2"):
-                os.mkdir(os.path.join(root, d))
-            with open(os.path.join(root, "nx2", "test_bad.py"), "w", encoding="utf-8") as f:
+            os.mkdir(os.path.join(root, "tests"))
+            with open(os.path.join(root, "tests", "test_bad.py"), "w", encoding="utf-8") as f:
                 f.write('import os\n\nRUN_ALL_SKIP = {"window": "why"}\n')
             rc, out, err = self.run_main(root)
         self.assertEqual(rc, 2)
-        self.assertIn("nx2/test_bad.py:3:", err)
+        self.assertIn("tests/test_bad.py:3:", err)
         self.assertEqual(out, "")
 
     def test_bad_declaration_elsewhere_does_not_stop_a_named_run(self):
         with tempfile.TemporaryDirectory() as root:
-            for d in ("tests", "nx2"):
-                os.mkdir(os.path.join(root, d))
-            with open(os.path.join(root, "nx2", "test_bad.py"), "w", encoding="utf-8") as f:
+            os.mkdir(os.path.join(root, "tests"))
+            with open(os.path.join(root, "tests", "test_bad.py"), "w", encoding="utf-8") as f:
                 f.write('RUN_ALL_SKIP = {"window": "why"}\n')
             with open(os.path.join(root, "tests", "test_good.py"), "w", encoding="utf-8") as f:
                 f.write('import sys\n\nRUN_ALL_ARGS = ["--flag"]\nsys.exit(0 if sys.argv[1:] == ["--flag"] else 1)\n')
@@ -176,12 +176,11 @@ class Runner(unittest.TestCase):
                 self.assertIn("tests/test_good.py", out)
                 rc, out, err = self.run_main(root, "test_bad")
                 self.assertEqual(rc, 2)
-                self.assertIn("nx2/test_bad.py:1:", err)
+                self.assertIn("tests/test_bad.py:1:", err)
 
     def test_unparsed_test_fails_without_running(self):
         with tempfile.TemporaryDirectory() as root:
-            for d in ("tests", "nx2"):
-                os.mkdir(os.path.join(root, d))
+            os.mkdir(os.path.join(root, "tests"))
             with open(os.path.join(root, "tests", "test_broken.py"), "w", encoding="utf-8") as f:
                 f.write('RUN_ALL_SKIP = {"windows": "why"\n')
             for os_name in ("linux", "windows"):
@@ -206,10 +205,9 @@ class Runner(unittest.TestCase):
         self.assertEqual((run_all.ARGS, run_all.MODULES, run_all.SKIP), ({}, {}, {}),
                          "tests/run_all.py's ARGS, MODULES and SKIP are retired: declare RUN_ALL_ARGS, RUN_ALL_MODULES "
                          "or RUN_ALL_SKIP in the test file instead (see the docstring of tests/run_all.py)")
-        for d in ("tests", "nx2"):
-            for f in sorted(os.listdir(ROOT / d)):
-                if f.startswith("test_") and f.endswith(".py"):
-                    run_all.read_declarations(str(ROOT / d / f), d + "/" + f, TOOLS)
+        for f in sorted(os.listdir(ROOT / "tests")):
+            if f.startswith("test_") and f.endswith(".py"):
+                run_all.read_declarations(str(ROOT / "tests" / f), "tests/" + f, TOOLS)
 
 
 if __name__ == "__main__":

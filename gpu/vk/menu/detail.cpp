@@ -17,7 +17,7 @@ const char* tx_grass_distance(int v) {
     static const char* t[] = {"Game's", "2x", "3x", "4x"};
     return (unsigned)v < 4 ? t[v] : t[0];
 }
-/// Shadow resolution: the sun's cascades at the game's own sizes (host/oot_shadow.c). Auto, the default, takes the size
+/// Shadow resolution: the sun's cascades at the game's own sizes (game/oot_shadow.c). Auto, the default, takes the size
 /// for the card's memory (menu_shadow_res)
 const char* tx_shadow_res(int v) {
     static const char* t[] = {"Auto", "Game's", "High", "Highest"};

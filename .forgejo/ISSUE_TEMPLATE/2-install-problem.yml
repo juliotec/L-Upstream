@@ -1,5 +1,5 @@
 name: Install or build problem
-about: The launcher, the builder or the AppImage stops, fails to build, update or start the game
+about: The launcher or longshot-builder stops, fails to build, update or start the game
 title: "Install: "
 labels: [kind/bug]
 body:
@@ -13,16 +13,14 @@ body:
       label: What you used
       options:
         - Longshot Launcher
-        - Longshot Builder (Windows)
-        - Linux AppImage
-        - Command line (nx2/make_game.py)
+        - Command line (longshot-builder)
     validations:
       required: true
   - type: input
     id: version
     attributes:
       label: Version
-      description: The launcher's or the builder's version, and the Longshot version it was installing.
+      description: The launcher's or longshot-builder's version, and the Longshot version it was installing.
       placeholder: Launcher v1.0.0, Longshot v3.0.0
     validations:
       required: true

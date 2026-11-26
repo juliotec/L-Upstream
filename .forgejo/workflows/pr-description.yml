@@ -1,4 +1,9 @@
-# Checks a pull request's description against the rules in scripts/check_pr_description.py.
+# Checks a pull request's title and description against the rules in scripts/check_pr_description.py. The title: a
+# squash-merged pull request's title is its commit on main, a line of the next release's notes, and what decides the next
+# version, so it must be a Conventional Commit (TITLE, which `forge.py pr create` checks too); it is read from the event's
+# file, never put in the shell's text. (The title is checked here, not in ci.yml: this file also
+# runs when a title is edited, and ci.yml's pull_request run on every edit would cancel and replace the code's checks.
+# This file runs main's script, never the pull request's code, so the job's token is no risk.)
 # A PR in work in progress (WIP: or [WIP] at the start of the title) passes with a notice: it is checked once it is
 # marked ready. `forge.py pr ready` runs the same check before it takes the WIP: off. Only the description is read, from
 # the API, with main's script: the pull request's code is never checked out, so pull_request_target, which also runs
@@ -16,13 +21,21 @@ on:
 permissions:
   contents: read
 
+# (an edit or a push makes a new run; an older one still running for the same pull request is cancelled: only the
+# newest description and head need the check. Every event type above is needed: synchronize puts the status on a new
+# head, edited is how a description, a title or WIP: changes)
+concurrency:
+  group: pr-description-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   description:
-    name: Description follows the template
+    name: Title and description
     runs-on: quick  # (a quick job: the runner kept free for these takes it, or any runner with room)
     timeout-minutes: 5
     steps:
-      - uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the scripts
+        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: |
@@ -30,7 +43,24 @@ jobs:
             .forgejo/pull_request_template.md
             tests
           sparse-checkout-cone-mode: false
+      - name: The title
+        run: |
+          python3 -I - <<'PY'
+          import importlib.util, json, os, sys
+          spec = importlib.util.spec_from_file_location("check", "scripts/check_pr_description.py")
+          check = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(check)
+          # (without Forgejo's work-in-progress prefixes, as forge.py and the description check take them off)
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+              title = check.strip_wip(json.load(f)["pull_request"]["title"])
+          if not check.TITLE.match(title):
+              print("::error::the title must be a Conventional Commit, type(scope): description, with the type one of %s "
+                    "(docs/dev/standards.md, Titles): %r" % (", ".join(check.TYPES), title))
+              sys.exit(1)
+          print("ok: %s" % title)
+          PY
       - name: Check the description
+        if: ${{ !cancelled() }}
         env:
           FORGEJO_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

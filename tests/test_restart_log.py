@@ -4,7 +4,8 @@ A game started with no stderr of its own (from its icon, Steam, the launcher: /d
 longshot_log.txt as stderr (host/hos_main.c), after moving the run before's to longshot_log.1.txt. The restart becomes the
 game again by execve, which keeps fd 2: the new run found a regular file there, took it for a stderr it was given, and
 neither moved the log nor named it for the crash window. Its lines went on after the first run's, and a crash in it showed
-the window without the run's log (host/hos_crash_dialog.c looks for "run_id: <run>" in the log's first 8 KB).
+the window without the run's log (the crash window, now the builder's, finds a run's log by its "run_id: <run>" line:
+builder/crates/crash/src/store.rs).
 
 This check cuts the Linux restart out of hos_relaunch.c, compiles it with stand-ins for execve and the log, and checks the
 stderr the game started again gets: none again (not a regular file) when the game was given none, the one it was given

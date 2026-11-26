@@ -8,9 +8,9 @@ where the game would, with the real client (scripts/longshot_bridge.py Bridge) i
 profile on the tour's route: a counting renderer told apart, RX_VK_PGO_FILE's reset after control and dump at each run's end
 against a stand-in for host/pgo_rt.c's writer, the refusals when nothing counts, and merge-profile (a stand-in llvm-profdata).
 
-The tour teleports through the bridge by the destination's index and switches the age through it (host/control.c, host/hos_main.c),
+The tour teleports through the bridge by the destination's index and switches the age through it (host/control.c, game/oot_tools.c),
 and gives the items through the live input file's "!cheat <action>" lines (host/nn_hid.c), whose numbers are the Insert menu's
-(gpu/vk/oot_cheat_items.h): a renumbered action or a reordered teleport list must not send the tour somewhere else.
+(game/oot_cheat_items.h): a renumbered action or a reordered teleport list must not send the tour somewhere else.
 Synthetic data only. Linux only (the bridge's Unix socket).
 
 python -I -B tests/test_pipeline_tour.py
@@ -62,22 +62,22 @@ def text(path):
 def source(tour, a):
     """What the tour reads from the source, and what it relies on there"""
     # (the menu: vk_menu.cpp and its modules' rows, #1633)
-    main_c, hid, menu, ctl_c = text("host/hos_main.c"), text("host/nn_hid.c"), menu_text(), text("host/control.c")
+    tools_c, hid, menu, ctl_c = text("game/oot_tools.c"), text("host/nn_hid.c"), menu_text(), text("host/control.c")
     # the bridge: a teleport by index is the Debug tab's OOT_TELEPORT_ACTION + index, the age switch OOT_AGE_ACTION
-    if "action = OOT_TELEPORT_ACTION + asked - 1" not in main_c or "action = OOT_AGE_ACTION" not in main_c:
-        fail("host/hos_main.c no longer takes the bridge's teleport and age switch as the Debug tab's actions")
+    if "action = OOT_TELEPORT_ACTION + asked - 1" not in tools_c or "action = OOT_AGE_ACTION" not in tools_c:
+        fail("game/oot_tools.c no longer takes the bridge's teleport and age switch as the Debug tab's actions")
     for cmd in ("teleport", "age", "status", "wait", "sequence", "press", "quit"):
         if '!strcmp(cmd, "%s")' % cmd not in ctl_c:
             fail("host/control.c has no %s command" % cmd)
-    # (status's game: the fields as oot_state reads them, or the sampled state of host/oot_state_tap.c, whose event, loading and
-    # age are filled from oot_state where the sample could not read them)
-    tap = text("host/oot_state_tap.c")
+    # (status's game: the fields as game_state reads them, or the sampled state of game/oot_state_tap.c, whose event, loading and
+    # age are filled from game_state where the sample could not read them)
+    tap = text("game/oot_state_tap.c")
     if 'buf_puts(&b, ",\\"game\\":");' not in ctl_c or '"{\\"event\\":%s,\\"loading\\":%s,\\"age\\":\\"%s\\"}"' not in ctl_c or \
             'const char *keys[] = {"event", "loading", "age"};' not in ctl_c:
         fail("host/control.c's status no longer says the game's event, loading and age, which the tour waits on")
     for field in ('",\\"event\\":%s"', '",\\"loading\\":%s"', '",\\"age\\":%s"'):
         if field not in tap:
-            fail("host/oot_state_tap.c's sample no longer has %s, which status's game passes on" % field)
+            fail("game/oot_state_tap.c's sample no longer has %s, which status's game passes on" % field)
     # (the presses: HOS_INPUT_SCRIPT's units, which scripts/longshot_bridge.py turns into the bridge's frame steps, as
     # host/control.c's own script reading would)
     ctl_py = text("scripts/longshot_bridge.py")
@@ -87,26 +87,26 @@ def source(tour, a):
     if '"refused"' not in ctl_c or '"cancelled"' not in ctl_c:
         fail("host/control.c no longer replies refused or cancelled")
     # the refusals asking again cannot change are named in the game's words
-    whys = re.findall(r'teleport\.why = (?:child \? )?"([^"]+)"', main_c)
+    whys = re.findall(r'teleport\.why = (?:child \? )?"([^"]+)"', tools_c)
     if not whys:
-        fail("host/hos_main.c's teleport refusals not found")
+        fail("game/oot_tools.c's teleport refusals not found")
     for why in whys:
         permanent = any(p in why for p in drive.PERMANENT)
         transient = any(w in why for w in ("event is playing", "map is loading", "in progress", "not there yet"))
         if permanent == transient:
             fail("a teleport refusal neither asked again nor given up on, or both: %r" % why)
     # the live input: "!cheat <action>", the Debug tab's actions (the inventory)
-    if not re.search(r'if \(!strncmp\(line, "!cheat ", 7\)\) __atomic_store_n\(&hos_oot_live_action, atoi\(line \+ 7\)', hid):
+    if not re.search(r'if \(!strncmp\(line, "!cheat ", 7\)\) __atomic_store_n\(&game_live_action, atoi\(line \+ 7\)', hid):
         fail("host/nn_hid.c's live input no longer reads \"!cheat <action>\"")
     if "cheat_action.store(1000 + teleport_choice)" not in menu or a["teleport"] != 1000:
         fail("the menu's teleport action and OOT_TELEPORT_ACTION (%d) differ" % a["teleport"])
     if "cheat_action.store(999)" not in menu or a["age"] != 999:
         fail("the menu's age action and OOT_AGE_ACTION (%d) differ" % a["age"])
     # the teleports: one for each destination, in its order; the adult-only ones those without a child map
-    table = main_c.split("oot_destinations[] = {", 1)[1].split("\n};", 1)[0]
+    table = tools_c.split("oot_destinations[] = {", 1)[1].split("\n};", 1)[0]
     entries = re.findall(r"\{(NULL|\"[^\"]*\"),.*?\},\s*/\* ([^*]+) \*/", table, re.S)
     if [label for _, label in entries] != [name for name, _ in a["teleports"]]:
-        fail("the teleport names and host/hos_main.c's destinations differ:\n%s\n%s" % (
+        fail("the teleport names and game/oot_tools.c's destinations differ:\n%s\n%s" % (
             [label for _, label in entries], [name for name, _ in a["teleports"]]))
     for (child, label), (_, adult_only) in zip(entries, a["teleports"]):
         if (child == "NULL") != adult_only:
@@ -115,9 +115,9 @@ def source(tour, a):
         fail("the destinations' maps and the teleport list differ")
     if not 0 < a["dungeons"] < len(a["teleports"]):
         fail("the teleport list's Dungeons section not found (vk_menu.cpp teleport_sections)")
-    main_time = re.search(r"action >= (\d+) && action < (\d+)\) \{\s*oot_set_time\(c, action - (\d+)\)", main_c)
+    main_time = re.search(r"action >= (\d+) && action < (\d+)\) \{\s*oot_set_time\(c, action - (\d+)\)", tools_c)
     if not main_time or int(main_time.group(1)) != route.TIME_ACTION or int(main_time.group(2)) < route.TIME_ACTION + 23:
-        fail("host/hos_main.c's clock action is not TIME_ACTION + hour")
+        fail("game/oot_tools.c's clock action is not TIME_ACTION + hour")
     # the inventory: the item list's order is the action's index; kinds 0 (unlock) and 1 (a quantity)
     names = list(a["items"])
     for must in ("Item_Bomb", "Item_Hookshot", "Item_Longshot", "Item_Arrow_Fire", "Item_DinFire", "Weapon_Range_Bow",
@@ -128,7 +128,7 @@ def source(tour, a):
             a["items"]["Item_Hookshot"][1] != 0 or a["items"]["Item_Hookshot"][0] + 1 != a["items"]["Item_Longshot"][0]:
         fail("the inventory's indices or kinds are read wrong: %s" % list(a["items"].items())[:16])
     unlock = route.items_unlock(a)
-    count = len(re.findall(r'OOT_ITEM\("', text("gpu/vk/oot_cheat_items.h")))
+    count = len(re.findall(r'OOT_ITEM\("', text("game/oot_cheat_items.h")))
     by_index = {i: name for name, (i, _) in a["items"].items()}
     for n in unlock:
         item, op = divmod(n - a["item"], 256)
@@ -138,7 +138,7 @@ def source(tour, a):
         fail("the quest items (the story's flags) are given")
     # the switches the tour sets are ones the game reads, and the options its menu writes
     env_src = "".join(text(p) for p in ("host/nn_vi.c", "host/nn_hid.c", "host/pad_sdl.c", "host/nn_audio.c", "host/hos_main.c",
-                                        "host/nn_applet.c", "host/discord_rpc.c", "host/display.c")) + menu + \
+                                        "game/oot_tools.c", "host/nn_applet.c", "game/discord_rpc.c", "host/display.c")) + menu + \
         "".join(p.read_text(encoding="utf-8", errors="replace") for p in (ROOT / "gpu" / "vk").glob("*.cpp"))
     for name in list(tour.BASE_ENV) + ["HOS_SKIP_OPENING", "HOS_CONTROL", "HOS_INPUT_LIVE", "HOS_WINDOW_SIZE", "HOS_WINDOW_NOACTIVATE",
                                        "RX_VK_SHOTS"]:
@@ -147,17 +147,20 @@ def source(tour, a):
     keys = {"output_res", "vsync", "resolution", "frame_rate_cap", "upscaling", "dlss", "handheld_profile", "ultrawide"}
     for row in re.findall(r'\{TAB_[A-Z]+, "([^"]+)", &opts\.', menu):
         keys.add(row.lower().replace(" ", "_"))
+    # (and the game's rows, game/menu/rows.c, saved under their keys)
+    keys.update(re.findall(r'\.key = "([^"]+)"', text("game/menu/rows.c")))
     for key in tour.BASE_INI:
         if key not in keys:
             fail("%s: no Insert menu row writes it to longshot_options.ini" % key)
     if tour.BASE_INI["frame_rate_cap"] != "6" or "Uncapped" not in re.search(r"tx_fps_cap\(int v\) \{(.*?)\}", menu, re.S).group(1).split(",")[6]:
         fail("frame_rate_cap=6 is not Uncapped")
-    # the lists the tour moves aside and reads: the notes and play's lists in the game folder's cache/, the shipped one beside the
-    # game (and a build from before's loose ones, which the game's start moves into cache/)
-    draw, paths, layout = text("gpu/vk/vk_draw.cpp"), text("gpu/vk/vk_paths.h"), text("host/game_layout.c")
+    # the lists the tour moves aside and reads: the notes and play's lists in the game folder's cache/ (the tour starts the game
+    # itself: no LONGSHOT_SHADER_CACHE, which only longshot-builder's play sets), the shipped one beside the game (and a build
+    # from before's loose ones, which the game's start moves into cache/)
+    draw, paths, layout = text("gpu/vk/vk_draw.cpp"), text("gpu/vk/vk_paths.h"), text("game/game_layout.c")
     if 'return strstr(name, "_shipped") ? game_folder_path() + name : cache_path(name);' not in draw or \
             'std::string pipe_notes_path() { return cache_path("longshot_pipelines.bin"); }' not in draw or \
-            'cache_path(const char* name) { return game_sub_path("cache", name); }' not in paths:
+            'return shared.empty() ? game_sub_path("cache", name) : shared + name;' not in paths:
         fail("the pipeline notes and lists are no longer in the game folder's cache/ (vk_draw.cpp, vk_paths.h)")
     if tour.LIST != "cache/longshot_pipeline_states.bin" or tour.LIST not in tour.STATE_FILES:
         fail("the tour's list is not cache/longshot_pipeline_states.bin: %s" % tour.LIST)
@@ -172,9 +175,11 @@ def source(tour, a):
         fail("the shipped list is not put aside, or two files are put aside under one name")
     # the renderer's counters (--vk-profile): RX_VK_PGO_FILE, <file>.reset and <file>.dump as host/pgo_rt.c reads them in the
     # renderer's copy, and its raw format's magic
-    pgo, build = text("host/pgo_rt.c"), text("nx2/build.py")
-    if '-DPGO_ENV="RX_VK_PGO_FILE"' not in build or vkprofile.PGO_ENV != "RX_VK_PGO_FILE" or vkprofile.PGO_MARK != b"RX_VK_PGO_FILE\x00":
-        fail("the renderer's copy of host/pgo_rt.c no longer reads RX_VK_PGO_FILE (nx2/build.py -DPGO_ENV)")
+    pgo, build = text("host/pgo_rt.c"), text("builder/crates/build-compile/src/plan.rs")
+    if '"-DPGO_ENV=\\"RX_VK_PGO_FILE\\""' not in build or vkprofile.PGO_ENV != "RX_VK_PGO_FILE" or \
+            vkprofile.PGO_MARK != b"RX_VK_PGO_FILE\x00":
+        fail("the renderer's copy of host/pgo_rt.c no longer reads RX_VK_PGO_FILE (builder/crates/build-compile/src/plan.rs "
+             "-DPGO_ENV)")
     for want in ('snprintf(dump, sizeof dump, "%s.dump", path);', 'snprintf(reset, sizeof reset, "%s.reset", path);',
                  "memset(PGO_CNT_BEGIN, 0,", "pgo_write(path);\n            DeleteFileA(dump);", "DeleteFileA(reset);",
                  "const char *e = getenv(PGO_ENV);"):
@@ -407,7 +412,7 @@ def cli(tour, a):
 
 
 def list_tools(tour, states, rec):
-    """The counts and the merge, through nx2/pipeline_states.py (whatever its format); the options file; the report; --publish"""
+    """The counts and the merge, through scripts/pipeline_states.py (whatever its format); the options file; the report; --publish"""
     head = states.MAGIC + struct.pack("<I", states.SIZE)
     with tempfile.TemporaryDirectory() as d:
         one, two, out = (os.path.join(d, n) for n in ("one.bin", "two.bin", "out.bin"))
@@ -453,7 +458,7 @@ def list_tools(tour, states, rec):
             fail("the report does not say where the renderer's counters went: %s" % report)
         if "settle: on after 60 frames with no new pipeline, 600 at most" not in report:
             fail("the report does not say the settle's frames: %s" % report)
-    # --publish: the tour's source written by nx2/pipeline_states.py tour, its note from what the runs' bridges said
+    # --publish: the tour's source written by scripts/pipeline_states.py tour, its note from what the runs' bridges said
     with tempfile.TemporaryDirectory() as d:
         part = os.path.join(d, "run-child")
         os.makedirs(part)
@@ -784,8 +789,8 @@ def folder_kept(tour):
     env = drive.run_environ({"PATH": "/bin", "RX_VK_NO_STATE_LIST": "1", "HOS_FPS_MAX": "30", "HOME": "/h"}, {"HOS_FPS_MAX": "1000"})
     if env != {"PATH": "/bin", "HOME": "/h", "HOS_FPS_MAX": "1000"}:
         fail("run_environ: %s" % env)
-    if '"HOS_ENV_FILE": no_env' not in src or '[exe, "--user", user]' not in src:
-        fail("the game reads the folder's longshot_env.txt, or its saves are not the run's own")
+    if '"HOS_ENV_FILE": no_env' not in src or '[exe, "--user", user]' not in src or '"LONGSHOT_PROFILE": profile' not in src:
+        fail("the game reads the folder's longshot_env.txt, or its saves are not the run's own (its profile)")
     # tour.md: no path of the run's, the options as the runs had them
     if tour.published_settings({"RX_VK_SHOTS": "/home/u/run/shots", "RX_VK_PGO_FILE": "/r/vk.profraw", "RX_VK_SHOT_W": "320",
                                 "HOS_OUTPUT_RES": "640x360", "RX_VK_X": "/abs"}) != {"RX_VK_SHOT_W": "320", "HOS_OUTPUT_RES": "640x360"}:

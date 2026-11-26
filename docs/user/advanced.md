@@ -14,9 +14,12 @@ These are in the launcher's build settings.
 - **Prepare shaders now:** off, the first start prepares them instead. A build whose preparation stopped ("the GPU driver
   stopped responding") leaves `longshot_prepare_skipped` in the game folder's `cache` folder, and the game then builds
   each shader when it is first drawn, with stutter, until you delete that file or build again.
-- **Build files:** the translated code and objects (about 4 GB) are deleted once the game is ready. To keep them, so an
-  update compiles only what changed, set `LONGSHOT_KEEP_BUILD_FILES=1` for the build; **Free up space** deletes them
-  later.
+- **Build files:** the compiled files (about 2 GB) are kept, so an update rebuilds only what
+  changed: a new version that changes little takes seconds to build. The builder keeps its files within 12 GB by
+  itself, the ones used longest ago let go first. The launcher keeps them in its own folder; its **Storage** page shows them and **Remove**
+  deletes them. A build from the command line keeps them in `~/.cache/longshot-builder` (Linux) or
+  `%LOCALAPPDATA%\Longshot\Builder` (Windows), or the folder a launcher gives `--cache`. Deleting them is safe: the next build then takes as
+  long as the first.
 
 ## Optional upscalers
 
@@ -41,8 +44,9 @@ whether each started, and why not.
   for (an NVIDIA or Intel GPU, a Radeon AMD names for none) the Lite network stands in, so FSR 4 is offered there too,
   with nothing to choose; `RX_VK_FSR4_STANDIN=0` leaves FSR 4 off there. Linux can retain the saved Lite value but
   cannot force it, so Auto is used.
-- **Intel XeSS** (Windows): put Intel's `libxess.dll`, from the `bin` folder of a recent
-  [Intel XeSS SDK](https://github.com/intel/xess/releases) release, beside `bin\longshot.exe` or in the game folder. It
+- **Intel XeSS** (Windows): turn on **XeSS** in the launcher's build settings. It shows Intel's license first, then
+  fetches Intel's `libxess.dll` into the game folder; a newer one from a recent
+  [Intel XeSS SDK](https://github.com/intel/xess/releases) release, put beside `longshot.exe` by hand, is kept. It
   runs on Intel Arc and Iris Xe GPUs, and on other GPUs whose Vulkan driver has what XeSS needs. There is no XeSS for
   Linux.
 
@@ -60,36 +64,42 @@ The switches worth knowing as a player are on the pages that need them ([common 
 
 ## Start the game from the command line
 
-The game itself is `bin\longshot.exe` on Windows and `bin/longshot` on Linux, in the game folder. The `longshot`
-launcher beside `bin` doesn't pass arguments on: start the game directly to use them.
+The game itself is `longshot.exe` on Windows and `longshot` on Linux, in the game folder (in its `bin` folder, if an
+older version's builder made the folder). In Longshot's own folder (`builds/default/` beside `Longshot.exe`), starting
+the game hands over to `Longshot.exe`, which checks the game is up to date and starts it with your profile: start
+`Longshot.exe` there, with the game's arguments after `--` (`Longshot.exe -- --romfs D:\romfs`). When the game needs a build (a mod with code was turned on), it asks `Longshot.exe` to build it again and `Longshot.exe` starts it again ([updates and saves](updates-and-saves.md#the-folder-you-start-longshot-from)).
 
 | Argument | What it does |
 |---|---|
-| `--user <folder>` | Where the game keeps your saves, caches and temporary files. Default: `user` in the game folder on Windows, `~/.local/share/longshot` on Linux |
-| `--romfs <folder>` | The game files' folder, when it is not the game folder's `romfs` |
+| `--user <folder>` | Where the game keeps your recordings, the mouse's sensitivity and its temporary files. Default: `%APPDATA%\Longshot` on Windows, `~/.local/share/longshot` on Linux (an old `user` folder in the game folder is moved there once). Your saves and settings are your profile's, wherever `--user` points |
+| `--romfs <folder>` | A folder of the game's files (an unpacked RomFS) to read instead of your `.nup` |
 | `--prepare-shaders` | Prepare the shaders as the first start does, then exit |
 | `--compile-shaders all` or `most` | What this run's preparation builds ([build options](#build-options)) |
 
 ```sh
 cd ~/Games/Longshot
-./bin/longshot --user "$HOME/longshot-data"
+./longshot --user "$HOME/longshot-data"
 ```
 
 ## The builder from the command line
 
-The launcher builds with the Longshot Builder, which also runs on its own from the command line, over SSH or in a
-script. Each version's builder is on [Longshot's releases](https://git.magicbean.dev/MagicBeanDev/Longshot/releases).
+Build through the launcher. Its builder is one file per version, `longshot-builder`, which also runs on its own from the
+command line, over SSH or in a script: each version's (`longshot-builder-<version>-linux-x64`,
+`longshot-builder-<version>-windows-x64.exe`) is on [Longshot's releases](https://git.magicbean.dev/MagicBeanDev/Longshot/releases).
+It needs nothing else: what it builds with is inside, unpacked into its cache the first time (about 2 s).
 
 ```sh
-./Longshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Longshot   # build
-./Longshot-<version>-x86_64.AppImage --cli --update ~/Games/Longshot                      # build again with this version
-./Longshot-<version>-x86_64.AppImage --play ~/Games/Longshot                              # play
+./longshot-builder-<version>-linux-x64 build --game ~/your-game.nup --out ~/Games/Longshot   # build
+./longshot-builder-<version>-linux-x64 update ~/Games/Longshot                              # build again with this version
+./longshot-builder-<version>-linux-x64 check --game ~/your-game.nup                         # only check your game's version
 ```
 
-On Windows, unpack `LongshotBuilder-<version>-windows-x64.zip` and run `LongshotBuilder.exe --cli` with the same
-options. `--check` only checks your game's version; `--log <file>` saves the build's output; `--jobs <n>` (or
-`LONGSHOT_JOBS=<n>`) limits how many files compile at once, and how many CPU threads every other step of the build uses
-(translating, the button prompts, preparing the shaders), so the PC stays usable while it builds. To build from a clone of this repository, see the
+On Windows, run `longshot-builder-<version>-windows-x64.exe` with the same arguments ([all its
+options](../dev/reference/build.md#build-a-game-folder)). An upscaler's
+files need its maker's license: `--upscaler dlss,fsr4,xess --accept-licenses nvidia,amd,intel`. `--log <file>` saves the
+build's output; `--jobs <n>` (or `LONGSHOT_JOBS=<n>`) limits how many files compile at once, and how many CPU threads
+every other step of the build uses (translating, the button prompts, preparing the shaders), so the PC stays usable
+while it builds. Keep the `.nup` where it was when you built: the game reads its files from it. To build from a clone of this repository, see the
 [developer setup](../dev/setup.md).
 
 ## Linux: faster GPU memory (/dev/udmabuf)

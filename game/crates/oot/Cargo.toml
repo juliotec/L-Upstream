@@ -1,0 +1,22 @@
+# Ocarina of Time's own code in Rust (game/README.md): the hook sites' callbacks the game's C had, one at a time, on
+# guest's checked memory. Safe code only; it is linked into the game through longshot-rs.
+[package]
+name = "oot"
+description = "Ocarina of Time's hook site callbacks in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+# (its callbacks call the host: a test binary of its own would have no host to link; tests/test_oot_fov_rust.py checks
+# them against the C they replaced, in a program with a host of its own)
+test = false
+doctest = false
+
+[dependencies]
+guest = { path = "../guest" }
+
+[lints]
+workspace = true

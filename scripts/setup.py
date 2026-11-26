@@ -1,5 +1,5 @@
 """Set up a clone for development, the part of docs/dev/setup.md that needs no account: run it as `mise run setup`, which
-first installs requirements.txt into mise's Python and, on Linux, the headers and glslang the game-free checks use.
+first installs, on Linux, the headers, glslang and Python packages the game-free checks use.
 Safe to run again: each step does only what is missing, then a summary says what was done and what is left for you.
 
     - the team's Tooling repository beside this checkout (../Tooling, where every doc and skill runs it from): cloned when missing, else
@@ -7,7 +7,9 @@ Safe to run again: each step does only what is missing, then a summary says what
       is left alone
     - the pre-commit and commit-msg hooks (pre-commit install)
     - Claude Code's magicbean plugin, when Claude Code is installed: the commands to install it when it is missing
-    - the compiler and headers a build needs on this OS: what is missing, and how to get it
+    - Rust, which a build compiles longshot-builder with
+    - tools.lock's build tools in the checkout's tools/: `mise run tools` when they are missing (dev.py's builds install
+      their own into the development folder)
 
 It never signs in and never reads or writes a token: sign in yourself, `python -I ../Tooling/scripts/forge.py login`.
 Standard library only.
@@ -18,7 +20,6 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,60 +109,38 @@ def plugin(done, todo):
                     "      /plugin install %s" % (PLUGIN, TOOLING_URL, PLUGIN))
 
 
-# The build's own checks, run in a Python of their own (they import nx2/): Linux's whole list (make_game.py
-# check_linux_prerequisites: the Python modules, the headers, FFmpeg, clang, clang++ and lld), and on Windows the headers.
-LINUX_CHECK = """
-import sys
-sys.path.insert(0, sys.argv[1])
-import make_game
-make_game.check_linux_prerequisites()
-"""
-HEADERS_CHECK = """
-import sys
-sys.path.insert(0, sys.argv[1])
-import build
-for (name, _, probe, env), found in zip(build.VK_HEADERS, build.vulkan_headers()):
-    print("" if found else "%s header %s (RX_CPM, or %s)" % (name, probe, env))
-"""
+RUST = "1.99"   # (mise.toml's: longshot-builder and the lifter, docs/dev/reference/builder.md)
 
 
 def toolchain(done, todo):
-    """What a game build needs on this OS, as the build itself checks it"""
-    nx2 = str(ROOT / "nx2")
-    if sys.platform.startswith("linux"):
-        code, out = run([sys.executable, "-I", "-c", LINUX_CHECK, nx2])
-        if code == 0:
-            done.append("build tools: everything a Linux build needs is there")
-            return
-        error = next((line for line in out.splitlines() if line.startswith("@@error ")), None)
-        missing = error[len("@@error "):] if error else "the check stopped: " + last_line(out)
-        todo.append("build tools: %s\n      Install them from your distribution, or build in the AppImage's container "
-                    "(scripts/linux/docker.sh): %s, Linux" % (missing, SETUP_DOC))
+    """What a game build needs here: Rust, to compile longshot-builder (dev.py does, and installs tools.lock's build tools
+    itself, the ones players' builders use)"""
+    cargo = shutil.which("cargo")
+    if not cargo:
+        todo.append("Rust: no cargo; `mise install` puts mise.toml's Rust %s on the PATH (%s)" % (RUST, SETUP_DOC))
         return
-    if os.name != "nt":
-        todo.append("build tools: not checked on %s (Windows and Linux only)" % sys.platform)
-        return
-    mingw = os.environ.get("LONGSHOT_MINGW") or str(ROOT / "llvm-mingw")
-    if os.path.isfile(os.path.join(mingw, "bin", "clang.exe")):
-        done.append("build tools: llvm-mingw at %s" % mingw)
-    elif os.environ.get("LONGSHOT_MSVC") == "1":
-        done.append("build tools: LONGSHOT_MSVC=1, the Visual Studio route (not checked here)")
+    code, out = run([cargo, "--version"], timeout=60)
+    version = out.split()[1] if code == 0 and len(out.split()) > 1 else "?"
+    if version.startswith(RUST + "."):
+        done.append("Rust: cargo %s (longshot-builder; dev.py installs tools.lock's build tools)" % version)
     else:
-        todo.append("build tools: no llvm-mingw (bin\\clang.exe in LONGSHOT_MINGW, else llvm-mingw\\ here): get its "
-                    "ucrt-x86_64 build and set LONGSHOT_MINGW to its folder (%s, Windows)" % SETUP_DOC)
-    code, out = run([sys.executable, "-I", "-c", HEADERS_CHECK, nx2])
-    missing = [line for line in out.splitlines() if line.strip()] if code == 0 else ["the check stopped: " + last_line(out)]
-    if missing:
-        todo.append("build tools: %s\n      Copy the Builder's tools\\cpm and set RX_CPM to it (%s, Windows)"
-                    % ("; ".join(missing), SETUP_DOC))
+        todo.append("Rust: cargo %s, not %s: `mise install` (mise.toml pins it) (%s)" % (version, RUST, SETUP_DOC))
+
+
+def build_tools(done, todo):
+    """tools.lock's build tools in the checkout (`mise run tools`: longshot-builder dev tools install, each tool's stamp in
+    .tools/), which `longshot-builder --root .` compiles with as a player's build does"""
+    installed = sorted(p.name for p in (ROOT / ".tools").glob("*")) if (ROOT / ".tools").is_dir() else []
+    if installed:
+        done.append("build tools: tools.lock's in tools/ (%s)" % ", ".join(installed))
     else:
-        done.append("build tools: the Vulkan, SPIR-V and VMA headers are there")
+        todo.append("build tools: `mise run tools` puts tools.lock's in tools/ (%s)" % SETUP_DOC)
 
 
 def main():
     argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     done, todo = [], []
-    for step in (tooling, hooks, plugin, toolchain):
+    for step in (tooling, hooks, plugin, toolchain, build_tools):
         step(done, todo)
     print("setup: done")
     for line in done:

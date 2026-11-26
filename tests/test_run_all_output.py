@@ -25,7 +25,6 @@ class FailedOutputIntoAPipe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "tests").mkdir()
-            (tmp / "nx2").mkdir()
             shutil.copy(ROOT / "tests" / "run_all.py", tmp / "tests" / "run_all.py")
             shutil.copy(ROOT / "tests" / "compiler_command.py", tmp / "tests" / "compiler_command.py")   # (run_all.py imports it)
             (tmp / "tests" / "test_quotes.py").write_text(FAILING, encoding="utf-8")

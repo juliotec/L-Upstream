@@ -96,7 +96,7 @@ def check_sources():
     menu = (upscaler if upscaler.exists() else vk / "vk_menu.cpp").read_text(encoding="utf-8")
     rules = (vk / "xess_rules.h").read_text(encoding="utf-8")
     api = (ROOT / "third_party" / "xess" / "inc" / "xess" / "xess.h").read_text(encoding="utf-8")
-    build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
+    build = "".join(p.read_text(encoding="utf-8") for p in sorted((ROOT / "builder" / "crates" / "build-compile" / "src").rglob("*.rs")))
     # Intel's DLL is the player's: loaded at run time with its own folder first in its search, never linked or shipped
     if "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS" not in xess:
         raise SystemExit("vk_xess.cpp does not load libxess.dll with LoadLibraryExA's own-folder search")

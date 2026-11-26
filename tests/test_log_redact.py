@@ -1,4 +1,5 @@
-"""The saved logs without the player's user name (host/log_redact.c, gpu/vk/compat/longshot_redact.h, nx2/log_redact.py).
+"""The saved logs without the player's user name (host/log_redact.c, gpu/vk/compat/longshot_redact.h, and the builder's
+log: builder/crates/build-driver/src/redact.rs).
 
 - the shared rule: the home folder as a whole is ~ (%USERPROFILE% on Windows), the user's name as a folder of any path <user>,
   and the rest of each path stays: names with spaces, an apostrophe, letters outside ASCII; another drive's Users folder;
@@ -8,24 +9,21 @@
   of the home folder itself when it is not USERNAME (and its short 8.3 name, where the drive makes them);
 - a log file once its run has ended (hos_log_redact_file): rewritten in place, only when it is the run named, left alone
   when already clean, longer and shorter lines both;
-- the builder's --log file (nx2/log_redact.py): the same output as the C rule for the same line, whole lines only, a line
-  cut across writes redacted whole, and make_game.py's build_log writing through it;
 - the Insert menu's Bug report: the same output, line for line;
-- the places that call it (source checks): hos_vlog and hos_fatal, the start's rotation, the crash watch, the crash window and
-  the Bug report sharing the one implementation.
+- the builder's log (longshot-builder's build.log and --log file): the same output, line for line, and this PC's home folder
+  and name from the environment (build-driver's redact example, run with cargo);
+- the places that call it (source checks): hos_vlog and hos_fatal, the start's rotation and the Bug report sharing the one
+  implementation, and the builder's crash window's port of it (builder/crates/crash/src/redact.rs, when it is there).
 """
 import argparse
-import importlib
-import io
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
+RUN_ALL_ARGS = ["--cargo", "{cargo}"]
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-log_redact = importlib.import_module("log_redact")
 
 HARNESS = r"""
 #include "log_redact.h"
@@ -169,9 +167,6 @@ def core_checks(exe):
         got = run(exe, ["core", *hx, str(windows)], line)
         assert got == want, ("C", line, got, want)
         assert run(exe, ["core", *hx, str(windows)], got) == got, ("C again", got)
-        py = log_redact.redact_line(line, home, user, bool(windows))
-        assert py == want, ("Python", line, py, want)
-        assert log_redact.redact_line(py, home, user, bool(windows)) == py, ("Python again", py)
 
 
 def menu_checks(cxx, exe, tmp):
@@ -183,6 +178,29 @@ def menu_checks(cxx, exe, tmp):
     for line, home, user, windows, want in CASES:
         hx = [home.encode("utf-8").hex(), user.encode("utf-8").hex()]
         assert run(menu, [*hx, str(windows)], line) == want == run(exe, ["core", *hx, str(windows)], line), ("menu", line)
+
+
+def builder_checks(cargo, exe):
+    """the builder's log (build-driver's rule, through its redact example): the same output as the shared rule, line for line"""
+    subprocess.run([cargo, "build", "-q", "--release", "-p", "build-driver", "--example", "redact"], cwd=ROOT / "builder",
+                   check=True, timeout=1800)
+    # (where cargo put it: CARGO_TARGET_DIR, relative to the folder cargo ran in, else the workspace's target/)
+    target = ROOT / "builder" / os.environ["CARGO_TARGET_DIR"] if os.environ.get("CARGO_TARGET_DIR") else ROOT / "target"
+    example = target / "release" / "examples" / ("redact.exe" if os.name == "nt" else "redact")
+
+    def rust(args, text, env=None):   # (run directly: its environment is the case's, which cargo's own lookup may not take)
+        r = subprocess.run([str(example), *args], input=text.encode("utf-8"), capture_output=True, env=env, timeout=60)
+        assert r.returncode == 0, (args, r.stderr.decode("utf-8", "replace"))
+        return r.stdout.decode("utf-8")
+    lines = "".join(line for line, *_ in CASES)
+    for windows in (0, 1):
+        for _, home, user, _, _ in CASES:
+            hx = [home.encode("utf-8").hex(), user.encode("utf-8").hex()]
+            want = run(exe, ["core", *hx, str(windows)], lines)
+            assert rust(["core", *hx, str(windows)], lines) == want, ("builder", home, user, windows)
+    if os.name != "nt":
+        line = "[build] reading /home/al/Games/x.nup and /run/media/al/SD\n"
+        assert rust(["line"], line, env_for("/home/al", "al")) == run(exe, ["line"], line, env_for("/home/al", "al"))
 
 
 def env_for(home, user):
@@ -245,29 +263,6 @@ def file_checks(exe, tmp):
     assert run(exe, ["file", str(tmp / "none.txt")], "", env).strip() == "-1"
 
 
-def python_checks(tmp):
-    here = ("/home/al", "al", "", False)
-    out = io.StringIO()
-    lines = log_redact.RedactedLines(out, here)
-    lines.write("compiling /ho")
-    assert out.getvalue() == ""   # (whole lines only)
-    lines.write("me/al/work/x.c\nlinked /home/al/y and /run/media/al/z\nleft")
-    assert out.getvalue() == "compiling ~/work/x.c\nlinked ~/y and /run/media/<user>/z\n", out.getvalue()
-    lines.close()
-    assert out.getvalue().endswith("\nleft")
-    home, user, folder, windows = log_redact.who({"USERPROFILE": "C:\\Users\\john.PC", "USERNAME": "john"}, windows=True)
-    assert (home, user, folder, windows) == ("C:\\Users\\john.PC", "john", "john.PC", True)
-    assert log_redact.redact("D:\\Users\\john.PC\\x C:\\Users\\john.PC\\y", (home, user, folder, windows)) == \
-        "D:\\Users\\<user>\\x %USERPROFILE%\\y"
-    # make_game.py's --log goes through it, and closes it
-    make_game = (ROOT / "nx2/make_game.py").read_text(encoding="utf-8")
-    start = make_game.index("def build_log(path):")
-    body = make_game[start:make_game.index("\n\n\n", start)]
-    assert "saved = _log_redact.RedactedLines(log)" in body and "LogStream(sys.stdout, saved)" in body
-    assert "LogStream(sys.stderr, saved)" in body and "saved.close()" in body
-    assert "import log_redact as _log_redact" in make_game
-
-
 def source_checks():
     threads = (ROOT / "host/hos_thread.c").read_text(encoding="utf-8")
     vlog = threads[threads.index("static void hos_vlog("):threads.index("void hos_log(const char *fmt, ...) {")]
@@ -277,12 +272,10 @@ def source_checks():
     assert fatal.index("hos_log_redact(clean, sizeof clean, buf);") < fatal.index('"[hos %s] FATAL: %s"')
     main = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
     assert main.index("MOVEFILE_REPLACE_EXISTING);") < main.index("hos_log_redact_file(to, NULL);") < main.index('freopen(path, "w", stderr)')
-    dialog = (ROOT / "host/hos_crash_dialog.c").read_text(encoding="utf-8")
-    helper = dialog[dialog.index("static int helper(const HosCrashArgs *a) {"):]
-    assert helper.index("hos_log_redact_file(log->path, run_id);") < helper.index("read_log(log, &s.who);")
-    assert helper.index("wait_game(a, &have_exit, &code)") < helper.index("hos_log_redact_file(")
-    header = (ROOT / "host/hos_crash_dialog.h").read_text(encoding="utf-8")
-    assert "return longshot_redact_line(out, cap, line, n, home, user, windows);" in header
+    # (the crash window is the builder's now: a Rust port of the rule, byte for byte; checked when the crate is in the tree)
+    port = ROOT / "builder/crates/crash/src/redact.rs"
+    if port.is_file():
+        assert "gpu/vk/compat/longshot_redact.h" in port.read_text(encoding="utf-8"), "redact.rs names the rule it ports"
     menu = (ROOT / "gpu/vk/vk_bug_report.cpp").read_text(encoding="utf-8")
     redact = menu[menu.index("std::string redact(const std::string& line"):menu.index("std::string cpu_name() {")]
     assert "longshot_redact_line(" in redact
@@ -292,9 +285,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cc", default=os.environ.get("CC", "gcc"))
     ap.add_argument("--cxx", default=os.environ.get("CXX", "g++"))
+    ap.add_argument("--cargo", required=True, help="the builder's half (build-driver's redact example)")
     a = ap.parse_args()
     source_checks()
-    python_checks(None)
     with tempfile.TemporaryDirectory(prefix="log-redact-") as t:
         tmp = Path(t)
         exe = compile_harness(a.cc, tmp)
@@ -302,8 +295,9 @@ def main():
         menu_checks(a.cxx, exe, tmp)
         here_checks(exe, tmp)
         file_checks(exe, tmp)
-    print("PASS: the saved logs without the user name (the rule in C and Python, the game's line, the file after its run, "
-          "the builder's log, the callers)")
+        builder_checks(a.cargo, exe)
+    print("PASS: the saved logs without the user name (the rule in C, the game's line, the file after its run, "
+          "the callers)")
 
 
 if __name__ == "__main__":

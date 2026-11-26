@@ -1,11 +1,11 @@
-"""Which lifted functions run in a play session, and when each first ran: the data for sizing a hot list (what must be
-compiled at full speed before Play, and what could wait or take a cheaper path).
+"""Which lifted functions run in a play session, and when each first ran: what must be compiled at full speed before Play,
+and what could wait or take a cheaper path.
 
     python -I scripts/coverage/cover.py run <game folder> [--out DIR] [--seconds N] [--env K=V ...] [--nm llvm-nm.exe]
-    python -I scripts/coverage/cover.py report <run folder> [--gen DIR | --csize FILE] [--hot LIST ...] [--json]
+    python -I scripts/coverage/cover.py report <run folder> [--gen DIR | --csize FILE] [--json]
     python -I scripts/coverage/cover.py compare <listed run> <played run> [--csize FILE]
 
-run: starts <game folder>\\bin\\longshot.exe the way the launcher's Play does (that folder as the working folder, no arguments)
+run: starts <game folder>\\longshot.exe the way the launcher's Play does (that folder as the working folder, no arguments)
 with cover_dll.c loaded before its entry point, then waits for the game to end (or --seconds, then stops it). Nothing is built
 again: the lifted functions are found in the exe's own symbol table (f_<guest address>), and the DLL is compiled from
 cover_dll.c with the launcher's clang (llvm-mingw). Marks: press Ctrl+Alt+M (in the game too; Windows' default sound says it
@@ -19,8 +19,8 @@ exception per function, the first time it runs, and ~400 MB more committed memor
 
 report: how many functions ran, their share of the host code (and of the lifted C with --gen, the lifted C folder of the
 same game build, or --csize, a "name bytes" file), when they first ran (the arrival of new functions per 100 ms and per
-second: what compiling them on first use would have to keep up with), what the given hot lists cover, and covered.txt
-(the functions that ran, in first-run order with their times). Compile costs use nx2/chunks.py's model (size +
+second: what compiling them on first use would have to keep up with), and covered.txt
+(the functions that ran, in first-run order with their times). Compile costs use the old lifter's model (size +
 size^2/350000) over the lifted C, scaled to --compiler-s: the -O1 compiler-seconds of the whole lifted C (6,478 in
 nightly-34's first build on a Ryzen 5 5600). compare: one run's functions as a shipped list, another run played against it.
 """
@@ -50,10 +50,10 @@ COMPILER_S = 6478.0   # (the lifted C's -O1 compiler-seconds: nightly-34's first
 # ---- the toolchain ------------------------------------------------------------------------------------------------------
 def tool_dirs():
     local = os.environ.get("LOCALAPPDATA", "")
-    found = sorted(glob.glob(os.path.join(local, "LongshotLauncher", "toolchains", "*", "LongshotBuilder", "tools", "llvm-mingw", "bin")),
-                   key=os.path.getmtime, reverse=True)
-    found += glob.glob(os.path.join(local, "LongshotBuilder", "versions", "*", "*", "tools", "llvm-mingw", "bin"))
-    return found
+    # (what a release's longshot-builder unpacked into its cache: build-driver's sources.rs)
+    cache = os.environ.get("LONGSHOT_CACHE") or os.path.join(local, "Longshot", "Builder")
+    return sorted(glob.glob(os.path.join(cache, "sources", "*", "tools", "llvm-mingw", "bin")),
+                  key=os.path.getmtime, reverse=True)
 
 
 def tool(name, given=None):
@@ -66,7 +66,7 @@ def tool(name, given=None):
     p = shutil.which(name)
     if p:
         return p
-    sys.exit("cover: no %s found (the Longshot Launcher's toolchain, or on the PATH)" % name)
+    sys.exit("cover: no %s found (longshot-builder's unpacked tools, or on the PATH)" % name)
 
 
 def image_base(exe):
@@ -183,9 +183,9 @@ def run(a):
     if os.name != "nt":
         sys.exit("cover: run is Windows only (the DLL hooks the Windows game); report and compare work anywhere")
     folder = os.path.abspath(a.folder)
-    exe = os.path.join(folder, "bin", "longshot.exe")
+    exe = os.path.join(folder, "longshot.exe")
     if not os.path.exists(exe):
-        sys.exit("cover: %s has no bin\\longshot.exe" % folder)
+        sys.exit("cover: %s has no longshot.exe" % folder)
     out = os.path.abspath(a.out or os.path.join(common.dev_home(), "runs",
                                                 "cover-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
     os.makedirs(out, exist_ok=True)
@@ -264,11 +264,11 @@ def run(a):
     k32.GetExitCodeProcess(proc, ctypes.byref(code))
     print("cover: the game ended (exit code %#x) after %.0f s" % (code.value, time.time() - t0), flush=True)
     marks.close()
-    report(argparse.Namespace(run=out, gen=a.gen, csize=a.csize, hot=a.hot, json=False, compiler_s=a.compiler_s))
+    report(argparse.Namespace(run=out, gen=a.gen, csize=a.csize, json=False, compiler_s=a.compiler_s))
 
 
 def model(size):
-    """nx2/chunks.py's compile-cost model of one function's C"""
+    """The old lifter's compile-cost model of one function's C"""
     return size + size * size // 350000
 
 
@@ -314,7 +314,7 @@ def report(a):
         cs = [sum(csize.get(n, 0) for n in names) for _, _, names in fns]
         c_all, c_ran = sum(cs), sum(cs[i] for i in ran)
         say("Their lifted C: %.1f of %.1f MB = %.1f%%" % (c_ran / 2**20, c_all / 2**20, 100.0 * c_ran / max(1, c_all)))
-        # (nx2/chunks.py's compile-cost model, size + size^2/350000, scaled to the whole lifted C's -O1 compiler time)
+        # (the old lifter's compile-cost model, size + size^2/350000, scaled to the whole lifted C's -O1 compiler time)
         k_all = sum(model(s) for s in cs)
         k_ran = sum(model(cs[i]) for i in ran)
         say("Their compile cost (the build's model): %.1f%% = ~%.0f of the %.0f -O1 compiler-s of the whole lifted C"
@@ -359,14 +359,6 @@ def report(a):
     if cs:
         big = sorted(ran, key=lambda i: -cs[i])[:10]
         say("Largest that ran (C KB at first-run s): " + ", ".join("%s %d@%.1f" % (fns[i][2][0], cs[i] >> 10, firsts[i] / 1000) for i in big))
-    by_name = {n: i for i, (_, _, names) in enumerate(fns) for n in names}
-    for h in a.hot or []:
-        names = [l.split()[0] for l in open(h) if l.startswith("f_")]
-        idx = {by_name[n] for n in names if n in by_name}
-        both = [i for i in idx if firsts[i]]
-        say("%s: %d functions, %d ran in this session (%.1f%% of the list); the list holds %.1f%% of what ran (host bytes %.1f%%)"
-            % (os.path.basename(h), len(idx), len(both), 100.0 * len(both) / max(1, len(idx)), 100.0 * len(both) / max(1, len(ran)),
-               100.0 * sum(fns[i][1] for i in both) / max(1, host_ran)))
     with open(os.path.join(out, "covered.txt"), "w", encoding="ascii") as f:
         for i in sorted(ran, key=lambda i: firsts[i]):
             f.write("%s %d\n" % (fns[i][2][0], firsts[i]))
@@ -431,7 +423,6 @@ def main():
             q.add_argument("--json", action="store_true")
         q.add_argument("--gen", help="the lifted C folder of the same game build (sa/gen)")
         q.add_argument("--csize", help='a file of "f_name bytes" lines (csize.txt from an earlier report)')
-        q.add_argument("--hot", action="append", help="a list of functions (hot_funcs.txt, hot_order.txt) to compare")
     c = sub.add_parser("compare", help="one run's functions as the shipped list, another run played against it")
     c.add_argument("listed")
     c.add_argument("played")

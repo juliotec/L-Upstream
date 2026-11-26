@@ -1,0 +1,130 @@
+# Longshot's Rust, one Cargo workspace with one Cargo.lock: the builder (docs/dev/reference/builder.md: longshot-builder
+# and its lifter) and longshot-rs, the one staticlib the game links (the game's crates join it as they come).
+# Its dependencies are few and pinned by checksum in Cargo.lock.
+[workspace]
+resolver = "3"
+members = [
+    "builder/crates/a64",
+    "builder/crates/build-assets",
+    "builder/crates/build-core",
+    "builder/crates/build-compile",
+    "builder/crates/build-driver",
+    "builder/crates/crash",
+    "builder/crates/game-files",
+    "builder/crates/cfg",
+    "builder/crates/image",
+    "builder/crates/sites",
+    "builder/crates/edits",
+    "builder/crates/mir",
+    "builder/crates/sem",
+    "builder/crates/llvm",
+    "builder/crates/lift",
+    "builder/crates/passes",
+    "builder/crates/profile",
+    "builder/crates/release",
+    "builder/crates/steam",
+    "builder/crates/launcher-profile",
+    "builder/crates/longshot-builder",
+    "builder/crates/ui",
+    "builder/crates/synthetic-game",
+    "game/crates/guest",
+    "game/crates/oot",
+    "longshot-rs",
+]
+# (third_party/renhdrum is a crate of its own, built apart: scripts/renhdrum.py)
+exclude = ["third_party"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.99"
+
+[workspace.dependencies]
+a64 = { path = "builder/crates/a64" }
+build-assets = { path = "builder/crates/build-assets" }
+build-core = { path = "builder/crates/build-core" }
+build-compile = { path = "builder/crates/build-compile" }
+build-driver = { path = "builder/crates/build-driver" }
+crash = { path = "builder/crates/crash" }
+game-files = { path = "builder/crates/game-files" }
+cfg = { path = "builder/crates/cfg" }
+image = { path = "builder/crates/image" }
+sites = { path = "builder/crates/sites" }
+edits = { path = "builder/crates/edits" }
+mir = { path = "builder/crates/mir" }
+sem = { path = "builder/crates/sem" }
+llvm = { path = "builder/crates/llvm" }
+lift = { path = "builder/crates/lift" }
+passes = { path = "builder/crates/passes" }
+profile = { path = "builder/crates/profile" }
+release = { path = "builder/crates/release" }
+steam = { path = "builder/crates/steam" }
+ui = { path = "builder/crates/ui" }
+launcher-profile = { path = "builder/crates/launcher-profile" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+miniz_oxide = "0.8"
+thiserror = "2.0"
+sha1_smol = "1.0"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+toml = "1.1"
+ruzstd = "=0.8.3"
+# (build-driver: the pack a release's program carries, read from its own file, mapped)
+memmap2 = "=0.9.12"
+lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
+sha2 = "=0.10.9"
+# (release: the release key's ECDSA P-256 signature of SHA256SUMS checked, pure Rust)
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
+libc = "=0.2.191"
+# (build-assets: the button prompts' fonts and pictures, the pipeline lists' xz, the icon's JPEG, all pure Rust)
+ab_glyph_rasterizer = "=0.1.10"
+crc32fast = "=1.5.5"
+flate2 = "=1.1.11"
+lzma-rs = "=0.3.0"
+png = "=0.18.1"
+ttf-parser = { version = "=0.25.1", default-features = false, features = ["std", "glyph-names"] }
+zune-jpeg = "=0.5.15"
+# (the builder's windows, builder/crates/ui: Slint with only its winit back end and software renderer (compat-1-18 is
+# Slint's required marker, no code); rfd's file chooser
+# with no GTK: Windows' own, the XDG desktop portal on Linux)
+slint = { version = "=1.18.1", default-features = false, features = ["compat-1-18", "backend-winit", "renderer-software"] }
+slint-build = { version = "=1.18.1", default-features = false, features = ["compat-1-18", "renderer-software"] }
+fontique = { version = "=0.11.1", default-features = false, features = ["fontconfig-dlopen"] }
+rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"] }
+
+[workspace.lints.rust]
+# (deny, not forbid: build-core/src/sys.rs's Windows module (Win32), build-core/src/vulkan.rs (the Vulkan loader's queries,
+# doctor's) and game-files/src/disk.rs's statvfs allow it)
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+debug = "line-tables-only"
+# (an arithmetic overflow on what a .nup or a game folder says stops the build with internal_error, never wraps into
+# a wrong size or place; dist inherits it)
+overflow-checks = true
+
+# The builder players get, and what its times are measured with: the release build, optimised across crates (fat
+# LTO, one codegen unit). Slower to build than `release` (a developer's), a little faster to run. `cargo build
+# --profile dist -p longshot-builder`.
+[profile.dist]
+inherits = "release"
+# (thin, not fat: the same game build time (a cold build 2:14 against 2:15), the program 2.5 times faster to build
+# (63 s against 155 s on a 7900X; the release's server runner has 2 cores); 34.7 MB against 25.9 MB)
+lto = "thin"
+codegen-units = 16
+# (no debug info generated: the line tables were most of the program's size, and making them most of its compile, which
+# strip = "debuginfo" then threw away. The symbols stay, so a panic's backtrace names its functions (no files or lines);
+# strip = "debuginfo" still takes out what the standard library comes with)
+debug = false
+strip = "debuginfo"
+
+# What links into the game (longshot-rs's liblongshot_rs.a): the release build, a panic stopping the game at once
+# (no unwinding into the host's C, which can't take it). `cargo build --profile game -p longshot-rs`.
+[profile.game]
+inherits = "release"
+panic = "abort"

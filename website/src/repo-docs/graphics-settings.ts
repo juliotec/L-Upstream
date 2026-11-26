@@ -20,7 +20,13 @@ export const BADGES = [
   { test: /shown only on AMD GPUs/i, label: 'AMD GPUs only', shown: true },
   { test: /shown where DLSS runs/i, label: 'Where DLSS runs', shown: true },
   { test: /\bshown with NVIDIA DLSS\b/i, label: 'With NVIDIA DLSS', shown: true },
+  { test: /\bshown only with NVIDIA's `nvngx_dlssnr\.dll`/i, label: 'With a DLSS 5 file', shown: true },
+  { test: /\bshown while DLSS 5 is On\b/i, label: 'While DLSS 5 is On', shown: true },
+  { test: /\bonly on an RTX 50 card with both DLSS 5 files\b/i, label: 'RTX 50 with both DLSS 5 files', shown: true },
   { test: /\bshown while Frame generation is on\b/i, label: 'While Frame generation is on', shown: true },
+  { test: /\bshown while Dynamic resolution is Off\b/i, label: 'While Dynamic resolution is Off', shown: true },
+  { test: /\bshown unless the Upscaler fixes the render size\b/i, label: 'Unless the Upscaler fixes the render size', shown: true },
+  { test: /\bshown while Frame generation is Fixed\b/i, label: 'While Frame generation is Fixed', shown: true },
   { test: /\bshown with a CRT filter on\b/i, label: 'With a CRT filter on', shown: true },
   { test: /\bshown with HUD layout set to Custom and no `HOS_WIDE_UI` override\b/i, label: 'Custom HUD layout without a HOS_WIDE_UI override', shown: true },
   { test: /while HDR is on/i, label: 'While HDR is on', shown: true },
@@ -39,6 +45,7 @@ function cString(field) {
 
 // Where the menu's sources begin after vk_menu.cpp in the text readMenuRows is given: the feature modules, gpu/vk/menu/*.cpp
 export const MODULES_MARKER = '\n// ---- gpu/vk/menu modules ----\n';
+export const GAME_ROWS_MARKER = '\n// ---- game menu rows ----\n';
 const PAGE_TABS = { graphics: 'GRAPHICS', audio: 'AUDIO', gameplay: 'GAMEPLAY', controls: 'CONTROLS', controls_page: 'PAGE',
   nfc: 'NFC', debug: 'DEBUG', motion: 'MOTION', fps_details: 'FPS_DETAILS', mods: 'MODS' };
 
@@ -66,6 +73,11 @@ function designated(init) {
   for (let i = 0; i < body.length; i++) {
     const c = body[i];
     if (c === '/' && body[i + 1] === '/') { while (i < body.length && body[i] !== '\n') i++; continue; }
+    if (c === '/' && body[i + 1] === '*') {
+      i = body.indexOf('*/', i + 2) + 1;
+      if (i === 0) throw new Error('Unreadable menu row');
+      continue;
+    }
     if (c === '"') { let j = i + 1; while (j < body.length && body[j] !== '"') j += body[j] === '\\' ? 2 : 1; field += body.slice(i, j + 1); i = j; continue; }
     if ('{(['.includes(c)) depth++;
     if ('})]'.includes(c)) depth--;
@@ -110,6 +122,33 @@ function readModuleRows(text) {
   return rows;
 }
 
+/// The game's rows (game/menu/rows.c), using the same keys and placement anchors as the renderer modules.
+function readGameRows(text) {
+  const table = text.match(/\bGameMenuRow\s+rows\[\]\s*=\s*\{/);
+  if (!table) throw new Error('Missing game menu row table');
+  const open = table.index + table[0].length - 1;
+  const body = text.slice(open + 1, closing(text, open) - 1);
+  const rows = [];
+  const init = /\{\s*\.key\s*=/g;
+  let m;
+  while ((m = init.exec(body))) {
+    const end = closing(body, m.index);
+    const fields = designated(body.slice(m.index, end));
+    init.lastIndex = end;
+    const page = cString(fields.tab || '');
+    const key = cString(fields.key || '');
+    const name = cString(fields.label || '');
+    const help = cString(fields.help || '');
+    if (!page || !PAGE_TABS[page] || !key || !name || !help ||
+        !/^GAME_MENU_(TOGGLE|SLIDER|CHOICE)$/.test(fields.kind) || !/^HOS_OPT_\w+$/.test(fields.option))
+      throw new Error(`Unrecognized game menu row: ${key || name}`);
+    rows.push({ page, key, name, help, value: fields.option, restart: fields.restart === '1',
+      gameRow: true, section: null, place: cString(fields.after || fields.before || '') });
+  }
+  if (!rows.length) throw new Error('Missing game menu rows');
+  return rows;
+}
+
 /// The menu's rows: vk_menu.cpp's own table (`Row rows[]`: the core's section headings and its custom rows), then the
 /// feature modules' (gpu/vk/menu/*.cpp, after MODULES_MARKER in `menu`). Each row has tab, name, value, help, restart,
 /// heading, its section's id (`section`) and `shown`, false for a row the menu can hide (row_shown, or a module's shown).
@@ -117,6 +156,7 @@ function readModuleRows(text) {
 /// table follows (tests/test_settings_table.py), so readGraphicsSettings orders by the table.
 export function readMenuRows(menu) {
   const at = menu.indexOf(MODULES_MARKER);
+  const gameAt = menu.indexOf(GAME_ROWS_MARKER);
   const core = readCoreRows(at < 0 ? menu : menu.slice(0, at));
   const sections = Object.fromEntries([...(menu.match(/kCoreSections\[\]\[2\]\s*=\s*\{([\s\S]*?)\};/)?.[1] || '')
     .matchAll(/\{"([^"]+)", "(\w+)"\}/g)].map(match => [match[1], match[2]]));
@@ -127,14 +167,16 @@ export function readMenuRows(menu) {
     row.section = section;
     row.key = row.heading ? section : '@' + row.name;
   }
-  const modules = at < 0 ? [] : readModuleRows(menu.slice(at + MODULES_MARKER.length));
-  for (const row of modules) {
+  const modules = at < 0 ? [] : readModuleRows(menu.slice(at + MODULES_MARKER.length, gameAt < 0 ? undefined : gameAt));
+  const gameRows = gameAt < 0 ? [] : readGameRows(menu.slice(gameAt + GAME_ROWS_MARKER.length));
+  const additional = [...modules, ...gameRows];
+  for (const row of additional) {
     row.tab = PAGE_TABS[row.page] || row.page.toUpperCase();
     // (this registered selector stores an opaque display identity rather than an Options integer: its own pointer and texts)
     row.monitorSelector = row.tab === 'GRAPHICS' && row.name === 'Fullscreen monitor' && row.value === '&monitor_pick'
       && /\btx_fullscreen_monitor\(/.test(row.text) && /\bhn_fullscreen_monitor\b/.test(row.hint);
   }
-  const rows = [...core, ...modules];
+  const rows = [...core, ...additional];
   // (a module row with no section of its own is in the section of the row or heading its place names)
   const byKey = new Map(rows.map(row => [row.key, row]));
   const sectionOf = (row, seen = new Set()) => {
@@ -143,7 +185,7 @@ export function readMenuRows(menu) {
     const anchor = byKey.get(row.place);
     return anchor ? (anchor.heading ? anchor.key : sectionOf(anchor, seen)) : null;
   };
-  for (const row of modules) row.section = sectionOf(row);
+  for (const row of additional) row.section = sectionOf(row);
   const shown = menu.match(/bool row_shown\(int i\) \{([\s\S]*?)\n\}/)?.[1];
   if (!shown) throw new Error('Missing menu row_shown');
   const conditional = new Set([...shown.matchAll(/&opts\.\w+/g)].map(match => match[0]));
@@ -273,7 +315,19 @@ export function readGraphicsSettings(page, menu) {
     // (gpu/vk/menu/sim_turf.cpp: the row that opens the area's simulated-turf page, whose values sim_turf_settings.ini keeps)
     const simTurfPage = row.key === '@Simulated turf' && row.name === 'Simulated turf' && row.value === 'nullptr' &&
       row.kind === 'menu::Kind::Page' && row.opens === 'sim_turf_settings';
-    if (!row.value.startsWith('&opts.') && !row.textField && !row.monitorSelector && !hudReset && !reshadeAction && !reshadeFile && !simTurfPage)
+    // (gpu/vk/menu/dlss5.cpp: the row that opens the DLSS 5 settings page, whose rows the Graphics table names on its line)
+    const dlss5Page = row.key === '@DLSS 5 settings' && row.name === 'DLSS 5 settings' && row.value === 'nullptr' &&
+      row.kind === 'menu::Kind::Page' && row.opens === 'dlss5_settings';
+    // (Dynamic resolution, gpu/vk/menu/upscaler.cpp, and Frame generation multiplier, framegen.cpp: views of opts.resolution
+    // and opts.framegen, which they set; they save nothing themselves. DLSS 5 preset, dlss5.cpp, a choice row: a view of the
+    // DLSS 5 settings page's opts.dlss5_* rows, Default when they hold its values, which it sets; it saves nothing itself)
+    const uiMirror = (row.key === 'dynamic_resolution' && row.name === 'Dynamic resolution' && row.value === '&dyn_res_ui' &&
+      row.kind === 'menu::Kind::Toggle') ||
+      (row.key === 'frame_generation_multiplier' && row.name === 'Frame generation multiplier' && row.value === '&fg_mult_ui' &&
+      row.kind === 'menu::Kind::Slider') ||
+      (row.key === 'dlss5_preset' && row.name === 'DLSS 5 preset' && row.value === '&preset_ui' && row.kind === undefined);
+    if (!row.value.startsWith('&opts.') && !row.textField && !row.monitorSelector && !hudReset && !reshadeAction && !reshadeFile && !simTurfPage &&
+        !dlss5Page && !uiMirror && !row.gameRow)
       throw new Error(`table/menu graphics coverage mismatch at ${row.name}`);
     if (row.section !== groups.at(-1).section) {
       if (!titles.has(row.section) || groups.some(group => group.section === row.section)) throw new Error(`table/menu graphics order mismatch at ${row.name}`);

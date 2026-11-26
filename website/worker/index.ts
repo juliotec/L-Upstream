@@ -261,7 +261,7 @@ function channelTable(releases) {
 }
 
 const NOT_THE_BUILDER = `<p class="lead">The launcher installs the builder and builds the game on your PC, from your own copy.</p>
-    <p>The <em>LongshotBuilder</em> files on Longshot's releases are for the launcher, not for you to run.</p>
+    <p>The <em>longshot-builder</em> files on Longshot's releases are for the launcher, not for you to run.</p>
     <p>The versions on this page are the launcher's. The game it builds has Longshot's own version numbers, separate from them.</p>`;
 
 const NEXT_STEPS = `<h2>Then</h2>

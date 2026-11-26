@@ -94,6 +94,9 @@ bool program_cache_complete_unshared(Program& p, FILE* in);   // (program_cache_
 /// (longshot) The bytes of a light-read program's code its record holds itself: none when its SPIR-V is in the shader store
 uint64_t program_cache_code_in_record(int64_t code_at, uint64_t words);
 /// The cache's file, for a thread's own handle on it (empty: no cache)
+/// (longshot) The program cache, as a preparation that got to its end left it, copied beside the shader store: what a game folder
+/// with none of this translator begins from (vk_progcache.cpp seed_path)
+void program_cache_publish();
 std::string program_cache_path();
 
 // (vk_shader.cpp's, for the cache)

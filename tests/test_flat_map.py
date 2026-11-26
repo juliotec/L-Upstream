@@ -30,13 +30,14 @@ STUBS = r'''
 #include <utility>
 #include <vector>
 #include "flat_map.h"
+#include "compat/longshot_env.h"   // (env_on, env_value_off: RX_VK_LOG_HITS, RX_VK_EXACT_STALE)
 
 typedef struct VkImageView_T* VkImageView;
 enum VkImageViewType { VK_IMAGE_VIEW_TYPE_1D, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_3D, VK_IMAGE_VIEW_TYPE_CUBE };
 enum VkFormat { VK_FORMAT_UNDEFINED = 0, VK_FORMAT_R8G8B8A8_UNORM = 37, VK_FORMAT_R32_UINT = 98 };
 #define VK_NULL_HANDLE nullptr
 enum class ViewUse { Sample, Attachment, Storage };
-struct Texture { int id; };
+struct Texture { uint32_t id; };   // (its creation number, as vk_texture.h's)
 struct nvn_tex {
     struct { int target, format; uint32_t width, height, depth, levels; } d;
     uint64_t gpu;
@@ -56,7 +57,12 @@ void note(const char* what, uint64_t a, uint64_t b = 0) {
 uint32_t texture_slot_version(int id) { return versions[id & 4095]; }
 uint64_t texture_destroy_generation() { return destroy_gen; }
 uint32_t texture_epoch() { return epoch; }
-bool env_on(const char*) { return false; }
+// (RX_VK_EXACT_STALE: whether the texture a handle resolved to is still there since that generation; either answer, in
+// the trace, so both maps must ask it alike)
+bool texture_still_resolved(uint32_t id, uint64_t since, uint64_t now) {
+    note("still_resolved", id, since << 32 | now);
+    return (id + since + now) % 3 != 0;
+}
 void logf(const char*, ...) {}
 bool texture_touch_quick(Texture* t, bool sampling) {
     note("touch_quick", (uint64_t)t->id, sampling);
@@ -77,7 +83,7 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
     note("texture_get", t->gpu, for_sampling);
     const uint64_t id = t->gpu >> 12;
     if (id % 13 == 0) return nullptr;
-    textures[id & 4095].id = (int)id;
+    textures[id & 4095].id = (uint32_t)id;
     return &textures[id & 4095];
 }
 VkImageView texture_view(Texture* tex, const nvn_tex*, const nvn_view* v, VkImageViewType want, ViewUse use, VkFormat* last,

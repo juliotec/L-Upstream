@@ -140,6 +140,7 @@ void hos_control_log(const char *line) { (void)line; }
 void hos_log_flush(void) {}
 static void hos_ab_end(void) {}   /* (host/hos_ab.c: no A/B here) */
 void hos_pad_speaker_shutdown(void) {}
+void hos_sdl_vibration_shutdown(void) {}
 static void log_flush(void) {}
 void hos_backtrace(void) {}
 void hos_hostcall_stats(void) {}

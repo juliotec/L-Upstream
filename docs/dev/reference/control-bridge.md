@@ -9,7 +9,7 @@ the `busy` sent to a client over the limit).
 
 | Tool | What it is |
 |---|---|
-| [`host/control.c`](../../../host/control.c) | The bridge, in the game. Its hooks live in `host/nn_hid.c` (controller read), `gpu/vk/vk_replay.cpp` (shots), `gpu/vk/vk_menu.cpp` (settings), `host/hos_main.c` (start, map, teleport, age), `host/oot_state_tap.c` (game snapshots and flags), `host/hos_mem.c` (guest memory bounds), `host/nn_fs.c` (save folder), `host/hos_relaunch.c` (relaunch) and `host/rx_backend.c` (renderer) |
+| [`host/control.c`](../../../host/control.c) | The bridge, in the game. Its hooks live in `host/nn_hid.c` (controller read), `gpu/vk/vk_replay.cpp` (shots), `gpu/vk/vk_menu.cpp` (settings), `host/hos_main.c` (start), `game/oot_tools.c` (map, teleport, age), `game/oot_state_tap.c` (game snapshots and flags), `host/hos_mem.c` (guest memory bounds), `host/nn_fs.c` (save folder), `host/hos_relaunch.c` (relaunch) and `host/rx_backend.c` (renderer) |
 | [`scripts/longshot_ctl.py`](../../../scripts/longshot_ctl.py) | The command line: starts a game with the bridge on, sends commands, manages run folders |
 | [`scripts/longshot_bridge.py`](../../../scripts/longshot_bridge.py) | The client library the command line, the tours and the tests import: the connection, run folders and their supervisor. Standard library only |
 | [`scripts/memtour.py`](../../../scripts/memtour.py) | A memory tour built on the client (Linux): loads a save, teleports through areas and samples RAM, swap and the renderer's `vk: budget:` line |
@@ -422,18 +422,25 @@ top-level launcher; a folder with no `bin/` at all (a source build) runs its top
 | Option | Effect |
 |---|---|
 | `--exe FILE` | A development executable instead |
-| `--image FILE`, `--romfs DIR`, `--user DIR` | Passed to the game as its own arguments |
+| `--image FILE`, `--romfs DIR`, `--user DIR` | Passed to the game as its own arguments (`--user`: its recordings and the mouse's sensitivity, never its saves or settings, which are its profile's) |
 | `--cwd DIR` | Working and cache folder; needs `--image` |
-| `--data DIR` | `XDG_DATA_HOME` for the run, so it has its own saves |
+| `--data DIR` | `XDG_DATA_HOME` for the run, so it has its own user folder (Linux) |
+| `--options FILE` | The run's settings (`longshot_options.ini`'s lines), copied as its profile's `settings.ini` |
 | `--headless` | `HOS_HEADLESS=1` |
 | `--env NAME=VALUE` | Any extra switch (repeatable) |
-| `--save FOLDER [--slot NN]` | Copies a save folder (or one slot, `03` or `slot_03`) into the run's data before start. The source is only read; a destination that already has saves is refused. On Windows, use with `--profile test` or `--user` |
-| `--repo-save NAME [--repo DIR]` | Copies `assets/saves/NAME/slot_00` from the repository ([assets/saves](../../../assets/saves/README.md)) as slot 00; the game creates `account.sav` and `option.sav` itself |
+| `--save FOLDER [--slot NN]` | Copies a save folder (or one slot, `03` or `slot_03`) into the run's profile before start. The source is only read; a destination that already has saves is refused |
+| `--repo-save NAME [--repo DIR]` | Copies `assets/saves/NAME/slot_00` from the repository ([assets/saves](../../../assets/saves/README.md)) into the run's profile as slot 00; the game creates `account.sav` and `option.sav` itself |
 | `--profile test` | `HOS_HEADLESS=1`, `HOS_AUDIO=0`, `--user <run>/user`, and `HOS_ENV_FILE` pointing to an empty file so `longshot_env.txt` is not read. Overrides conflicting `--env`; refuses `--data` and `--user`. Inputs sent through the run default to `exclusive` |
 | `--ready bridge\|present\|play` | Wait for a `status` reply (default), a first present, or `play` with `stalled`, `game.event` and `game.loading` false. `play` does not press through the title for you |
 | `--timeout SECS` | Readiness timeout (default 600). On failure the game is stopped and the run marked failed |
 | `--run DIR`, `--root DIR` | A new or empty run folder, or the parent for a unique one (default `runs/control` in the [development folder](build.md#where-dev-data-lives)) |
 | `--wrapper JSON` | An argv prefix around the lifetime supervisor (for admission, such as a job queue). It must run the rest of the argv unchanged and wait for it |
+
+Every run plays a [profile](profiles.md), the one place the game takes its settings, saves and start slot from: the
+run folder's own `profile/` (`longshot_bridge.make_profile`: a `profile.json`, `settings.ini` from `--options`, and
+`saves/` with the save copied in), given to the game as `LONGSHOT_PROFILE`. A `--env LONGSHOT_PROFILE=<folder>` (a
+whole path) plays that one instead; a save copied into it needs its saves empty, and `--options` never writes over its
+`settings.ini`. The run's manifest names it (`game_profile`).
 
 On Linux the socket lives in a short private folder (`hctl-*` under `$XDG_RUNTIME_DIR`, else the temporary folder, or
 `/tmp` when that path is over 48 bytes); on Windows the pipe is named

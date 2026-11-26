@@ -11,7 +11,7 @@ Checked:
   ### heading each), the GPU as written and the system naming its OS; its link fills in the form's own fields
   (Forgejo's field:<id> query, for ids the form has) and stays within 2000 characters: more switches than fit are
   counted, not listed;
-- where the player is comes from the last map line (host/hos_main.c logs them), the run before's crash line is named;
+- where the player is comes from the last map line (game/oot_tools.c logs them), the run before's crash line is named;
 - the switches set are listed by name, and a value only when it is a number, a size or on/off and its name holds none of
   TOKEN, KEY, ROOM, SECRET, PASS, SERVER, USER: paths, addresses, scripts and secrets are left out; other variables are not
   listed; the link carries the switches' names and never a value;
@@ -223,7 +223,8 @@ def wiring():
     check("blit_crop(cmd, src, sw, sh, crop, ask_image," in record and "menu" not in record and "ReportShot" not in replay,
           "the picture is not copied from the game's frame into shot_ask's own image, or the menu is drawn into it")
     host = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    refresh = host[host.index("static void oot_inventory_refresh("):]
+    tools = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
+    refresh = tools[tools.index("static void oot_inventory_refresh("):]
     refresh = refresh[:refresh.index("\n}\n")]
     check('hos_log("map: %s", line)' in refresh and "0x1d6189dau" in refresh,
           "the host does not log the map (Sequence_CurrentBanc) the report's place comes from")
@@ -269,7 +270,7 @@ def main():
         game = str(game_path) + os.sep
         sep = "\\" if windows else "/"
         home_as = "%USERPROFILE%" if windows else "~"
-        (game_path / "logs").mkdir()   # (the game folder's logs/: host/game_layout.c)
+        (game_path / "logs").mkdir()   # (the game folder's logs/: game/game_layout.c)
         now_log = game_path / "logs" / "longshot_log.txt"
         now_log.write_text(
             "[hos host] longshot " + VERSION + "\n"

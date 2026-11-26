@@ -1,4 +1,4 @@
-/* (longshot) The performance summary (perf_report.cpp gathers it, the launcher sends it: nx2/perf_report.py): what a
+/* (longshot) The performance summary (perf_report.cpp gathers it, the launcher sends it: longshot-builder perf-report, builder/crates/build-driver/src/perf.rs): what a
    player who ticked "Send performance statistics" in the launcher sends about their frames, split by the map they were
    on. Frame totals are sampled every second with Link's position and camera view. Every few minutes and at the end the game writes one summary into the game folder's
    perf_pending folder; the launcher sends them to the perf relay (Longshot-api's telemetry, /telemetry/perf: telemetry/perf there, whose
@@ -57,7 +57,7 @@ inline const char* phase_name(int p) {
 }
 
 /// The "map" before the game is in one: the start-up screen preparing the shaders, then the intro, title and file select
-/// (the crash report names them the same: host/hos_crash_dialog.h)
+/// (the crash report names them the same: builder/crates/crash/src/facts.rs)
 constexpr const char* kPreparingShaders = "Preparing shaders";
 constexpr const char* kTitleAndIntro = "Title and intro";
 
@@ -82,7 +82,7 @@ struct Waits {
 /// past it, and the relay takes a map's seconds up to 900: 840 leaves a minute for that frame. Its one-second samples are
 /// thinned to fit kMaxBody (summary_json), so a long period sends fewer than one a second, never a summary too big
 constexpr int kPeriodDefault = 300, kPeriodMin = 60, kPeriodMax = 840;
-/// The biggest summary the sender sends (nx2/perf_report.py MAX_BODY: tests/test_perf_report.py checks they agree). One
+/// The biggest summary the sender sends (perf.rs MAX_BODY: tests/test_perf_report.py checks they agree). One
 /// bigger is refused there and deleted, its map totals with it
 constexpr size_t kMaxBody = 60 * 1024;
 /// What the sender may add when it re-encodes a summary: it fills in a version the game left empty
@@ -327,8 +327,9 @@ inline std::string kernel_of(const std::string& os_text) {
     return "";
 }
 
-/// The relay's address in a game folder's longshot_version.txt stamp (nx2/make_game.py writes it from nx2/addresses.ini):
-/// only an https:// address on a line of its own, like the crash helper's stamp reader. False when there is no such key
+/// The relay's address in a game folder's longshot_version.txt stamp (longshot-builder writes it from assets/addresses.ini):
+/// only an https:// address on a line of its own, like the crash window's (builder/crates/crash/src/names.rs stamp_address).
+/// False when there is no such key
 inline bool stamp_address(const std::string& stamp, const std::string& key, std::string& out) {
     const std::string prefix = key + "=";
     size_t at = 0;
@@ -351,7 +352,7 @@ inline bool stamp_address(const std::string& stamp, const std::string& key, std:
     return false;
 }
 
-/// A release's version (the crash helper's hos_crash_release_version): vX.Y.Z, vX.Y.Z-rc.N, nightly-<count>-<8 hex>
+/// A release's version (the crash window's: builder/crates/crash/src/facts.rs release_version): vX.Y.Z, vX.Y.Z-rc.N, nightly-<count>-<8 hex>
 inline bool is_release_version(const std::string& v) {
     size_t p = 0;
     const auto digits = [&]() -> bool {

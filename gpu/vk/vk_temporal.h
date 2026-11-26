@@ -1,7 +1,7 @@
 // A temporal upscaler in place of OoT's gameplay upscale network (vk_temporal.cpp): the frame chain any such upscaler
 // needs, and the engines that draw with it. The chain finds the scene's camera and depth, makes the inputs at the render
 // size (the colour as the network samples it, the depth, motion vectors with the skinned draws' own), keeps the camera
-// jitter's state for the host (nx2/oot_jitter.py) and writes the engine's picture into the network's output. An engine
+// jitter's state for the host (the hook sites jitter.view*) and writes the engine's picture into the network's output. An engine
 // (NVIDIA DLSS: vk_dlss.cpp; AMD FSR 4: vk_fsr4.cpp) only turns those inputs into the picture.
 #pragma once
 
@@ -126,7 +126,7 @@ void temporal_reset_failure();
 /// ("; DLSS: jitter ..., actor motion ..., its images ... MB") and temporal_mode(); else 0 and b left alone
 int temporal_status(char* b, size_t n);
 
-/// The scene's width (axis 0) or height (1) for the host's camera jitter (nx2/oot_jitter.py, HOS_OPT_DLSS_JITTER_W and _H):
+/// The scene's width (axis 0) or height (1) for the host's camera jitter (the hook sites jitter.view*, HOS_OPT_DLSS_JITTER_W and _H):
 /// 0 when there is to be none (no engine drawing, RX_VK_DLSS_JITTER=0, or RX_VK_FSR_JITTER=0 with FSR 3.1 on the chain). Axis 2: the jitter sequence's length for the
 /// engine's scale (dlss_jitter_phases, HOS_OPT_DLSS_JITTER_PHASES)
 uint32_t temporal_jitter_size(int axis);
@@ -151,6 +151,7 @@ struct TemporalImage {
 /// (DLAA, FSR's native AA: the render size)
 struct TemporalFrame {
     TemporalImage color, depth, motion, output;
+    int nr_scale = 100;         // (longshot) DLSS 5's working size this frame, a percent of the picture (vk_dlss.cpp dlss_nr_chain)
     uint32_t render_w = 0, render_h = 0;
     float jitter[2]{};          // (the scene's sub-pixel offset this frame, in render pixels, x right and y down)
     bool reset = false;         // (no history: the first frame, or one after a gap or a camera cut the chain saw)

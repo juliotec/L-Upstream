@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
-    menu = (ROOT / "host/oot_menu.c").read_text(encoding="utf-8")
+    menu = (ROOT / "game/oot_menu.c").read_text(encoding="utf-8")
     linux_menu = menu[menu.rindex("#else") + len("#else"):menu.rindex("#endif")]
     code = r'''
 #include "host/hold_toggle.h"

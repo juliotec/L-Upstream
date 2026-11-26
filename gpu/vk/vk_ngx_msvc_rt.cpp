@@ -2,7 +2,7 @@
 // with Microsoft's compiler against its static C++ runtime, /MT) asks of that runtime and the MinGW one does not have.
 // The C parts it shares with the static FFmpeg libraries (/GS's cookie and handler, _fltused) are host/mingw_msvc_shims.c,
 // linked into this DLL too; these are the C++ ones. Its C library calls go to the UCRT (api-ms-win-crt-*), and its C++ frame
-// handler is the system's (__CxxFrameHandler3, which the UCRT exports). nx2/build.py compiles this file only for the llvm-mingw
+// handler is the system's (__CxxFrameHandler3, which the UCRT exports). builder/crates/build-compile compiles this file only for the llvm-mingw
 // build with NVIDIA's SDK (LONGSHOT_NGX_SDK); the MSVC build (LONGSHOT_MSVC=1) has Microsoft's own runtime and no need of it.
 #if defined(__MINGW32__) && defined(LONGSHOT_NGX)
 #include <windows.h>

@@ -2,7 +2,7 @@
 
 The file is compiled on its own against a fake guest memory that holds a player camera: its pitch limits at +0x178, its
 pitch at +0x18c, its yaw at +0x1a4 and its state at +0x204. hos_mouse_camera is what the camera's update (f_80644c80,
-nx2/oot_patches.py) calls each frame. Until it has run the mouse's motion is the right stick's (hos_mouse_native gives
+its entry: the hook site camera.update) calls each frame. Until it has run the mouse's motion is the right stick's (hos_mouse_native gives
 -1); then it turns yaw and pitch by 0.1 degrees a count at sensitivity 1, pitch kept within the limits and yaw wrapped at
 180, up and down swapped with the menu's Invert mouse vertical (option 8) and left and right with its Invert mouse
 horizontal (option 61, or HOS_MOUSE_INVERT_X=1: the game's own camera inversion turns the right stick around, which the
@@ -13,8 +13,11 @@ start. Without the menu's Mouse camera (option 6), or on an object that is not a
 the camera free control only in its states 3 (it follows Link, the right stick takes it over) and 4 (the player's), and
 while no button it takes the right stick for is held (ZR, the bow's aim; L, the item wheel; R: hos_mouse_native_free);
 150 ms without the camera (the pause menu, another camera) give the motion back to the stick as well.
-python -I -B tests/test_mouse_native.py   (Linux: host/posix's windows.h)
+The camera's update hook, as the lift lowers it (tests/sitehooks.py), runs with its callback against a stub
+hos_mouse_camera: it is handed x0 and the update goes on.
+python -I -B tests/test_mouse_native.py [--cc clang] [--cargo cargo]   (Linux: host/posix's windows.h)
 """
+import argparse
 import os
 import shutil
 import subprocess
@@ -27,6 +30,8 @@ from pathlib import Path
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+CC = "clang"   # (the hook's fixture's compiler, --cc: main() sets it)
 
 HOS_H = r"""
 #pragma once
@@ -214,6 +219,18 @@ int main(int argc, char **argv) {
 
 
 class MouseNativeTests(unittest.TestCase):
+    def test_the_camera_update_calls_it_first(self):
+        """the camera's update hands the camera to hos_mouse_camera at its entry: the hook site camera.update (the text
+        patch it replaced put the same call first in f_80644c80)"""
+        sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+        from sitecheck import engine_fn, hands, reg, site
+        x = site("camera.update", "f_80644c80")
+        self.assertIn("x0:ptr:camera", x.args)
+        self.assertFalse(x.can_return)   # (the update runs on: the hook only looks)
+        self.assertEqual(engine_fn(x), "hos_site_mouse_camera")
+        hands(CC, [(x, "int hos_site_mouse_camera(", (reg(0),))],
+              "void hos_mouse_camera(uint64_t cam) { calls++, got[0] = cam; }\n")
+
     def test_turns_the_player_camera(self):
         if sys.platform == "win32":
             self.skipTest("host/posix's windows.h stands in for Windows here")
@@ -241,4 +258,12 @@ class MouseNativeTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    raise SystemExit(unittest.main(verbosity=1))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
+    args, rest = parser.parse_known_args()
+    sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+    import sitehooks
+    sitehooks.use(args.cc, args.cargo)
+    CC = args.cc
+    raise SystemExit(unittest.main(argv=[sys.argv[0], *rest], verbosity=1))

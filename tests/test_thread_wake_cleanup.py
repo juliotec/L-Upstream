@@ -34,7 +34,8 @@ FIXTURE = r'''
 #define CHECK(test, message) do { if (!(test)) { fprintf(stderr, "%s\n", message); exit(1); } } while (0)
 typedef struct { int closed, kind; } HostHandle;
 typedef HostHandle *HANDLE;
-typedef struct { HANDLE handle, wake; } HosThread;
+typedef struct { HANDLE handle, wake; int ctx; } HosThread;
+static void hos_setjmp_forget(const void *c) { (void)c; }   /* (host/hos_setjmp.c: the context's setjmp slots) */
 static HosThread *threads[1024], *destroying;
 static int nthreads, threads_lock, lock_held, frees, thread_closes, wake_closes, check_free_order;
 
@@ -80,7 +81,7 @@ static void checked_free(void *memory) {
 
 static void cycle(int handles, int registered) {
     HostHandle thread = {0, 1}, wake = {0, 2};
-    HosThread before = {NULL, NULL}, after = {NULL, NULL};
+    HosThread before = {NULL, NULL, 0}, after = {NULL, NULL, 0};
     destroying = (HosThread *)calloc(1, sizeof *destroying);
     CHECK(destroying != NULL, "allocation failed");
     if (handles & 1) destroying->handle = &thread;

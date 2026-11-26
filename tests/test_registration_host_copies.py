@@ -45,10 +45,14 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     read = lambda path: (a.source / path).read_text(encoding="utf-8")
-    bank, native, hos, a64 = (read(path) for path in ["gpu/vk/vk_bank.cpp", "host/nvn_native.c", "host/hos.h",
-                                                       "third_party/a64-kit/rt/a64.h"])
+    bank, native, hos, llvm = (read(path) for path in ["gpu/vk/vk_bank.cpp", "host/nvn_native.c", "host/hos.h",
+                                                        "builder/crates/llvm/src/lib.rs"])
+    # (where guest address 0 is: the lift's choice, builder/crates/llvm's Options, written into gen/rt/a64_config.h)
+    base = re.findall(r"^\s*memory_base: (0x[0-9a-fA-F_]+),$", llvm, re.M)
+    assert len(base) == 1, base
     constants = "\n".join([define(hos, "HOS_SYSTEM_BASE"), define(hos, "HOS_SPACE_END"), define(hos, "HOS_GUEST_SPACE"),
-                           define(native, "VBASE"), define(native, "VPAGE"), define(a64, "A64_HOST_BASE")])
+                           define(native, "VBASE"), define(native, "VPAGE"),
+                           "#define A64_HOST_BASE %sULL" % base[0].replace("_", "")])
     # (the registrations' entries all go through descriptor_ok: one that copied from its pointer unchecked would not)
     replay = read("gpu/vk/vk_replay.cpp")
     for source, marker in [(bank, "void register_texture(int id"), (bank, "void register_sampler(int id"),

@@ -1,7 +1,7 @@
 // (longshot) Offline test of the Ampere -> Maxwell lowering (shader_recompiler/frontend/ampere/lower_to_maxwell.h).
 // Runs LowerToMaxwell over native programs a run dumped (RX_VK_DUMP_FAILED=<folder>: <stage>_<key>.bin, 16-byte
 // instructions) and groups what still fails by reason and opcode, with the first failing instructions' words.
-//   lower_test <folder> [samples per reason]      (built by nx2/lower_test.py)
+//   lower_test <folder> [samples per reason]      (built by scripts/lower_test.py)
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>

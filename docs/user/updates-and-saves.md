@@ -1,12 +1,13 @@
 # Updates and saves
 
-The Longshot Launcher keeps the game up to date: it rebuilds it from the game files the first build kept, so you don't
-need your copy of the game again, and your saves and settings stay as they are.
+The Longshot Launcher keeps the game up to date: it rebuilds it from your copy of the game where the first build found
+it, so keep your `.nup` there (the game reads its files from it too), and your saves and settings stay as they are.
 
 ## How updates work
 
 When the launcher starts, it checks for a newer version on your channel. If there is one, press **Update**: it
-downloads the new builder (only the parts that changed) and builds the game again, usually faster than the first time.
+downloads the new builder (only the parts that changed) and builds the game again: only what the new version
+changed is rebuilt, often in seconds to a few minutes.
 The launcher updates itself the same way. What changed in each version is on
 [Longshot's releases](https://git.magicbean.dev/MagicBeanDev/Longshot/releases).
 
@@ -22,8 +23,8 @@ The launcher updates itself the same way. What changed in each version is on
 
 | An update keeps | An update replaces |
 |---|---|
-| Your saves | The game itself (`bin`) and its files |
-| Your menu choices and controls (`longshot_options.ini`) | `image.bin` and the shader list |
+| Your saves | The game itself (`longshot.exe` or `longshot`, the renderer and their libraries) |
+| Your menu choices and controls (`longshot_options.ini`) | `image.bin`, `longshot_romfs.idx` (where your game files are in the `.nup`) and the shader list |
 | `longshot_env.txt` | `language.txt`, written again with the game's language |
 | Your `mods` folder, and `mods.json` (their order and switches) | `texts`, the game's texts reworded for a PC |
 | | `exefs_patches.txt`, the list of the mods' code patches the build applied |
@@ -43,9 +44,28 @@ Any launcher can build from either channel. To go back to a released version, bu
 When you report a problem, say the exact version: it's on the launcher's home page, and on the first line of
 `longshot_log.txt`. [The release guide](../dev/reference/releases.md#versions) explains the numbers.
 
-Each version also ships the files [RecompLauncher](https://recomplauncher.com) installs (`recomplauncher.json`). It only
-finds releases on GitHub, so for now add a downloaded release to it by hand.
+Each version also ships a file for [RecompLauncher](https://recomplauncher.com)
+(`longshot-builder-<version>-<system>-recomplauncher.zip`). It only finds releases on GitHub, so for now add a downloaded
+one to it by hand. The game reads your `.nup` where it is: keep it there. The program to start is `Longshot.exe`
+(`Longshot.x86_64` on Linux): it brings the game up to date when it must and starts it, so a shortcut or a Steam entry
+points there.
 
+### The folder you start Longshot from
+
+Longshot's own folder (RecompLauncher's, or any folder you put a release's program in as `Longshot.exe` or
+`Longshot.x86_64`) holds the program you start, the game it builds in `builds/default/`, and its cache in `cache/`, so
+you can move or delete the whole folder. Your copy of the game, your settings and your saves are in your **profile**:
+`profile/`
+beside the program unless something starts it with `--profile <folder>` (RecompLauncher uses `%APPDATA%\Longshot`, or
+`~/.config/Longshot` on Linux). The first time, start the program with your copy, `Longshot.exe --game "D:\Games\Ocarina
+of Time.nup"` (RecompLauncher's Easy Setup does it for you); it builds the game (10 to 20
+minutes) and starts it. After that it starts the game at once, unless a new release, a new graphics driver or a moved
+copy of the game needs a build first. Starting `builds/default/longshot.exe` yourself does the same: it hands over to
+`Longshot.exe`. Your saves from before (the game folder's `user` folder, or `%APPDATA%\Longshot\save`,
+`~/.local/share/longshot/save`) are copied into the profile's `saves/` the first time, and kept where they were; so are
+your settings from there, as the profile's `settings.ini`, when it has none yet. The profile's folder holds
+`profile.json` (your copy of the game and the upscalers), `settings.ini` and `saves/` (your saves alone); the game's
+logs and caches stay in `builds/default/logs` and `cache`.
 ## Where the files go
 
 The build reads your game and never changes it.
@@ -53,15 +73,20 @@ The build reads your game and never changes it.
 | What | Windows | Linux |
 |---|---|---|
 | The game | The folder you chose (`Games\Longshot` in your user folder by default) | The folder you chose (`~/Games/Longshot` by default) |
-| Your saves | `%APPDATA%\Longshot\save` when the launcher starts the game; `user` in the game folder when you start it yourself ([details](saves.md#where-longshot-keeps-them)) | `~/.local/share/longshot` |
+| Your copy of the game (`.nup`) | Where you keep it: the game reads its files from it, so leave it there | The same |
+| Your saves | `%APPDATA%\Longshot\save`, also when you start the game yourself ([details](saves.md#where-longshot-keeps-them)) | `~/.local/share/longshot` |
 | Your settings (`longshot_options.ini`) and mods' order (`mods.json`) | `%APPDATA%\Longshot` when the launcher starts the game (a portable launcher's `LongshotLauncher-data\user`); the game folder when you start it yourself | The game folder |
 | The shader caches and the logs | `cache` and `logs` in the game folder | `cache` and `logs` in the game folder |
-| The launcher, each version's builder and its tools, the build files | `%LOCALAPPDATA%\LongshotLauncher` (the portable launcher's `LongshotLauncher-data` beside it) | `~/.local/share/longshot/launcher` |
+| The launcher, each version's builder and its tools, and the build files (about 2 GB, kept for quick updates, in `longshot-builder`) | `%LOCALAPPDATA%\LongshotLauncher` (the portable launcher's `LongshotLauncher-data` beside it) | `~/.local/share/longshot/launcher` |
 | NFC tags | `%LOCALAPPDATA%\Longshot\nfc` | `~/.local/share/longshot/nfc` |
+
+- **Build files:** the launcher's **Storage** page shows them and **Remove** deletes them; that is safe, and the next
+  build then takes as long as the first. A build from the command line keeps them in `%LOCALAPPDATA%\Longshot\Builder`
+  (Windows) or `~/.cache/longshot-builder` (Linux) instead.
 
 - **Caches:** `cache` (several GB, made for this version and this graphics card) can be deleted at any time; the next
   start prepares the shaders again, which takes minutes on some PCs.
-- **Saves elsewhere:** start the game with `--user <folder>` ([command line](advanced.md#start-the-game-from-the-command-line)).
+- **Saves elsewhere:** your saves are your profile's (its `saves` folder): play another profile, `Longshot.exe --profile <folder>` ([command line](advanced.md#the-builder-from-the-command-line)).
 - **`.hosnew` files** are settings the game was writing when it stopped: the next start removes the ones it knows, and
   you can delete any other.
 - **Uninstall:** uninstall the launcher (Windows: *Apps & features*), then delete its folder, the game folder and the
@@ -74,8 +99,9 @@ everything it does on the network or with other programs. What the reports hold,
 kept: [privacy](privacy.md).
 
 - **Downloads from git.magicbean.dev:** the launcher reads the release lists, downloads a version's files and checks
-  each against the SHA-256 in the release's signed `SHA256SUMS`. The builder's tools come from the links in `tools.lock`,
-  each checked by SHA-256. With DLSS on, NVIDIA's DLSS library comes from `github.com/NVIDIA/DLSS`. The game itself
+  each against the SHA-256 in the release's signed `SHA256SUMS`: the builder, one file with its build tools inside, or
+  only the difference from the version you have. With DLSS, FSR 4 or XeSS on (and its license accepted), the builder
+  downloads that maker's files from the maker's GitHub (`github.com/NVIDIA/DLSS` for DLSS), each checked by SHA-256. The game itself
   checks for nothing when it starts.
 - **Your Discord status**, through the Discord app on this PC while it runs: "Playing Longshot", where Link is and the
   time played. Turn it off with **Gameplay → Discord status**.

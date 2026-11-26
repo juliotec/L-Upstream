@@ -28,6 +28,10 @@ static inline int vibration_steam_2026(unsigned vendor, unsigned product) {
     return vendor == VIB_STEAM_VENDOR && product >= VIB_STEAM_CABLE && product <= VIB_STEAM_DONGLE;
 }
 
+static inline int vibration_switch_pro(unsigned vendor, unsigned product, int virtual_pad, int steam) {
+    return vendor == 0x057e && product == 0x2009 && !virtual_pad && !steam;
+}
+
 /* HOS_RUMBLE_BACKEND: unset or auto, motors, hd, renhdrum (anything else: auto) */
 static inline int vibration_force(const char *env) {
     if (!env || !*env) return VIB_FORCE_AUTO;

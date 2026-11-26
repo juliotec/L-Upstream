@@ -185,5 +185,19 @@ class LicenseTests(unittest.TestCase):
         self.assertIn("not accepted", err.getvalue())
 
 
+
+class SameAsTheBuilder(unittest.TestCase):
+    """longshot-builder fetches the same files for players (builder/crates/build-driver/src/runtimes.rs): every pin here,
+    commit and SHA-256, is one there, so a developer's build and a player's have the same vendors' files"""
+    def test_the_pins_match(self):
+        rust = (ROOT / "builder" / "crates" / "build-driver" / "src" / "runtimes.rs").read_text(encoding="utf-8")
+        for commit in (fetch.DLSS_COMMIT, fetch.FSR_COMMIT, fetch.XESS_COMMIT):
+            self.assertIn('"%s"' % commit, rust)
+        pins = list(dlss.common) + [v for p in dlss.platforms.values() for v in p.values()]
+        pins += [(path, sha) for path, sha, _ in fetch.FSR.files + fetch.XESS.files]
+        for path, sha in pins:
+            self.assertIn('"%s"' % path, rust, path)
+            self.assertIn('"%s"' % sha, rust, path)
+
 if __name__ == "__main__":
     unittest.main()

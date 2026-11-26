@@ -41,14 +41,14 @@ typedef struct HosControlSetting {
 
 /* OoT samples are bounded JSON objects, made on Link's update, never from guest memory on the socket thread.
    Watches have separate bounded pending changes; the table baselines are shared. The slot is a connection slot. */
-#define HOS_CONTROL_OOT_JSON 32768
-#define HOS_CONTROL_OOT_CLIENTS 8
-#define HOS_CONTROL_OOT_FLAGS 64
-typedef struct HosControlOotWatch {
+#define HOS_CONTROL_GAME_JSON 32768
+#define HOS_CONTROL_GAME_CLIENTS 8
+#define HOS_CONTROL_GAME_FLAGS 64
+typedef struct HosControlGameWatch {
     int64_t every;
     int nflags, changes;
-    char flags[HOS_CONTROL_OOT_FLAGS][48];
-} HosControlOotWatch;
+    char flags[HOS_CONTROL_GAME_FLAGS][48];
+} HosControlGameWatch;
 
 /* The game as the bridge sees it: control.c's own for the game, a fake one in tests/control_test.c */
 typedef struct HosControlGame {
@@ -95,18 +95,18 @@ typedef struct HosControlGame {
        teleport or age ask replaces one not taken yet. 0: not asked */
     int (*age)(int adult);
     /* (OoT) with the map: an event playing (a cutscene, a map change's), a map loading, Link the child. 0 before any */
-    int (*oot_state)(int *event, int *loading, int *child);
+    int (*game_state)(int *event, int *loading, int *child);
     /* (OoT) coalesced request for the next safe Link-update snapshot; cancel drops an unanswered request. */
-    uint64_t (*oot_sample_ask)(void);
-    void (*oot_sample_cancel)(uint64_t ticket);
+    uint64_t (*game_sample_ask)(void);
+    void (*game_sample_cancel)(uint64_t ticket);
     /* Copy a snapshot that satisfies ticket, or 0 while pending. Ticket 0 reads the last retained snapshot.
-       No guest reads here; frame/t still date retained samples. status falls back to oot_state for null
+       No guest reads here; frame/t still date retained samples. status falls back to game_state for null
        event/loading/age, so those fields keep their protocol-1 types inside a non-null game. */
-    int (*oot_sample)(uint64_t ticket, char *out, size_t cap);
+    int (*game_sample)(uint64_t ticket, char *out, size_t cap);
     /* Replace a connection's watch (NULL cancels and forgets pending changes); no guest reads here. */
-    void (*oot_watch)(int slot, const HosControlOotWatch *watch);
+    void (*game_watch)(int slot, const HosControlGameWatch *watch);
     /* Consume the latest pending sample for that connection, 0 when none. No guest reads or socket I/O. */
-    int (*oot_poll)(int slot, char *out, size_t cap);
+    int (*game_poll)(int slot, char *out, size_t cap);
     /* the game started again as the Insert menu's Restart now does it (host/hos_relaunch.c: the same command and the
        environment it started with, so the bridge comes back on the same socket); does not return. NULL: no restart here */
     void (*relaunch)(void);

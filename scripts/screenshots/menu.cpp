@@ -23,7 +23,14 @@ namespace mkwvk {
 // No host: no callback is set, so no row has a tag, a mod, a monitor or a microphone to list. The NFC Scan row asks the host
 // whether a scan is under way until its text says no more, so the host's scan is idle.
 static int idle_scan(int) { return 0; }
-static MkwVkHost empty_host = [] { MkwVkHost h{}; h.nfc_scan = idle_scan; return h; }();
+static MkwVkHost empty_host = [] {
+    MkwVkHost h{};
+    h.nfc_scan = idle_scan;
+#ifdef LONGSHOT_CAPTURE_GAME_ROWS
+    h.game_menu_rows = game_menu_rows;
+#endif
+    return h;
+}();
 const MkwVkHost* host = &empty_host;
 Device dev{}; // No physical device: hide hardware-specific Debug actions in this UI-only fixture.
 std::atomic<bool> present_native_pq{false}; // Synthetic SDR presentation, never a live HDR surface.
@@ -38,6 +45,14 @@ int dlss_fg_skip(unsigned* most) { if (most) *most = 0; return FG_SKIP_NOT_BUILT
 int dlss_fg_unavailable() { return FG_SKIP_NOT_BUILT; }
 bool dlss_fg_forced() { return false; }
 int dlss_fg_most() { return 0; }   // (no DLSS FG top: the Frame generation row's own values)
+// No DLSS 5 (gpu/vk/menu/dlss5.cpp): no nvngx_dlssnr.dll, so its rows stay hidden; nothing runs, nothing to show
+bool dlss_nr_offered() { return false; }
+bool dlss_nr_model_offered() { return false; }   // (nor the DLSS 5 model row)
+DlssNrStatus dlss_nr_status() { return NR_WAITING; }
+dlss_nr::Issue dlss_nr_issue() { return dlss_nr::Issue::not_built; }
+void dlss_nr_retry() {}
+void dlss_nr_publish(const DlssNrControls&) {}
+dlss_nr::MetricsView dlss_nr_metrics() { return {}; }
 int framegen_capped(int framegen, int) { return framegen; }
 // No FSR 4 (the FSR 4 model row): no switch over it, no Lite, nothing to set
 int fsr4_model_env() { return -1; }
@@ -208,6 +223,14 @@ int main(int argc, char** argv) {
         mkwvk::cur_tab = tab == "audio" ? mkwvk::TAB_AUDIO : tab == "controls" ? mkwvk::TAB_CONTROLS : mkwvk::TAB_GRAPHICS;
         mkwvk::opts.ultrawide = 0; // Explicit 16:9, independent of any real monitor.
         mkwvk::outputs_sync();
+#ifdef LONGSHOT_CAPTURE_GAME_ROWS
+        for (const char* key : {"field_of_view", "ultrawide_menus"}) {
+            const auto missing = std::none_of(mkwvk::rows.begin(), mkwvk::rows.end(), [key](const mkwvk::Row& row) {
+                return row.value && std::string_view(mkwvk::ini_key(row)) == key;
+            });
+            check(!missing, key);
+        }
+#endif
         // Snapshot these fixture values as the starting state, without restart_init's language-file read.
         for (int i = 0; i < (int)std::size(mkwvk::rows); ++i) {
             auto& row = mkwvk::rows[i];

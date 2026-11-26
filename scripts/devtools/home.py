@@ -2,11 +2,11 @@
 Linux and Windows; Python's standard library only. docs/dev/reference/build.md, *Where dev data lives*.
 
     dev.py paths [NAME]         the development folder and what it holds; NAME (home, work or a part such as bases or
-                                stores/lifts): that path alone, for scripts
+                                store): that path alone, for scripts
     dev.py migrate [--dry-run]  move the older places into it (once per PC; --dry-run: say what would move)
 
-migrate moves ~/.cache/longshot-dev (bases/, builder/), ~/.cache/longshot-{objects,lifts,queue} and job_queue.json and
-dev_build.json of ~/.config/longshot (Windows: %LOCALAPPDATA%\\Longshot\\{dev,objects,lifts,queue} and those two files of
+migrate moves ~/.cache/longshot-dev (bases/, builder/), ~/.cache/longshot-queue and job_queue.json and
+dev_build.json of ~/.config/longshot (Windows: %LOCALAPPDATA%\\Longshot\\{dev,queue} and those two files of
 %APPDATA%\\Longshot) into the development folder (common.old_places). On one drive each is a rename; across drives a copy
 (hard links among the copied files kept, clones where the file system makes them), checked file by file before the old one
 is deleted. It leaves a link at each old place it emptied (Linux; a junction for a folder on Windows), so a session still
@@ -17,6 +17,8 @@ dev_packs.busy while it moves them. A part already in the development folder is 
 have stays at the old place, said, for you to compare. Never moved: the player's data (~/.local/share/longshot,
 %APPDATA%\\Longshot's saves and options), Tooling's sign-in and chat files beside the two settings files, the queue's tickets
 ($XDG_RUNTIME_DIR/longshot-queue; on Windows the old queue folder's tickets/, which every version of the queue reads).
+The development folder's builder/, the build tools of dev.py before tools-store/, is left where it is and said: a checkout
+of an older dev.py still installs its tools there, and it holds downloads only, so you delete it once none is left.
 """
 import argparse
 import contextlib
@@ -37,9 +39,9 @@ def say(text):
 
 
 def work_dir():
-    """`mise run build`'s work folder: work, or work-windows for the Windows game built on Linux (its objects apart)"""
-    cross = not common.WINDOWS and os.environ.get("RX_TARGET", "").strip().lower() == "windows"
-    return os.path.join(common.dev_home(), "work-windows" if cross else "work")
+    """This checkout's work folder for `mise run build` (common.work_dir): work/<checkout>, or work-windows/<checkout> for
+    the Windows game built on Linux (its objects apart)"""
+    return common.work_dir(common.ROOT)
 
 
 def path_of(name):
@@ -300,6 +302,19 @@ def repoint_bases(old_root, home):
             os.replace(p + ".tmp", p)
 
 
+# (the build tools' folder of dev.py before tools-store/: `longshot-builder dev tools install` installs them there now)
+OLD_TOOLS = "builder"
+
+
+def old_tools_note():
+    """The old build tools' folder in the development folder, when it is there: said, never deleted, for a checkout of an
+    older dev.py may still read it"""
+    p = os.path.join(common.dev_home(), OLD_TOOLS)
+    if os.path.isdir(p) and not os.path.islink(p):
+        say("%s holds the build tools of dev.py before tools-store/ (downloads only): once no checkout of yours is that "
+            "old, delete it (`dev.py bases --prune` lists it with the rest)" % p)
+
+
 def cmd_migrate(a):
     home = common.dev_home()
     s = jobqueue.settings()
@@ -307,6 +322,7 @@ def cmd_migrate(a):
     todo = plan(qdir)
     if not todo:
         say("nothing to move: everything is in %s" % home)
+        old_tools_note()
         return 0
     for _, old, new, _ in todo:
         say("%s -> %s" % (old, new))
@@ -340,6 +356,7 @@ def cmd_migrate(a):
         say("left %s where it was: the development folder has one too; compare them and delete the one you don't need" % p)
     if not failed:
         say("done: `dev.py paths` shows the development folder")
+    old_tools_note()
     return 1 if failed else 0
 
 
@@ -347,7 +364,7 @@ def add_commands(sub):
     """`dev.py paths` and `dev.py migrate`"""
     p = sub.add_parser("paths", help="this PC's development folder and what it holds",
                        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("name", nargs="?", help="one path alone: home, work, or a part such as bases or stores/lifts")
+    p.add_argument("name", nargs="?", help="one path alone: home, work, or a part such as bases or store")
     p.set_defaults(func=cmd_paths)
     p = sub.add_parser("migrate", help="move what older tools kept elsewhere into the development folder",
                        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

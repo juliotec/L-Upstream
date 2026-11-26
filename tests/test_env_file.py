@@ -37,7 +37,7 @@ def main():
             "RX_VK_DLSS_DIR=/opt/ngx\nHOS_T_HOME=~\nSDL_VULKAN_LIBRARY=x.dll\nSDL_VIDEO_EGL_DRIVER=x.so\n"
             "SDL_AUDIODRIVER=pulseaudio\nHOS_T_UP=..\nHOS_SAMPLE_FILE=longshot_vk.dll\nRX_VK_FRAME_LOG=x.txt\n"
             "RX_VK_DUMP_DIR=dumps\nHOS_PRESENT_TRACE=t.txt\nRX_VK_DLSS_DIR=\\\\server\\share\n"
-            "HOS_AUDIO_DUMP=image.bin\nRX_VK_HANG_DUMP=longshot_options.ini\nRX_VK_SHOTS=user\n"
+            "HOS_AUDIO_DUMP=image.bin\nLONGSHOT_PROFILE=p\nLONGSHOT_SHADER_CACHE=c\nRX_VK_HANG_DUMP=longshot_options.ini\nRX_VK_SHOTS=user\n"
             "HOS_INPUT_SCRIPT=1:A,2:A\nRX_VK_MENU_SCRIPT=1:INS\nHOS_CONTROL_PEER_SID=S-1-5-21-1-2-3-1001\n"
             "HOS_T_NOTE=0  # mute\nHOS_T_TAB=off\t# a tab before it\nHOS_T_HASH=a#b\nHOS_T_ONLY= # nothing but a note\n", encoding="utf-8")
         (tmp / "test_env.txt").write_text("# a test run's own switches\nHOS_T_OTHER=1\nHOS_T_SHARED=other\n"
@@ -58,6 +58,7 @@ static int setenv(const char *name, const char *value, int overwrite) {
 static int unsetenv(const char *name) { return setenv(name, "", 1); }
 #endif
 #define MAX_PATH 260
+#define HOS_PATH_CAP MAX_PATH
 typedef unsigned long DWORD;
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 static DWORD hos_game_path_a(char *out, DWORD size) {   /* (host/hos_paths.h: the game folder's path) */
@@ -78,6 +79,8 @@ int main(int argc, char **argv) {
     CHECK(is("VK_ADD_LAYER_PATH", NULL) && is("SDL_DYNAMIC_API", NULL) && is("HOS_ENV_FILE", NULL));
     CHECK(is("HOS_SAMPLE_FILE", NULL) && is("RX_VK_DUMP_DIR", NULL) && is("HOS_T_HOME", NULL));
     CHECK(is("HOS_AUDIO_DUMP", NULL) && is("RX_VK_HANG_DUMP", NULL) && is("RX_VK_SHOTS", NULL));
+    /* (the profile and the shader cache the builder gives a game are its own to set, not a shared file's) */
+    CHECK(is("LONGSHOT_PROFILE", NULL) && is("LONGSHOT_SHADER_CACHE", NULL));
     CHECK(is("HOS_INPUT_SCRIPT", NULL) && is("RX_VK_MENU_SCRIPT", NULL));
     CHECK(is("HOS_CONTROL_PEER_SID", NULL));       /* (another account into the control pipe: never from a shared file) */
     CHECK(is("RX_VK_SKIP_CODE", "2c56,ab") && is("RX_VK_DLSS_DIR", "/opt/ngx"));

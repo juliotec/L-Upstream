@@ -6,7 +6,7 @@
 #endif
 
 /* The SDK's memcpy, memmove, memset, memcmp, strlen and strcmp done by the host's: ENTRY_HOOK_SYM(_FROM)s, spliced at the entry of the
-   SDK's own functions by the standalone lift (nx2/entry_hooks.py), which stay behind them. Each does what the SDK's does for
+   SDK's own functions by the lift (builder/crates/edits/src/entry_hooks.rs), which stay behind them. Each does what the SDK's does for
    every call it takes (tests/test_libc_hooks.py): memcpy is the SDK's memmove-safe one (overlapping copies come out as
    memmove's), memcpy, memmove and memset return the destination as they found it in x0, memcmp and strcmp the difference of
    the first unequal bytes (unsigned) as a 32-bit int, zero-extended in x0 as the SDK's leaves it. What they write is marked
@@ -16,9 +16,9 @@
    2-9x from 128 bytes. But Windows' memmove switches to non-temporal stores at about 1.75 MB: such a copy took 6x as long as a
    cached one and left its destination out of the cache, so reading it after was 4x slower than after the lifted copy. So a copy
    or a fill over LIBC_PIECE bytes goes in pieces below that, each marked once written, with the interrupt poll the lifted loop
-   has between them (A64_POLL: the virtual cores' hand-off, nx2/poll.py). memset under 8 bytes and memcmp under 16 are the
+   has between them (A64_POLL: the virtual cores' hand-off). memset under 8 bytes and memcmp under 16 are the
    SDK's own: the call cost more there than it saved. ENTRY_HOOK_SYM_FROM's size is tested in the spliced line itself
-   (nx2/entry_hooks.py), so those calls do not leave the lifted code) */
+   (builder/crates/edits/src/entry_hooks.rs), so those calls do not leave the lifted code) */
 #define LIBC_PIECE (256u << 10)
 /* HOS_HLE_STATS=1: the calls the host took, per function ("hle: <n> libc_memcpy;" ...), and those over LIBC_PIECE
    (libc_pieced). Off, one test of the switch a call; the counting is out of line, so the small calls' path stays as short */

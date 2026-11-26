@@ -1,6 +1,6 @@
 /* (longshot) Save my pipeline list (the Insert menu's Debug tab, vk_menu.cpp): the zip a player attaches to the "Submit your
    pipelines" issue (#14), as plain functions. No Vulkan, no menu, no files: tests/test_pipeline_share.py compiles this header.
-   The builders make the same zip with nx2/pipeline_share.py: the same two files, the same checks of the list (nx2/pipeline_states.py
+   The builders make the same zip with longshot-builder share: the same two files, the same checks of the list (scripts/pipeline_states.py
    --check), the same template lines.
 
    The zip holds longshot_pipeline_states.bin as the game wrote it and longshot_pipeline_report.txt (the issue's template filled
@@ -18,14 +18,14 @@ namespace mkwvk::pipeline_share {
 constexpr const char* kIssueUrl = "https://git.magicbean.dev/MagicBeanDev/Longshot/issues/14";
 constexpr const char* kListName = "longshot_pipeline_states.bin";
 constexpr const char* kReportName = "longshot_pipeline_report.txt";
-// (the issue's template, its lines in its order: nx2/pipeline_share.py FIELDS, the same)
+// (the issue's template, its lines in its order: longshot-builder share FIELDS, the same)
 constexpr const char* kFields[] = {"Longshot version", "OS, GPU and driver", "Output resolution", "Upscaler + render resolution",
                                    "Frame generation / HDR", "Mods or texture packs",
                                    "Where you played (areas, dungeons, age, night/rain, ...)", "Pipelines"};
 constexpr int kFieldCount = sizeof kFields / sizeof kFields[0];
 constexpr int kWhere = 6;   // (left for the player to fill in)
 
-/// The list's records as nx2/pipeline_states.py --check counts them (parse, strict): "HKSTATE2" with 552-byte records or
+/// The list's records as scripts/pipeline_states.py --check counts them (parse, strict): "HKSTATE2" with 552-byte records or
 /// "HKSTATE1" with 528, whole records, at least one. -1 when it is not one to share, *why saying so in the player's words
 inline long long check_list(const std::string& bytes, bool present, std::string* why) {
     auto no = [&](const std::string& text) { return *why = text, -1LL; };
@@ -64,7 +64,7 @@ inline std::string report_text(const std::string& lines) {
            "personal info) and this text.\n\n" + lines;
 }
 /// How many of a checked list's records name a compute program (a version 2 record whose kind, its second last word, is 1:
-/// vk_draw.cpp StateRec2::kCompute, nx2/pipeline_states.py COMPUTE). The list is zipped as it is: they go with the pipelines
+/// vk_draw.cpp StateRec2::kCompute, scripts/pipeline_states.py COMPUTE). The list is zipped as it is: they go with the pipelines
 inline long long compute_count(const std::string& bytes) {
     if (bytes.size() < 12 || bytes.compare(0, 8, "HKSTATE2")) return 0;
     long long n = 0;
@@ -86,7 +86,7 @@ inline std::string mods_text(const std::vector<std::string>& names) {
     return out.empty() ? "none" : out;
 }
 /// The Output resolution line: the size, then in brackets the Handheld profile or the game's own size, and Ultrawide (docked only),
-/// as nx2/pipeline_share.py output_text combines them
+/// as longshot-builder share output_text combines them
 inline std::string output_text(unsigned w, unsigned h, bool handheld, bool game_own, bool ultrawide) {
     std::string extra = handheld ? "Handheld profile" : game_own ? "the game's own" : "";
     if (ultrawide && !handheld) extra += std::string(extra.empty() ? "" : ", ") + "Ultrawide on";

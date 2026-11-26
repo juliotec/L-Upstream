@@ -3,6 +3,8 @@
 // as another process would).
 #include "spirv_pack.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -302,6 +304,57 @@ int main(int argc, char** argv) {
         later.close();
     }
 #endif
+
+    // (with_lock: another Longshot's f waits for this one's to end, so the program cache's copy beside the store and its
+    // index are read and written as one: vk_progcache.cpp)
+    {
+        spirv_pack::Store first, second;
+        CHECK(first.open(dir) && second.open(dir));
+        std::atomic<int> step{0};
+        std::thread holder([&] {
+            first.with_lock([&] {
+                step = 1;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                step = 2;
+            });
+        });
+        while (step == 0) std::this_thread::yield();
+        int seen = -1;
+        CHECK(second.with_lock([&] { seen = step; }));
+        holder.join();
+        CHECK(seen == 2);
+    }
+
+    // (the program caches' copies beside the store: this translator's and the two newest others kept, older pairs removed,
+    // whatever else is there left)
+    {
+        const std::string seeds = dir + "/seeds";
+        std::filesystem::create_directories(seeds, ec);
+        auto put = [&](const std::string& name, int age) {
+            const std::string p = seeds + "/" + name;
+            if (FILE* f = std::fopen(p.c_str(), "wb")) std::fputs("x", f), std::fclose(f);
+            std::filesystem::last_write_time(p, std::filesystem::file_time_type::clock::now() - std::chrono::hours(age), ec);
+        };
+        const char* stamps[] = {"00000000000000a1", "00000000000000a2", "00000000000000a3", "00000000000000a4", "00000000000000a5"};
+        for (int i = 0; i < 5; i++) {
+            put(std::string("spirv.pack.programs-") + stamps[i], 10 * (i + 1));   // (a1 newest, a5 oldest)
+            put(std::string("spirv.idx.programs-") + stamps[i], 10 * (i + 1));
+        }
+        put("spirv.idx.programs-00000000000000b0", 1);   // (an index whose pack is gone: oldest)
+        put("spirv.pack", 1000);
+        put("spirv.pack.programs-00000000000000a9.new", 1000);   // (a copy a stopped Longshot left: removed)
+        put("spirv.idx.programs-00000000000000a5.new-123", 2);    // (another left a day ago)
+        put("spirv.pack.programs-00000000000000a5.new-456", 0);   // (one being written now: kept, not a pair's)
+        auto there = [&](const std::string& name) { return std::filesystem::exists(seeds + "/" + name); };
+        CHECK(spirv_pack::prune_program_copies(seeds, 0xa5, 2) == 3);   // (a5 is this one: a1, a2 kept; a3, a4, b0 removed)
+        CHECK(there("spirv.pack.programs-00000000000000a5") && there("spirv.idx.programs-00000000000000a5"));
+        CHECK(there("spirv.pack.programs-00000000000000a1") && there("spirv.idx.programs-00000000000000a2"));
+        CHECK(!there("spirv.pack.programs-00000000000000a3") && !there("spirv.idx.programs-00000000000000a3"));
+        CHECK(!there("spirv.pack.programs-00000000000000a4") && !there("spirv.idx.programs-00000000000000b0"));
+        CHECK(there("spirv.pack") && there("spirv.pack.programs-00000000000000a5.new-456"));
+        CHECK(!there("spirv.pack.programs-00000000000000a9.new") && !there("spirv.idx.programs-00000000000000a5.new-123"));
+        CHECK(spirv_pack::prune_program_copies(seeds, 0xa5, 2) == 0);
+    }
 
     // (no folder: none)
     spirv_pack::Store none;

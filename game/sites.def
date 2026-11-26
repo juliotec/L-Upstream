@@ -1,0 +1,290 @@
+/* (longshot) The hook sites the host gives a flag byte and a callback slot: one line per site of the game's site tables
+   (game/sites/sites.toml), included by game/sites.h and game/sites.c with the macros defined there.
+
+     HOS_SITE(<ident>, "<name>")                   a named site nothing in the engine subscribes to: off until hos_site_set()
+     HOS_SITE_ENGINE(<ident>, "<name>", <fn>)      a site the engine's own feature uses: on from the start, calling fn
+                                                   (int fn(Ctx *A64_NOESC c): its answer read by can_return and branch sites)
+     HOS_VALUE(<ident>, "<name>", <type>, <sym>)   a value a data rule reads (rule sites' `value`): the C variable sym,
+                                                   volatile, defined by the feature that owns it; hos_value_set writes it
+     HOS_TABLE(<ident>, "<name>", <sym>)           a table a data rule reads: const void *volatile sym; hos_table_publish
+     HOS_SITE_OUTCOME(<ident>, "<name>")           a site above that changes the game's outcome on a worker thread (branch,
+                                                   allow, jump, replace, can_return): no callback set at run time
+                                                   (hos_site_add and hos_site_set refuse it); the lift stops when these
+                                                   lines are not exactly the table's such sites
+
+   <ident> is the site's name with each dot an underscore (builder/crates/sites ident); the lifted code names hos_site_on_<ident> and
+   hos_site_fn_<ident>, so a site in a table with no line here would not link: the lift stops first, naming it
+   (builder/crates/sites apply), and builder/crates/sites/tests/repository.rs checks every table against this list. A line for a site no table has (another
+   game build's) costs a byte and a pointer. docs/dev/reference/hooks.md has the rest. */
+
+/* The Insert menu's Text speed and Text size: game/oot_text_step.c */
+HOS_SITE_ENGINE(text_letterStep, "text.letterStep", hos_text_letter_step)
+
+/* Skip opening: game/oot_sites.c over host/hos_main.c's hos_oot_opening */
+HOS_SITE_ENGINE(opening_request, "opening.request", hos_site_opening_request)
+HOS_SITE_ENGINE(opening_timeline, "opening.timeline", hos_site_opening_timeline)
+HOS_SITE_ENGINE(opening_skipQuery, "opening.skipQuery", hos_site_opening_skip_query)
+
+/* Skip title screen: game/oot_sites.c over game/oot_autoload.c's hos_oot_autoload_wait (the screen a button wait is on) */
+HOS_SITE_ENGINE(menu_buttonWait, "menu.buttonWait", hos_site_menu_button_wait)
+HOS_SITE_ENGINE(menu_buttonWaitNoDecideAnim, "menu.buttonWaitNoDecideAnim", hos_site_menu_button_wait)
+
+/* The save requests' trace and Transition autosave: game/oot_sites.c over host/hos_main.c's hos_oot_trace_save */
+HOS_SITE_ENGINE(save_request, "save.request", hos_site_save_request)
+
+/* Camera speed: game/oot_sites.c, hos_camera_scale (host/nn_vi.c) at each turn-speed function's return */
+HOS_SITE_ENGINE(camera_yawSpeed, "camera.yawSpeed", hos_site_camera_turn_speed)
+HOS_SITE_ENGINE(camera_pitchSpeed, "camera.pitchSpeed", hos_site_camera_turn_speed)
+HOS_SITE_ENGINE(camera_yawSpeedLevel2, "camera.yawSpeedLevel2", hos_site_camera_turn_speed)
+HOS_SITE_ENGINE(camera_pitchSpeedLevel2, "camera.pitchSpeedLevel2", hos_site_camera_turn_speed)
+
+/* Native mouse look: game/oot_sites.c over host/mouse_native.c's hos_mouse_camera */
+HOS_SITE_ENGINE(camera_update, "camera.update", hos_site_mouse_camera)
+
+/* The menus' mouse: game/oot_sites.c over game/oot_menu.c */
+HOS_SITE_ENGINE(menu_focus, "menu.focus", hos_site_menu_focus)
+HOS_SITE_ENGINE(menu_update, "menu.update", hos_site_menu_update)
+
+/* The button prompts changed while the game runs: game/oot_sites.c over host/prompts.c */
+HOS_SITE_ENGINE(text_boxDraw, "text.boxDraw", hos_site_text_box_draw)
+HOS_SITE_ENGINE(text_boxLayout, "text.boxLayout", hos_site_text_box_layout)
+HOS_SITE_ENGINE(font_glyphRender, "font.glyphRender", hos_site_glyph_render)
+
+/* The zstd decodes on the host's libzstd: game/oot_sites.c over host/hos_zstd.c */
+HOS_SITE_ENGINE(zstd_stream, "zstd.stream", hos_site_zstd_stream)
+HOS_SITE_ENGINE(zstd_frames, "zstd.frames", hos_site_zstd_frames)
+
+/* The cloth's solves at most 60 a second above 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(cloth_solve, "cloth.solve", hos_site_cloth_solve)
+
+/* A movie's frame count by the frames' time: game/oot_sites.c over host/nn_vi.c's hos_movie_frames */
+HOS_SITE_ENGINE(movie_frameCount, "movie.frameCount", hos_site_movie_frame_count)
+
+/* The scene buffer's format for native HDR: game/oot_sites.c over host/nn_vi.c's hos_scene_rgba16f */
+HOS_SITE_ENGINE(render_sceneFormat, "render.sceneFormat", hos_site_scene_format)
+
+/* Damage taken and heart protection: game/oot_sites.c over game/oot_damage.c */
+HOS_SITE_ENGINE(player_lifeHit, "player.lifeHit", hos_site_life_hit)
+HOS_SITE_ENGINE(player_lifeWrite, "player.lifeWrite", hos_site_life_write)
+
+/* Link's update and the Debug tab's flight: game/oot_sites.c over host/hos_main.c */
+HOS_SITE_ENGINE(player_update, "player.update", hos_site_player_update)
+HOS_SITE_ENGINE(player_pose, "player.pose", hos_site_player_pose)
+HOS_SITE_ENGINE(player_flightRotation, "player.flightRotation", hos_site_flight_rotation)
+
+/* The Debug tab's free camera: game/oot_sites.c over host/hos_main.c */
+HOS_SITE_ENGINE(camera_view, "camera.view", hos_site_camera_view)
+
+/* The Debug tab's Movement speed: game/oot_sites.c over host/hos_main.c's hos_oot_cct_speed */
+HOS_SITE_ENGINE(player_speedMove, "player.speedMove", hos_site_speed_per_frame)
+HOS_SITE_ENGINE(player_speedMoveOther, "player.speedMoveOther", hos_site_speed_per_frame)
+HOS_SITE_ENGINE(player_speedSet, "player.speedSet", hos_site_speed_per_second)
+HOS_SITE_ENGINE(player_speedSetComponent, "player.speedSetComponent", hos_site_speed_per_second)
+
+/* A horse's jump blend above 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(horse_jumpStep, "horse.jumpStep", hos_site_horse_jump_step)
+
+/* The texture heap's compaction once in a while: game/oot_sites.c over game/oot_tex_compact.c */
+HOS_SITE_ENGINE(texture_compactAsk, "texture.compactAsk", hos_site_tex_compact_ask)
+
+/* The physics solver's steps above 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(physics_solverSteps, "physics.solverSteps", hos_site_solver_steps)
+HOS_SITE_ENGINE(physics_solverStepsOther, "physics.solverStepsOther", hos_site_solver_steps)
+
+/* The sound job at 60 Hz and the music manager's time and flags above 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(sound_job, "sound.job", hos_site_sound_job)
+HOS_SITE_ENGINE(sound_jobStep, "sound.jobStep", hos_site_sound_job_step)
+HOS_SITE_ENGINE(music_update, "music.update", hos_site_music_update)
+HOS_SITE_ENGINE(music_time, "music.time", hos_site_music_time)
+HOS_SITE_ENGINE(music_changeFlags, "music.changeFlags", hos_site_music_change_flags)
+HOS_SITE_ENGINE(music_changeFlags1, "music.changeFlags1", hos_site_music_change_flags)
+HOS_SITE_ENGINE(music_changeFlags2, "music.changeFlags2", hos_site_music_change_flags)
+HOS_SITE_ENGINE(music_changeFlags6, "music.changeFlags6", hos_site_music_change_flags)
+
+/* Link's driven body's target above 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(physics_driveTarget, "physics.driveTarget", hos_site_drive_target)
+HOS_SITE_ENGINE(physics_driveTargetOther, "physics.driveTargetOther", hos_site_drive_target_other)
+
+/* The cloth's time below 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(cloth_time, "cloth.time", hos_site_cloth_time)
+
+/* The counters cut to whole frames above 60 fps: game/oot_sites.c over host/nn_vi.c's hos_frame_whole */
+HOS_SITE_ENGINE(frame_wholePickup, "frame.wholePickup", hos_site_whole_pickup)
+HOS_SITE_ENGINE(frame_wholeWater, "frame.wholeWater", hos_site_whole_water)
+HOS_SITE_ENGINE(frame_wholeTimeOfDay, "frame.wholeTimeOfDay", hos_site_whole_time_of_day)
+HOS_SITE_ENGINE(frame_wholeScarecrowPlay, "frame.wholeScarecrowPlay", hos_site_whole_scarecrow)
+HOS_SITE_ENGINE(frame_wholeScarecrowRecord, "frame.wholeScarecrowRecord", hos_site_whole_scarecrow_record)
+HOS_SITE_ENGINE(frame_wholeScarecrowLast, "frame.wholeScarecrowLast", hos_site_whole_scarecrow)
+HOS_SITE_ENGINE(frame_wholeFloorWeb, "frame.wholeFloorWeb", hos_site_whole_floor_web)
+
+/* Disable camera centering: game/oot_sites.c over host/mouse_native.c */
+HOS_SITE_ENGINE(camera_followYaw, "camera.followYaw", hos_site_camera_follow_yaw)
+
+/* A moving floor's carry above 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(physics_floorCarry, "physics.floorCarry", hos_site_floor_carry)
+HOS_SITE_ENGINE(physics_floorCarryOther, "physics.floorCarryOther", hos_site_floor_carry)
+HOS_SITE_ENGINE(physics_floorCarryThird, "physics.floorCarryThird", hos_site_floor_carry)
+
+/* The Voice Language option kept after a restart: game/oot_sites.c over game/oot_voice.c */
+HOS_SITE_ENGINE(options_voiceWritten, "options.voiceWritten", hos_site_voice_written)
+
+/* The OptimizeChangeBank thread's allocations tried again when their heap is full: game/oot_sites.c over game/oot_heap_retry.c */
+HOS_SITE_ENGINE(heap_gpuAlloc, "heap.gpuAlloc", hos_site_gpu_alloc)
+HOS_SITE_ENGINE(heap_gpuAllocOther, "heap.gpuAllocOther", hos_site_gpu_alloc)
+HOS_SITE_ENGINE(heap_cpuAlloc, "heap.cpuAlloc", hos_site_heap_alloc)
+HOS_SITE_ENGINE(heap_cpuAllocOther, "heap.cpuAllocOther", hos_site_heap_alloc)
+HOS_SITE_ENGINE(heap_objectAlloc, "heap.objectAlloc", hos_site_heap_alloc_x21)
+HOS_SITE_ENGINE(heap_objectBuffer, "heap.objectBuffer", hos_site_heap_alloc_x22)
+HOS_SITE_ENGINE(heap_objectBufferOther, "heap.objectBufferOther", hos_site_heap_alloc_x22)
+HOS_SITE_ENGINE(heap_blockBuffer, "heap.blockBuffer", hos_site_heap_alloc_sp0)
+HOS_SITE_ENGINE(heap_blockObject, "heap.blockObject", hos_site_heap_alloc_sp0)
+HOS_SITE_ENGINE(heap_restOwn, "heap.restOwn", hos_site_heap_rest_own)
+HOS_SITE_ENGINE(heap_restEnd, "heap.restEnd", hos_site_heap_rest_end)
+
+/* A song's notes once a note above 60 fps: game/oot_sites.c over game/oot_high_fps.c */
+HOS_SITE_ENGINE(song_noteCue, "song.noteCue", hos_site_song_cue_played)
+HOS_SITE_ENGINE(song_noteCueOther, "song.noteCueOther", hos_site_song_cue_other)
+
+/* The ocarina's note wait told to the host: game/oot_sites.c over host/nn_hid.c's hos_oc_wait */
+HOS_SITE_ENGINE(ocarina_waitStart, "ocarina.waitStart", hos_site_oc_wait_start)
+HOS_SITE_ENGINE(ocarina_waitTick, "ocarina.waitTick", hos_site_oc_wait_tick)
+HOS_SITE_ENGINE(ocarina_waitMode, "ocarina.waitMode", hos_site_oc_wait_mode)
+HOS_SITE_ENGINE(ocarina_waitContext, "ocarina.waitContext", hos_site_oc_wait_none)
+HOS_SITE_ENGINE(ocarina_waitOwner, "ocarina.waitOwner", hos_site_oc_wait_none)
+HOS_SITE_ENGINE(ocarina_waitDone, "ocarina.waitDone", hos_site_oc_wait_end)
+HOS_SITE_ENGINE(ocarina_waitReset, "ocarina.waitReset", hos_site_oc_wait_end)
+
+/* A loop of one frame kept on one pose above 60 fps: game/oot_sites.c over host/nn_vi.c's hos_loop_step and hos_loop_pose */
+HOS_SITE_ENGINE(anim_loopStep, "anim.loopStep", hos_site_loop_step)
+HOS_SITE_ENGINE(anim_loopStepOther, "anim.loopStepOther", hos_site_loop_step_other)
+HOS_SITE_ENGINE(anim_loopPose, "anim.loopPose", hos_site_loop_pose)
+
+/* The saved steering rate above 60 fps: game/oot_sites.c */
+HOS_SITE_ENGINE(steer_rateLower, "steer.rateLower", hos_site_turn_rate_lower)
+HOS_SITE_ENGINE(steer_rateUpper, "steer.rateUpper", hos_site_turn_rate_upper)
+
+/* The job barriers waiting for their work: game/oot_sites.c over game/oot_barrier.c */
+HOS_SITE_ENGINE(barrier_sleepClaim, "barrier.sleepClaim", hos_site_barrier_sleep_claim)
+HOS_SITE_ENGINE(barrier_sleepGather, "barrier.sleepGather", hos_site_barrier_sleep_gather)
+HOS_SITE_ENGINE(barrier_sleepDone, "barrier.sleepDone", hos_site_barrier_sleep_done)
+HOS_SITE_ENGINE(barrier_sleepOther, "barrier.sleepOther", hos_site_barrier_sleep_other)
+HOS_SITE_ENGINE(barrier_sleepThird, "barrier.sleepThird", hos_site_barrier_sleep_third)
+HOS_SITE_ENGINE(barrier_orClaim, "barrier.orClaim", hos_site_barrier_wake_x24)
+HOS_SITE_ENGINE(barrier_orClaimOther, "barrier.orClaimOther", hos_site_barrier_wake_x24)
+HOS_SITE_ENGINE(barrier_orGather, "barrier.orGather", hos_site_barrier_wake_x24)
+HOS_SITE_ENGINE(barrier_orDone, "barrier.orDone", hos_site_barrier_wake_x24)
+HOS_SITE_ENGINE(barrier_orOther, "barrier.orOther", hos_site_barrier_wake_x19)
+HOS_SITE_ENGINE(barrier_orOtherSecond, "barrier.orOtherSecond", hos_site_barrier_wake_x19)
+HOS_SITE_ENGINE(barrier_orThird, "barrier.orThird", hos_site_barrier_wake_x26)
+
+/* Dynamic resolution: game/oot_sites.c over host/nn_vi.c's hos_fixed_resolution, hos_dynres_runs, hos_fixed_scale_bits */
+HOS_SITE_ENGINE(dynres_fixedPath, "dynres.fixedPath", hos_site_dynres_fixed_path)
+HOS_SITE_ENGINE(dynres_dynamicFrame, "dynres.dynamicFrame", hos_site_dynres_dynamic_frame)
+HOS_SITE_ENGINE(dynres_fixedScale, "dynres.fixedScale", hos_site_dynres_fixed_scale)
+HOS_SITE_ENGINE(render_fixedScaleApply, "render.fixedScaleApply", hos_site_fixed_scale_apply)
+HOS_SITE_ENGINE(render_fixedScaleFlags, "render.fixedScaleFlags", hos_site_fixed_scale_flags)
+
+/* The neighbouring map the OptimizeChangeBank thread preloads, kept while the choice only flickers: game/oot_sites.c over
+   game/oot_ocb_hold.c's hos_oot_ocb_pick */
+HOS_SITE_ENGINE(preload_choice, "preload.choice", hos_site_preload_choice)
+
+/* The gameplay field of view, the sun's shadow size and steady sun shadows: game/oot_sites.c over game/crates/oot/src/fov.rs,
+   game/oot_shadow.c and game/oot_shadow_fit.c */
+HOS_SITE_ENGINE(camera_lens, "camera.lens", hos_site_camera_lens)
+HOS_SITE_ENGINE(shadow_cascadeSize, "shadow.cascadeSize", hos_site_shadow_cascade_size)
+HOS_SITE_ENGINE(shadow_fitBasis, "shadow.fitBasis", hos_site_shadow_fit_basis)
+HOS_SITE_ENGINE(shadow_fitBox, "shadow.fitBox", hos_site_shadow_fit_box)
+
+/* The temporal upscalers' camera jitter: game/oot_sites.c over host/rx_backend.c's hos_dlss_jitter_clip */
+HOS_SITE_ENGINE(jitter_viewRows, "jitter.viewRows", hos_site_jitter_view_rows)
+HOS_SITE_ENGINE(jitter_viewRowX, "jitter.viewRowX", hos_site_jitter_view_row_x)
+HOS_SITE_ENGINE(jitter_viewRowY, "jitter.viewRowY", hos_site_jitter_view_row_y)
+
+/* Sprint: game/oot_sites.c over game/oot_sprint.c's hos_sprint_link and hos_sprint_stance */
+HOS_SITE_ENGINE(sprint_link, "sprint.link", hos_site_sprint_link)
+HOS_SITE_ENGINE(sprint_stance, "sprint.stance", hos_site_sprint_stance)
+
+/* A jump's takeoff above 60 fps: game/oot_sites.c over game/oot_high_fps.c's hos_oot_jump_speed and hos_oot_takeoff_velocity */
+HOS_SITE_ENGINE(jump_takeoffSpeed, "jump.takeoffSpeed", hos_site_jump_takeoff_speed)
+HOS_SITE_ENGINE(jump_takeoffVelocity, "jump.takeoffVelocity", hos_site_jump_takeoff_velocity)
+
+/* Widescreen and ultrawide: game/oot_wide_sites.c over host/hos_main.c's and game/hos_wide_ui.c's values */
+HOS_SITE_ENGINE(wide_outSize, "wide.outSize", hos_site_wide_out_size)
+HOS_SITE_ENGINE(wide_outSizeOther, "wide.outSizeOther", hos_site_wide_out_size)
+HOS_SITE_ENGINE(wide_sceneSize, "wide.sceneSize", hos_site_wide_scene_size)
+HOS_SITE_ENGINE(wide_cameraRatio, "wide.cameraRatio", hos_site_wide_camera_ratio)
+HOS_SITE_ENGINE(wide_projectionRatio, "wide.projectionRatio", hos_site_wide_projection_ratio)
+HOS_SITE_ENGINE(wide_projectionRatioCopy, "wide.projectionRatioCopy", hos_site_wide_projection_ratio_copy)
+HOS_SITE_ENGINE(wide_projectionRatioCopy2, "wide.projectionRatioCopy2", hos_site_wide_projection_ratio_copy2)
+HOS_SITE_ENGINE(wide_projectionRatioCopy3, "wide.projectionRatioCopy3", hos_site_wide_projection_ratio_copy3)
+HOS_SITE_ENGINE(wide_clearance, "wide.clearance", hos_site_wide_clearance)
+HOS_SITE_ENGINE(wide_clearanceFollow, "wide.clearanceFollow", hos_site_wide_clearance_follow)
+HOS_SITE_ENGINE(wide_hud, "wide.hud", hos_site_wide_hud)
+HOS_SITE_ENGINE(wide_bubble, "wide.bubble", hos_site_wide_bubble)
+HOS_SITE_ENGINE(wide_movie, "wide.movie", hos_site_wide_movie)
+HOS_SITE_ENGINE(wide_savePicture, "wide.savePicture", hos_site_wide_save_picture)
+HOS_SITE_ENGINE(ui_calcDirty, "ui.calcDirty", hos_site_ui_calc_dirty)
+HOS_SITE_ENGINE(ui_paneDirty, "ui.paneDirty", hos_site_ui_pane_dirty)
+HOS_SITE_ENGINE(ui_paneNoParent, "ui.paneNoParent", hos_site_ui_pane_no_parent)
+HOS_SITE_ENGINE(ui_paneParent, "ui.paneParent", hos_site_ui_pane_parent)
+HOS_SITE_ENGINE(ui_panePlaced, "ui.panePlaced", hos_site_ui_pane_placed)
+HOS_SITE_ENGINE(ui_paneSize, "ui.paneSize", hos_site_ui_pane_size)
+HOS_SITE_ENGINE(ui_titlePrepare, "ui.titlePrepare", hos_site_ui_title_prepare)
+HOS_SITE_ENGINE(ui_titleDraw, "ui.titleDraw", hos_site_ui_title_draw)
+HOS_SITE_ENGINE(ui_titleReset, "ui.titleReset", hos_site_ui_title_reset)
+HOS_SITE_ENGINE(ui_pictureConstants, "ui.pictureConstants", hos_site_ui_picture_constants)
+HOS_SITE_ENGINE(ui_pictureDraw, "ui.pictureDraw", hos_site_ui_picture_draw)
+HOS_SITE_ENGINE(ui_layoutBuilt, "ui.layoutBuilt", hos_site_ui_layout_built)
+
+/* The frame's real time at the step divides (inline rules: host/nn_vi.c owns both values) */
+HOS_VALUE(frame_seconds, "frame.seconds", uint32_t, hos_frame_seconds_bits)
+HOS_VALUE(frame_stepObject, "frame.stepObject", uint64_t, hos_step_probe)
+
+/* The sites that change the game's outcome on a worker thread: their engine feature's callback alone (builder/crates/sites
+   check_site and apply; docs/dev/reference/hooks.md, who may change the outcome) */
+HOS_SITE_OUTCOME(opening_timeline, "opening.timeline")
+HOS_SITE_OUTCOME(opening_skipQuery, "opening.skipQuery")
+HOS_SITE_OUTCOME(save_request, "save.request")
+HOS_SITE_OUTCOME(zstd_stream, "zstd.stream")
+HOS_SITE_OUTCOME(zstd_frames, "zstd.frames")
+HOS_SITE_OUTCOME(cloth_solve, "cloth.solve")
+HOS_SITE_OUTCOME(movie_frameCount, "movie.frameCount")
+HOS_SITE_OUTCOME(render_sceneFormat, "render.sceneFormat")
+HOS_SITE_OUTCOME(horse_jumpStep, "horse.jumpStep")
+HOS_SITE_OUTCOME(texture_compactAsk, "texture.compactAsk")
+HOS_SITE_OUTCOME(sound_job, "sound.job")
+HOS_SITE_OUTCOME(frame_wholePickup, "frame.wholePickup")
+HOS_SITE_OUTCOME(frame_wholeWater, "frame.wholeWater")
+HOS_SITE_OUTCOME(frame_wholeTimeOfDay, "frame.wholeTimeOfDay")
+HOS_SITE_OUTCOME(frame_wholeScarecrowPlay, "frame.wholeScarecrowPlay")
+HOS_SITE_OUTCOME(frame_wholeScarecrowRecord, "frame.wholeScarecrowRecord")
+HOS_SITE_OUTCOME(frame_wholeScarecrowLast, "frame.wholeScarecrowLast")
+HOS_SITE_OUTCOME(frame_wholeFloorWeb, "frame.wholeFloorWeb")
+HOS_SITE_OUTCOME(camera_followYaw, "camera.followYaw")
+HOS_SITE_OUTCOME(physics_floorCarry, "physics.floorCarry")
+HOS_SITE_OUTCOME(physics_floorCarryOther, "physics.floorCarryOther")
+HOS_SITE_OUTCOME(physics_floorCarryThird, "physics.floorCarryThird")
+HOS_SITE_OUTCOME(options_voiceWritten, "options.voiceWritten")
+HOS_SITE_OUTCOME(heap_gpuAlloc, "heap.gpuAlloc")
+HOS_SITE_OUTCOME(heap_gpuAllocOther, "heap.gpuAllocOther")
+HOS_SITE_OUTCOME(heap_cpuAlloc, "heap.cpuAlloc")
+HOS_SITE_OUTCOME(heap_cpuAllocOther, "heap.cpuAllocOther")
+HOS_SITE_OUTCOME(heap_objectAlloc, "heap.objectAlloc")
+HOS_SITE_OUTCOME(heap_objectBuffer, "heap.objectBuffer")
+HOS_SITE_OUTCOME(heap_objectBufferOther, "heap.objectBufferOther")
+HOS_SITE_OUTCOME(heap_blockBuffer, "heap.blockBuffer")
+HOS_SITE_OUTCOME(heap_blockObject, "heap.blockObject")
+HOS_SITE_OUTCOME(anim_loopStep, "anim.loopStep")
+HOS_SITE_OUTCOME(anim_loopStepOther, "anim.loopStepOther")
+HOS_SITE_OUTCOME(anim_loopPose, "anim.loopPose")
+HOS_SITE_OUTCOME(steer_rateLower, "steer.rateLower")
+HOS_SITE_OUTCOME(steer_rateUpper, "steer.rateUpper")
+HOS_SITE_OUTCOME(barrier_sleepClaim, "barrier.sleepClaim")
+HOS_SITE_OUTCOME(barrier_sleepGather, "barrier.sleepGather")
+HOS_SITE_OUTCOME(barrier_sleepDone, "barrier.sleepDone")
+HOS_SITE_OUTCOME(barrier_sleepOther, "barrier.sleepOther")
+HOS_SITE_OUTCOME(barrier_sleepThird, "barrier.sleepThird")
+HOS_SITE_OUTCOME(dynres_fixedPath, "dynres.fixedPath")
+HOS_SITE_OUTCOME(dynres_fixedScale, "dynres.fixedScale")
+HOS_SITE_OUTCOME(ui_titlePrepare, "ui.titlePrepare")
+HOS_SITE_OUTCOME(ui_titleDraw, "ui.titleDraw")

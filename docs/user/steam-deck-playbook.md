@@ -12,7 +12,8 @@ any PC is [getting started](getting-started.md).
 - The launcher's Linux AppImage: [Download for Linux](https://longshot.magicbean.dev/download/launcher/linux). The
   launcher needs no installing; its own Deck notes are in its [README](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/src/branch/main/README.md).
 - Your own copy of the game, at the supported version ([requirements](requirements.md)).
-- Room: about 60 GB free while building, then roughly 15 GB for the game and its shader cache. An SD card works for the
+- Room: about 5 GB free for the build, part of it kept for quick updates ([requirements](requirements.md)), then a few GB for the game and its shader cache,
+  besides your copy of the game, which the game reads its files from: keep it where it was when you built. An SD card works for the
   finished game, but stutter when you arrive in an area is worse there: keep the game on the internal drive if you can.
 - Somewhere to build: the Deck itself, or any other x86-64 Linux PC
   ([the same requirements](requirements.md)). A Windows PC builds the game for Windows, not for the Deck, so it can't
@@ -30,7 +31,7 @@ any PC is [getting started](getting-started.md).
    waits for its build tools to download and asks for your game file: press **Next** once both are ready, leave the
    settings page as it stands (its defaults suit a Deck), and press the last button, **Build** with the version on
    it. The compile starts.
-4. Leave it running, plugged in, with the display timeout off: the Deck's CPU takes well over the ~15 minutes a
+4. Leave it running, plugged in, with the display timeout off: the Deck's CPU takes well over the ~3 minutes a
    12-core desktop needs, so budget an evening. The launcher finishes by itself; you don't sit and watch it, and it
    says what it did, or what went wrong, when it's done.
 
@@ -41,6 +42,11 @@ Deck's Desktop mode, copy the **whole game folder**, everything in it, to the De
 manager, or over the network. Copy it whole rather than picking files out of it; the game, its caches and its shader
 list belong together.
 
+The game reads its files from your `.nup`, by the path it had on the PC that built it. Copy the `.nup` to the Deck as
+well, to the same path (the same folder under the same user name), or the game says it can't find it. If the
+launcher on the Deck finds the `.nup` gone, it offers **Pick the .nup again** and builds the folder again from it, which
+on the Deck takes the evening a build there takes.
+
 The game's code is compiled to fit the CPU of the PC that built it, and a newer PC may use instructions the Deck's
 CPU doesn't have: a game copied from that PC can close as soon as it starts. Whether your PC is safe is hard to
 check, so the safe route is to build it for a level the Deck's CPU is certain to run: from a terminal, the builder's
@@ -48,8 +54,9 @@ own command line ([what that is](advanced.md#the-builder-from-the-command-line),
 `RX_MARCH=x86-64-v3` in front of it:
 
 ```sh
-RX_MARCH=x86-64-v3 ./Longshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Longshot
+RX_MARCH=x86-64-v3 ./longshot-builder-<version>-linux-x64 build --game ~/your-game.nup --out ~/Games/Longshot
 ```
+
 
 `x86-64-v3` is the level the Deck's CPU runs. A plain launcher build on a PC no newer than the Deck's CPU usually
 copies over fine too; the line above takes the guesswork out.
@@ -85,6 +92,11 @@ Steam in Desktop mode and start it from Game Mode:
    its version, so after an update that renames the folder, point this line at the new path.
 
 3. Return to Game Mode. The entry sits in your library with your other games; start it there.
+
+A Longshot set up without the launcher (RecompLauncher's, or a release's `Longshot.x86_64` in a folder of your own) can
+add itself: in Desktop mode, quit Steam, then in Konsole run `./Longshot.x86_64 steam-shortcut` in its folder (add
+`--profile <folder>` to play another profile). It adds a **Longshot** entry with its icon and never touches an entry it
+didn't make; with Steam running it still adds it, and the entry shows after Steam starts again.
 
 Starting through Steam is how the Deck expects a game to run: Steam gives the game its controller settings, and the
 game leaves the Deck's own per-game performance controls (the Quick Access menu's performance page) to Steam - it

@@ -1,12 +1,13 @@
 /* Windows: the game's narrow paths in a folder named outside every ANSI code page (tests/test_utf8_paths.py builds this beside
-   a copy of the game's manifest, nx2/win_manifest.py, and runs it from such a folder). host/hos_main.c's narrow_paths_ok is
-   pasted in for the start-up check. Exit 0: all good; the expected code page is argv[1] ("utf8", or "ansi" without the manifest). */
+   a copy of the game's manifest, the builder's (build-compile res.rs), and runs it from such a folder). host/hos_main.c's
+   narrow_paths_ok is pasted in for the start-up check. Exit 0: all good; the expected code page is argv[1] ("utf8", or "ansi" without the manifest). */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#define HOS_PATH_CAP 4096   /* (host/hos_paths.h's, which narrow_paths_ok's buffers take) */
 
 /* ACTUAL_NARROW_PATHS_OK */
 

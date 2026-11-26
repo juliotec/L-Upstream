@@ -1,9 +1,11 @@
-"""scripts/linux/Dockerfile is the Linux AppImage's CI build environment for any distribution: the same base system and the
-same system packages as .forgejo/workflows/build-linux.yml. Reads both files; nothing is built.
+"""builder/tools/Dockerfile is the Linux build environment for any distribution: what the build tools are made in
+(builder/tools/make.sh, their sysroot among them) and what CI builds the Linux longshot-builder in
+(.forgejo/workflows/build-linux.yml). Reads both files; nothing is built.
 
-Issue: the two lists are kept by hand. A package added to the workflow alone (a new FFmpeg or SDL2 dependency) builds
-in CI and fails in the container, or builds a different AppImage there; a newer base image puts a newer glibc in the
-AppImage's sysroot, and the game it builds no longer runs on the systems the release is for.
+The two are kept by hand. The base system is the same, or a newer one puts a newer glibc in the sysroot and the game a
+player builds no longer runs on the systems the release is for. Every package the workflow installs is in the image, or
+CI's build fails in the container. The image has more (the recipes' own builds), and the toolchain PPA's GCC 13: the
+sysroot's recipe copies the newest GCC's runtime into it, and the game needs libstdc++ 13 (C++20 <format>).
 
     python -I -B tests/test_linux_docker_packages.py
 """
@@ -12,8 +14,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCKERFILE = ROOT / "scripts/linux/Dockerfile"
+DOCKERFILE = ROOT / "builder/tools/Dockerfile"
 WORKFLOW = ROOT / ".forgejo/workflows/build-linux.yml"
+TOOLS_WORKFLOW = ROOT / ".forgejo/workflows/tools.yml"
 
 
 def installs(text):
@@ -45,9 +48,17 @@ class LinuxDockerPackages(unittest.TestCase):
 
     def test_packages(self):
         ci, docker = installs(self.workflow), installs(self.docker)
-        self.assertIn("g++-13", ci, "the workflow's package list was not found")
+        self.assertIn("build-essential", ci, "the workflow's package list was not found")
         self.assertEqual(sorted(ci - docker), [], "in the workflow, not in the Dockerfile")
-        self.assertEqual(sorted(docker - ci), [], "in the Dockerfile, not in the workflow")
+        self.assertLessEqual({"g++-13", "libstdc++-13-dev"}, docker, "the Dockerfile has no GCC 13 for the sysroot")
+
+    def test_the_make_tools_workflow_is_the_image(self):
+        """The Make tools workflow makes the archives a developer makes in the image (builder/tools/docker.sh): the same
+        system, packages and PPA"""
+        wf = TOOLS_WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(re.search(r"^\s*container:\s*(\S+)", wf, re.M).group(1), "ubuntu:22.04")
+        self.assertEqual(sorted(installs(wf) ^ installs(self.docker)), [])
+        self.assertEqual(ppas(wf), ppas(self.docker))
 
     def test_ppa_options(self):
         ppa = "ppa:example/testing"
@@ -58,8 +69,24 @@ class LinuxDockerPackages(unittest.TestCase):
         self.assertEqual(ppas("apt-get update"), set())
 
     def test_ppas(self):
-        self.assertIn("ppa:ubuntu-toolchain-r/test", ppas(self.workflow), "the workflow's PPA was not found")
-        self.assertEqual(ppas(self.docker), ppas(self.workflow))
+        self.assertEqual(ppas(self.docker), {"ppa:ubuntu-toolchain-r/test"}, "the Dockerfile's toolchain PPA (GCC 13)")
+        self.assertLessEqual(ppas(self.workflow), ppas(self.docker))
+
+    def test_ppa_from_launchpad_net(self):
+        """(main's #2373) where the toolchain PPA is added, its source is rewritten to ppa.launchpad.net:
+        ppa.launchpadcontent.net, add-apt-repository's choice, answered 503 for hours and every build that added it failed"""
+        rewrite = "sed -i 's|https://ppa\\.launchpadcontent\\.net/|http://ppa.launchpad.net/|g' /etc/apt/sources.list.d/*.list"
+        files = [DOCKERFILE, WORKFLOW] + sorted((ROOT / ".forgejo/workflows").glob("*.yml"))
+        adders = 0
+        for f in dict.fromkeys(files):
+            text = re.sub(r"\\\n", " ", f.read_text(encoding="utf-8")) if f.exists() else ""
+            for m in re.finditer(r"add-apt-repository\s+(?:-\S+\s+)*ppa:ubuntu-toolchain-r/test", text):
+                adders += 1
+                with self.subTest(file=f.relative_to(ROOT).as_posix()):
+                    after = text[m.end():]
+                    self.assertIn(rewrite, after, "the PPA's source is not rewritten")
+                    self.assertLess(after.index(rewrite), after.index("apt-get update"), "rewritten after the update")
+        self.assertGreaterEqual(adders, 2, "the Dockerfile's and the Make tools workflow's PPA were not found")
 
 
 if __name__ == "__main__":

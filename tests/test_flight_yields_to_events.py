@@ -2,7 +2,7 @@
 
 An event that takes Link (a map change, the age toggle's reload, a cutscene) waits for him to stand. The flight moved him
 to its own position every tick, so with it on he never stood: flying into an area's exit or toggling his age left the
-screen black until the flight was switched off. host/hos_main.c's oot_update_player_cheats now reads the event manager
+screen black until the flight was switched off. game/oot_tools.c's oot_update_player_cheats now reads the event manager
 before it flies him, and starts the flight again from where he stands once the event has ended. And a Link the game
 moved while he flew (a respawn after a fall keeps his actor) was flown straight back to where the flight had him, over
 the same drop, again and again: the flight starts from where the game put him instead.
@@ -23,7 +23,7 @@ def need(ok, what):
 
 
 def main():
-    source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    source = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
     playing = block(source, "static int oot_event_playing(Ctx *c) {")
     need("oot_singleton(c, OOT_EVENTMGR_SLOT)" in playing and "events + 104" in playing,
          "oot_event_playing does not read the event manager's playing event")
@@ -31,7 +31,11 @@ def main():
     read = cheats.index("int flying = rx_option(HOS_OPT_CHEAT_FLIGHT, 0) > 0;")
     yields = cheats.index("if (flying && oot_event_playing(c)) flying = 0;")
     forgets = cheats.index("if (!flying) flying_actor = 0;")
-    moves = cheats.index("change_position(c);")
+    # (the move is the game's own, OneShotPhysicsCctChangePosition, through game_call: the controller and the position below
+    # the stack as its arguments, that stack, LR as the update had it)
+    moves = cheats.index("game_call_more(c, 0x806d2530ULL, arg, 2, (const uint64_t[]){controller, arg}, NULL, &lr);")
+    need("const GameCallMore lr = {.set_lr = 1, .lr = c->x[30]};" in cheats and "a64_lookup" not in cheats,
+         "the flight's move is not the game's own through game_call, LR as the update had it")
     need(read < yields < forgets < moves, "the flight moves Link before it has asked whether an event plays")
     # (flying_actor cleared: the flight's own position is taken from Link again when it resumes, not the one from before)
     need("flying_actor != actor" in cheats[forgets:moves], "a flight that resumes does not start from where Link stands")

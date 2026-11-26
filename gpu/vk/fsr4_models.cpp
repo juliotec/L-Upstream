@@ -325,7 +325,8 @@ std::atomic<int> g_model{SELECT_AUTO};
 std::atomic<int> g_native_model{MODEL_UNKNOWN};
 
 /// The libraries whose layout was read and run. FSR SDK v2.4.0's signed Vulkan upscaler (FSR 4.1.2, file version
-/// 4.1.2.4555): the SHA-256 scripts/fetch.py pins for Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll.
+/// 4.1.2.4555): the SHA-256 the builder (build-driver runtimes.rs FSR_FILES) and scripts/fetch.py pin for
+/// Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll.
 const KnownLibrary kKnown[] = {
     {"4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7", "FSR SDK 2.4 (FSR 4.1.2)"},
 };

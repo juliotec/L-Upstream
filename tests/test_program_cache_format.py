@@ -2,22 +2,20 @@
 cache's own format changes.
 
 longshot_programs.bin (6.9 GB with every program of the game) is good for program_cache_stamp: the translator's stamp
-(translator_stamp in gpu/vk/vk_shader.cpp, LONGSHOT_SHADER_STAMP from nx2/build.py, which hashes vk_shader.cpp and the recompiler)
+(translator_stamp in gpu/vk/vk_shader.cpp, LONGSHOT_SHADER_STAMP from the builder, which hashes vk_shader.cpp and the recompiler)
 mixed with kProgramCacheFormat. The cache's reads and the prepare's scheduling are in gpu/vk/vk_progcache.cpp, outside the hashed
 files: an edit there kept nothing out before (they were in vk_shader.cpp, so every such change made every player translate the whole
 game again). A change to what a record holds raises kProgramCacheFormat instead.
 
-Checked here: nx2/build.py's stamp (nx2/translator_files.py), run on authored files, changes for a vk_shader.cpp edit and not
-for a vk_progcache.cpp or vk_progcache.h edit; and in the source, that the program cache's file, index, notes and prepared stamps all come from
+Checked here: the builder's stamp (builder/crates/build-compile/src/generated/shader_stamp.rs) is made of vk_shader.cpp and not of
+vk_progcache.cpp or vk_progcache.h; and in the source, that the program cache's file, index, notes and prepared stamps all come from
 program_cache_stamp, which takes translator_stamp and kProgramCacheFormat, and that the cache's reads are no longer in vk_shader.cpp.
 
 No compiler, Vulkan, GPU or game. python -I -B tests/test_program_cache_format.py
 """
-import importlib.util
 from pathlib import Path
 import re
 import sys
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
@@ -35,38 +33,26 @@ def body(text, marker):
     return text[start:at]
 
 
-def translator_files():
-    """nx2/translator_files.py, which nx2/build.py's LONGSHOT_SHADER_STAMP is made from"""
-    build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-    if 'shader_stamp = "-DLONGSHOT_SHADER_STAMP=0x%sull" % translator_files.stamp(vk)' not in build:
-        raise SystemExit("FAIL: nx2/build.py's LONGSHOT_SHADER_STAMP is no longer translator_files.stamp: update this check")
-    spec = importlib.util.spec_from_file_location("translator_files_under_test", ROOT / "nx2" / "translator_files.py")
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
+def stamped():
+    """(the folders, the files) under gpu/vk the builder's LONGSHOT_SHADER_STAMP is made of (shader_stamp.rs DIRS, FILES)"""
+    src = (ROOT / "builder" / "crates" / "build-compile" / "src" / "generated" / "shader_stamp.rs").read_text(encoding="utf-8")
+    if "-DLONGSHOT_SHADER_STAMP=0x{}ull" not in (ROOT / "builder" / "crates" / "build-compile" / "src" / "plan.rs").read_text(encoding="utf-8"):
+        raise SystemExit("FAIL: the builder's LONGSHOT_SHADER_STAMP is no longer shader_stamp.rs's: update this check")
+    lists = []
+    for name in ("DIRS", "FILES"):
+        m = re.search(r"const %s: \[&str; \d+\] = \[([^\]]*)\];" % name, src)
+        if not m:
+            raise SystemExit("FAIL: shader_stamp.rs has no %s: update this check" % name)
+        lists.append(set(re.findall(r'"([^"]+)"', m.group(1))))
+    return lists
 
 
 def main():
-    files = translator_files()
-    with tempfile.TemporaryDirectory(prefix="program-cache-format-") as tmp:
-        vk = Path(tmp) / "gpu/vk"
-        for rel in ("eden/a.cpp", "sirit/a.cpp", "compat/a.h", "vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h",
-                    "vk_progcache.cpp", "vk_progcache.h"):
-            f = vk / rel
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_bytes(b"int authored_input;\n")
-
-        def stamp():
-            return files.stamp(str(vk))
-
-        first = stamp()
-        (vk / "vk_progcache.cpp").write_bytes(b"int the_precompile_reads_on_more_threads;\n")
-        (vk / "vk_progcache.h").write_bytes(b"int a_readers_helper_moved;\n")
-        if stamp() != first:
-            raise SystemExit("FAIL: an edit to the program cache's reads changes the translator stamp: every player translates again")
-        (vk / "vk_shader.cpp").write_bytes(b"int a_translation_fix;\n")
-        if stamp() == first:
-            raise SystemExit("FAIL: an edit to the translator keeps the programs it translated before")
+    dirs, files = stamped()
+    if "vk_shader.cpp" not in files:
+        raise SystemExit("FAIL: an edit to the translator keeps the programs it translated before")
+    if {"vk_progcache.cpp", "vk_progcache.h"} & files or any(d.startswith("vk_progcache") for d in dirs):
+        raise SystemExit("FAIL: an edit to the program cache's reads changes the translator stamp: every player translates again")
 
     shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
     cache = (VK / "vk_progcache.cpp").read_text(encoding="utf-8")

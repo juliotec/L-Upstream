@@ -4,21 +4,27 @@ min_version = "2026.11.3"
 # and the PC's job queue; test and lint before you push.
 
 [tasks.setup]
-description = "Once per clone, safe to repeat: ../Tooling, git hooks, Python requirements, (Linux) the checks' tools; says what is missing"
+description = "Once per clone, safe to repeat: ../Tooling, git hooks, (Linux) the checks' tools and Python packages, Rust; says what is missing"
 shell = "bash -c"
-depends = ["build-deps", "test-deps"]
+depends = ["test-deps"]
 run = "python3 -I scripts/setup.py"
 
 [tools]
 python = "3.12.15"
-node = "22.12.0"
+node = "22.23.5"
 # The Aqua provider has no Windows build; PyPI gives every platform the same pinned pre-commit.
 "pypi:pre-commit" = "4.0.1"
 "pypi:ruff" = "0.12.0"   # (ruff.toml; pre-commit runs it on changed Python)
 "github:rhysd/actionlint" = "1.7.12"
-"github:open-policy-agent/conftest" = "0.71.1"
-"github:CircleCI-Public/circleci-cli" = "1.14.0"
 "github:koalaman/shellcheck" = "0.10.0"
+# (.pre-commit-config.yaml's gitleaks-system hook runs it: the prebuilt release, not a Go toolchain building it)
+"github:gitleaks/gitleaks" = "8.22.1"
+# (longshot-builder's and the lifter's: docs/dev/reference/builder.md, "Building and checking the builder";
+# scripts/renhdrum.py's RUST_VERSION; the Windows target checks the builder for Windows: `cargo clippy --target
+# x86_64-pc-windows-gnullvm`, and is the game's Rust on Windows, build-compile's rust.rs, which a developer's
+# llvm-mingw build compiles. The release's Linux program is this system's own target, x86_64-unknown-linux-gnu, linked
+# against glibc 2.35: scripts/longshot_builder.py)
+rust = { version = "1.99.1", components = "rustfmt,clippy", targets = "x86_64-pc-windows-gnullvm" }
 # glslang 16.6.0 linux x86_64 tarball (checksum in test-deps-linux and [tasks.test-deps]); no arm64 release.
 
 [tasks.test-deps]
@@ -45,45 +51,45 @@ if [ ! -x "$tool_dir/bin/glslangValidator" ]; then
 fi
 echo "test-deps: glslang in $tool_dir/bin (on PATH, the shader checks use it)"
 python3 -m pip install --disable-pip-version-check --no-deps \
-  zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4 lz4==4.4.5 unicorn==2.1.4
+  zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4 unicorn==2.1.4
 """
-
-[tasks.build-deps]
-description = "Install requirements.txt into mise's Python before a game build"
-hide = true
-shell = "bash -c"
-run = "python3 -m pip install --disable-pip-version-check -r requirements.txt"
 
 [tasks.build]
-description = "Build a game folder from your own dump (same arguments as nx2/make_game.py; work folder: the development folder's work/)"
+description = "Build a game folder from your own dump with this checkout's longshot-builder, through the PC's job queue (its arguments: build --game <.nup> --out <folder> ...; work folder: this checkout's in the development folder's work/ unless --work)"
 shell = "bash -c"
-depends = ["build-deps"]
-# (one command, the arguments its last words: mise 2026.11 puts them at the end of the text, and the script's own "$@" is empty)
-run = """
-bash -c '
-work=1
-for a in "$@"; do case "$a" in --work|--work=*) work= ;; esac; done
-# (not the player builder folder, ~/.cache/longshot-builder or %LOCALAPPDATA%\\LongshotBuilder: `dev.py paths work`)
-[ -z "$work" ] || set -- --work "$(python3 -I scripts/dev.py paths work)" "$@"
-python3 -I nx2/make_game.py "$@"
-' build "$@"
-"""
+# (`dev.py packs run` gives longshot-builder this checkout's work folder in the development folder's work/ when no --work
+# is given, and the development folder's builder-cache/ as its cache: not a player's work folder or cache,
+# ~/.cache/longshot-builder or %LOCALAPPDATA%\\Longshot\\Builder. It runs as a job of the PC's queue. mise puts the task's
+# arguments after the line)
+run = "python3 -I scripts/dev.py packs run --"
 
 [tasks.build-dev]
-description = "Compile the lifted tree in work/sa again (LONGSHOT_JOBS, else a compiler per CPU thread but one, as memory allows; RX_HOT_OPT=O1 before it: a quicker build, never measured)"
+description = "Compile the game again in this checkout's work folder (lifted before by `mise run build`), with this checkout's sources, through the PC's job queue (LONGSHOT_JOBS; RX_HOT_OPT=O1: a quicker build, never measured)"
 shell = "bash -c"
-depends = ["build-deps"]
-# (make_game.py's default_jobs: build.py alone compiles one file at a time, and its memory gate holds back what memory can't)
+run = "python3 -I scripts/dev.py packs run -- compile"
+
+[tasks.tools]
+description = "tools.lock's build tools for this system into the checkout's tools/ (longshot-builder dev tools install; its arguments after: --only <name> ...), where longshot-builder --root . takes them"
+shell = "bash -c"
 run = """
-jobs="${LONGSHOT_JOBS:-0}"
-[ "$jobs" != 0 ] || jobs="$(python3 -I -c 'import os; print(max(1, (os.cpu_count() or 2) - 1))')"
-python3 -I nx2/build.py --standalone --jobs "$jobs" "$@"
+set -euo pipefail
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) system=windows-x64 ;; *) system=linux-x64 ;; esac
+cargo run --release --locked -q -p longshot-builder -- dev tools install . --system "$system"
+"""
+
+[tasks.rust]
+description = "The Rust workspace's checks (the builder, the game's crates), as CI runs them: rustfmt, clippy with warnings as errors, cargo test"
+shell = "bash -c"
+run = """
+set -euo pipefail
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 """
 
 [tasks.dev]
 description = "scripts/dev.py: shared bases, packs and runtimes through the PC's job queue (base, pack, rt, game, queue, paths; --help lists all)"
 shell = "bash -c"
-depends = ["build-deps"]
 run = 'python3 -I scripts/dev.py "$@"'
 
 [tasks.tracy-tools]
@@ -129,11 +135,6 @@ else
 fi
 actionlint -color -config-file .forgejo/actionlint.yaml .forgejo/workflows/*.yml
 """
-
-[tasks."ci:smoke"]
-description = "CI's quick check of run_all's JUnit report (Chunk runs it after lint)"
-shell = "bash -c"
-run = "python3 -I -B tests/test_run_all_junit.py"
 
 [tasks.test-changed]
 description = "Only the checks that read a file this branch changed against main (run_all.py --changed [BASE]): a quick look before you push"

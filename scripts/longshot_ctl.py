@@ -372,7 +372,8 @@ def launch(a):
     session = start_session(a.game_dir, run=a.run, root=a.root, exe=a.exe, image=a.image, romfs=a.romfs, user=a.user,
                             cwd=a.cwd, data=a.data, save=a.save, slot=a.slot, profile=a.profile, headless=a.headless,
                             sock=a.sock, env=changes, ready=a.ready, timeout=a.timeout,
-                            wrapper=json.loads(a.wrapper) if a.wrapper else None, repo_save=a.repo_save, repo=a.repo)
+                            wrapper=json.loads(a.wrapper) if a.wrapper else None, repo_save=a.repo_save, repo=a.repo,
+                            options=a.options)
     info = session.info()
     print(json.dumps(info) if a.json else info["socket"])
     return 0
@@ -404,11 +405,14 @@ def main(argv=None):
     q.add_argument("--exe", help="the game executable, instead of finding it in GAME_DIR")
     q.add_argument("--image", help="an explicit image.bin (the game's positional image argument)")
     q.add_argument("--romfs", help="the game's --romfs folder")
-    q.add_argument("--user", help="the game's --user folder, on Linux and Windows")
-    q.add_argument("--data", help="XDG_DATA_HOME for the run (its saves)")
+    q.add_argument("--user", help="the game's --user folder (its recordings, the mouse's sensitivity; not its saves or "
+                   "settings, which are its profile's)")
+    q.add_argument("--data", help="XDG_DATA_HOME for the run (its user folder on Linux)")
+    q.add_argument("--options", metavar="FILE", help="the run's settings (longshot_options.ini's lines), copied as its "
+                   "profile's settings.ini")
     which = q.add_mutually_exclusive_group()
-    which.add_argument("--save", help="a save folder (<data>/longshot/save/<user id>) copied in first (Linux); the source is "
-                                  "only read")
+    which.add_argument("--save", help="a save folder (<profile>/saves/save/<user id>, or <data>/longshot/save/<user id>) "
+                                  "copied into the run's profile first; the source is only read")
     which.add_argument("--repo-save", metavar="NAME", help="a save in the repository (assets/saves/NAME): its slot_00 "
                        "alone copied in first, as --save (the game makes account.sav and option.sav)")
     q.add_argument("--repo", metavar="DIR", help="with --repo-save: the checkout whose assets/saves it is in (default this "

@@ -176,7 +176,7 @@ static int fake_save_root(char *out, size_t cap) {
 }
 /* (OoT) the map and the teleport: a teleport asked for is taken by the game's thread at its next frame, as the player's
    update takes it, unless teleport_held (not in play: nobody takes it). Link is the child: destination 2 has no child map,
-   so it is refused, as hos_main.c's oot_teleport refuses it */
+   so it is refused, as game/oot_tools.c's oot_teleport refuses it */
 static const char *const dest_child[3] = {"KokiriForest_Child", "HyruleField_Child", NULL};
 static const char *const dest_adult[3] = {"KokiriForest_Adult", "HyruleField_Adult", "GerudoFortress_Adult"};
 static char fake_map_now[80];
@@ -195,7 +195,7 @@ static int fake_destination(int i, const char **child, const char **adult) {
     return 1;
 }
 /* (the age switch: asked as a teleport is, with teleport_asked = AGE_ASKED + 1 for the adult, + 0 the child; taken, Link
-   that age already: nothing done (result 2), else his age flips and the map reloads in it, as hos_main.c does.
+   that age already: nothing done (result 2), else his age flips and the map reloads in it, as game/oot_tools.c does.
    stale_age: the state's sample of the age is the other one, as an old sample can be) */
 enum { AGE_ASKED = 100 };
 static volatile int fake_child = 1, stale_age;
@@ -254,8 +254,8 @@ static HosControlGame game = {
     .mem_write = fake_mem_write, .save_root = fake_save_root, .log = fake_log, .quit = fake_quit,
     .renderer = fake_renderer, .version = "test", .map = fake_map, .destination = fake_destination,
     .teleport = fake_teleport, .teleport_result = fake_teleport_result, .teleport_cancel = fake_teleport_cancel,
-    .age = fake_age, .oot_state = fake_state, .oot_sample_ask = fake_sample_ask,
-    .oot_sample_cancel = fake_sample_cancel, .oot_sample = fake_sample, .picture = fake_picture};
+    .age = fake_age, .game_state = fake_state, .game_sample_ask = fake_sample_ask,
+    .game_sample_cancel = fake_sample_cancel, .game_sample = fake_sample, .picture = fake_picture};
 
 static void *game_thread(void *unused) {
     (void)unused;

@@ -83,7 +83,7 @@ std::vector<display_modes::Size> screen_modes() {
 // same rules) when it is none of them. The ini keeps the size, not the choice's number: output_res=3840x2160 (the game's
 // own: kGameOutput, menu/output.h)
 // (the sizes offered before the screen's: output_res=0 to 5 as saved then, and where the screen's are not known, by width then
-// height. nx2/pipeline_share.py OUTPUTS mirrors it)
+// height. longshot-builder share OUTPUTS mirrors it)
 constexpr Out kOutputs[] = {{2048, 1152}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
 Out outputs_screen{0, 0};   // (the window's screen's size the choices were read for: outputs_follow_screen)
 /// A screen's own size among the modes, and its shape at the most pixels a picture of another shape takes when the size itself

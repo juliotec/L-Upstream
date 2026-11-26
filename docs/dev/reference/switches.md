@@ -5,7 +5,7 @@ few `LONGSHOT_` names. Every one has a row in [`gpu/vk/switches.def`](../../../g
 does with it unset and what setting it does. That file is the full reference; this page explains how switches are read and
 lists the ones developers use.
 
-Build switches (read by `make_game.py` and `build.py`, not the game) are in [the build](build.md#build-switches). Profiling
+Build switches (read by `longshot-builder`, not the game) are in [the build](build.md#build-switches). Profiling
 switches are in [profiling](profiling.md). When to add a switch and how to choose its default is in
 [standards](../standards.md#switches).
 
@@ -33,13 +33,14 @@ stands in for a menu row overrides it for that run only; the options file keeps 
 
   The one path it takes is `RX_VK_DLSS_DIR`'s, a folder on this PC (not a network share).
 - The file `HOS_ENV_FILE` names has none of these limits: use it for a scripted or A/B run, so the player's file stays as
-  it is. `HOS_OPTIONS_FILE=<path>` does the same for the options file (set in the environment or the `HOS_ENV_FILE` file).
+  it is. Its settings come from the run's own profile (`LONGSHOT_PROFILE`'s `settings.ini`), the only place the game
+  reads them from.
 - Lines left out are logged as `env: longshot_env.txt: <name> left out (...)`.
 
 ### On and off
 
 An on/off switch is **off** when it is unset, empty, `0`, `false`, `off` or `no` (any case), and on for anything else
-(`env_on` in `gpu/vk/compat/longshot_env.h`; `kit.env_on` in Python). A switch that is on by default (`HOS_AUDIO=0`,
+(`env_on` in `gpu/vk/compat/longshot_env.h`; `build_compile::options::on` in the builder). A switch that is on by default (`HOS_AUDIO=0`,
 `HOS_VCORES=0`) is turned off by the same words (`env_on_or`). Some older `gpu/vk` switches are still read as numbers, where
 only `0` is off. A switch that takes a number or a list reads its value as its row says.
 
@@ -61,7 +62,7 @@ Each row of `gpu/vk/switches.def` is `SW(name, kind, type, "unset", "set")`, sor
 | `kill` | Turns off (or back to an older way) something that is on for everyone |
 | `attempt` | Turns on something off for everyone: an experiment nobody ships |
 | `hw` | Unset, it follows the PC (GPU vendor or driver, VRAM, CPU count, OS) |
-| `player` | A setting the player has (Insert menu, options file), or one the launcher or Builder sets |
+| `player` | A setting the player has (Insert menu, options file), or one the launcher or `longshot-builder` sets |
 
 The comment where a switch is read says how it works in detail.
 
@@ -77,21 +78,23 @@ The rules (when, which default, when to remove) are in [standards](../standards.
 
 **Switches the shader translator reads** are part of the program cache's stamp (`translator_stamp` in
 `gpu/vk/vk_shader.cpp`; `tests/test_program_stamp_knobs.py`), so changing one translates every program again. The stamp
-also covers the translator's sources (`nx2/translator_files.py`: `gpu/vk/{eden,sirit,compat}/`, `vk_shader.cpp`,
-`vk_bank.cpp`, `vk_state.h`). A code change there makes every player translate every program at their next start, so code
+also covers the translator's sources (`builder/crates/build-compile/src/generated/shader_stamp.rs`:
+`gpu/vk/{eden,sirit,compat}/`, `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, C and C++ by their tokens). A code change there makes every player translate every program at their next start, so code
 the translator doesn't read belongs elsewhere.
 
 ## The options file
 
-`longshot_options.ini` holds the Insert menu's settings. It lives in the user folder the game is given, with the saves
+`longshot_options.ini`'s lines hold the Insert menu's settings. They live in the profile the game plays, with its saves
 (`host/options_path.c`):
 
-1. `HOS_OPTIONS_FILE=<path>`, if set (in the environment or the `HOS_ENV_FILE` file);
-2. else the `--user` folder (the launcher's `%APPDATA%\Longshot` on Windows);
-3. else beside the game.
+1. the profile's `settings.ini` (`LONGSHOT_PROFILE`, [profiles](profiles.md));
+2. without a profile (a developer's game folder), `longshot_options.ini` beside the game.
+
+No switch and no command line names another file: a scripted or test run plays a profile of its own, with the settings
+it wants in its `settings.ini` (`scripts/longshot_bridge.py` `start_session(options=...)`).
 
 The log's `options: the settings file is <path>` says which. Only `compile_shaders=`, the build's choice, stays in the game
-folder's own file, where `make_game.py` writes it.
+folder's own file, where `longshot-builder --compile-shaders` writes it.
 
 `gpu/vk/vk_menu.cpp` (`save`) writes the whole file at every change:
 
@@ -108,10 +111,11 @@ Keys whose numbers are not obvious from the row:
 | Key | Values |
 |---|---|
 | `grass_distance` | The short decorative blades' reach: 0 Game's (default; radius 22 m, blades thinned from 12 m to about 20 m), 1 2x, 2 3x, 3 4x. The radius and both fades extend by that factor at once. It does not change the large-scale simulated turf, whose separate **Simulated turf** page uses adaptive record lists (`gpu/vk/vk_draw.cpp` `grass_reach`; `RX_VK_GRASS_DISTANCE` overrides the row) |
-| `hud_layout` | HUD layout. 0 Screen's edges (default), 1 Middle 16:9, 2 Custom. Read at each present (`host/hos_wide_ui.c`). `HOS_WIDE_UI` overrides it |
+| `hud_layout` | HUD layout. 0 Screen's edges (default), 1 Middle 16:9, 2 Custom. Read at each present (`game/hos_wide_ui.c`). `HOS_WIDE_UI` overrides it |
 | `hud_health_x/y/scale`, `hud_buttons_x/y/scale`, `hud_minimap_x/y/scale` | Custom HUD placement, with horizontal and vertical offsets in percent of the picture and scale in percent of the usual size |
 | `key_toggle_hud`, `pad_toggle_hud` | Session HUD shortcut, unbound by default. Uses the Controls page's normal binding format |
 | `walk_mode` | 0 Hold, 1 Toggle |
+| `dlss5_detail`, `dlss5_colour`, `dlss5_intensity`, `dlss5_local_structure`, `dlss5_local_tone`, `dlss5_skin` | The DLSS 5 rows that show 0 to 2, in hundredths (`154` is 1.54); `dlss5_skin=-100` follows the local structure. `dlss5_highlight` is in tenths (`20` is 2.0x), `dlss5_resolution` a percent of the picture, `dlss5_style` 0 Standard, 1 Natural, 2 Cinematic, `dlss5_strengths` 0 As in OptiScaler, 1 Model defaults, 2 Applied |
 | `threaded_rendering` | The Debug tab's Threaded rendering row (`gpu/vk/threaded_rendering.h`): 0 Auto (default), 1 On (`RX_VK_ASYNC=1` and `RX_VK_RECORDER=thread`), 2 Off. Auto goes by the physical cores the process may run on (`usable_cores` in `gpu/vk/vk_progcache.cpp`): 4 or more cores, the render thread and the recorder thread, as On; fewer, Off. Where only buffer-pool mirrors are absent (integrated GPUs where `!f.discrete()`, or `RX_VK_MIRROR=0`), Auto keeps the render thread off and runs the recorder thread alone with 6 or more physical cores (`kAutoRecorderOnlyCores`), and Off with fewer. Auto is also Off, whatever the cores, where the mode is not safe on the run (the capture off, `RX_VK_LOW_SPEC`, a frame dump, a benchmark replay). `threaded::kAutoEnabled` turned off makes Auto Off on every PC |
 
 A new row on the Graphics, Audio, Gameplay, Controls or NFC tab needs its line in the settings table of
@@ -137,8 +141,14 @@ Upscaler switches are in [upscalers](upscalers.md#switches).
 | `LONGSHOT_BUILD_NAME=<text>` | Shown under the version at the menu's top right (F1) and on the start-up screen, so a screenshot says which change it was. `dev.py queue run --desc` sets it for a game run (default: the job's name) |
 | `HOS_AUDIO=0` | Open no sound device (the mixer still runs). `HOS_AUDIO_MUTE=1` opens it at volume 0 |
 | `HOS_CONTROL=<socket>` | Start the [control bridge](control-bridge.md) |
-| `HOS_ENV_FILE=<path>`, `HOS_OPTIONS_FILE=<path>` | A test's own switches and settings files |
+| `HOS_ENV_FILE=<path>` | A test's own switches file (its settings: its own profile's `settings.ini`) |
 | `HOS_SKIP_OPENING=1` | Skip the new-game opening |
+| `LONGSHOT_BUILDER_CHANNEL=<read>,<write>` | Set by longshot-builder's play: the descriptors (Windows: handle values) of the two pipes to the builder that started the game, which only that process has. The game opens them (host/builder_channel.c), makes them non-inheritable and takes the variable out of its environment ([the game's channel to its builder](build.md#the-games-channel-to-its-builder)). Environment only: `longshot_env.txt` cannot set it |
+| `LONGSHOT_DEV_MODS=<folders>` | Set by `longshot-builder mod run`: mod folders linked in for this run beside the profile's mods, joined by the OS's path separator (`:` on Linux, `;` on Windows). The builder only passes it on; the Mod API's game side reads it ([the mod command](build.md#the-mod-command)). Environment only |
+| `LONGSHOT_PROFILE=<folder>` | Play that [profile](profiles.md) (longshot-builder's play sets it, and so does `longshot_bridge.start_session` for a developer's run): the run keeps its saves in its `saves/` and its settings in its `settings.ini`, and starts on its `profile.json`'s `start_slot`. The one place of the three: no switch and no `--user` names another. A profile folder the game cannot write in is the builder's to say before the game starts ([an unusable profile folder](profiles.md#an-unusable-profile-folder)). Environment only (`longshot_env.txt` cannot name a folder). The game says it can (`longshot-builder info`'s `capabilities.game` lists `profile`) |
+| `LONGSHOT_SAFE_START=1` | Set by `longshot-builder play --safe-start` for that play. The builder only passes it on; the Mod API's game side is to read it (no mod starts, and the Mods tab says why): this release's game does not read it yet. Environment only |
+| `LONGSHOT_SHADER_CACHE=<folder>` | Keep the shader and pipeline caches (the prepared programs, the pipeline cache and its play files, the pipeline notes, the preparation's record, the driver's faults) in that folder instead of the game folder's `cache/`. longshot-builder sets it for the game it plays and for its shader preparation: `<the builder's cache>/shaders/<translator stamp>/<driver>/`, shared by every build of that translator on this driver ([where things are](build.md#where-things-are)). A whole path, made when missing. Environment only (`longshot_env.txt` cannot name a folder) |
+| `HOS_START_SLOT` | Not a switch to set: the game sets it at the start from the profile's `start_slot`, for its own side (the Mod API's Skip title mod presses through to it), and takes away one the environment brought. A run that starts on a slot plays a profile whose `profile.json` names it |
 | `HOS_OOT_CHEATS=1` | The Debug tab's tools (flight, free camera, teleport, inventory) |
 | `HOS_FIXED_TIME=<POSIX seconds>` | The game's clock starts there, so runs compare |
 | `HOS_LANGUAGE=<code>` | The game's language for this run |
@@ -219,7 +229,7 @@ the vibration's stream (`hos_pad_speaker_fill`); otherwise the speaker opens its
 | `RX_VK_TRANSLATE_WAIT_MS=<ms>` | Bound the wait for translating shaders, then leave their draws out (off by default) |
 | `RX_VK_DRIVER_FAULTS=0/2` | Ask the driver again for programs it faulted on (`0`), or build one at a time on every driver (`2`) |
 | `RX_VK_PROGRAM_CACHE_ZSTD=1` | Keep translated programs zstd-compressed in `longshot_programs.zst.bin`, a file of its own: `longshot_programs.bin` is left alone, and the first run translates every program again. Its records are only read whole, so programs load before the title (`RX_VK_LOAD=start`'s way, `load_default.h`) |
-| `LONGSHOT_SHADER_STORE=<folder>\|0` | Where the shader store keeps the programs' SPIR-V once for every game folder (`spirv.pack`, `spirv.idx`, `spirv.lock`; [architecture](architecture.md)). Unset: `%LOCALAPPDATA%\Longshot\shaders`, on Linux `$XDG_CACHE_HOME/longshot/shaders` (else `~/.cache/longshot/shaders`). `0`: none, each record keeps its SPIR-V as before. A cache written for another store starts over at the next start; one whose store did not open this run (a file held by another program) is kept for the next. Kept for the game the builders start (`make_game.GAME_ENV_KEEP`: the preparation at the build, the AppImage's Play), so it is set where the build runs too. Not with `RX_VK_PROGRAM_CACHE_ZSTD` |
+| `LONGSHOT_SHADER_STORE=<folder>\|0` | Where the shader store keeps the programs' SPIR-V once for every game folder (`spirv.pack`, `spirv.idx`, `spirv.lock`; [architecture](architecture.md)). Unset: `%LOCALAPPDATA%\Longshot\shaders`, on Linux `$XDG_CACHE_HOME/longshot/shaders` (else `~/.cache/longshot/shaders`). `0`: none, each record keeps its SPIR-V as before. A cache written for another store starts over at the next start; one whose store did not open this run (a file held by another program) is kept for the next. Kept for the game `longshot-builder` and the launcher start (`build_driver::shaders::game_env`: the preparation at the build, the launcher's Play), so it is set where the build runs too. Not with `RX_VK_PROGRAM_CACHE_ZSTD` |
 
 #### Intel's compiler on Windows
 
@@ -300,7 +310,7 @@ The memory budget and its `vk: budget:` lines are in [architecture](architecture
 
 | Switch | What it does |
 |---|---|
-| `HOS_SHADOW_STABLE=0` | Fit the sun's nearest shadow cascade as shipped at every Shadow resolution, following the view each frame. `HOS_SHADOW_STABLE=1` uses the steady fit at every resolution. By default the steady fit runs only on Highest (3072 texels); below it the game's fit is kept because the steady square is coarser standing still. The steady fit (`host/oot_shadow_fit.c`, `nx2/oot_shadow_fit.py`) keeps its basis independent of the camera, following the sun by the smallest turn from a point moving in whole texels, and fits a steady square around the slice's bounding sphere on whole texels. The log says `shadow: the sun's nearest cascade is <n> m a side` when the size changes. |
+| `HOS_SHADOW_STABLE=0` | Fit the sun's nearest shadow cascade as shipped at every Shadow resolution, following the view each frame. `HOS_SHADOW_STABLE=1` uses the steady fit at every resolution. By default the steady fit runs only on Highest (3072 texels); below it the game's fit is kept because the steady square is coarser standing still. The steady fit (`game/oot_shadow_fit.c`, the hook sites `shadow.fitBasis` and `shadow.fitBox`) keeps its basis independent of the camera, following the sun by the smallest turn from a point moving in whole texels, and fits a steady square around the slice's bounding sphere on whole texels. The log says `shadow: the sun's nearest cascade is <n> m a side` when the size changes. |
 
 ### Threads and cores
 
@@ -330,3 +340,12 @@ The memory budget and its `vk: budget:` lines are in [architecture](architecture
 | `RX_VK_REFLEX_LOG=1`, `RX_VK_DLSS_LOG=1` | NVIDIA Reflex's latency timings, NGX's own lines ([upscalers](upscalers.md#dlsss-log-and-memory)) |
 | `HOS_MIC_LOG=1` | Each microphone stream's frames read and its peak, once a second (`audio in:`) |
 | `HOS_MOTION_DEBUG=1` | The motion sensors: what the game gets, twice a second |
+
+## DLSS 5
+
+| Switch | Use |
+|---|---|
+| `RX_VK_DLSS_NR=0/1` | DLSS 5 (NVIDIA's neural rendering after the upscaler) off or on for one run, over its row; NVIDIA's `nvngx_dlssnr.dll` and a temporal upscaler are still needed ([DLSS 5](../../user/dlss5.md)) |
+| `RX_VK_DLSS_NR_DEBUG=0..5` | A view of DLSS 5 for one run, never saved: 1 its input, 2 the model's raw output, 3 the difference x20, 4 depth, 5 motion vectors |
+| `RX_VK_DLSS_NR_LINUX=1` | Linux: the DLSS 5 rows shown and the native NGX asked for neural rendering (an experiment; a Windows DLL cannot be used there) |
+| `RX_VK_DLSS_NR_MODEL=auto/nvidia/fp16` | Windows, an RTX 50 with both DLSS 5 files: which one runs for one run, over the DLSS 5 model row (Auto is NVIDIA's). With one file, that file runs; RTX 20, 30 and 40 run the community FP16 file ([DLSS 5](../../user/dlss5.md)) |

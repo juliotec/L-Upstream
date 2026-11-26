@@ -1,11 +1,11 @@
-"""The mouse in the game's own menus (host/oot_menu.c): where it points, what it asks of the game.
+"""The mouse in the game's own menus (game/oot_menu.c): where it points, what it asks of the game.
 
 The file is compiled on its own against a fake guest memory holding menu screens as the game lays them out: a screen's
 list of entries (+136 the head, +144 the first node, +156 the entry's offset from its node; entry+24 the button), a
 button's focus at +56 and its hit box at *(button+0x58) (its matrix at +0x28: the scale at +0x28 and +0x38, the
 translation at +0x4c and +0x50; its rectangle at +0x84, about the origin; a second box's scale at +0xd8 and centre at
 +0xfc). hos_oot_menu_tick is what a menu screen's update calls each frame (f_802f1380), hos_oot_menu_focus what the pause
-menu's focus handler calls (f_802ed660; nx2/oot_patches.py). The game's focus setter (f_8088ffc0) is a fake that records
+menu's focus handler calls (f_802ed660; the hook site menu.focus). The game's focus setter (f_8088ffc0) is a fake that records
 its button; the pad's presses (hos_hid_tap) are recorded as their script.
 
 In the pause menu the mouse moved onto a button gives it the focus through the setter, a click on the focused button is
@@ -54,6 +54,17 @@ void hos_log(const char *fmt, ...);
 int64_t hos_now_ns(void);
 """
 
+# (host/game_call.h for the stand-in Ctx: the fixture's game_call and game_call_more call through a64_lookup as
+# host/game_call.c does, the context put back, and mark the callee as reached through them)
+GAME_H = r"""
+#pragma once
+#include <stdint.h>
+typedef struct { int set_x8; uint64_t x8; int set_lr; uint64_t lr; float *s0, *s1; } GameCallMore;
+int game_has(uint64_t fn);
+int game_call(Ctx *c, uint64_t fn, uint64_t sp, int nargs, const uint64_t *args, uint64_t *ret);
+int game_call_more(Ctx *c, uint64_t fn, uint64_t sp, int nargs, const uint64_t *args, uint64_t *ret, const GameCallMore *more);
+"""
+
 VK_API_H = r"""
 #pragma once
 enum { HOS_MOUSE_LEFT = 1, HOS_MOUSE_RIGHT = 2, HOS_MOUSE_MIDDLE = 4 };
@@ -69,6 +80,7 @@ SHORT fake_key_state(int vk);
 
 FIXTURE = r"""
 #include "hos.h"
+#include "game_call.h"
 #include "../gpu/vk/vk_api.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -132,6 +144,30 @@ int hos_input_movie_menu_take(uint64_t screen, MovieMenu *out) {
 }
 void hos_input_movie_menu_done(int met) { if (met) movie_met++; else movie_missed++; }
 int hos_input_movie_playing(void) { return movie_playing; }
+/* (host/game_call.c's call, over the stand-in context: x0.. the arguments, LR 0 unless given, the context put back; in_call
+   while the callee runs, so a setter reached any other way is counted in outside) */
+static int in_call, outside;
+int game_has(uint64_t fn) { return fn && a64_lookup(fn) != NULL; }
+int game_call_more(Ctx *c, uint64_t fn, uint64_t sp, int nargs, const uint64_t *args, uint64_t *ret, const GameCallMore *more) {
+    const A64Fn f = fn ? a64_lookup(fn) : NULL;
+    if (!f || nargs < 0 || nargs > 8 || (nargs && !args)) return 0;
+    const Ctx saved = *c;
+    if (sp) c->x[31] = sp & ~0xfULL;
+    for (int i = 0; i < nargs; i++) c->x[i] = args[i];
+    if (more && more->set_x8) c->x[8] = more->x8;
+    c->x[30] = more && more->set_lr ? more->lr : 0;
+    in_call++;
+    f(c);
+    in_call--;
+    if (ret) *ret = c->x[0];
+    if (more && more->s0) memcpy(more->s0, &c->vreg[0][0], 4);
+    if (more && more->s1) memcpy(more->s1, &c->vreg[1][0], 4);
+    *c = saved;
+    return 1;
+}
+int game_call(Ctx *c, uint64_t fn, uint64_t sp, int nargs, const uint64_t *args, uint64_t *ret) {
+    return game_call_more(c, fn, sp, nargs, args, ret, NULL);
+}
 static uint64_t focus_asked, focus_screen;
 static int focus_calls;
 /* (a focus change reported from another of the game's threads while the setter runs: the hook there must not wait for
@@ -145,6 +181,7 @@ static DWORD WINAPI other_thread(LPVOID arg) {
     return 0;
 }
 static void focus_setter(Ctx *c) {
+    if (!in_call || c->x[2] != 0 || c->x[30] != 0) outside++;   /* (through game_call: x2 0, LR 0) */
     focus_screen = c->x[0], focus_asked = c->x[1], focus_calls++, c->x[0] = 1;
     if (other_pane) {
         HANDLE t = CreateThread(NULL, 0, other_thread, NULL, 0, NULL);
@@ -154,7 +191,11 @@ static void focus_setter(Ctx *c) {
     }
 }
 static int item_calls;   /* (Key Items' setter, f_833fda00: the page's refresh from its key buffer) */
-static void item_setter(Ctx *c) { (void)c, item_calls++; }
+static uint64_t item_screen, item_buffer;
+static void item_setter(Ctx *c) {
+    if (!in_call || c->x[30] != 0) outside++;   /* (through game_call, LR 0) */
+    item_screen = c->x[0], item_buffer = c->x[1], item_calls++;
+}
 A64Fn a64_lookup(uint64_t addr) { return addr == 0x8088ffc0ULL ? focus_setter : addr == 0x833fda00ULL ? item_setter : NULL; }
 
 static uint64_t alloc(size_t n) { const uint64_t a = heap_top; heap_top += (n + 15) & ~(size_t)15; return a; }
@@ -395,6 +436,8 @@ int main(void) {
     CHECK(item_calls == 1 && !strcmp((const char *)GP(get64(replay + 760)), "Item_Medal_Light"));
     CHECK(movie_met == 2 && movie_missed == 3);
     movie_playing = 0;
+    CHECK(focus_calls > 0 && item_calls > 0 && !outside);   /* (every setter call made through game_call) */
+    CHECK(item_buffer == item_screen + 760);                /* (Key Items' refresh: the screen and its key buffer) */
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
@@ -404,7 +447,7 @@ int main(void) {
 class OotMenuMouseTests(unittest.TestCase):
     def test_points_and_clicks_the_menus(self):
         if sys.platform != "win32":
-            self.skipTest("the game's menus' mouse is Windows' (host/oot_menu.c: _WIN32)")
+            self.skipTest("the game's menus' mouse is Windows' (game/oot_menu.c: _WIN32)")
         compiler = shutil.which("gcc") or shutil.which("clang")
         if not compiler:
             self.skipTest("no C compiler")
@@ -418,14 +461,16 @@ class OotMenuMouseTests(unittest.TestCase):
             # (and the real "../gpu/vk/compat/longshot_env.h": env_on, the switches' rule)
             (tmp / "gpu" / "vk" / "compat").mkdir()
             shutil.copy(ROOT / "gpu" / "vk" / "compat" / "longshot_env.h", tmp / "gpu" / "vk" / "compat" / "longshot_env.h")
-            shutil.copy(ROOT / "host" / "oot_menu.c", tmp / "host" / "oot_menu.c")
+            (tmp / "host" / "game_call.h").write_text(GAME_H, encoding="utf-8")
+            (tmp / "game").mkdir()   # (game/oot_menu.c finds the stand-in hos.h through -I host, as a build does)
+            shutil.copy(ROOT / "game" / "oot_menu.c", tmp / "game" / "oot_menu.c")
             shutil.copy(ROOT / "host" / "input_movie.h", tmp / "host" / "input_movie.h")
             (tmp / "host" / "keys.h").write_text(KEYS_H, encoding="utf-8")
             (tmp / "host" / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"
             build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-g", "-D_WIN32_WINNT=0x0601",
-                                    "-include", str(tmp / "host" / "keys.h"),
-                                    str(tmp / "host" / "t.c"), str(tmp / "host" / "oot_menu.c"), "-o", str(binary)],
+                                    "-include", str(tmp / "host" / "keys.h"), "-I", str(tmp / "host"),
+                                    str(tmp / "host" / "t.c"), str(tmp / "game" / "oot_menu.c"), "-o", str(binary)],
                                    text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)

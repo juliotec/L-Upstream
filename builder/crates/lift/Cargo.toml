@@ -1,0 +1,23 @@
+[package]
+name = "lift"
+description = "The function builder: a discovered guest function and its instructions as mid IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+a64.workspace = true
+build-core.workspace = true
+cfg.workspace = true
+edits.workspace = true
+image.workspace = true
+llvm.workspace = true
+mir.workspace = true
+passes.workspace = true
+profile.workspace = true
+sem.workspace = true
+sites.workspace = true
+
+[lints]
+workspace = true

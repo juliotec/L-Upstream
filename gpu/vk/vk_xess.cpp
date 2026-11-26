@@ -175,11 +175,8 @@ bool load_locked() {
     if (l.tried) return l.ok;
     l.tried = true;
     std::string exe_dir, game_dir;
-    char exe[MAX_PATH];
-    DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    if (n && n < MAX_PATH) exe_dir = std::string(exe, n).substr(0, std::string(exe, n).find_last_of("\\/"));
-    n = game_module_path(exe, MAX_PATH);
-    if (n && n < MAX_PATH) game_dir = std::string(exe, n).substr(0, std::string(exe, n).find_last_of("\\/"));
+    if (const std::string s = exe_module_string(); !s.empty()) exe_dir = s.substr(0, s.find_last_of("\\/"));
+    if (const std::string s = game_module_string(); !s.empty()) game_dir = s.substr(0, s.find_last_of("\\/"));
     std::string where;
     for (const std::string& dir : xess_rules::library_dirs(getenv("RX_VK_XESS_DIR"), exe_dir, game_dir)) {
         where += (where.empty() ? "" : ", ") + dir;

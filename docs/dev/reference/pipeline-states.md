@@ -11,24 +11,26 @@ The sources are in `assets/pipeline_states/`:
 - `tour.bin.xz`, written only by the pipeline tour and replaced whole each time;
 - `contrib/<name>.bin.xz`, one per contributed list.
 
-Each has a `<name>.md` note (who, GPU, driver, build, settings, route). `nx2/make_game.py` merges them into the game
-folder's `longshot_pipeline_states_shipped.bin` at every build. A record holds shader hashes, formats and draw state,
+Each has a `<name>.md` note (who, GPU, driver, build, settings, route). The build's finish merges them into the game
+folder's `longshot_pipeline_states_shipped.bin` at every build (`builder/crates/build-assets/src/pipelines.rs`). A record holds shader hashes, formats and draw state,
 never game code.
 
 A game run writes `longshot_pipeline_states.bin` into the game folder's `cache/`. To add it as a list:
 
 ```sh
-python -I nx2/pipeline_states.py add <name> <game folder>/cache/longshot_pipeline_states.bin --who ... --gpu ... --build ... --settings ... --route ...
-python -I nx2/pipeline_states.py check      # every source and the merge, as the release checks read them
+python -I scripts/pipeline_states.py add <name> <game folder>/cache/longshot_pipeline_states.bin --who ... --gpu ... --build ... --settings ... --route ...
+python -I scripts/pipeline_states.py check      # every source and the merge, as the release checks read them
 ```
 
 `add` keeps only pipelines no other contributed list has. A list depends on its settings: one recorded at 1440p with
 DLSS shares few pipelines with one at 360p. Players send theirs with the Insert menu's **Save my pipeline list** (Debug
-tab), or `nx2/pipeline_share.py <game folder>`.
+tab), or `longshot-builder share <game folder>`, which zips it for the "Submit your pipelines" issue.
 
 Refresh the tour's list before each release, and after a change to the shader translation or to the state a pipeline is
-made from. When the record format changes (`MAGIC2` and `SIZE2` in `nx2/pipeline_states.py` for the current version 2
-records, `HKSTATE2`; `MAGIC` and `SIZE` are version 1's), convert or re-record every source.
+made from. When the record format changes (`MAGIC2` and `SIZE2` in `scripts/pipeline_states.py` for the current version 2
+records, `HKSTATE2`; `MAGIC` and `SIZE` are version 1's), convert or re-record every source, and change the build's
+merge (`pipelines.rs`) with it. `scripts/pipeline_states.py` is a developer tool, not part of the build: `add` and `check`
+above, and the pipeline tour, run it.
 
 ## The pipeline tour
 

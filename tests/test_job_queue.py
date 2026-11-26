@@ -6,8 +6,8 @@ environment a job gets.
 - A timed run that uses no GPU lets shared game runs go beside it; timed runs of one group go one at a time.
 - Priorities and aging (another version's tickets may carry one): a low ticket that waited an hour is at normal's level,
   never above high.
-- A job's environment never gains an OOT_, RX_ or A64_ variable (make_game.py lift_key hashes them all: a variable naming
-  the job would give every build its own lift key, so no build took another's translation).
+- A job's environment never gains an OOT_, RX_ or A64_ variable (switches a build reads: a variable naming the job would
+  give every build its own keys, so no build took another's).
 - The RAM file system check takes the longest mount holding a path.
 - The queue's tickets are where every version of it looks (scripts/job_queue.py before dev.py): in
   $XDG_RUNTIME_DIR/longshot-queue as <pid>.json under .lock (Windows: %LOCALAPPDATA%\\Longshot\\queue\\tickets, which
@@ -21,7 +21,8 @@ environment a job gets.
   running.
 - Windows protects a player as Linux does: a longshot.exe with no LONGSHOT_JOB is someone playing (a timed job waits,
   status names it), one under a job or preparing shaders is not, one whose memory can't be read counts as nobody's;
-  a build outside the queue is a python running nx2/build.py or make_game.py, backslashes or not. Checked on a made-up
+  a build outside the queue is a longshot-builder (LONGSHOT_QUEUE_HEAVY: a release's longshot-builder-<v>-<p> too), any
+  case, or the cargo `dev.py packs run` marks with LONGSHOT_HEAVY, that is not a job's. Checked on a made-up
   process table on any OS (the Windows code, its process reads stood in for), and on Windows with real processes.
 - Windows: procs.proc_start sends no Ctrl+C, with common.WINDOWS patched off too, as Environment's test does (os.kill(pid,
   0) there is a Ctrl+C to the whole console: it ended run_all.py and the shell around it at once, without a word).
@@ -173,7 +174,7 @@ class Environment(unittest.TestCase):
             base = {"PATH": "/usr/bin", "TMPDIR": d}
             for mode in q.MODES:
                 env = q.job_env(base, "a-job", mode, s, 42)
-                added = {k for k in env if k not in base and k.startswith(q.LIFT_KEY_PREFIXES)}
+                added = {k for k in env if k not in base and k.startswith(q.BUILD_SWITCH_PREFIXES)}
                 self.assertEqual(added, set(), mode)
                 self.assertEqual(env["LONGSHOT_JOB_NAME"], "a-job")
             self.assertIn("__GL_SHADER_DISK_CACHE_PATH", q.job_env(base, "g", "shared", s, 42))
@@ -232,6 +233,122 @@ class Environment(unittest.TestCase):
         self.assertEqual(q.cpu_sets(s, domains=[frozenset({0})]), (None, None))   # (one L3 domain: no pinning)
 
 
+class InsideAJob(unittest.TestCase):
+    """A process inside a job never queues again, whatever reached it: a ticket of its own would wait for jobs that wait for
+    the job around it. On 2026-11-24 a build job ran `dev.py vk`, whose build environment dropped LONGSHOT_JOB on its way to
+    `dev.py packs run`; that queued longshot-builder's compile as a ticket, which waited behind a queued timed run, which
+    waited for the build job to end: neither went on. Any queue's marker (main's, scripts/job_queue.py's OOT_STATUS_LOCK)
+    says so, and so does a running job's ticket, any version's, whose runner or command is above the process"""
+    CHAIN = [(300, 30), (200, 20), (100, 10), (1, 1)]   # (this process, its parent, ...: (pid, start))
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.q = os.path.join(self.d, "q")
+        self.s = dict(q.DEFAULTS, LONGSHOT_QUEUE_DIR=self.q)
+        alive = mock.patch.object(q, "alive", return_value=True)   # (the made-up pids below: running)
+        alive.start()
+        self.addCleanup(alive.stop)
+
+    def ticket(self, pid=200, start=20, name="outer", mode="build", state="active", **k):
+        """A ticket as main's runner writes it: its own pid and start, its pid namespace, its command's pid and start"""
+        t = T(pid, name, mode, state, start=start, ns=k.pop("ns", procs.pidns()), **k)
+        q.write_ticket(self.q, t)
+        return t
+
+    def test_every_marker_a_queue_set(self):
+        for k in q.JOB_MARKERS:
+            self.assertTrue(q.inside_job({k: "x"}), k)
+        self.assertIsNone(q.inside_job({"LONGSHOT_JOBS": "8", "LONGSHOT_JOB": " "}))   # (LONGSHOT_JOBS is the build's)
+        self.assertEqual(q.inside_job({"LONGSHOT_JOB": "7", "LONGSHOT_JOB_NAME": "grsp"}), "grsp")
+
+    def test_a_running_job_above(self):
+        self.assertIsNone(q.job_above(self.q, self.CHAIN))   # (no ticket)
+        self.ticket()   # (its runner: this process's parent)
+        self.assertEqual(q.job_above(self.q, self.CHAIN)["name"], "outer")
+        self.assertIsNone(q.job_above(self.q, [(300, 30), (150, 15), (1, 1)]))   # (another branch of the tree)
+
+    def test_its_command_above(self):
+        self.ticket(pid=999, start=99, child=100, child_start=10)
+        self.assertEqual(q.job_above(self.q, self.CHAIN)["name"], "outer")
+
+    def test_a_pid_used_again_or_another_namespace_is_not_it(self):
+        self.ticket(start=21)
+        self.assertIsNone(q.job_above(self.q, self.CHAIN))
+        shutil.rmtree(self.q)
+        self.ticket(ns="pid:[1]" if procs.pidns() != "pid:[1]" else "pid:[2]")
+        self.assertIsNone(q.job_above(self.q, self.CHAIN))
+
+    def test_a_waiting_ticket_is_not_a_job(self):
+        self.ticket(name="waits", mode="timing", state="waiting")
+        self.assertIsNone(q.job_above(self.q, self.CHAIN))
+
+    def test_unsure_is_inside(self):
+        """A job runs and this process's parents can't be read: inside one, for all it can tell (directly, no ticket)"""
+        self.ticket()
+        self.assertIs(q.job_above(self.q, []), q.UNSURE)
+        env = {k: v for k, v in os.environ.items() if k not in q.JOB_MARKERS}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(procs, "ancestors", return_value=None):
+            self.assertEqual(q.job_here({}, self.s), (q.UNSURE["name"], {}))
+
+    def test_job_here_gives_the_markers_back(self):
+        env = {k: v for k, v in os.environ.items() if k not in q.JOB_MARKERS}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(q.job_here({}, self.s))
+            # (this process's own environment, when the one it would give its command dropped them: the build's)
+            with mock.patch.dict(os.environ, {"LONGSHOT_JOB": "42", "LONGSHOT_JOB_NAME": "grsp-v1"}):
+                self.assertEqual(q.job_here({}, self.s), ("grsp-v1", {"LONGSHOT_JOB": "42", "LONGSHOT_JOB_NAME": "grsp-v1"}))
+            # (none left anywhere: the running job above it, its markers made from its ticket)
+            with mock.patch.object(procs, "ancestors", return_value=self.CHAIN):
+                self.ticket(name="grsp-v1")
+                self.assertEqual(q.job_here({}, self.s), ("grsp-v1", {"LONGSHOT_JOB": "200", "LONGSHOT_JOB_NAME": "grsp-v1",
+                                                                      "LONGSHOT_JOB_MODE": "build"}))
+
+    def test_run_inside_carries_the_markers(self):
+        """run() inside a job runs its command directly, with the job's markers though environ dropped them (build.py's
+        environment does), and writes no ticket: what that command runs knows it is inside a job too"""
+        env = {k: v for k, v in os.environ.items() if k not in q.JOB_MARKERS}
+        env.update(LONGSHOT_JOB="42", LONGSHOT_JOB_NAME="grsp-v1", LONGSHOT_JOB_MODE="build")
+        given = {k: v for k, v in env.items() if k not in q.JOB_MARKERS}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(q.subprocess, "call", return_value=0) as call, \
+                mock.patch.object(q, "write_ticket", side_effect=AssertionError("a ticket inside a job")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(q.run("vk-x", "light", ["true"], environ=given, s=self.s), 0)
+        got = call.call_args.kwargs["env"]
+        self.assertEqual((got["LONGSHOT_JOB"], got["LONGSHOT_JOB_NAME"]), ("42", "grsp-v1"))
+
+
+@unittest.skipIf(os.name == "nt", "the shell commands below")
+class NoTicketInsideAJob(unittest.TestCase):
+    """Real processes: a job started by main's runner (only its ticket, as main writes it: this test process stands in
+    for the runner) runs `env -i ... sh -c 'dev.py queue run inner ...'`, every marker gone, while a timed run waits in
+    the queue for that job to end. The inner run starts at once, directly, and writes no ticket; before, it queued behind
+    the timed run and neither ever went on (here: the time limit)"""
+
+    def test_through_env_and_sh(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        qdir, me = os.path.join(d, "q"), os.getpid()
+        q.write_ticket(qdir, T(me, "outer", "build", "active", start=procs.proc_start(me), ns=procs.pidns(), t=0,
+                               since=time.time(), cmd="env SNAP=x sh verify.sh", cwd=d))
+        # (a timed run queued after it: it waits for the build to end; a build queued after it would wait for it. Its
+        # runner: this process too, so that it reads as alive)
+        with open(os.path.join(qdir, "b3.json"), "w") as f:
+            json.dump(T(me, "meas-b3", "timing", "waiting", start=None, ns=procs.pidns(), t=1), f)
+        ran = os.path.join(d, "ran")
+        inner = "exec %s -I %s queue run inner --mode build -- %s -c \"open('%s', 'w').write('ok')\"" % (
+            sys.executable, SCRIPT, sys.executable, ran)
+        env = ["PATH=" + os.environ.get("PATH", ""), "HOME=" + d, "TMPDIR=" + d, "LONGSHOT_QUEUE_DIR=" + qdir,
+               "LONGSHOT_QUEUE_STATE=" + os.path.join(d, "s"), "LONGSHOT_QUEUE_SCOPE=0"]
+        r = subprocess.run(["env", "-i"] + env + ["sh", "-c", inner], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("inside job outer", r.stderr)
+        with open(ran) as f:
+            self.assertEqual(f.read(), "ok")
+        self.assertEqual(sorted(t["name"] for t in q.read_tickets(qdir, clean=False)), ["meas-b3", "outer"])
+
+
 @unittest.skipIf(os.name == "nt", "the shell commands below")
 class RealQueue(unittest.TestCase):
     def run_two(self, mode):
@@ -239,7 +356,7 @@ class RealQueue(unittest.TestCase):
             env = dict(os.environ, LONGSHOT_QUEUE_DIR=os.path.join(d, "q"), LONGSHOT_QUEUE_STATE=os.path.join(d, "s"),
                        LONGSHOT_QUEUE_SCOPE="0", LONGSHOT_QUEUE_MIN_FREE_GB="0", LONGSHOT_QUEUE_MAX_PRESSURE="100",
                        LONGSHOT_QUEUE_MAX_SWAP_GB="100000")
-            for k in ("LONGSHOT_JOB",):
+            for k in q.JOB_MARKERS:   # (every marker: one left makes the queue run the jobs directly, as inside a job)
                 env.pop(k, None)
             marks = os.path.join(d, "marks")
             cmd = lambda n: [sys.executable, "-I", SCRIPT, "queue", "run", n, "--mode", mode, "--",
@@ -251,7 +368,9 @@ class RealQueue(unittest.TestCase):
             self.assertEqual((a.wait(30), b.wait(30)), (0, 0))
             with open(marks) as f:
                 t = {line.split()[0]: float(line.split()[1]) for line in f}
-            return t["b+"] < t["a-"]   # (b started while a still ran)
+            # (the two ran at once: their spans overlap. On a loaded machine b can reach the queue before a, so which one
+            # started first is not asked)
+            return max(t["a+"], t["b+"]) < min(t["a-"], t["b-"])
 
     def test_exclusive_one_at_a_time_shared_together(self):
         self.assertFalse(self.run_two("gpu"))
@@ -267,10 +386,13 @@ class WindowsPlayers(unittest.TestCase):
         41: (4, "Longshot.exe", "longshot.exe --x", "LONGSHOT_JOB=fps\0PATH=C:\\x\0"),
         42: (4, "longshot.exe", "longshot.exe --prepare-shaders", "PATH=C:\\x\0"),
         43: (4, "longshot.exe", None, None),
-        50: (4, "python.exe", 'python.exe -I C:\\src\\nx2\\build.py --jobs 4', "PATH=C:\\x\0"),
-        51: (4, "python.exe", "python.exe -I nx2/make_game.py", "LONGSHOT_JOB=b1\0"),
+        50: (4, "longshot-builder.exe", 'longshot-builder.exe build --game g.nup --out C:\\g', "PATH=C:\\x\0"),
+        51: (4, "longshot-builder.exe", "longshot-builder.exe build", "LONGSHOT_JOB=b1\0"),
         52: (4, "python.exe", "python.exe -c pass", "PATH=C:\\x\0"),
-        53: (60, "python.exe", "python.exe nx2/build.py", "PATH=C:\\x\0"),
+        53: (60, "Longshot-Builder.exe", "longshot-builder.exe compile", "PATH=C:\\x\0"),
+        54: (4, "longshot-builder-nightly-80-ab12-windows-x64.exe", "x build", "PATH=C:\\x\0"),   # (a release's name)
+        55: (4, "cargo.exe", "cargo build -p longshot-builder", "LONGSHOT_HEAVY=cargo\0"),   # (dev.py packs run's)
+        56: (4, "cargo.exe", "cargo test", "PATH=C:\\x\0"),   # (anyone else's cargo: no build of ours)
         60: (4, "cmd.exe", "cmd /c x", "PATH=C:\\x\0"),
         61: (60, "notepad.exe", "notepad", "PATH=C:\\x\0"),
         62: (61, "conhost.exe", "conhost", "PATH=C:\\x\0"),   # (61 is a pid used again: started before its "parent")
@@ -303,7 +425,7 @@ class WindowsPlayers(unittest.TestCase):
     def test_games(self):
         games = {g["pid"]: g["job"] for g in q.game_procs(self.s)}
         self.assertEqual(games, {40: "", 41: "fps", 42: "prepare", 43: None})
-        self.assertFalse({4, 50, 60, 61} & set(self.read), "only the games' and pythons' memory is read")
+        self.assertFalse({4, 52, 60, 61} & set(self.read), "only the games' and the builders' memory is read")
         self.assertEqual(procs.env_of(40), {"PATH": "C:\\x"}, "the block's =C: entries are no variables")
 
     def test_playing(self):
@@ -322,8 +444,8 @@ class WindowsPlayers(unittest.TestCase):
         self.assertIn("a build outside the queue: pid 50", out.getvalue())
 
     def test_builds_outside(self):
-        self.assertEqual(q.heavy_procs(self.s), [50, 53])
-        self.assertEqual(q.heavy_procs(self.s, procs.tree(60)), [50], "a job's tree is its own")
+        self.assertEqual(q.heavy_procs(self.s), [50, 53, 54, 55])
+        self.assertEqual(q.heavy_procs(self.s, procs.tree(60)), [50, 54, 55], "a job's tree is its own")
 
     def test_tree(self):
         self.assertEqual(sorted(procs.tree(60)), [53, 60, 61], "61's 62 is older than 61: a pid used again")
@@ -364,11 +486,10 @@ class WindowsPlayersReal(unittest.TestCase):
         self.assertIn(jobs, procs.tree(os.getpid()), "the test's own children are in its tree")
 
     def test_a_build_outside_the_queue(self):
-        script = os.path.join(self.d, "nx2", "build.py")
-        os.makedirs(os.path.dirname(script))
-        with open(script, "w") as f:
-            f.write("import time\ntime.sleep(60)\n")
-        p = subprocess.Popen([sys.executable, "-I", script])
+        # (a program named longshot-builder.exe: Windows' own ping under that name, which runs for a minute)
+        exe = os.path.join(self.d, "longshot-builder.exe")
+        shutil.copyfile(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "PING.EXE"), exe)
+        p = subprocess.Popen([exe, "-n", "60", "127.0.0.1"], stdout=subprocess.DEVNULL)
         self.procs.append(p)
         time.sleep(0.5)
         self.assertIn(p.pid, q.heavy_procs(dict(q.DEFAULTS)))
@@ -388,7 +509,7 @@ class WindowsTree(unittest.TestCase):
         self.env = dict(os.environ, LONGSHOT_QUEUE_DIR=os.path.join(self.d, "q"), LONGSHOT_QUEUE_STATE=os.path.join(self.d, "s"),
                         LONGSHOT_QUEUE_SCOPE="0", LONGSHOT_QUEUE_MIN_FREE_GB="0", LONGSHOT_QUEUE_MAX_PRESSURE="100",
                         LONGSHOT_QUEUE_MAX_SWAP_GB="100000")
-        for k in ("LONGSHOT_JOB",):
+        for k in q.JOB_MARKERS:   # (every marker: one left makes the queue run the jobs directly, as inside a job)
             self.env.pop(k, None)
         self.pidfile = os.path.join(self.d, "grandchild")
         self.grand = None

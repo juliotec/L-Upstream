@@ -1,15 +1,15 @@
-"""mods.json, the one list of which mods are on and in which order: the game (host/mods.c, host/mods_list.c) and the build
-(nx2/exefs_patches.py) read one file by one rule. No game: made-up game folders with empty mods and authored texts.
+"""mods.json, the one list of which mods in the game folder's mods/ (the emulators' layout, game/mods.c) are on and in
+which order: the game (game/mods.c, game/mods_list.c) reads and writes it. The builder reads no mods.json: it builds in
+manifest mods alone (docs/dev/reference/mods.md, "One mod format"). No game: made-up game folders with empty mods and
+authored texts.
 
-host/mods.c, host/mods_list.c and host/options_path.c are built as the game builds them (Windows with its own headers and
+game/mods.c, game/mods_list.c and host/options_path.c are built as the game builds them (Windows with its own headers and
 the game's manifest, so its file names are UTF-8 as the game's are; Linux with the POSIX shim) into a program that stands in
 a made-up game folder, starts the mods as the game does, takes the Mods tab's changes from its command line and prints the
 list before and after. Checked:
 
-- where the file is: beside the settings file (the game folder when the game is started by itself, the user folder with
-  --user, the folder of HOS_OPTIONS_FILE), and the build names the same file (given --user, the same environment, or neither:
-  the game's note in the game folder says where it read its list, with or without mods, and is taken away when that is the
-  game folder again); the build follows a note only to a whole path that is there, and says so;
+- where the file is: beside the settings file (the game folder when the game is started without a profile, the profile
+  with LONGSHOT_PROFILE; --user moves nothing); no note for a build is written in the game folder;
 - the order and the switches written at a change and read at the next start, the cheats' switches with them; the file is
   replaced whole (a new file moved over it);
 - what the game does not know is kept when it writes the file: keys beside "mods" and "cheats", keys in a mod's entry (they
@@ -17,28 +17,22 @@ list before and after. Checked:
   there (in its place); a mod the file does not name is on, after the named ones, and gets an entry;
 - what the launcher wrote while the game ran stays: the game writes only what the Mods tab changed in this run (a switch the
   tab changed, the whole order when the tab moved a mod) onto the file as it is then; a mod both changed takes the tab's;
-- the game folder's list is copied into the user folder once when that has none, as the settings are (not a file that is no
-  list, not with HOS_OPTIONS_FILE), and the build reads the game folder's until then;
-- longshot_mods.txt, the list of builds before mods.json: read once into mods.json (in the user folder too), the log saying
-  so in one line, the old file renamed longshot_mods.txt.imported and never read again; the build reads it while there is
-  no mods.json, with the game's line ends, and writes and renames nothing;
-- a mods.json that is not a list: every mod on, by name, in the game and in the build, and the Mods tab's note says so; the
-  file is left as it is until the Mods tab changes something, and is then kept as mods.json.bad beside the new one; a file
-  of 1 MB or more is not a list, on both sides;
-- the mods no list names are in the same order in the game and in the build (capitals, letters outside ASCII); an id is a
-  folder's name byte for byte; an id twice: its first entry counts, the second stays in the file;
-- a folder name outside ASCII is the same id in the game and in the build (UTF-8 in the file); a name that is not UTF-8
-  (Windows: the program built without the manifest) is never written, the file stays a list, and the mod is on after the
-  named ones in the game and in the build;
+- the game folder's list is copied into the profile once when that has none, as the settings are (not a file that is no
+  list);
+- mods.json is the only list: a longshot_mods.txt (the list of builds before mods.json) is not read, and left as it is;
+- a mods.json that is not a list: every mod on, by name, and the Mods tab's note says so; the file is left as it is until
+  the Mods tab changes something, and is then kept as mods.json.bad beside the new one; a file of 1 MB or more is not a
+  list;
+- the mods no list names in their order (capitals, letters outside ASCII); an id is a folder's name byte for byte; an id
+  twice: its first entry counts, the second stays in the file;
+- a folder name outside ASCII is its id (UTF-8 in the file); a name that is not UTF-8 (Windows: the program built without
+  the manifest) is never written, the file stays a list, and the mod is on after the named ones;
 - (Windows) another program has mods.json open: the write is tried again for a moment; when it still fails the change is
   kept, the Mods tab's note says so, and the next change writes both; a file that cannot be opened is not moved aside;
-- the build's own entry (exefs_patches.collect, which nx2/make_game.py calls with its --user) lists the mods' patch files in
-  that order, with those switches, and says which list it read;
-- host/mods_list.c and exefs_patches.parse_list take and refuse the same texts, with the same mods and switches: authored
-  texts for each rule, and a few hundred texts made from valid ones by changing bytes; what the game writes is a list
-  again, and writing that changes nothing.
+- game/mods_list.c over authored texts for each rule and a few hundred texts made from valid ones by changing bytes: what
+  it takes and refuses, and what it writes is a list again, and writing that changes nothing.
 
-python -I -B tests/test_mods_list.py [--cc gcc]
+python -I -B tests/test_mods_list.py [--cc gcc] --cargo cargo
 """
 import argparse
 import json
@@ -46,22 +40,30 @@ import os
 from pathlib import Path
 import random
 import shutil
+import re
 import subprocess
 import sys
 import tempfile
-import types
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "gcc", "--cargo", "{cargo}"]
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import exefs_patches as ep  # noqa: E402
-import win_manifest  # noqa: E402
 
 WINDOWS = sys.platform == "win32"
 EXE = "longshot.exe" if WINDOWS else "longshot"
 
+LIST_MAX = 1 << int(re.search(r"MODS_LIST_MAX = 1 << (\d+)", (ROOT / "game" / "mods_list.h").read_text(encoding="utf-8")).group(1))
+
+
+def manifest_res(path):
+    """The game's manifest as the .res the builder links into the exe (build-compile's manifest_res example), at path"""
+    subprocess.run([CARGO, "run", "-q", "-p", "build-compile", "--example", "manifest_res", "--", str(path)],
+                   cwd=ROOT / "builder", check=True, timeout=1800)
+    return str(path)
+
+
 HOS_H = ("#pragma once\n#include <stddef.h>\n#include <stdint.h>\nvoid hos_log(const char *f, ...);\n"
          "int64_t hos_now_ns(void);\n")
+GAME_HOST_H = '#include "hos.h"\n#include "romfs.h"\n#include "hos_paths.h"\n#include "options_path.h"\n#include "restbl.h"\n'
 
 MAIN = r'''
 #include <stdarg.h>
@@ -76,7 +78,13 @@ MAIN = r'''
 #endif
 void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("log: "); vprintf(fmt, ap); printf("\n"); va_end(ap); }
 int64_t hos_now_ns(void) { return 0; }
-const char *hos_romfs_dir;   /* (no game RomFS: no size table to merge) */
+#include "romfs_index.h"
+const char *hos_romfs_dir;   /* (no game RomFS: no size table to merge; host/romfs.c's folder backend, with no folder) */
+HosRomfsIndex *hos_romfs_index;   /* (no .nup's index either) */
+size_t hos_zs_frame(void *dst, size_t cap, const void *src, size_t n) { (void)dst; (void)cap; (void)src; (void)n; return 0; }
+size_t hos_zs_frame_head(void *dst, size_t cap, const void *src, size_t n) { (void)dst; (void)cap; (void)src; (void)n; return 0; }
+uint8_t *hos_zs_read_romfs(const char *rel, size_t *n, size_t limit) { (void)rel; (void)n; (void)limit; return NULL; }
+uint64_t hos_zs_romfs_content_size(const char *rel) { (void)rel; return 0; }
 uint8_t *hos_zs_read(const char *path, size_t *n, size_t limit) { (void)path; (void)n; (void)limit; return NULL; }
 uint64_t hos_zs_content_size(const char *path) { (void)path; return 0; }
 int hos_zs_write(const char *path, const uint8_t *data, size_t n) { (void)path; (void)data; (void)n; return 0; }
@@ -159,7 +167,7 @@ int main(int argc, char **argv) {
 #else
     printf("names utf-8\n");
 #endif
-    hos_options_choose(split, argv);
+    hos_options_choose();   /* (the game's arguments, --user among them, name no settings file) */
     hos_options_carry();
     hos_mods_init(NULL);
     show("start");
@@ -213,19 +221,24 @@ def need(ok, what):
 
 
 def build(cc, tmp):
-    """The program: host/mods.c (beside a hos.h of the test's), mods_list.c, options_path.c and restbl.c as they are. On
+    """The program: game/mods.c (beside a hos.h and a game_host.h of the test's), mods_list.c, options_path.c, restbl.c and romfs.c (its
+    folder backend, with no RomFS: romfs_index.c beside it, never opened) as they are. On
     Windows (the program, the same without the game's manifest: its file names in the system's code page, as on a Windows
     from before the manifest's); elsewhere (the program, None)"""
     src = tmp / "src"
     src.mkdir()
-    (src / "mods.c").write_bytes((ROOT / "host" / "mods.c").read_bytes())
+    (src / "mods.c").write_bytes((ROOT / "game" / "mods.c").read_bytes())
     (src / "hos.h").write_text(HOS_H)
+    # (host/game_host.h's parts mods.c uses, over the hos.h above: the whole of it needs the lift's runtime)
+    (src / "game_host.h").write_text(GAME_HOST_H)
     (tmp / "main.c").write_text(MAIN)
-    host = ROOT / "host"
-    inc = ["-std=gnu11"] + ([] if WINDOWS else ["-D_GNU_SOURCE", "-I", str(host / "posix")]) + ["-I", str(host)]
+    host, game = ROOT / "host", ROOT / "game"
+    inc = (["-std=gnu11"] + ([] if WINDOWS else ["-D_GNU_SOURCE", "-I", str(host / "posix")]) + ["-I", str(host)]
+           + ["-I", str(game)])
     objs = []
-    for name, c, strict in (("mods_list", host / "mods_list.c", True), ("mods", src / "mods.c", False),
+    for name, c, strict in (("mods_list", game / "mods_list.c", True), ("mods", src / "mods.c", False),
                             ("options_path", host / "options_path.c", True), ("restbl", host / "restbl.c", False),
+                            ("romfs", host / "romfs.c", False), ("romfs_index", host / "romfs_index.c", False),
                             ("main", tmp / "main.c", True)):
         obj = tmp / (name + ".o")
         subprocess.run([cc, *inc, *(["-Wall", "-Wextra", "-Werror"] if strict else ["-w"]), "-c", str(c), "-o", str(obj)], check=True)
@@ -237,7 +250,7 @@ def build(cc, tmp):
         return built, None
     plain = tmp / ("plain-" + EXE)
     subprocess.run([cc, *objs, "-o", str(plain)], check=True)
-    res = win_manifest.write(str(tmp / "longshot_manifest.res"))   # (nx2/build.py links it into the game)
+    res = manifest_res(tmp / "longshot_manifest.res")   # (the builder links it into the game)
     if subprocess.run([cc, *objs, res, "-fuse-ld=lld", "-o", str(built)]).returncode:
         print("note: this compiler does not link the game's manifest: the program's file names are the system code page's")
         return plain, plain
@@ -260,7 +273,7 @@ class Game:
 
     def run(self, *args, ops=(), **env):
         """The game started with args, the Mods tab's changes ops: ([(name, on)] at the start, the same at the end, the log)"""
-        e = {k: v for k, v in os.environ.items() if k not in ("HOS_OPTIONS_FILE", "HOS_MODS", "T_PARSE")}
+        e = {k: v for k, v in os.environ.items() if k not in ("LONGSHOT_PROFILE", "HOS_MODS", "T_PARSE")}
         e.update(env)
         r = subprocess.run([str(self.dir / EXE), *args, "--", *map(str, ops)], cwd=self.cwd, env=e, capture_output=True, timeout=60)
         self.names = "mbcs" if b"names mbcs" in r.stdout else "utf-8"   # (how the program's file names and log are text)
@@ -273,63 +286,8 @@ class Game:
                 lists[word[0]].append((bytes.fromhex(word[2]).decode(self.names, "replace"), word[1] == "on"))
         return lists["start"], lists["end"], out
 
-    def build_order(self, user=None, log=None, **env):
-        """What a build of this game folder reads: [(name, on)] of nx2/exefs_patches.py, and the file it names (the calls
-        exefs_patches.collect makes: build_entry checks collect itself)"""
-        path = ep.list_file(str(self.dir), user, env, log)
-        beside = None if env.get("HOS_OPTIONS_FILE") or same_file(path, self.dir / "mods.json") else str(self.dir / "mods.json")
-        old = None if env.get("HOS_OPTIONS_FILE") else str(self.dir / ep.OLD_LIST_NAME)
-        mods = ep.ordered(ep.find_mods(str(self.dir / "mods")), path, old, log, beside)
-        return [(name, on) for name, _, on in mods], Path(path)
 
-
-def build_entry(built, tmp):
-    """exefs_patches.collect, the build's entry (nx2/make_game.py): the patch files in the list's order, with its switches"""
-    g = Game(built, tmp / "collect", ["a", "b", "c"])
-    for name in "abc":
-        (g.dir / "mods" / name / "exefs").mkdir()
-        (g.dir / "mods" / name / "exefs" / "x.pchtxt").write_text("@nsobid-00\n")
-    user = g.top / "user-folder"
-    user.mkdir()
-    g.run("--user", str(user), ops=["edit", 2, 2, "edit", 1, 2, "edit", 1, 0])   # (c first; a off)
-    fakes = {"kit": types.ModuleType("kit"), "nso2": types.ModuleType("nso2"), "nso": types.ModuleType("nso")}
-    fakes["nso"].Nso = lambda path: None   # (no game code here: every file counts as one that changes code)
-    kept = {name: sys.modules.get(name) for name in fakes}, ep.Main, ep.classify_file, os.environ.pop("HOS_OPTIONS_FILE", None)
-    sys.modules.update(fakes)
-    ep.Main, ep.classify_file = (lambda nso_main: None), (lambda main, name, raw: ("code", "", {}))
-    try:
-        said = []
-        want = [("c", True), ("a", False), ("b", True)]
-        for told in (str(user), None):   # (told the user folder, or not: the game's note)
-            got = [(f["mod"], f["on"]) for f in ep.collect(str(g.top / "exefs"), str(g.dir), said.append, user=told)]
-            need(got == want, "the build's patch files, %s: %r" % ("told the user folder" if told else "not told", got))
-        need(any("the mods' order and switches: " in line and line.rstrip().endswith("mods.json") for line in said),
-             "the build does not say which list it read: %r" % said)
-        need(any("where the game last read it" in line for line in said), "the build does not say it followed the note: %r" % said)
-        # (told a user folder that has no list yet: the game folder's, which the game copies there at its next start)
-        (g.dir / "mods.json").write_text(json.dumps({"mods": [entry("b", False), entry("c", True)]}), encoding="utf-8")
-        fresh = g.top / "fresh-user"
-        fresh.mkdir()
-        got = [(f["mod"], f["on"]) for f in ep.collect(str(g.top / "exefs"), str(g.dir), said.append, user=str(fresh))]
-        need(got == [("b", False), ("c", True), ("a", True)] and not (fresh / "mods.json").exists(),
-             "the build's patch files, the user folder without a list: %r" % got)
-    finally:
-        for name, module in kept[0].items():
-            if module is None:
-                del sys.modules[name]
-            else:
-                sys.modules[name] = module
-        ep.Main, ep.classify_file = kept[1], kept[2]
-        if kept[3] is not None:
-            os.environ["HOS_OPTIONS_FILE"] = kept[3]
-    make = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
-    need('p.add_argument("--user"' in make and 'exefs_patches.collect(exefs, out, user=getattr(a, "user", None))' in make,
-         "nx2/make_game.py does not take --user or does not give it to the patches' collection")
-    print("ok: the build's collection of patch files follows the same list, told the user folder (make_game.py --user) or not")
-
-
-def same_file(a, b):
-    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
+CARGO = "cargo"   # (main: --cargo, for the game's manifest on Windows)
 
 
 def read(path):
@@ -354,7 +312,7 @@ def no_mods(built, tmp):
 
 
 def where_and_round_trip(built, tmp):
-    # started by itself: the list beside the game, written at a change, read at the next start; the build reads the same
+    # started by itself: the list beside the game, written at a change, read at the next start
     g = Game(built, tmp / "beside", ["b", "a", "c"])
     start, end, log = g.run(ops=["edit", 2, 2, "edit", 0, 0, "cheat", "cheat_0badf00d", 1, "switch", "cheat_0badf00d"])
     need(start == [("a", True), ("b", True), ("c", True)], "no list: the mods by name, on: %r" % start)
@@ -369,61 +327,33 @@ def where_and_round_trip(built, tmp):
     need(start == end == [("a", False), ("c", True), ("b", True)] and "changed 0" in log, "the next start: %r" % start)
     need("switch cheat_0badf00d 1" in log and "switch cheat_other -1" in log and "the list (the order and the switches) is" in log,
          "the next start's cheats or log:\n" + log)
-    order, named = g.build_order()
-    need(order == start and same_file(named, path), "the build reads %r from %s" % (order, named))
     was = os.stat(path).st_ino   # (written whole: a new file moved over the old one, never the old one written into)
     g.run(ops=["edit", 0, 1])
     need(read(path)["mods"][0] == entry("a", True) and os.stat(path).st_ino != was and not (g.dir / "mods.json.new").exists(),
          "mods.json was written in place, or its new file was left behind")
 
-    # --user: the list in the user folder, as the settings file; the build is told, or reads the game's note
+    # a profile: the list in it, beside its settings.ini, and no note for a build in the game folder. --user moves nothing
     g = Game(built, tmp / "user", ["a", "b"])
-    user = g.top / "user-folder"
+    user = g.top / "profile"
     user.mkdir()
-    start, end, log = g.run("--user", str(user), ops=["edit", 0, 3, "edit", 1, 0])
-    need(end == [("b", True), ("a", False)], "--user: the changes: %r" % end)
-    need(read(user / "mods.json") == {"mods": [entry("b", True), entry("a", False)]} and not (g.dir / "mods.json").exists(),
-         "--user: mods.json is not in the user folder alone")
-    order, named = g.build_order(user=str(user))
-    need(order == end and same_file(named, user / "mods.json"), "the build, given --user, reads %r from %s" % (order, named))
+    start, end, log = g.run("--user", str(g.top / "elsewhere"), ops=["edit", 0, 3, "edit", 1, 0], LONGSHOT_PROFILE=str(user))
+    need(end == [("b", True), ("a", False)], "a profile: the changes: %r" % end)
+    need(read(user / "mods.json") == {"mods": [entry("b", True), entry("a", False)]} and not (g.dir / "mods.json").exists()
+         and not (g.top / "elsewhere").exists(), "a profile: mods.json is not in the profile alone")
     note = g.dir / "modcache" / "mods_json.txt"
-    need(note.exists() and same_file(note.read_text(encoding="utf-8").strip(), user / "mods.json"), "the game's note for the build")
-    order, named = g.build_order()
-    need(order == end and same_file(named, user / "mods.json"), "the build, not told, reads %r from %s" % (order, named))
-    # (a relative --user: the game folder's, started with nothing; the build's is whole against the game folder too)
-    (g.dir / "rel").mkdir()   # (the game makes its user folder: host/hos_main.c)
-    start, end, log = g.run("--user", "rel", ops=["edit", 1, 0])
-    need(read(g.dir / "rel" / "mods.json") == {"mods": [entry("a", True), entry("b", False)]}, "--user relative")
-    order, named = g.build_order(user="rel")
-    need(order == end and same_file(named, g.dir / "rel" / "mods.json"), "the build with a relative --user: %s" % named)
-    order, named = g.build_order(user=str(user))   # (what the build is told counts before the game's note, now rel's)
-    need(order == [("b", True), ("a", False)] and same_file(named, user / "mods.json"), "the build, told another folder: %s" % named)
-    # (a settings file of the run's own: the list beside it, the note left as it is; the build with the same environment)
+    need(not note.exists(), "a note for a build was written in the game folder")
+    # (HOS_OPTIONS_FILE, a switch that is gone, names no list)
     own = g.top / "own"
     own.mkdir()
-    start, end, log = g.run("--user", str(user), ops=["edit", 0, 0], HOS_OPTIONS_FILE=str(own / "own.ini"))
-    need(read(own / "mods.json") == {"mods": [entry("a", False), entry("b", True)]}, "HOS_OPTIONS_FILE: the list beside it")
-    need(same_file(note.read_text(encoding="utf-8").strip(), g.dir / "rel" / "mods.json"), "HOS_OPTIONS_FILE changed the note")
-    order, named = g.build_order(user=str(user), HOS_OPTIONS_FILE=str(own / "own.ini"))
-    need(order == end and same_file(named, own / "mods.json"), "the build with HOS_OPTIONS_FILE: %s" % named)
-    # (by itself again: the game folder's list, and the note is gone)
+    start, end, log = g.run(ops=["edit", 0, 0], LONGSHOT_PROFILE=str(user), HOS_OPTIONS_FILE=str(own / "own.ini"))
+    need(read(user / "mods.json") == {"mods": [entry("b", False), entry("a", False)]} and not (own / "mods.json").exists(),
+         "HOS_OPTIONS_FILE moved the list")
+    # (by itself again: the game folder's list)
     start, end, log = g.run(ops=["edit", 1, 0])
-    need(start == [("a", True), ("b", True)] and not note.exists(), "started by itself after --user: %r" % start)
-    order, named = g.build_order()
-    need(order == end == [("a", True), ("b", False)] and same_file(named, g.dir / "mods.json"), "the build after: %s" % named)
-    # (no mods and no list in the user folder: no note is written into the game folder; the build reads the game folder's
-    # list, as it does when a note names a file that is not there)
-    g = Game(built, tmp / "no-mods", [])
-    user = g.top / "user-folder"
-    user.mkdir()
-    note = g.dir / "modcache" / "mods_json.txt"
-    g.run("--user", str(user))
-    need(not note.exists(), "no mods: a note was written with no list to name")
-    order, named = g.build_order()
-    need(order == [] and same_file(named, g.dir / "mods.json"), "no mods: the build after: %r %s" % (order, named))
-    g.run()
-    need(not note.exists(), "no mods: the note stays when the game is started by itself")
-    print("ok: mods.json beside the settings file (the game folder, --user, HOS_OPTIONS_FILE); the build names the same file")
+    need(start == [("a", True), ("b", True)] and end == [("a", True), ("b", False)] and not note.exists()
+         and read(g.dir / "mods.json") == {"mods": [entry("a", True), entry("b", False)]},
+         "started by itself after a profile: %r" % start)
+    print("ok: mods.json beside the settings file (the game folder, the profile; not --user, not HOS_OPTIONS_FILE)")
 
 
 LAUNCHER = '''{ "profile": "randomizer",
@@ -455,8 +385,6 @@ def unknown_kept(built, tmp):
                  entry("new", False)],
         "cheats": {"cheat_00000001": True, "cheat_00000002": "later"}}, "what the game wrote:\n" + text)
     need('{"a":[1,2.50,"x"]}' in text and '{ "sync": [true, null] }' in text, "a value is not kept as it was written:\n" + text)
-    order, _ = g.build_order()
-    need(order == end, "the build reads %r" % order)
     # (the launcher writes the file while the game runs: its keys, its order and its switches are in what the game writes after it)
     later = g.top / "later.json"
     later.write_text(json.dumps({"profile": "vanilla", "mods": [entry("new", False, version="3.0.0"), entry("a", False)]}),
@@ -498,88 +426,48 @@ def launcher_meanwhile(built, tmp):
     print("ok: what the launcher wrote while the game ran stays; the game writes only what the Mods tab changed")
 
 
-def migration(built, tmp):
+def old_list_not_read(built, tmp):
+    """longshot_mods.txt, the list of builds before mods.json, is not read by the game, nor touched"""
     g = Game(built, tmp / "old", ["a", "b", "c"])
-    old, aside = g.dir / "longshot_mods.txt", g.dir / "longshot_mods.txt.imported"
-    old_text = "# Longshot's mods\noff b\non c\non gone\ncheat cheat_0badf00d on\n"
+    old = g.dir / "longshot_mods.txt"
+    old_text = "off b\non c\ncheat cheat_0badf00d on\n"
     old.write_text(old_text, encoding="utf-8")
-    user = g.top / "user-folder"
-    user.mkdir()
-    want = [("b", False), ("c", True), ("a", True)]
-    order, _ = g.build_order(user=str(user))
-    need(order == want and not (user / "mods.json").exists() and old.read_text(encoding="utf-8") == old_text and not aside.exists(),
-         "the build before the game's first start reads %r, or writes or renames something" % order)
-    start, end, log = g.run("--user", str(user), ops=["switch", "cheat_0badf00d"])
-    need(start == end == want and "switch cheat_0badf00d 1" in log, "the old file's order and switches: %r" % start)
-    told = [line for line in log.splitlines() if "longshot_mods.txt" in line]
-    need(len(told) == 1 and "mods.json" in told[0] and "longshot_mods.txt.imported" in told[0],
-         "the log does not say it in one line:\n" + log)
-    need(read(user / "mods.json") == {"mods": [entry("b", False), entry("c", True), entry("gone", True), entry("a", True)],
-                                      "cheats": {"cheat_0badf00d": True}}, "mods.json made from the old file")
-    need(not old.exists() and aside.read_text(encoding="utf-8") == old_text and not (g.dir / "mods.json").exists(),
-         "the old file is not put aside as it was")
-    start, end, log = g.run("--user", str(user))
-    need(start == want and "longshot_mods.txt" not in log, "the start after: %r" % start)
-    for told_user in (str(user), None):
-        order, _ = g.build_order(user=told_user)
-        need(order == want, "the build after the move reads %r" % order)
-    # (the player deletes mods.json to start over: the old list does not come back, in the game or in the build)
-    (user / "mods.json").unlink()
     by_name = [("a", True), ("b", True), ("c", True)]
-    start, end, log = g.run("--user", str(user))
-    order, _ = g.build_order(user=str(user))
-    need(start == order == by_name and "no list yet" in log and aside.exists(), "mods.json deleted: %r, the build %r" % (start, order))
-    # (the old file's lines end at \r and \n only, in the game and in the build)
-    g = Game(built, tmp / "old-lines", ["a", "b", "c"])
-    (g.dir / "longshot_mods.txt").write_bytes(b"off c\x0boff b\r\non a\roff gone\n")
-    order, _ = g.build_order()
-    start, end, log = g.run()
-    need(order == start == by_name, "the old file's odd lines: the build %r, the game %r" % (order, start))
-    print("ok: longshot_mods.txt is read once into mods.json, said in one log line, renamed .imported and never read again")
+    start, end, log = g.run(ops=["switch", "cheat_0badf00d"])
+    need(start == by_name and "switch cheat_0badf00d -1" in log and "longshot_mods.txt" not in log,
+         "the old list was read: the game %r\n%s" % (start, log))
+    need(old.read_text(encoding="utf-8") == old_text and not (g.dir / "longshot_mods.txt.imported").exists()
+         and not (g.dir / "mods.json").exists(), "the old list was moved, or a list written from it")
+    print("ok: longshot_mods.txt is not read, and left as it is")
 
 
 def carried(built, tmp):
-    """The game folder's list goes to the user folder once, as the settings do; the build reads the game folder's until then"""
+    """The game folder's list goes to the profile once, as the settings do"""
     g = Game(built, tmp / "carried", ["a", "b", "c"])
-    user = g.top / "user-folder"
+    user = g.top / "profile"
     user.mkdir()
     mine = [("a", False), ("c", True), ("b", True)]
     start, end, log = g.run(ops=["edit", 0, 0, "edit", 2, 2])   # (by itself: a off, c up)
     need(end == mine and "copied" not in log, "by itself: %r" % end)
-    (g.dir / "longshot_mods.txt").write_text("off b\n", encoding="utf-8")   # (an old file there too: not read, the list is newer)
-    said = []
-    order, named = g.build_order(user=str(user), log=said.append)
-    need(order == mine and not (user / "mods.json").exists() and any(str(g.dir / "mods.json") in line for line in said),
-         "the build before the launcher's first start reads %r (%r)" % (order, said))
-    start, end, log = g.run("--user", str(user), ops=["edit", 0, 1])   # (through the launcher: the same list; a on there)
-    need(start == mine and log.count("was copied to") == 1, "the first start with --user: %r\n%s" % (start, log))
+    start, end, log = g.run(ops=["edit", 0, 1], LONGSHOT_PROFILE=str(user))   # (a profile: the same list; a on there)
+    need(start == mine and log.count("was copied to") == 1, "the first start with a profile: %r\n%s" % (start, log))
     theirs = [("a", True), ("c", True), ("b", True)]
     need(read(g.dir / "mods.json") == {"mods": [entry(n, on) for n, on in mine]} and
-         read(user / "mods.json") == {"mods": [entry(n, on) for n, on in theirs]} and (g.dir / "longshot_mods.txt").exists(),
+         read(user / "mods.json") == {"mods": [entry(n, on) for n, on in theirs]},
          "the copy does not leave the game folder's list as it is")
     start, end, log = g.run()
     need(start == mine and "copied" not in log, "by itself again, the game folder's: %r" % start)
-    start, end, log = g.run("--user", str(user))
-    order, _ = g.build_order(user=str(user))
-    need(start == order == theirs and "copied" not in log, "with --user again, the user folder's, not copied twice: %r" % start)
-    # (a settings file of the run's own: nothing is copied, in the game or for the build)
-    own = g.top / "own"
-    own.mkdir()
-    by_name = [("a", True), ("b", True), ("c", True)]
-    start, end, log = g.run(HOS_OPTIONS_FILE=str(own / "own.ini"))
-    order, _ = g.build_order(HOS_OPTIONS_FILE=str(own / "own.ini"))
-    need(start == order == by_name and not (own / "mods.json").exists() and "copied" not in log, "HOS_OPTIONS_FILE: %r" % start)
-    # (a game folder's file that is not a list is not copied; the build does not read it either)
+    start, end, log = g.run(LONGSHOT_PROFILE=str(user))
+    need(start == theirs and "copied" not in log, "with the profile again, the profile's, not copied twice: %r" % start)
+    # (a game folder's file that is not a list is not copied)
     g = Game(built, tmp / "carried-bad", ["a", "b"])
-    user = g.top / "user-folder"
+    user = g.top / "profile"
     user.mkdir()
     (g.dir / "mods.json").write_text('{"mods": [{"id": "local/b", "enabled": 0}]}', encoding="utf-8")
-    said = []
-    order, _ = g.build_order(user=str(user), log=said.append)
-    start, end, log = g.run("--user", str(user))
-    need(start == order == [("a", True), ("b", True)] and not (user / "mods.json").exists() and "not copied" in log
-         and any("not read" in line for line in said), "a file that is not a list was carried: %r\n%s" % (start, log))
-    print("ok: the game folder's list is copied into the user folder once, as the settings are; the build reads it until then")
+    start, end, log = g.run(LONGSHOT_PROFILE=str(user))
+    need(start == [("a", True), ("b", True)] and not (user / "mods.json").exists() and "not copied" in log,
+         "a file that is not a list was carried: %r\n%s" % (start, log))
+    print("ok: the game folder's list is copied into the profile once, as the settings are")
 
 
 def not_a_list(built, tmp):
@@ -593,9 +481,6 @@ def not_a_list(built, tmp):
     start, end, log = g.run(ops=["note", 0])
     need("note mods.json is not a list of mods, so every mod is on" in log, "the Mods tab's note does not say it:\n" + log)
     need(path.read_text(encoding="utf-8") == bad and not (g.dir / "mods.json.bad").exists(), "the file was touched at a start")
-    said = []
-    order, _ = g.build_order(log=said.append)
-    need(order == by_name and sum("is not a list of mods" in line for line in said) == 1, "the build: %r, %r" % (order, said))
     start, end, log = g.run(ops=["edit", 1, 0, "note", 0])
     need("note mods.json is not" not in log, "the note stays after a new list is written:\n" + log)
     need((g.dir / "mods.json.bad").read_text(encoding="utf-8") == bad and "was not a list of mods" in log and "kept as" in log,
@@ -603,27 +488,25 @@ def not_a_list(built, tmp):
     need(read(path) == {"mods": [entry("a", True), entry("b", False), entry("c", True)]}, "the new list")
     start, end, log = g.run()
     need(start == [("a", True), ("b", False), ("c", True)] and "is not a list" not in log, "the start after: %r" % start)
-    # (the size: a file one byte under the limit is a list, a file of the limit is not, in the game and in the build)
+    # (the size: a file one byte under the limit is a list, a file of the limit is not)
     g = Game(built, tmp / "size", ["a", "b"])
     text = json.dumps({"mods": [entry("b", False)]}).encode()
-    for size, want in ((ep.LIST_MAX - 1, [("b", False), ("a", True)]), (ep.LIST_MAX, [("a", True), ("b", True)])):
+    for size, want in ((LIST_MAX - 1, [("b", False), ("a", True)]), (LIST_MAX, [("a", True), ("b", True)])):
         (g.dir / "mods.json").write_bytes(text + b" " * (size - len(text)))
         start, end, log = g.run()
-        order, _ = g.build_order()
-        need(start == order == want and ("too large" in log) == (size == ep.LIST_MAX),
-             "a file of %d bytes: the game %r, the build %r" % (size, start, order))
+        need(start == want and ("too large" in log) == (size == LIST_MAX), "a file of %d bytes: the game %r" % (size, start))
     # (a file under the limit that the game's own way of writing, a line a mod and a cheat, would take past it: not written)
     near = ('{"cheats":{%s}}' % ",".join('"k%d":true' % i for i in range(74000))).encode()
     (g.dir / "mods.json").write_bytes(near)
     start, end, log = g.run(ops=["edit", 0, 0, "note", 0])
-    need(len(near) < ep.LIST_MAX and "too large to be read again" in log and "not saved yet" in log
-         and (g.dir / "mods.json").read_bytes() == near and ep.read_list(str(g.dir / "mods.json")) == [],
+    need(len(near) < LIST_MAX and "too large to be read again" in log and "not saved yet" in log
+         and (g.dir / "mods.json").read_bytes() == near,
          "the game wrote a file too large to be read again, or does not say that it did not")
     print("ok: a mods.json that is not a list: every mod on by name, left as it is, then kept as mods.json.bad at a change")
 
 
 def odd_lists(built, tmp):
-    """Folder sets and lists where the two readers could part: the order of what no list names, ids, the note"""
+    """Folder sets and lists: the order of what no list names, ids"""
     names = ["B", "a", "Zeta", "alpha"]
     g = Game(built, tmp / "sorted", names)
     if g.run()[0] and g.names == "utf-8":   # (letters outside ASCII where the program's file names are UTF-8)
@@ -636,51 +519,22 @@ def odd_lists(built, tmp):
             pass
     want = sorted(names, key=lambda n: bytes(c + 32 if 65 <= c <= 90 else c for c in n.encode("utf-8")))
     start, end, log = g.run()
-    order, _ = g.build_order()
-    need([n for n, _ in start] == [n for n, _ in order] == want and want[:2] == ["a", "alpha"],
-         "the mods no list names: the game %r, the build %r" % (start, order))
-    # (an id is the folder's name byte for byte: another case is another mod, in both)
+    need([n for n, _ in start] == want and want[:2] == ["a", "alpha"], "the mods no list names: the game %r" % start)
+    # (an id is the folder's name byte for byte: another case is another mod)
     g = Game(built, tmp / "case", ["a", "b"])
     path = g.dir / "mods.json"
     path.write_text(json.dumps({"mods": [{"id": "local/A", "enabled": False}, entry("b", False)]}), encoding="utf-8")
     start, end, log = g.run()
-    order, _ = g.build_order()
-    need(start == order == [("b", False), ("a", True)], "an id in another case: the game %r, the build %r" % (start, order))
-    # (an id twice: its first entry counts, in both; the second stays in the file. A cheat's key twice: the later one counts,
+    need(start == [("b", False), ("a", True)], "an id in another case: the game %r" % start)
+    # (an id twice: its first entry counts; the second stays in the file. A cheat's key twice: the later one counts,
     # and both stay)
     twice = [entry("a", False), entry("b", True), entry("a", True, note="second")]
     path.write_text('{"mods": %s, "cheats": {"cheat_1": false, "cheat_1": true}}' % json.dumps(twice), encoding="utf-8")
     start, end, log = g.run(ops=["switch", "cheat_1", "edit", 1, 0])
-    order, _ = g.build_order()
-    need(start == [("a", False), ("b", True)] and order == end == [("a", False), ("b", False)], "an id twice: %r, %r" % (start, order))
+    need(start == [("a", False), ("b", True)] and end == [("a", False), ("b", False)], "an id twice: %r, %r" % (start, end))
     need(read(path) == {"mods": [entry("a", False), entry("b", False), entry("a", True, note="second")], "cheats": {"cheat_1": True}}
          and "switch cheat_1 1" in log and path.read_text(encoding="utf-8").count('"cheat_1"') == 2, "an id or a cheat's key twice, written")
-    # (the note: followed only to a whole path that is there, and the build says what it did)
-    g = Game(built, tmp / "noted", ["a", "b"])
-    (g.dir / "modcache").mkdir()
-    note, beside = g.dir / "modcache" / "mods_json.txt", g.dir / "mods.json"
-    beside.write_text(json.dumps({"mods": [entry("b", False)]}), encoding="utf-8")
-    elsewhere = g.top / "elsewhere"
-    (elsewhere / "rel").mkdir(parents=True)
-    (elsewhere / "rel" / "mods.json").write_text(json.dumps({"mods": [entry("b", True), entry("a", False)]}), encoding="utf-8")
-    here = os.getcwd()
-    os.chdir(elsewhere)   # (a path that is not whole would be found from here)
-    try:
-        for text, word in (("rel/mods.json\n", "does not hold a whole path"), ("\n", "does not hold a whole path"),
-                           (str(g.top / "gone" / "mods.json") + "\n", "which is not there")):
-            note.write_text(text, encoding="utf-8")
-            said = []
-            order, named = g.build_order(log=said.append)
-            need(order == [("b", False), ("a", True)] and same_file(named, beside) and any("warning" in line and word in line for line in said),
-                 "a note of %r: the build reads %s and says %r" % (text, named, said))
-        note.write_text(str(elsewhere / "rel" / "mods.json") + "\n", encoding="utf-8")
-        said = []
-        order, named = g.build_order(log=said.append)
-        need(order == [("b", True), ("a", False)] and any("where the game last read it" in line for line in said),
-             "a note to a list that is there: %r, %r" % (order, said))
-    finally:
-        os.chdir(here)
-    print("ok: the same order for what no list names; ids byte for byte, the first of two; a note followed only to a file that is there")
+    print("ok: the order of what no list names; ids byte for byte, the first of two")
 
 
 def held_open(built, tmp):
@@ -726,10 +580,9 @@ def other_names(built, plain, tmp):
     else:
         need(end == [(name, True), ("a", False)], "a name outside ASCII: %r" % end)
         need(read(g.dir / "mods.json") == {"mods": [entry(name, True), entry("a", False)]}, "its id in mods.json is not its name")
-        order, _ = g.build_order()
         start, end, log = g.run()
-        need(order == start == [(name, True), ("a", False)], "the build reads %r, the game %r" % (order, start))
-        print("ok: a folder name outside ASCII is one id in the game and in the build")
+        need(start == [(name, True), ("a", False)], "the next start reads %r" % start)
+        print("ok: a folder name outside ASCII is its id")
     # a name that is not UTF-8 in the program (its file names in the system's code page): never in the file
     name = "caf\u00e9"
     try:
@@ -745,12 +598,11 @@ def other_names(built, plain, tmp):
     need(end == [("b", False), ("z", True), (name, True)], "the changes: %r" % end)
     need(read(g.dir / "mods.json") == {"mods": [entry("b", False), entry("z", True)]}, "the file with a name it cannot hold")
     start, end, log = g.run()
-    order, _ = g.build_order()
-    need(start == order == [("b", False), ("z", True), (name, True)], "the next start reads %r, the build %r" % (start, order))
+    need(start == [("b", False), ("z", True), (name, True)], "the next start reads %r" % start)
     print("ok: a folder name that is not UTF-8 is never written: the file stays a list, the mod is on after the named ones")
 
 
-# ---- one reader's rules, two readers: texts for each rule (True: a list), then texts made by changing bytes
+# ---- the reader's rules: texts for each rule (True: a list), then texts made by changing bytes
 DEEP = b"[" * 63 + b"]" * 63   # (as a value in the list's object: 64 deep, the most)
 TEXTS = [
     (True, b"{}"), (True, b" \t\r\n{ } \n"), (True, b'{"mods":[]}'), (True, b'{"cheats":{}}'),
@@ -811,7 +663,7 @@ def changed_texts(count):
     return out
 
 
-def both_readers(built, tmp):
+def the_reader(built, tmp):
     folder = tmp / "texts"
     folder.mkdir()
     texts = TEXTS + [(None, text) for text in changed_texts(600)]
@@ -832,20 +684,12 @@ def both_readers(built, tmp):
             at["again"] = " ".join(word[1:])
     lists = 0
     for i, (want, text) in enumerate(texts):
-        try:
-            build, why = ep.parse_list(text), ""
-        except ValueError as e:
-            build, why = None, str(e)
         got = host[i]
-        need(got["ok"] == (build is not None), "the game and the build differ on %r: the game %s, the build %s"
-             % (text[:200], got["why"] or "takes it", why or "takes it"))
-        need(want is None or got["ok"] == want, "%r is %sa list for both" % (text[:200], "" if got["ok"] else "not "))
+        need(want is None or got["ok"] == want, "%r is %sa list (%s)" % (text[:200], "" if got["ok"] else "not ", got["why"]))
         if not got["ok"]:
             continue
         lists += 1
-        need(got["mods"] == build, "the mods of %r: the game %r, the build %r" % (text[:200], got["mods"], build))
-        need(got["again"] == "same" and ep.parse_list(got["text"]) == build, "written again, %r is %s: %r"
-             % (text[:200], got["again"], got["text"][:300]))
+        need(got["again"] == "same", "written again, %r is %s: %r" % (text[:200], got["again"], got["text"][:300]))
         # (what the game does not know is what it writes: the other keys, their numbers by their digits)
         whole = json.loads(text.decode("utf-8-sig"), parse_int=str, parse_float=str)
         again = json.loads(got["text"].decode("utf-8"), parse_int=str, parse_float=str)
@@ -853,14 +697,16 @@ def both_readers(built, tmp):
             whole.pop(known, None), again.pop(known, None)
         need(whole == again, "the other keys of %r are not kept: %r" % (text[:200], got["text"][:300]))
     need(lists >= 40, "only %d of the texts are lists: the changed ones do not test much" % lists)
-    print("ok: the game and the build take and refuse the same %d texts (%d lists, with the same mods; written again, the same)"
-          % (len(texts), lists))
+    print("ok: the game read %d texts (%d lists; written again, the same)" % (len(texts), lists))
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="gcc")
+    p.add_argument("--cargo", default="cargo", help="for the game's manifest on Windows (build-compile's manifest_res example)")
     a = p.parse_args()
+    global CARGO
+    CARGO = a.cargo
     cc = shutil.which(a.cc) or shutil.which("clang") or a.cc
     with tempfile.TemporaryDirectory(prefix="longshot-mods-list-") as tmp:
         tmp = Path(tmp)
@@ -869,15 +715,14 @@ def main():
         no_mods(built, tmp)
         unknown_kept(built, tmp)
         launcher_meanwhile(built, tmp)
-        migration(built, tmp)
+        old_list_not_read(built, tmp)
         carried(built, tmp)
         not_a_list(built, tmp)
         odd_lists(built, tmp)
         held_open(built, tmp)
         other_names(built, plain, tmp)
-        build_entry(built, tmp)
-        both_readers(built, tmp)
-    print("PASS: mods.json: where it is, what is kept, the old file, a file that is not a list; the game and the build agree")
+        the_reader(built, tmp)
+    print("PASS: mods.json: where it is, what is kept, no old file read, a file that is not a list, what the reader takes")
 
 
 if __name__ == "__main__":

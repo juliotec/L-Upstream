@@ -192,15 +192,8 @@ void on_message(uint32_t type, const wchar_t* message) {
 std::vector<std::string> library_dirs() {
     std::vector<std::string> d;
     if (const char* e = getenv("RX_VK_FSR_DIR"); e && *e) d.emplace_back(e);
-    char exe[MAX_PATH];
-    DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    if (n && n < MAX_PATH) {
-        std::string s(exe, n);
-        d.push_back(s.substr(0, s.find_last_of("\\/")));
-    }
-    n = game_module_path(exe, MAX_PATH);
-    if (n && n < MAX_PATH) {
-        std::string s(exe, n);
+    if (const std::string s = exe_module_string(); !s.empty()) d.push_back(s.substr(0, s.find_last_of("\\/")));
+    if (std::string s = game_module_string(); !s.empty()) {
         s = s.substr(0, s.find_last_of("\\/"));
         if (d.empty() || d.back() != s) d.push_back(s);
     }

@@ -9,7 +9,9 @@ that record whether the thread holds its core in host_path and in CreateFileA, t
   unknown mount, a write to a mount that is not writable, a movie left out (HOS_NO_MOVIES), a blanked icon, a file not
   found;
 - a thread that holds no core when it calls OpenFile takes none;
-- a RomFS open never touches save_lock; a staged open resolves before locking and checks its path under the lock.
+- a RomFS open never touches save_lock; a staged open resolves before locking and checks its path under the lock;
+- a RomFS that is the .nup's index opens its files through host/romfs.h's hos_romfs_open, without the core, and a file it
+  lacks is not found, the core back.
 
 python -I -B tests/test_vcore_fs_open.py [--cxx clang++]
 """
@@ -100,7 +102,19 @@ typedef int SRWLOCK;
 static SRWLOCK save_lock;
 static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; lock_touches++; locked++; held_at_lock = held; }
 static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; lock_touches++; locked--; }
-typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; Save *save; char relative[HOS_FS_PATH]; } Handle;
+/* the RomFS in the .nup (host/romfs.h): a file there opens through hos_romfs_open, not CreateFileA */
+typedef struct HosRomfsFile { int unused; } HosRomfsFile;
+static HosRomfsFile rom_file;
+static void *hos_romfs_index;   /* (set: the RomFS is the .nup's index) */
+static const char *hos_romfs_dir;
+static int rom_found, held_in_rom = -1, locked_in_rom = -1;
+static HosRomfsFile *hos_romfs_open(const char *rel) {
+    (void)rel;
+    held_in_rom = held, locked_in_rom = locked;
+    return rom_found ? &rom_file : NULL;
+}
+static void hos_romfs_file_close(HosRomfsFile *f) { (void)f; }
+typedef struct { HANDLE h; HosRomfsFile *rom; int writable; char path[HOS_FS_PATH]; Save *save; char relative[HOS_FS_PATH]; } Handle;
 static uint64_t new_handle(Handle *h) { free(h); return 7; }
 static int writes_open;
 
@@ -114,8 +128,8 @@ static uint64_t open_file(const char *path, int mode, int core) {
     Ctx c;
     memset(&c, 0, sizeof c);
     c.x[0] = (uint64_t)(uintptr_t)&handle, c.x[1] = (uint64_t)(uintptr_t)path, c.x[2] = (uint64_t)mode;
-    held = core, takes = 0, held_in_path = held_in_create = -1;
-    lock_touches = locked = checked_locked = 0, locked_in_path = locked_in_create = -1;
+    held = core, takes = 0, held_in_path = held_in_create = held_in_rom = -1;
+    lock_touches = locked = checked_locked = 0, locked_in_path = locked_in_create = locked_in_rom = -1;
     imp__ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci(&c);
     return c.x[0];
 }
@@ -164,6 +178,17 @@ int main(void) {
     check(r == 0 && held == 0 && takes == 0, "a thread that held no core takes none");
     check(lock_touches == 0, "a RomFS open without a core does not touch save_lock");
 
+    /* a RomFS that is the .nup's index: its files open through romfs.h, without the core and without save_lock */
+    static int index;
+    hos_romfs_index = &index, hos_romfs_dir = "rom:", rom_found = 1;
+    r = open_file("rom:/UI/LayoutArchive/Common.bntx.zs", 1, 1);
+    check(r == 0 && held_in_rom == 0 && held_in_create == -1, "an open in the .nup's index: hos_romfs_open without the core, no CreateFileA");
+    check(held == 1 && takes == 1 && lock_touches == 0, "an open in the .nup's index: the core back, no save_lock");
+    rom_found = 0;
+    r = open_file("rom:/missing.bin", 1, 1);
+    check(r == R_PATH_NOT_FOUND && held_in_rom == 0 && held == 1 && held_in_create == -1, "a file the index lacks: the core back");
+    hos_romfs_index = NULL, hos_romfs_dir = NULL;
+
     path_ok = 2, path_writable = 1;
     r = open_file("save:/option.sav", 1, 1);
     check(r == 0 && locked_in_path == 0, "a staged read-only open resolves before taking save_lock");
@@ -185,6 +210,8 @@ def main():
     actual = block(src, "HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {")
     if "fs_open_file(c)" in actual:
         actual = block(src, "static void fs_open_file(Ctx *c) {") + "\n" + actual
+    # (romfs_rel: a path's part under the RomFS)
+    actual = block(src, "static const char *romfs_rel(const char *path) {") + "\n" + actual
     fixture = HARNESS.replace("@OPEN@", actual)
     compiler = shutil.which(args.cxx)
     if not compiler:

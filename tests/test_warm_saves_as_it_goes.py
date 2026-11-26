@@ -3,7 +3,7 @@ warm_save_tick). No game or GPU.
 
 Why: on a cold driver cache a preparation is hours of compiles (AMD: nightly-622's, 80 minutes in with no
 longshot_vk_pipelines.bin written yet), and the cache was written once, after the last build. A preparation killed, crashed or
-stopped before its end (make_game's silence timeout, the player closing it) kept nothing, and the next one compiled it all again.
+stopped before its end (the builder's silence timeout, the player closing it) kept nothing, and the next one compiled it all again.
 
 How: the real warm_save_due() is cut out of vk_draw.cpp and run over a made-up clock: the first call only sets the next save,
 none is due before ten minutes, one at ten, the next ten minutes after that, and a tick that comes late saves once and counts

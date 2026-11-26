@@ -32,7 +32,7 @@ The game sends a value per side: a low and a high band, an amplitude and a frequ
 
 | Vibration row | Plays |
 |---|---|
-| Auto (default) | Through RenHDrum, every pad it plays: a DualSense's voice coils (on a cable its own sound card, over Bluetooth HID report `0x36`), an Xbox One or Series pad's four motors, a Switch Pro Controller's or Joy-Con pair's HD rumble, a Steam Controller (2026)'s grips (HID report `0x88`, experimental in RenHDrum). Without RenHDrum, or what it needs: a Switch pad (and a Joy-Con alone, always) its own HD rumble, every other pad its two motors (`rumble_map` in `nn_hid.c`) |
+| Auto (default) | Through RenHDrum, every pad it plays: a DualSense's voice coils (on a cable its own sound card, over Bluetooth HID report `0x36`), a Microsoft Xbox One or Series pad's four motors, an original Nintendo Switch Pro Controller's HD rumble, a Steam Controller (2026)'s grips (HID report `0x88`, experimental in RenHDrum). Switch pads outside the RenHDrum path use Longshot's HD rumble where SDL accepts the reports. Controllers whose driver refuses the reports use their motors (`rumble_map` in `nn_hid.c`) |
 | Basic | Every pad's motors |
 | Off | Nothing |
 
@@ -46,7 +46,7 @@ Vibration strength (`rumble_strength=`, 25 to 200 %) applies to every backend. R
 ([`host/rumble_renhdrum.c`](../../../host/rumble_renhdrum.c), source in
 [`third_party/renhdrum`](../../../third_party/renhdrum)) is loaded by full path from beside the game (`renhdrum.dll`,
 `renhdrum.so` on Linux); without it, every pad keeps its motors or its own HD rumble. `python -I scripts/renhdrum.py
-build` makes it; `nx2/build.py` copies it beside the game from `third_party/renhdrum/`.
+build` makes it; the build copies it beside the game from `third_party/renhdrum/`.
 
 ## Sticks
 
@@ -115,10 +115,10 @@ the switches, the controls and the file). It holds:
 - each motion read (`GetSixAxisSensorStates`): the gyroscope's readings the game is handed;
 - each player camera update (`hos_mouse_camera`, `host/mouse_native.c`): whether the native mouse camera was on, whether
   the camera was free, whether a stick turned it, and the mouse's turn in degrees;
-- the mouse in the game's menus (`host/oot_menu.c`, Windows): the focus changes and Items page choices it makes by
+- the mouse in the game's menus (`game/oot_menu.c`, Windows): the focus changes and Items page choices it makes by
   calling the game (its clicks and scrolls are the controller's). A replay hands a focus only to one of the screen's
   buttons then, and an item only when it is one of Key Items'; any other is counted as not met;
-- the Debug tools' actions where the game takes them (`oot_update_player_cheats`, `host/hos_main.c`): teleports, the age
+- the Debug tools' actions where the game takes them (`oot_update_player_cheats`, `game/oot_tools.c`): teleports, the age
   switch, items, Mark and Return, the hour, from the Insert menu, `HOS_INPUT_LIVE`'s `!cheat` or the control bridge;
 - the Debug tools' rows that change what the game does (heart protection, flight, the free camera, Link's speed, damage
   taken), at the start and at each change;
@@ -180,7 +180,7 @@ HOS_INPUT_PLAY=run.jsonl   HOS_REALTIME_STEP=0 HOS_FIXED_TIME=1767225600 ./longs
   actors and timers stay the replay's own: a corrected replay follows a route, it does not prove the run. The end gives
   the corrections' count, the largest and the mean.
 - **The host's own time-based choices.** A run that records or plays takes the OptimizeChangeBank hold
-  (`host/oot_ocb_hold.c`) and the texture heap's compaction gap (`host/oot_tex_compact.c`) by the game clock's time
+  (`game/oot_ocb_hold.c`) and the texture heap's compaction gap (`game/oot_tex_compact.c`) by the game clock's time
   instead of the wall's (`hos_input_movie_time`), so they land on the same frame of a replay as of its recording. One
   that records or plays from its start has no movie pacing (`host/nn_vi.c`).
 - **An exact replay** needs the same game: the 60 cap with Per frame (`HOS_REALTIME_STEP=0`), `HOS_FIXED_TIME`, the same
@@ -218,7 +218,7 @@ the game or copied for a recording.
 | `HOS_XINPUT=1` | Poll XInput as well as SDL |
 | `HOS_SWITCH2=0` | Leave a Switch 2 Pro Controller to a bridge program |
 | `HOS_INPUT_BACKGROUND` | Controllers count in the background (1) or never (0), over the menu |
-| `HOS_RUMBLE_BACKEND` | `renhdrum`: also a Joy-Con alone, and a DualSense whose connection SDL can't tell, through RenHDrum; `motors`: every pad's motors; `hd`: no RenHDrum (a Switch pad its own HD rumble) |
+| `HOS_RUMBLE_BACKEND` | `renhdrum`: also a DualSense whose connection SDL can't tell, through RenHDrum; `motors`: every pad's motors; `hd`: no RenHDrum (a Switch pad its own HD rumble) |
 | `HOS_MOUSE_NATIVE`, `HOS_MOUSE_SENS`, `HOS_MOUSE_INVERT_X`, `HOS_MOUSE_INVERT_Y` | Mouse camera settings over the menu |
 
 Scripted input for test runs (`HOS_INPUT_SCRIPT`, `HOS_INPUT_LIVE`) is in [developing](../developing.md#scripted-input). The full list is in

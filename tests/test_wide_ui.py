@@ -2,14 +2,14 @@
 https://github.com/NotRexed/Hookshot/pull/2843) moves a HUD layout's side panes out
 to a wider screen's edges, and only while the picture is not 16:9.
 
-nx2/oot_wide.py calls host/hos_wide_ui.c from f_8154cab0, where the game makes a pane's final transform: the parent it is
+The hook sites ui.* (game/oot_wide_sites.c) call game/hos_wide_ui.c from f_8154cab0, where the game makes a pane's final transform: the parent it is
 made from, then the transform stored (the translation at +0x4c). A pane at one side of the 3840-wide canvas whose ancestors
 were not moved has its x moved out by the screen's extra half width; its children keep the move they were made with; a
 pane spanning the canvas is drawn the screen's width instead; the HUD's gauges move by name, a pointer placed from the world
 stays, the minimap's icons move with it and the map page keeps its own. A menu's layout is not moved. A change of the shape
 marks every pane to remake its transform.
 
-python -I -B tests/test_wide_ui.py [--cc gcc]
+python -I -B tests/test_wide_ui.py [--cc clang] [--cargo cargo]
 """
 import argparse
 import os
@@ -19,13 +19,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
 ENV_ON_H = str(ROOT / "gpu" / "vk" / "compat" / "longshot_env.h")
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_wide  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
+from widesites import hook, site  # noqa: E402
+import sitehooks  # noqa: E402
 
 FIXTURE_HEAD = '#include "%s"\n' % (ROOT / "gpu/vk/vk_api.h").as_posix() + r'''#include <math.h>
 #include <stdint.h>
@@ -45,7 +46,32 @@ static void recomp_store32(Ctx *c, uint64_t a, uint32_t v) { (void)c; memcpy(mem
 static void recomp_store64(Ctx *c, uint64_t a, uint64_t v) { (void)c; memcpy(mem + (a - BASE), &v, 8); }
 typedef void (*A64Fn)(Ctx *);
 A64Fn a64_lookup(uint64_t addr);
+/* (host/game_call.h's calls as host/game_call.c makes them, over this context: x0.. the arguments, x8 and LR as given (LR
+   0 otherwise), the context put back; in_call while the callee runs) */
+typedef struct { int set_x8; uint64_t x8; int set_lr; uint64_t lr; float *s0, *s1; } GameCallMore;
+static int in_call;
+static int game_has(uint64_t fn) { return fn && a64_lookup(fn) != NULL; }
+static int game_call_more(Ctx *c, uint64_t fn, uint64_t sp, int nargs, const uint64_t *args, uint64_t *ret, const GameCallMore *more) {
+    const A64Fn f = fn ? a64_lookup(fn) : NULL;
+    if (!f || nargs < 0 || nargs > 8 || (nargs && !args)) return 0;
+    const Ctx saved = *c;
+    if (sp) c->x[31] = sp & ~0xfULL;
+    for (int i = 0; i < nargs; i++) c->x[i] = args[i];
+    if (more && more->set_x8) c->x[8] = more->x8;
+    c->x[30] = more && more->set_lr ? more->lr : 0;
+    in_call++, f(c), in_call--;
+    if (ret) *ret = c->x[0];
+    if (more && more->s0) memcpy(more->s0, &c->vreg[0][0], 4);
+    if (more && more->s1) memcpy(more->s1, &c->vreg[1][0], 4);
+    *c = saved;
+    return 1;
+}
+static int game_call(Ctx *c, uint64_t fn, uint64_t sp, int nargs, const uint64_t *args, uint64_t *ret) {
+    return game_call_more(c, fn, sp, nargs, args, ret, NULL);
+}
 static void hos_log(const char *f, ...) { (void)f; }
+#define HOS_LOG_TRACE 0
+static void hos_log_at(int level, const char *f, ...) { (void)level; (void)f; }
 static int64_t hos_now_ns(void) { return 0; }
 /* (the Insert menu's rows, host/rx_backend.c rx_option: the Graphics tab's HUD layout, 71, as fixture_hud_layout says) */
 int fixture_hud_layout, fixture_wide_menus;
@@ -74,6 +100,8 @@ static int pack_count, draw_count;
 static void fixture_pack(Ctx *ctx) {
     const int i = pack_count++;
     CHECK(i < 3);
+    CHECK(in_call && ctx->x[30] == 0);   /* (through game_call_more, LR 0) */
+    CHECK(ctx->x[1] == recomp_load64(ctx, ctx->x[23] + 0x18) && ctx->x[2] == recomp_load64(ctx, ctx->x[23] + 0x20));
     packed_width[i] = getf(ctx->x[0] + REC_SIZE);
     packed_x[i] = getf(ctx->x[0] + REC_MTX + 12);
     for (int k = 0; k < 4; k++) packed_uv[i][k] = getf(ctx->x[0] + REC_UV[0] + 4 * k);
@@ -81,6 +109,7 @@ static void fixture_pack(Ctx *ctx) {
 }
 static void fixture_draw(Ctx *ctx) {
     CHECK(draw_count < 2);
+    CHECK(in_call && ctx->x[30] == 0);   /* (through game_call, LR 0) */
     drawn_constants[draw_count++] = recomp_load64(ctx, ctx->x[0] + 0x48);
 }
 A64Fn a64_lookup(uint64_t addr) { return addr == SPLIT_PACK ? fixture_pack : addr == SPLIT_DRAW ? fixture_draw : NULL; }
@@ -407,23 +436,28 @@ def check(cond, what):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--cc", default="gcc")
+    p.add_argument("--cc", default="clang")
+    p.add_argument("--cargo")
     a = p.parse_args()
+    sitehooks.use(a.cc, a.cargo)
 
-    host = (ROOT / "host" / "hos_wide_ui.c").read_text(encoding="utf-8")
+    host = (ROOT / "game" / "hos_wide_ui.c").read_text(encoding="utf-8")
     backend = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")
 
     check("hos_wide_ui_tick();" in backend, "the host does not plan the HUD each present")
     check('getenv("HOS_WIDE_UI")' in host, "HOS_WIDE_UI no longer turns the HUD's moves off")
 
-    words = {off: word for off, word, _ in oot_wide.UI_SITES}
-    check(words == {0x152a730: 0xb9400008, 0x152caa0: 0xb9400008, 0x152cd98: 0xad4207e0, 0x152cdd4: 0xb9403008, 0x152ce64: 0xfc04c263,
-                    0x152ac40: 0x2d4b0400, 0x15306f4: 0xa940a7e8, 0x1530740: 0xaa0003f6, 0x1525ca0: 0x91004260},
+    # (the pane sites, at the instructions main's nx2/oot_wide.py UI_SITES put its C after: function + offset, main + 0x80020000)
+    at = {name: int(site(name).function[2:], 16) + site(name).offset for name in (
+        "ui.calcDirty", "ui.paneDirty", "ui.paneNoParent", "ui.paneParent", "ui.panePlaced", "ui.paneSize",
+        "ui.pictureConstants", "ui.pictureDraw", "ui.layoutBuilt")}
+    check(at == {"ui.calcDirty": 0x8154a730, "ui.paneDirty": 0x8154caa0, "ui.paneNoParent": 0x8154cd98,
+                 "ui.paneParent": 0x8154cdd4, "ui.panePlaced": 0x8154ce64, "ui.paneSize": 0x8154ac40,
+                 "ui.pictureConstants": 0x815506f4, "ui.pictureDraw": 0x81550740, "ui.layoutBuilt": 0x81545ca0},
           "the pane transform sites moved")
-    check(all(site in oot_wide.SITES for site in oot_wide.UI_SITES), "the pane sites are not installed")
-    api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
+    api = (ROOT / "game" / "options.h").read_text(encoding="utf-8")   # (the game's option ids)
     opt = re.search(r"HOS_OPT_WIDE_MENUS = (\d+), HOS_WIDE_MENUS_EXTENDED = (\d+)", api)
-    check(opt is not None, "vk_api.h no longer names the Ultrawide menus option")
+    check(opt is not None, "game/options.h no longer names the Ultrawide menus option")
     check(opt.groups() == ("102", "3"), "the Ultrawide menus option or its Extended value moved: update FIXTURE_HEAD")
     for name in ("hos_wide_ui_parent(uint64_t parent)", "hos_wide_ui_placed(Ctx *c, uint64_t pane)",
                  "hos_wide_ui_size(Ctx *c, uint64_t pane)"):
@@ -433,12 +467,14 @@ def main():
     for decl in ("extern volatile float hos_wide_ratio;\n",):
         check(decl in body, "the host file no longer declares " + decl.strip())
         body = body.replace(decl, "", 1)
-    src = FIXTURE_HEAD + body + FIXTURE_MAIN.replace("FORCE_SITE", oot_wide.UI_FORCE)
+    defs, line = hook("ui.paneDirty")   # (the force site, its callback from game/oot_wide_sites.c, as the lift lowers it)
+    src = FIXTURE_HEAD + body + "#define A64_NOESC\n" + defs + FIXTURE_MAIN.replace("FORCE_SITE", line)
     with tempfile.TemporaryDirectory(prefix="wide-ui-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / ("fixture.exe" if sys.platform == "win32" else "fixture")
         c.write_text(src, encoding="utf-8")
-        cc = subprocess.run([a.cc, "-std=c11", "-O1", "-include", ENV_ON_H, "-Wall", "-Wno-unused-function", "-o", str(exe), str(c), "-lm"],
+        cc = subprocess.run([a.cc, "-std=c11", "-O1", "-include", ENV_ON_H, "-Wall", "-Wno-unused-function", "-o", str(exe), str(c),
+                             *sitehooks.objects(tmp, src), "-lm"],
                             capture_output=True, text=True)
         check(cc.returncode == 0, "fixture did not compile:\n" + cc.stdout + cc.stderr)
         env = {k: v for k, v in os.environ.items() if k not in ("HOS_WIDE_UI", "HOS_WIDE_KEEP", "HOS_WIDE_UI_LOG",

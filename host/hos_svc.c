@@ -45,7 +45,7 @@ static uint64_t get_info(uint32_t id0, uint64_t id1, int *ok) {
     case 14: return HOS_SYSTEM_BASE;                       /* StackRegionAddress */
     case 15: return HOS_SYSTEM_END - HOS_SYSTEM_BASE;      /* StackRegionSize */
     case 16: case 17: return 0;                            /* SystemResourceSize total / used */
-    case 18: return hos_program_id;                        /* ProgramId (main.npdm's, gen/hos_image.c) */
+    case 18: return hos_program_id;                        /* ProgramId (main.npdm's, gen/image.c) */
     case 20: {   /* UserExceptionContextAddress: (longshot) OoT's nn::os::SetDyingMessageRegionPrivate writes its
                     dying-message region into it; a zeroed page, made once */
         static uint64_t ctx_page;

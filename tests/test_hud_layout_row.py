@@ -1,16 +1,16 @@
 """The Insert menu's HUD layout row: the HUD at the screen's edges, or in the middle 16:9 (#1133), game-free.
 
-On a screen that is not 16:9 the HUD's corners go to the screen's own edges (host/hos_wide_ui.c, #95). Until now only the
+On a screen that is not 16:9 the HUD's corners go to the screen's own edges (game/hos_wide_ui.c, #95). Until now only the
 switch HOS_WIDE_UI=0 kept the HUD in the middle 16:9 as the first versions had it, and no row of the menu moved it: an
 ultrawide player who wanted the hearts and the minimap near the middle found the Ultrawide menus row moving only the
 menus. The Graphics tab's HUD layout row chooses: Screen's edges (0, the default, as before) or Middle 16:9 (1, as
 HOS_WIDE_UI=0). It changes at once. HOS_WIDE_UI, when set, still decides, and the row says so.
 
-Checked: host/hos_wide_ui.c compiled whole (tests/test_wide_ui.py's stand-ins, tests/test_hud_layout.py's HUD) places the
+Checked: game/hos_wide_ui.c compiled whole (tests/test_wide_ui.py's stand-ins, tests/test_hud_layout.py's HUD) places the
 HUD's panes at 21:9 and at 4:3 with the row at Middle 16:9 as HOS_WIDE_UI=0 places them, and with the row at Screen's
 edges as before; HOS_WIDE_UI over the row either way; the row changed during play moves the HUD at once. And the wiring (the row fixed while
 HOS_WIDE_UI holds it):
-the row on the Graphics tab, saved as hud_layout, 0 by default; option 71 (HOS_OPT_HUD_LAYOUT, gpu/vk/vk_api.h) answers
+the row on the Graphics tab, saved as hud_layout, 0 by default; option 71 (HOS_OPT_HUD_LAYOUT, game/options.h) answers
 it; docs/user/graphics-and-controls.md (the settings table) and docs/dev/reference/switches.md (the options file) say what
 it does.
 
@@ -27,7 +27,6 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
 sys.path.insert(0, str(ROOT / "tests"))
 import test_hud_layout  # noqa: E402
 from test_wide_ui import FIXTURE_HEAD  # noqa: E402
@@ -80,7 +79,7 @@ def check(cond, what):
 
 
 def placing_checks(cc):
-    host = (ROOT / "host" / "hos_wide_ui.c").read_text(encoding="utf-8")
+    host = (ROOT / "game" / "hos_wide_ui.c").read_text(encoding="utf-8")
     body = "".join(line for line in host.splitlines(keepends=True) if not line.startswith("#include"))
     decl = "extern volatile float hos_wide_ratio;\n"
     check(decl in body, "the host file no longer declares " + decl.strip())
@@ -90,7 +89,7 @@ def placing_checks(cc):
         c.write_text(FIXTURE_HEAD + body + HELPERS + MAIN, encoding="utf-8")
         built = subprocess.run([cc, "-std=c11", "-O1", "-include", test_hud_layout.ENV_ON_H, "-Wall", "-Wno-unused-function", "-o", str(exe), str(c), "-lm"],
                                capture_output=True, text=True)
-        check(built.returncode == 0, "host/hos_wide_ui.c did not compile with the stand-ins:\n" + built.stdout + built.stderr)
+        check(built.returncode == 0, "game/hos_wide_ui.c did not compile with the stand-ins:\n" + built.stdout + built.stderr)
 
         def run(ratio, row, then=-1, env=None):
             e = {k: v for k, v in os.environ.items() if k != "HOS_WIDE_UI"}
@@ -124,23 +123,23 @@ def placing_checks(cc):
 
 def wiring_checks():
     failed = []
-    api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
+    api = (ROOT / "game" / "options.h").read_text(encoding="utf-8")   # (the game's option ids)
     from menu_model_fixture import menu_text
     menu = menu_text(ROOT)   # (vk_menu.cpp and its modules' rows: the row is gpu/vk/menu/widescreen.cpp's)
     menu_h = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
-    host = (ROOT / "host" / "hos_wide_ui.c").read_text(encoding="utf-8")
+    host = (ROOT / "game" / "hos_wide_ui.c").read_text(encoding="utf-8")
     settings = (ROOT / "docs" / "user" / "graphics-and-controls.md").read_text(encoding="utf-8")
     dev = (ROOT / "docs" / "dev" / "reference" / "switches.md").read_text(encoding="utf-8")
     for ok, what in (
-            (re.search(r"HOS_OPT_HUD_LAYOUT = 71\b", api), "gpu/vk/vk_api.h names option 71 HOS_OPT_HUD_LAYOUT"),
+            (re.search(r"HOS_OPT_HUD_LAYOUT = 71\b", api), "game/options.h names option 71 HOS_OPT_HUD_LAYOUT"),
             (re.search(r'\{TAB_GRAPHICS, "HUD layout", &opts\.hud_layout, 0, 2, 1,', menu),
              "the Graphics tab has the HUD layout row, 0 to 2"),
             (re.search(r"int hud_layout = 0;", menu_h), "opts.hud_layout is 0 (Screen's edges) by default"),
             (re.search(r'value == &opts\.hud_layout && getenv\("HOS_WIDE_UI"\)', menu[menu.index("bool row_fixed("):]),
              "the row is fixed while HOS_WIDE_UI holds it (row_fixed), as rows other switches hold"),
             (re.search(r"if \(id >= HOS_OPT_HUD_LAYOUT && id <= HOS_OPT_HUD_MINIMAP\) return menu_hud_option\(id\);", replay), "option 71 answers the row"),
-            (re.search(r"rx_option\(HOS_OPT_HUD_LAYOUT, 0\)", host), "host/hos_wide_ui.c asks the row (rx_option 71)"),
+            (re.search(r"rx_option\(HOS_OPT_HUD_LAYOUT, 0\)", host), "game/hos_wide_ui.c asks the row (rx_option 71)"),
             ("| HUD layout |" in settings, "the settings page's table has the row"),
             ("HUD layout" in dev and "hud_layout" in dev, "docs/dev/reference/switches.md's options file has hud_layout"),
             ("keeps the HUD and movies in the middle 16:9" not in settings,

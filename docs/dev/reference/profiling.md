@@ -23,6 +23,7 @@ numbers.
 | Is switch A faster than switch B, within the noise? | [An A/B within one run](../developing.md#an-ab-within-one-run) (`HOS_AB`) |
 | Where CPU time goes by category, for a publishable report | [CPU profile](#cpu-profile) |
 | How does Longshot run on players' PCs? | [Performance statistics](#performance-statistics) |
+| How often each of the game's functions, blocks and branches runs, for the lifter to optimise by | The guest profile: an instrumented build and `HOS_GUEST_PROFILE` ([the build](build.md#the-guest-profile)) |
 
 Every profiling tool costs frame rate. Use them to find what to optimise, then measure the change without them.
 
@@ -144,7 +145,7 @@ it compiles no Tracy code: the macros in [`host/hos_tracy.h`](../../../host/hos_
 
 The client listens on 127.0.0.1 only, announces nothing, sends no machine code, and records only while a viewer or
 `tracy-capture` is connected (`TRACY_ONLY_LOCALHOST`, `TRACY_NO_BROADCAST`, `TRACY_NO_CODE_TRANSFER`,
-`TRACY_ON_DEMAND`; set in [`nx2/build.py`](../../../nx2/build.py)).
+`TRACY_ON_DEMAND`; set by the compile, `builder/crates/build-compile/src/plan.rs`).
 
 ### Build and capture
 
@@ -152,9 +153,9 @@ How to build a Tracy game and capture a run: [developing](../developing.md#tracy
 
 On Linux, Tracy's sampler runs at 10 kHz; `TRACY_SAMPLING_HZ=<n>` sets the rate, `TRACY_NO_SAMPLING=1` turns it off.
 
-On Windows, `longshot_vk.dll` links against the executable's import library (`longshot_tracy.lib` in the work folder),
-and the renderer's zones reach the capture through it. Tracy's client asks for its system libraries by
-`#pragma comment(lib, ...)` lines under `_MSC_VER`, which llvm-mingw's clang doesn't define, so `nx2/build.py` links
+On Windows, `longshot_vk.dll` links against the executable's import library (`longshot_tracy.lib` in the work folder's
+`build/`), and the renderer's zones reach the capture through it. Tracy's client asks for its system libraries by
+`#pragma comment(lib, ...)` lines under `_MSC_VER`, which llvm-mingw's clang doesn't define, so the game's link adds
 `ws2_32` and `secur32` itself ([`tests/test_tracy_win_libs.py`](../../../tests/test_tracy_win_libs.py) checks every
 library those lines ask for is linked). Sampling and context switches on Windows go through Event Tracing for Windows,
 which Tracy's manual says needs an administrator: untried; run as a user with `TRACY_NO_SAMPLING=1`.
@@ -182,31 +183,16 @@ Plots: `frame ms (renderer)`, and with `RX_VK_FRAME_TRACE=1` six of the frame tr
 
 ### The game's own functions
 
-Linux builds only. Lifted functions get zones (blue) from a list: [`nx2/tracy_funcs.txt`](../../../nx2/tracy_funcs.txt) (the job loops and
-the main thread's frame phases), plus `LONGSHOT_TRACY_FUNCS=<file>` of your own at build time. Format, one a line:
-
-```
-<guest address> [calls] [zone name]
-```
-
-- A listed function is a zone each time it runs; its text is the object it ran on and the caller.
-- `calls` also makes each indirect call it makes a zone (`game call`), for dispatch points such as job loops. Its chunk
-  is recompiled.
-- Objects are named by RTTI class name where there is one, else a short string the object points at, else its vtable.
-
-A list of your own is made from the game: keep it outside the checkout. `HOS_TRACY_GAME=0` leaves the game zones out of
-a capture (`funcs` or `calls` keeps one kind). A zone left open by `longjmp`, or a function inlined into a caller in its
-own chunk, gets no clean zone. [`nx2/tracy_funcs.py`](../../../nx2/tracy_funcs.py) builds the wrappers.
-
-If a capture stops with "Invalid order of zone begin and end events", look in the log for `tracy: a game zone ... ended
-out of turn` or `tracy: a fiber switch ... with N game call zones open`; for the second, build with
-`LONGSHOT_TRACY_FIBERS=1` (fibers as Tracy fibers; much slower, so off by default).
+The lifted game code has no zones of its own: the old builder's lift wrapped listed functions in zones
+(`tracy_funcs.txt`, `HOS_TRACY_GAME`), and the Rust lifter writes none yet. A capture shows the host's and the
+renderer's zones, and the game's time between them. If a capture stops with "Invalid order of zone begin and end
+events" around a fiber switch, build with `LONGSHOT_TRACY_FIBERS=1` (fibers as Tracy fibers; much slower, so off by
+default).
 
 ### Adding a zone
 
 Include `host/hos_tracy.h` (C or C++); its top lists the macros. Put `HT_SCOPE("name");` at the start of a block, inside
-`#ifdef TRACY_ENABLE` ... `#endif`, so builds without Tracy and the source-cutting checks never see it
-([`tests/test_tracy_funcs.py`](../../../tests/test_tracy_funcs.py)). Use `HT_SCOPE_DRAW` for anything per draw, and keep
+`#ifdef TRACY_ENABLE` ... `#endif`, so builds without Tracy and the source-cutting checks never see it. Use `HT_SCOPE_DRAW` for anything per draw, and keep
 zones off loops that run more than a few thousand times a frame.
 
 ### Cost
@@ -246,17 +232,17 @@ user name, saves, logs, game files or IDs are sent.
 
 | Part | Where |
 |---|---|
-| Counting, summaries, sending (system curl, off the render thread) | [`gpu/vk/perf_report.cpp`](../../../gpu/vk/perf_report.cpp), [`perf_curl.cpp`](../../../gpu/vk/perf_curl.cpp) |
+| Counting, summaries, the game's own sending (system curl, off the render thread) | [`gpu/vk/perf_report.cpp`](../../../gpu/vk/perf_report.cpp), [`perf_curl.cpp`](../../../gpu/vk/perf_curl.cpp) |
 | The tick | `send=1` in the game folder's `longshot_perf.ini` (`keep_sent=0` keeps no copies), written by the launcher |
-| Waiting and sent summaries | `perf_pending/` (48 at most), `perf_sent/` (each summary the relay took, as sent; the game keeps them all, `nx2/perf_report.py` keeps the last 48) |
-| Relay address | `perf_reports=` in `longshot_version.txt`, stamped from [`nx2/addresses.ini`](../../../nx2/addresses.ini) |
+| Waiting and sent summaries | `perf_pending/` (48 at most): the game writes each there and sends it as it plays; what it could not send waits there for the launcher's sender. `perf_sent/`: a copy of each the relay took, exactly as sent, unless `keep_sent=0` (the game keeps all of its own, the launcher's sender trims the folder to the last 48) |
+| Relay address | The game sends to `perf_reports=` in `longshot_version.txt`, which the build's finish stamps from [`assets/addresses.ini`](../../../assets/addresses.ini) (packaged tools only: a `VERSION` or `version.txt` at the tools' root). The launcher's sender sends to its own tree's `assets/addresses.ini` (a release's tree only), never to what the game folder names |
 | Map, movies and Link's pose | the host's `hos_perf_info` (`MkwVkHost::perf_info`) |
-| Local stand-in sender, for checks and testing | see [Tools](#tools) |
+| The launcher's sender | `longshot-builder perf-report <game folder> --send` ([build-driver's `perf.rs`](../../../builder/crates/build-driver/src/perf.rs)), started by the launcher in a process of its own; its answer is the [`perf_report` event](build-events.md#the-events). It sends each summary as the game wrote it (only `version` and `release` filled in), and drops unsent a file there that is not one ([its schema](../../../builder/crates/build-driver/src/perf/schema.rs), the game's keys and the histograms' bucket counts) |
 
 A summary goes every `RX_VK_PERF_INTERVAL` seconds of play (default 300, 60 to 840) and at exit, holds at most 16 maps,
 and stays under 60 KiB (`perf_report::kMaxBody`; samples are thinned to fit). The log says `vk: performance statistics
 on (...)` at the first frame. `RX_VK_PERF_TEST_CURL=<path>` (test builds only) replaces curl in the checks.
-The stand-in sender reads its own switches: `LONGSHOT_PERF_URL`, `LONGSHOT_PERF_TIMEOUT`, `LONGSHOT_PERF_MAX_SENDS`
+The launcher's sender reads its own switches: `LONGSHOT_PERF_URL`, `LONGSHOT_PERF_TIMEOUT`, `LONGSHOT_PERF_MAX_SENDS`
 (at most 5 a start by default: the ingest route takes 6 a minute with a burst of 6 per address — the two numbers live together, if you
 raise one, raise the other; one sender at a time, holding `perf_pending/.sending`, a lease it renews while it sends),
 `LONGSHOT_PERF_BACKOFF`, `LONGSHOT_PERF_KEEP_SENT`.
@@ -273,9 +259,8 @@ or `RX_MAPS=<folder>` (the game folder on Linux, a folder of `.map` files on Win
 | `scripts/perf.py stacks` | an `HOS_SAMPLE_FILE` file (one thread) | Which functions is this thread in, inclusive and self? |
 | `scripts/perf.py threads` | a sample file | Each thread's running share; when no game thread runs, what everyone waits in; when the main thread is blocked, what runs |
 | `scripts/perf.py renderer` | a sample file | What do the renderer's threads (`mkw_vk*`) run? |
-| `scripts/perf.py hotlist` | a sample file | Which lifted functions are hottest? Writes the list for the lift's `A64_HOT_FUNCS` |
 | `scripts/perf.py chain` | an `HOS_CHAIN` file (+ a sample file of the same run) | The frame's critical path: which thread ran, waited or slept on it, and the hand-offs |
 | `scripts/perf.py cpu` | sampled run folders + Windows maps | CPU time by category, thread and function, publishable (lifted code as one row) |
 | `scripts/perf.py ab` | frame traces of `HOS_AB` runs | Is side 1 faster than side 0, with a confidence interval? |
-| `nx2/perf_report.py` | a game folder | What would the performance statistics send (`--send` sends it, `--tick on\|off` sets the tick, with `--keep-sent on\|off`)? |
+| `longshot-builder perf-report` | a game folder | What would the performance statistics send (`--send` sends it, `--tick on\|off` sets the tick, with `--keep-sent on\|off`)? |
 | `mise run tracy-tools` | | Builds `tracy-capture` and `tracy-csvexport` 0.15.0 |

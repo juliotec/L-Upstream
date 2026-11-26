@@ -26,7 +26,9 @@ STOPS = {"microphone_gain", "pad_speaker_volume", "pad_speaker_sync", "pad_speak
          "hud_minimap_x", "hud_minimap_y", "hud_minimap_scale",
          "sim_turf_fade_start", "sim_turf_density", "sim_turf_minimum_blades", "sim_turf_far_power",
          "sim_turf_fade_start_multiplier", "sim_turf_density_multiplier", "sim_turf_minimum_blades_multiplier",
-         "sim_turf_far_power_multiplier"}
+         "sim_turf_far_power_multiplier",
+         "dlss5_resolution", "dlss5_detail", "dlss5_colour", "dlss5_intensity", "dlss5_local_structure", "dlss5_local_tone",
+         "dlss5_skin", "dlss5_highlight"}
 WRAPS = {"sharpness"}
 
 

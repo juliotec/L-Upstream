@@ -1,0 +1,12 @@
+[package]
+name = "a64"
+description = "AArch64 decoder: an instruction word to a typed instruction, for the lifter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

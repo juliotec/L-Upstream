@@ -3,7 +3,7 @@
 // temporal inputs by changing this file alone.
 //
 // What comes from the frame chain DLSS and FSR 4 share (vk_temporal.cpp) and what does not yet:
-//  - the camera jitter: the chain's, the one jitter in the game (nx2/oot_jitter.py, host/rx_backend.c hos_dlss_jitter_clip),
+//  - the camera jitter: the chain's, the one jitter in the game (the hook sites jitter.view*, host/rx_backend.c hos_dlss_jitter_clip),
 //    switched on for FSR by jitter_size() as vk_temporal.cpp's temporal_jitter_size switches it on for DLSS and FSR 4, and
 //    read back here from the camera's uniform buffer as vk_temporal.cpp reads it;
 //  - the camera: the same uniform buffer and the same checks as vk_temporal.cpp's temporal_note_scene_draw; the near plane and the

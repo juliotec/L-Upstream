@@ -1,19 +1,18 @@
-"""The Discord status's pieces of heart in all (host/oot_heart_containers.c): 4 * (hearts - 3 - boss containers taken) +
+"""The Discord status's pieces of heart in all (game/oot_heart_containers.c): 4 * (hearts - 3 - boss containers taken) +
 pieces held, the containers' ids read from the map files.
 
-No game file: the SARC (Pack/ZsDic.pack.zs's dictionaries) and the BYML map files (an Actors list of dictionaries with
-Gyaml and Hash) are made here, in both byte orders, with made-up names and ids. The readers find the named file and the
-named actors' 64-bit (and 32-bit) ids, skip the others, keep to cap, and refuse what is not one of them; each file cut at
-every length is refused or read without reading past its end (the harness is built with -fsanitize=address where the
-compiler has it). A SARC whose string table passes 256 KiB is read too: the name's offset in an SFAT node is 24 bits,
-and its bits 16 to 23 are the ones a 16-bit mask loses. The total adds up, and is -1 (not shown) when a part is not known
-or the parts do not add up.
-host/hos_main.c, host/discord_rpc.c, host/oot_state_tap.c and nx2/build.py are checked in their source for using them.
+No game file: the BYML map files (an Actors list of dictionaries with Gyaml and Hash) are made here, in both byte
+orders, with made-up names and ids. The reader finds the named actors' 64-bit (and 32-bit) ids, skips the others, keeps
+to cap, and refuses what is not a map; each file cut at every length is refused or read without reading past its end
+(the harness is built with -fsanitize=address where the compiler has it). The total adds up, and is -1 (not shown) when
+a part is not known or the parts do not add up. The map files are read through host/zs.c, whose dictionaries they need.
+game/oot_tools.c, game/discord_rpc.c, game/flags.c and game/oot_heart_containers.c are checked in their source for using them.
 
     python -I -B tests/test_heart_containers.py [--cc gcc]
 """
 import argparse
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -23,6 +22,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / "host"
+GAME = ROOT / "game"
 
 
 def u24(v, be):
@@ -83,39 +83,6 @@ def byml(root_actors, be, extra_root_key=None):
     return bytes(out)
 
 
-def sarc(files, be):
-    """A SARC of {name: bytes}"""
-    e = ">" if be else "<"
-    names = b""
-    name_off = {}
-    for n in files:
-        name_off[n] = len(names)
-        names += pad4(n.encode() + b"\0")
-    sfat = b"SFAT" + struct.pack(e + "HHI", 12, len(files), 0x65)
-    data, nodes = b"", b""
-    for n, body in files.items():
-        start = len(data)
-        data += pad4(body)
-        nodes += struct.pack(e + "IIII", 0, 0x01000000 | (name_off[n] // 4), start, start + len(body))
-    sfnt = b"SFNT" + struct.pack(e + "HH", 8, 0) + names
-    data_at = 0x14 + len(sfat) + len(nodes) + len(sfnt)
-    data_at += -data_at % 8
-    head = b"SARC" + struct.pack(e + "H", 0x14) + (b"\xfe\xff" if be else b"\xff\xfe")
-    head += struct.pack(e + "IIHH", data_at + len(data), data_at, 0x100, 0)
-    out = head + sfat + nodes + sfnt
-    return out + b"\0" * (data_at - len(out)) + data
-
-
-def deep_sarc(be):
-    """A SARC whose wanted names sit past 256 KiB of string table, where the name offset needs its bits 16 to 23"""
-    files = {}
-    for i in range(1024):   # (each filler name is 255 bytes and a terminator: 1024 * 256 = 256 KiB, word 0x10000)
-        files["f%04d" % i + "y" * 250] = b"filler"
-    files["zs.zsdic"] = b"the-zs-d"
-    files["bcett.byml.zsdic"] = b"the-bcett-d"
-    return sarc(files, be)
-
-
 def c_array(name, data):
     return "static const unsigned char %s[%d] = {%s};\n" % (name, max(len(data), 1), ",".join(str(b) for b in data) or "0")
 
@@ -151,31 +118,10 @@ int main(void) {
             CHECK(r >= -1 && r <= 2);
             free(p);
         }
-        const unsigned char *s = be ? PACK_BE : PACK_LE;
-        const size_t sn = be ? sizeof PACK_BE : sizeof PACK_LE;
-        size_t a = 0, b = 0;
-        p = copy(s, sn);
-        CHECK(heart_sarc_find(p, sn, "bcett.byml.zsdic", &a, &b) && b - a == 11 && !memcmp(p + a, "the-bcett-d", 11));
-        CHECK(heart_sarc_find(p, sn, "zs.zsdic", &a, &b) && b - a == 8 && !memcmp(p + a, "the-zs-d", 8));
-        CHECK(!heart_sarc_find(p, sn, "bcett.byml", &a, &b) && !heart_sarc_find(p, sn, "pack.zsdic", &a, &b));
-        free(p);
-        for (size_t k = 0; k < sn; k++) {
-            p = copy(s, k);
-            if (heart_sarc_find(p, k, "bcett.byml.zsdic", &a, &b)) CHECK(b <= k && a <= b);
-            free(p);
-        }
-        const unsigned char *q = be ? PACK_DEEP_BE : PACK_DEEP_LE;
-        const size_t qn = be ? sizeof PACK_DEEP_BE : sizeof PACK_DEEP_LE;
-        p = copy(q, qn);
-        CHECK(heart_sarc_find(p, qn, "bcett.byml.zsdic", &a, &b) && b - a == 11 && !memcmp(p + a, "the-bcett-d", 11));
-        CHECK(heart_sarc_find(p, qn, "zs.zsdic", &a, &b) && b - a == 8 && !memcmp(p + a, "the-zs-d", 8));
-        free(p);
     }
     unsigned long long ids[2];
     CHECK(heart_byml_actor_ids((const unsigned char *)"not a map file", 14, "Obj_Heart_Container", (uint64_t *)ids, 2) == -1);
     CHECK(heart_byml_actor_ids(NO_ACTORS, sizeof NO_ACTORS, "Obj_Heart_Container", (uint64_t *)ids, 2) == -1);
-    size_t a, b;
-    CHECK(!heart_sarc_find((const unsigned char *)"SARC but no more of it", 22, "zs.zsdic", &a, &b));
     /* (the total: 3 hearts to start, a container each, four pieces a heart) */
     CHECK(heart_pieces_total(36, 5, 1) == 5);    /* (the Water Temple save: 9 hearts, five containers, 1 held) */
     CHECK(heart_pieces_total(12, 0, 0) == 0);    /* (a new game) */
@@ -195,18 +141,20 @@ int main(void) {
 
 
 def check_source():
-    main = (HOST / "hos_main.c").read_text(encoding="utf-8")
-    if "heart_pieces_total(stats[1], hos_oot_heart_containers_taken(), oot_pouch_count(c, \"Obj_Heart_Piece\"))" not in main:
-        raise SystemExit("host/hos_main.c: the pieces of heart are not the total (heart_pieces_total) any more")
-    rpc = (HOST / "discord_rpc.c").read_text(encoding="utf-8")
+    tools = (GAME / "oot_tools.c").read_text(encoding="utf-8")
+    if "heart_pieces_total(stats[1], hos_oot_heart_containers_taken(), oot_pouch_count(c, \"Obj_Heart_Piece\"))" not in tools:
+        raise SystemExit("game/oot_tools.c: the pieces of heart are not the total (heart_pieces_total) any more")
+    rpc = (GAME / "discord_rpc.c").read_text(encoding="utf-8")
     if "hos_oot_heart_containers_load();" not in rpc:
-        raise SystemExit("host/discord_rpc.c: the boss containers' ids are not loaded on the Discord status's thread")
-    tap = (HOST / "oot_state_tap.c").read_text(encoding="utf-8")
-    if "int hos_oot_gamedata_bool64(uint64_t id, int *at)" not in tap or "#define STATE_BOOL64 0xc58u" not in tap:
-        raise SystemExit("host/oot_state_tap.c: the Bool64bitKey flag reader is gone")
-    build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-    if '"oot_heart_containers.c")' not in build:
-        raise SystemExit("nx2/build.py: host/oot_heart_containers.c is not in ZSTD_HOST (it needs zstd.h)")
+        raise SystemExit("game/discord_rpc.c: the boss containers' ids are not loaded on the Discord status's thread")
+    flags = (GAME / "flags.c").read_text(encoding="utf-8")
+    if "int game_flag_bool64(uint64_t mgr, uint64_t id, int *at)" not in flags or "#define FLAG_BOOL64 0xc58u" not in flags:
+        raise SystemExit("game/flags.c: the Bool64bitKey flag reader is gone")
+    containers = (GAME / "oot_heart_containers.c").read_text(encoding="utf-8")
+    if "game_flag_bool64(game_flags_mgr(), heart_ids[i], &at[i])" not in containers:
+        raise SystemExit("game/oot_heart_containers.c: the containers taken are not read through the flags service")
+    if "hos_zs_read_romfs_named(path, &map_n, 1u << 30, \"bcett.byml.zsdic\")" not in containers:
+        raise SystemExit("game/oot_heart_containers.c: the map files are not read through host/zs.c (its dictionaries)")
 
 
 def main():
@@ -220,8 +168,6 @@ def main():
     for be in (0, 1):
         tag = "BE" if be else "LE"
         data += c_array("MAP_" + tag, byml(actors, be, extra_root_key="Version"))
-        data += c_array("PACK_" + tag, sarc({"zs.zsdic": b"the-zs-d", "bcett.byml.zsdic": b"the-bcett-d"}, be))
-        data += c_array("PACK_DEEP_" + tag, deep_sarc(be))
     no_actors = bytearray(byml(actors, 0))
     root = struct.unpack_from("<I", no_actors, 12)[0]
     no_actors[root] = 0xc0   # (the root no longer a dictionary)
@@ -230,10 +176,13 @@ def main():
         root_dir = Path(tmp).resolve()
         src, exe = root_dir / "heart_test.c", root_dir / "heart_test"
         src.write_text(data + HARNESS, encoding="utf-8")
+        # (host/game_host.h's part the readers use, the RomFS's: the whole of it needs the lift's runtime)
+        (root_dir / "game_host.h").write_text('#include "romfs.h"\n', encoding="utf-8")
         windows = os.name == "nt"
         extra = {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS} if windows else {}
-        base = [a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-DHEART_CONTAINERS_NO_GAME", "-I", str(HOST), str(src),
-                str(HOST / "oot_heart_containers.c"), "-o", str(exe)]
+        base = [a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-DHEART_CONTAINERS_NO_GAME", "-I", str(root_dir),
+                "-I", str(HOST), "-I", str(GAME),
+                str(src), str(GAME / "oot_heart_containers.c"), "-o", str(exe)]
         build = subprocess.run(base[:1] + ["-fsanitize=address", "-g"] + base[1:], capture_output=True, **extra)
         if build.returncode:   # (no sanitizer on this compiler: the plain build)
             build = subprocess.run(base, **extra)
@@ -244,7 +193,7 @@ def main():
         if run.returncode or run.stdout.strip() != "ok":
             raise SystemExit("the heart containers check failed")
     print("PASS: the pieces of heart in all add up from the hearts, the boss containers taken and the pieces held; the "
-          "containers' ids are read from a SARC's dictionary and BYML map files of either byte order, cut short or not")
+          "containers' ids are read from BYML map files of either byte order, cut short or not")
 
 
 if __name__ == "__main__":

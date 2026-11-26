@@ -37,7 +37,7 @@ A switch is an environment variable the game reads ([how switches work](referenc
   don't reformat unrelated code in the same change.
 - **One topic per change.** A fix doesn't carry a refactor; two unrelated fixes are two pull requests. Find the cause
   (a log, a trace, a measurement) before the fix.
-- **Game-specific code goes in new files** where possible. `nx2/`, `host/` and `gpu/` stay close to mkw-recomp so
+- **Game-specific code goes in new files** where possible. `host/` and `gpu/` stay close to mkw-recomp so
   upstream fixes apply as a patch; each sync names its mkw-recomp base commit in the commit message. Treat local
   mkw-recomp and Eglantine checkouts as read-only references.
 - **The GPU replay's rules** in [architecture](reference/architecture.md#rules-from-mkw) are not suggestions: nothing
@@ -45,11 +45,13 @@ A switch is an environment variable the game reads ([how switches work](referenc
   stay in submission order.
 - **Two platforms.** Windows builds with llvm-mingw, Linux with clang/gcc. Keep host code portable, and paths UTF-8
   (no `CP_ACP`).
-- **Python runs with `-I`.** Tests use the standard library only. The pipeline's dependencies (lz4, numpy, capstone,
-  unicorn, zstandard) are the exception, not a reason to add more; so are the button prompts' (fontTools, Pillow,
-  astc-encoder-py, texture2ddecoder: `nx2/prompt_requirements.txt`), for the button prompts (`nx2/prompt_assets.py`,
-  `nx2/prompt_draw.py`) and Pillow for the game's icon (`nx2/make_icon.py`, `nx2/game_title.py`), at build time. Line
-  endings are LF (`.gitattributes`; `*.bat` files are CRLF).
+- **The builder is Rust, with few dependencies.** The workspace in `builder/` denies `unsafe` (allowed only in
+  `build-core/src/sys.rs`'s Windows module and `game-files/src/disk.rs`'s system calls) and asks for docs on every
+  public item; clippy runs with warnings as errors, and rustfmt checks the layout (`tests/test_lifter.py`). A new crate
+  is named in its pull request and pinned in `Cargo.lock`. No player's build runs Python.
+- **Python runs with `-I`.** It is for the development tools and the checks. Tests use the standard library only; a
+  check that needs a package (unicorn, numpy) declares it. Line endings are LF (`.gitattributes`; `*.bat` files are
+  CRLF).
 - **`third_party/` is not modified.** Its parts are upstream copies with their notices in `PROVENANCE.md`. A fix goes
   outside them, in a new folder with its own provenance note. For a deliberate refresh from upstream, say so in the
   part's note and run `python -I scripts/check_third_party.py --update <part>` in the same commit.
@@ -68,12 +70,11 @@ A switch is an environment variable the game reads ([how switches work](referenc
 | **Generated files are generated.** The SPIR-V headers in `gpu/vk/shaders/` and `gpu/vk/host_shaders/` (`*_spv.h`) are compiled from the shader beside them, never edited: the CRT, FSR 3 and host headers with `python -I -B scripts/shaders.py crt\|fsr3\|host`, the others (`clear_*`, `dlss_*`, `fg_*` ...) with the glslang command in their test | `tests/test_crt_shaders.py`, `test_fsr3_shaders.py`, `test_host_shaders.py`, and each other shader's test (`tests/test_dlss_actor.py` ...) |
 | **`third_party/` matches** the `tree-sha256` in each part's `PROVENANCE.md` | `python -I scripts/check_third_party.py` |
 | **Paths are UTF-8** (no `CP_ACP`) | `tests/test_utf8_paths.py` |
-| A variable the lift reads is in its key, or listed as not changing its output | `tests/test_lift_cache.py` |
+| **A cache key holds exactly what changes its output**, and no path, builder version or build-wide option: a lifted unit's, an object's, an asset's ([the builder](reference/builder.md#the-lifts-cache)) | the crates' own tests (`cargo test -p lift`, `-p build-compile`, `-p build-assets`) |
 | A switch the shader translator reads is in the program cache's stamp | `tests/test_program_stamp_knobs.py` |
 | A new Graphics, Audio, Gameplay, Controls or NFC row has its line in the settings table (`docs/user/graphics-and-controls.md`), in the menu's order | `tests/test_settings_table.py` |
 | Log lines carry the right level tag | `tests/test_log_levels.py` |
 | **Thread-local state links under COFF ThinLTO.** An inline `thread_local` at namespace scope is `constinit` (no dynamic initializer); the recorder's `Arena`, which has one, is reached only through `rec::t_arena()` (`gpu/vk/vk_recorder.h`) | `tests/test_thinlto_tls.py` |
-| A build entry script handles long Windows paths (`long_paths.install()`, `ENTRY_SCRIPTS`) | `tests/test_build_long_paths.py` |
 
 ## Fixes and checks
 
@@ -94,7 +95,7 @@ A switch is an environment variable the game reads ([how switches work](referenc
   | The change touches | Measure |
   |---|---|
   | what the game does each frame | fps (average, 1% low) and frame time in the heavy areas and the target area |
-  | the build (lifter, translator, compiler flags, shader or pack steps) | the game's build time and size, from a clean build |
+  | the build (lifter, compiler flags, units, caches, shader or pack steps) | the game's build time and size, from a clean build and after a one-function change |
   | loading, caches or startup | load or first-run time and cache size, cold and warm |
   | memory, images or buffers | RAM and VRAM |
   | the launcher, a tool or a script | that program's own time, size or output |
@@ -124,7 +125,7 @@ else).
 | `perf` | faster, or less memory | patch |
 | `refactor` | no effect on behaviour | patch |
 | `docs`, `test` | documentation, tests only | patch |
-| `ci`, `build` | the workflows; the build scripts, AppImage, Builder package | patch |
+| `ci`, `build` | the workflows; the build scripts, the release's `longshot-builder` and its pack | patch |
 | `chore` | anything else | patch |
 | `revert` | undoing an earlier change, the reverted PR in the body | patch |
 
@@ -135,7 +136,7 @@ and `chore` are left out of the release notes ([releases](reference/releases.md#
 
 **A change the game runs is tested in the game on your own PC before its pull request opens**, where it matters (its
 area, your GPU, driver and OS): `forge.py pr create --tested-in-game "where it ran and what you saw"`, posted as the
-first comment. `pr create` refuses a branch that touches `gpu/`, `host/`, `nx2/`, `assets/` or `third_party/` without it
+first comment. `pr create` refuses a branch that touches `gpu/`, `host/`, `builder/`, `assets/` or `third_party/` without it
 (`GAME_PATHS` in `scripts/check_pr_description.py`); `--force` skips that. A change the game doesn't run (docs, tests, a
 script) runs the way it is used.
 

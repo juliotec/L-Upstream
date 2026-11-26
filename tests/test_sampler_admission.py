@@ -5,7 +5,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402
 
@@ -13,6 +12,7 @@ from srccut import block   # noqa: E402
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+RUN_ALL_ALONE = True   # (it measures time or CPU, or races threads: beside other checks on a loaded runner it failed or timed out)
 
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -47,6 +47,7 @@ _Static_assert(sizeof(HosMotionState) == sizeof(((MovieMotion *)0)->v), "a motio
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
+#include "../game/game.h"   /* (the game's hooks this file calls) */
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
 /* (a script's or the control bridge's SPRINT, host/control.c: Sprint's key held, for test runs; npad_states takes it out
@@ -154,7 +155,7 @@ static void mouse_look_tick(void) {
     if (fabs(look_x) < 1e-6 && fabs(look_y) < 1e-6) look_x = look_y = 0;
 }
 
-/* (host/oot_menu.c) A drag of the free mouse in the game's own menus (the map, the tapestry): panned as
+/* (game/oot_menu.c) A drag of the free mouse in the game's own menus (the map, the tapestry): panned as
    the camera's mouse is (mouse_look_move, mouse_look_tick: the same sensitivity, least deflection and decay), on the
    left stick (right = 0: the map's and the tapestry's pan) or the right (1: Key Items' stones turned). The pixels it
    moved (y up) come from the game's thread; the read takes them. The camera's 0.03 a count is for raw counts, several
@@ -394,8 +395,7 @@ static void live_input(void) {
                 if (!strncmp(line, "!rdoc", 5)) rx_request_rdoc_capture(atoi(line + 5));
                 void rx_flash_dark_arm(void);   /* (as !dump): armed RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
-                extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
-                if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&game_live_action, atoi(line + 7), __ATOMIC_RELAXED);
                 void hos_bind(int set, int button, int slot, int code);   /* "!bind <HOS_SW_*> <HOS_PAD_*>", as the Controls page */
                 int bind_b = -1, bind_pad = -2;
                 if (!strncmp(line, "!bind ", 6) && sscanf(line + 6, "%d %d", &bind_b, &bind_pad) == 2 &&
@@ -464,7 +464,7 @@ static int parse_presses(const char *s, int64_t base_ms, int live) {
     return got;
 }
 
-/* the host's own presses and stick (host/oot_menu.c: the game's menus' mouse), below: taken with the script's */
+/* the host's own presses and stick (game/oot_menu.c: the game's menus' mouse), below: taken with the script's */
 static void host_taps(void);
 static void host_stick_read(int32_t stick[4]);
 static void host_drag_read(int32_t stick[4]);   /* (above) */
@@ -496,7 +496,7 @@ static void scripted_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) 
     host_drag_read(stick);
 }
 
-/* (host/oot_menu.c) presses from the host, in the script's syntax ("0:A/100"), from now: the game's pause
+/* (game/oot_menu.c) presses from the host, in the script's syntax ("0:A/100"), from now: the game's pause
    menu's clicks. Any thread; the next read takes them */
 static SRWLOCK tap_lock = SRWLOCK_INIT;
 static char tap_text[256];
@@ -549,7 +549,7 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
    first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
    stick's and the camera's directions, and Walk; the ocarina's five note controls take a gamepad input too, and so does
-   Sprint (held, or toggled, it sets the game's dash input: host/oot_sprint.c; none by default, the Controls tab's Sprint
+   Sprint (held, or toggled, it sets the game's dash input: game/oot_sprint.c; none by default, the Controls tab's Sprint
    row gives it Shift and the left stick's press, gpu/vk/menu/sprint.cpp apply_sprint_layout).
    A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
    only while the mouse is captured; 4 and 5 also while one of the game's menus has it (mouse_buttons_arm) ---- */
@@ -602,7 +602,7 @@ static _Thread_local int input_keys[HOS_KEY_N][2], input_pads[HOS_KEY_N][2];
 static int sampled_key(int i, int k) { return input_snapshot_active ? input_keys[i][k] : (int)key_bind[i][k]; }
 static int sampled_pad(int i, int k) { return input_snapshot_active ? input_pads[i][k] : pad_bind[i][k]; }
 
-/* ---- (longshot) the ocarina's five note controls, driven by the wait flag nx2/oot_patches.py's patch sets ---- */
+/* ---- (longshot) the ocarina's five note controls, driven by the wait flag the hook sites ocarina.wait* set ---- */
 volatile uint64_t hos_oc_note_bits;
 volatile int hos_oc_wait;
 volatile int hos_oc_last_kind;
@@ -1209,7 +1209,7 @@ static uint64_t flight_input;
 static uint64_t free_camera_axes;
 static int free_camera_height;
 static int move_stick_held;   /* (the left stick pushed as the game got it: hos_move_stick_held) */
-static int sprint_now;   /* (Sprint as read_input last read it, SPRINT_KEY | SPRINT_PAD | SPRINT_L3: host/oot_sprint.c's) */
+static int sprint_now;   /* (Sprint as read_input last read it, SPRINT_KEY | SPRINT_PAD | SPRINT_L3: game/oot_sprint.c's) */
 enum { SPRINT_KEY = 1, SPRINT_PAD = 2, SPRINT_L3 = 4 };   /* (L3: the gamepad input held is the left stick's press) */
 
 /* Sprint's gamepad input held at the last read of the pads (pad_raw_now): SPRINT_PAD, and SPRINT_L3 when it is the left
@@ -1227,11 +1227,10 @@ static int pad_sprint_down(void) {
     return down;
 }
 
-/* Sprint itself is host/oot_sprint.c: it sets the game's dash input in Link's flags (the run after a roll) while Sprint
+/* Sprint itself is game/oot_sprint.c: it sets the game's dash input in Link's flags (the run after a roll) while Sprint
    runs, and never touches A. npad_states hands it Sprint's input each read; it hands back the buttons, with LS while a
    press of the left stick that is not Sprint's (a conversation's, which hides the text box) is held. */
-uint64_t hos_sprint_input(uint64_t buttons, int on, int down, int l3, int toggle, int reset, int blocked);
-enum { SPRINT_BLOCKED = 1, SPRINT_AWAY = 2, SPRINT_PAUSE = 4 };   /* (its blocked: host/oot_sprint.c's) */
+enum { SPRINT_BLOCKED = 1, SPRINT_AWAY = 2, SPRINT_PAUSE = 4 };   /* (its blocked: game/oot_sprint.c's) */
 
 uint64_t hos_flight_input(void) {
     return __atomic_load_n(&flight_input, __ATOMIC_RELAXED);
@@ -1247,12 +1246,11 @@ uint64_t hos_free_camera_input(int *height) {
 }
 
 static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int free_camera) {
-    int hos_oot_flight_shortcut_ready(void);
     static int64_t first_press;
     static int held, consume_jump;
     const uint64_t jump = 1ULL << B_B;
     const int down = !!(*buttons & jump);
-    if (mode < 0 || menu_open || free_camera || !hos_oot_flight_shortcut_ready() || !game_in_front()) {
+    if (mode < 0 || menu_open || free_camera || !game_flight_shortcut_ready() || !game_in_front()) {
         first_press = 0;
         held = 1;
         consume_jump = 0;
@@ -1294,7 +1292,6 @@ static void hud_shortcut(int readable, int mouse) {
     }
     const int down = pad_down || bound_down(HOS_KEY_TOGGLE_HUD, mouse);
     if (down && armed && generation == last_generation) {
-        void hos_gameplay_hud_toggle(void);
         hos_gameplay_hud_toggle();
     }
     armed = !down;
@@ -1421,8 +1418,7 @@ static void read_input(uint64_t *buttons, uint64_t *taps, int32_t stick[4]) {
     input_snapshot_active = 1;
     ReleaseSRWLockShared(&input_bind_lock);
     void hos_mouse_native_stick(int held);
-    void hos_oot_autoload_input(void);   /* (host/oot_autoload.c: the Skip title screen row's presses) */
-    hos_oot_autoload_input();
+    game_autoload_input();
     /* (longshot) HOS_CONTROL: the control bridge's presses (host/control.c); one that asked to be exclusive keeps the
        player's devices out while it lasts */
     const int control_exclusive = hos_control_input(buttons, stick);
@@ -1657,7 +1653,7 @@ static void npad_states(Ctx *c) {
         const int steered = abs(stick[0]) > 4096 || abs(stick[1]) > 4096;
         __atomic_store_n(&move_stick_held, steered, __ATOMIC_RELAXED);
         /* Sprint (the Controls page's line; the Controls tab's Sprint row on gives it Shift and the left stick's press):
-           host/oot_sprint.c, the game's dash input while Sprint's key or button is held, or from a press to the next with
+           game/oot_sprint.c, the game's dash input while Sprint's key or button is held, or from a press to the next with
            its Toggle (the Controls page, on by default). The Toggle's sprint is Link's state's to end, not the buttons'
            toggles': opening Insert or the game's pause and the focus lost hold it as it is (away), and only the row turned
            off or the bindings laid out again end it here. The row off (the default): its key and button do nothing */
@@ -1863,12 +1859,20 @@ static void rumble_map(const float v[4], float motor[2]) {
     motor[0] = heavy[0] > heavy[1] ? heavy[0] : heavy[1];
     motor[1] = light[0] > light[1] ? light[0] : light[1];
 }
+static SRWLOCK vibration_send_lock = SRWLOCK_INIT;
+static volatile LONG vibration_permitted = 1;
+static float vibration_amp[2][2];
+
 static void vibration_send(uint64_t handle, uint64_t value) {
-    static float amp[2][2];
+    AcquireSRWLockExclusive(&vibration_send_lock);
+    if (!vibration_permitted) {
+        ReleaseSRWLockExclusive(&vibration_send_lock);
+        return;
+    }
     float v[4];
     memcpy(v, GP(value), sizeof v);
     const int dev = (G32(handle) >> 16) & 1;
-    rumble_map(v, amp[dev]);
+    rumble_map(v, vibration_amp[dev]);
     {   /* (longshot) what the game asks for: the first values, then a count now and then */
         static long long n, strong;
         static float peak;
@@ -1885,14 +1889,41 @@ static void vibration_send(uint64_t handle, uint64_t value) {
     void rh_push(int side, const float value[4]);
     rh_push(dev, v);
     void hos_sdl_rumble(float low, float high);   /* pad_sdl.c */
-    hos_sdl_rumble(amp[0][0] > amp[1][0] ? amp[0][0] : amp[1][0], amp[0][1] > amp[1][1] ? amp[0][1] : amp[1][1]);
+    hos_sdl_rumble(fmaxf(vibration_amp[0][0], vibration_amp[1][0]), fmaxf(vibration_amp[0][1], vibration_amp[1][1]));
+    ReleaseSRWLockExclusive(&vibration_send_lock);
 }
 static void vibration_value_idle(uint64_t v) {   /* VibrationValue {f32 amp_low, freq_low, amp_high, freq_high} */
     float idle[4] = {0.0f, 160.0f, 0.0f, 320.0f};
     memcpy(GP(v), idle, sizeof idle);
 }
-HLE(_ZN2nn3hid6detail15PermitVibrationEb) { RET(0); }
-HLE(_ZN2nn3hid6detail20IsVibrationPermittedEPb) { *(uint8_t *)GP(ARG(0)) = 1; RET(0); }
+HLE(_ZN2nn3hid6detail15PermitVibrationEb) {
+    const int permit = (ARG(0) & 1) != 0;
+    AcquireSRWLockExclusive(&vibration_send_lock);
+    if (!permit) {
+        const float idle[4] = {0.0f, 160.0f, 0.0f, 320.0f};
+        void hos_sdl_rumble(float low, float high);
+        void hos_sdl_rumble_hd(int side, const float value[4]);
+        void rh_push(int side, const float value[4]);
+        memset(vibration_amp, 0, sizeof vibration_amp);
+        hos_sdl_rumble(0, 0);
+        for (int side = 0; side < 2; side++) {
+            hos_sdl_rumble_hd(side, idle);
+            rh_push(side, idle);
+        }
+    }
+    InterlockedExchange(&vibration_permitted, permit);
+    ReleaseSRWLockExclusive(&vibration_send_lock);
+    RET(0);
+}
+HLE(_ZN2nn3hid6detail20IsVibrationPermittedEPb) {
+    *(uint8_t *)GP(ARG(0)) = (uint8_t)InterlockedCompareExchange(&vibration_permitted, 0, 0);
+    RET(0);
+}
+HLE(_ZN2nn3hid29IsOunceVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE) { RET(1); }
+HLE(_ZN2nn3hid6detail29IsOunceVibrationDeviceMountedEPbRKNS0_21VibrationDeviceHandleE) {
+    *(uint8_t *)GP(ARG(0)) = 1;
+    RET(0);
+}
 HLE(_ZN2nn3hid6detail27BeginPermitVibrationSessionEv) { RET(0); }
 HLE(_ZN2nn3hid6detail25EndPermitVibrationSessionEv) { RET(0); }
 HLE(_ZN2nn3hid6detail25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE) { RET(0); }

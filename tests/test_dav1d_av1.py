@@ -4,7 +4,7 @@ thread and with several (frame threads hold pictures back, and only one dav1d_ge
 
 python -I -B tests/test_dav1d_av1.py --cxx <compiler> --dav1d <prefix with include/dav1d/dav1d.h>
 
-The Windows library (scripts/windows/dav1d.sh), from Linux: --cross <llvm-mingw>/bin/x86_64-w64-mingw32-clang --run wine
+The Windows library (builder/tools/windows-x64/dav1d.sh), from Linux: --cross <llvm-mingw>/bin/x86_64-w64-mingw32-clang --run wine
 --dav1d <cpm>/dav1d/<version>, as the Windows builder workflow checks it.
 
 tests/dav1d_av1/lossless_64x48.ivf is synthetic (no game data): 12 pictures of the pattern below, 64x48, encoded losslessly
@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--dav1d", "{dav1d}"]
-RUN_ALL_SKIP = {"windows": "the dav1d library is built for Windows by scripts/windows/dav1d.sh; checked on Linux"}
+RUN_ALL_SKIP = {"windows": "the dav1d library is built for Windows by builder/tools/windows-x64/dav1d.sh; checked on Linux"}
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "dav1d_av1" / "lossless_64x48.ivf"

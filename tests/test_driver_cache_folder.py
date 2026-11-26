@@ -3,14 +3,14 @@
 NVIDIA's Linux driver keeps no shader cache at all when that folder does not exist: it neither makes it nor falls back to
 ~/.cache/nvidia, and every start compiles every pipeline again. This cuts driver_cache_folder out of hos_main.c, compiles
 it and runs it on missing, nested, existing and impossible paths, and checks that the Linux main calls it before the
-window. It also keeps the game's Linux file named longshot: NVIDIA files its cache by the program's file name alone, so a
-new name would start every player's cache from nothing.
+window. (That the game's Linux file stays named longshot, as NVIDIA files its cache by the program's file name alone and
+a new name would start every player's cache from nothing, is build-compile's own test, src/exe_resources_tests.rs.)
+
 python -I -B tests/test_driver_cache_folder.py [--cxx c++]
 """
 import argparse
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
@@ -51,9 +51,6 @@ def main():
         raise SystemExit("FAIL: the Linux main does not call driver_cache_folder")
     if main_fn.index("driver_cache_folder();") > main_fn.index("hos_display_init()"):
         raise SystemExit("FAIL: driver_cache_folder runs after the window (SDL) may have loaded Vulkan")
-    exe_name = re.search(r'^EXE = "([^"]+)" if LINUX', (ROOT / "nx2" / "build.py").read_text(encoding="utf-8"), re.M)
-    if not exe_name or exe_name.group(1) != "longshot":
-        raise SystemExit("FAIL: the Linux game is no longer named longshot (nx2/build.py EXE): NVIDIA's cache is filed by that name")
 
     cxx = shutil.which(args.cxx)
     if not cxx:

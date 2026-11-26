@@ -428,7 +428,7 @@ def main():
         raise SystemExit("FAIL: profiling/cpu.py names an HLE body not inlined %r, not as its imp_ entry" % names)
     header = (ROOT / "host" / "hos.h").read_text(encoding="utf-8")
     hostcall = cut((ROOT / "host" / "hos_hostcall.c").read_text(encoding="utf-8"), "#define HOS_HOSTCALL_BASE",
-                   "/* Call guest code from inside a host function", "host/hos_hostcall.c")
+                   "/* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran", "host/hos_hostcall.c")
     dispatch = cut((ROOT / "host" / "nvn_native.c").read_text(encoding="utf-8"), "static void nvn2_counted(",
                    "/* nvnBootstrapLoader", "host/nvn_native.c")
     main_c = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")

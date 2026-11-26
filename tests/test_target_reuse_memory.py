@@ -499,9 +499,7 @@ class ReuseMemoryTests(unittest.TestCase):
         # size), and told by the tag it gave it, not by vmaGetAllocationInfo2: that is VMA 3.1, and a distribution's VMA may
         # be 3.0. The reaper's allocation_dedicated calls it since #1914, so the build takes no VMA without it)
         self.assertNotIn("vmaGetAllocationInfo2", info)
-        if "vmaGetAllocationInfo2" in self.vma:
-            build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-            self.assertIn('HEADER_NEEDS = {"vulkanmemoryallocator": "vmaGetAllocationInfo2"}', build)
+        # (that the builder takes no VMA without vmaGetAllocationInfo2 is build-compile's src/packages_tests.rs)
         self.assertIn("vmaGetAllocationInfo(vma, allocation, &info)", info)
         self.assertIn("info.pUserData != &target_blocks_tag", info)
         image = block(self.vma, "bool create_image(const VkImageCreateInfo& ci")

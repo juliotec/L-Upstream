@@ -138,6 +138,8 @@ int upscaler() { return opts.dlss; }
 // (the Output resolution's preview in play, none; a module's row locked by its own locked(), none: the CRT rows have none)
 Out output_preview_target{};
 bool module_locked(const int*) { return false; }
+// (the row a preview in play locks besides row_fixed's own list, Frame generation multiplier: not here)
+bool preview_locked(const int*) { return false; }
 // (the device rows' choices, saved by their ids: none here)
 int output_pick = 0, monitor_pick = 0;
 std::string output_want, output_saved_name, monitor_want, monitor_saved_name;

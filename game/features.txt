@@ -1,0 +1,8 @@
+# What this game can do that a launcher may ask of it, one name a line: the builder keeps them in the game folder's build
+# record, longshot_build.json's `features` (builder/crates/build-driver/src/folder.rs, features), and `longshot-builder
+# info` says them as `capabilities.game`, so a launcher knows them without running the game. A name is never reused for something else; a line is removed only when
+# the game no longer does it.
+#
+# profile: LONGSHOT_PROFILE=<folder> plays that profile: its saves/, settings.ini and profile.json's start_slot
+# (host/longshot_profile.h, docs/dev/reference/profiles.md).
+profile

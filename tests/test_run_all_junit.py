@@ -1,4 +1,4 @@
-"""tests/run_all.py --list, --junit, --exact, the default substring names and --shard (CircleCI's splitter uses them)."""
+"""tests/run_all.py --list, --junit, --exact, the default substring names and --shard (for a CI's test splitter or report)."""
 import os
 import subprocess
 import sys

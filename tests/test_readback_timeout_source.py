@@ -95,6 +95,7 @@ struct Texture {
     VkImage image = &the_image;
     VmaAllocation allocation = &the_alloc;
     uint64_t gpu = 0x100000, guest_size = 4096, bytes = 1 << 20, pad = 0, last_value = 0, pool_key = 0;
+    uint32_t id = 7;   // (its creation number: destroy_later names it to gone_note)
     std::vector<VkDeviceMemory> sparse_chunks;
     std::unordered_map<uint64_t, VkImageView> views;
     struct BlockAttachment { VkImage image; VmaAllocation allocation; int format; uint32_t level; };
@@ -122,6 +123,7 @@ void pool_put(Dead& d) { pooled.insert(d.image); }
 bool flush_record(Flush& f, VkCommandBuffer = VK_NULL_HANDLE) { f.buf = &a_buffer; return f.ok = true; }
 bool flush_finish(Flush& f, bool gpu_ok) { f.buf = VK_NULL_HANDLE; return f.ok && gpu_ok; }
 /* FLUSH_TEXTURES */
+/* GONE */
 /* DESTROY_LATER */
 void dead_list(uint64_t completed) {
 /* DEAD_LOOP */
@@ -190,7 +192,10 @@ def main():
     source = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     wait = block(source, "bool readback_submit_wait()")
     frame = block(source, "void texture_frame(uint64_t completed)")
-    fixture = (FIXTURE.replace("/* DEAD */", block(source, "struct Dead {") + ";")
+    # (gone_note, which destroy_later calls since the handle tables' stale log: the real one, with its log)
+    gone = source[source.index("constexpr uint32_t kGoneLog"):source.index("void gone_note(uint32_t id)")] + \
+        block(source, "void gone_note(uint32_t id)")
+    fixture = (FIXTURE.replace("/* GONE */", gone).replace("/* DEAD */", block(source, "struct Dead {") + ";")
                .replace("/* READBACK */", between(source, "// (a command buffer of its own for the read-backs", wait) + wait)
                .replace("/* FLUSH */", block(source, "struct Flush {") + ";")
                .replace("/* FLUSH_TEXTURES */", block(source, "void flush_textures(std::vector<Flush>& fs)"))

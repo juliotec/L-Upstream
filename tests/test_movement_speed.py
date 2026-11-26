@@ -1,23 +1,35 @@
-"""The Debug tab's Movement speed (1x to 3x): nx2/oot_patches.py's patch_cct_speed hooks the places a character controller's
-forward speed is set (SPEED_PLACES: Link's move f_809552f0 at its two setter calls, the setter f_80559df0 and f_80964bf0), each
-once, after its anchor, with s0's unit; a file patched before is given back as it is, and a file without them is left alone.
-apply makes them only in the supported build's lift (protect_hearts). host/hos_main.c's hos_oot_cct_speed scales the speed for
+"""The Debug tab's Movement speed (1x to 3x): four hook sites (game/sites/sites.toml, game/oot_sites.c) hand the places a
+character controller's forward speed is set to hos_oot_cct_speed with s0's unit, where the text patch they replaced
+(nx2/oot_patches.py patch_cct_speed, deleted) put the same calls: Link's move f_809552f0 after it takes the controller for each
+of its two setter calls (player.speedMove, player.speedMoveOther: a frame's speed), the setter f_80559df0's entry
+(player.speedSet) and f_80964bf0 after its first load (player.speedSetComponent: a second's). Only the supported build has a
+table. game/oot_tools.c's hos_oot_cct_speed scales the speed for
 Link's controller alone, only while the left stick is pushed and only up to 15 m/s (a ledge climb's 55 is left alone); the menu
-sends the row's percent (menu_link_speed), 100 while the debug tools are off.
+sends the row's percent (menu_link_speed), 100 while the debug tools are off. The four hooks, as the lift lowers them
+(tests/sitehooks.py), with their callbacks run against a stub hos_oot_cct_speed: each hands it the context, x0 and its
+unit, and the function goes on.
 
-python -I -B tests/test_movement_speed.py
+python -I -B tests/test_movement_speed.py [--cc clang] [--cargo cargo]
 """
-import os
+import argparse
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import CTX, engine_fn, hands, reg, site  # noqa: E402
+import sitehooks  # noqa: E402
 
-BODY = "    c->x[9]=recomp_load32(c,c->x[8] + 32);\nreturn;\n}\n"
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+STUBS = r"""
+void hos_oot_cct_speed(Ctx *c, uint64_t controller, int per_second) {
+    calls++, got[0] = (uint64_t)(uintptr_t)c, got[1] = controller, got[2] = 0x100 | (uint64_t)per_second;
+}
+"""
+
+SITES = (("player.speedMove", "f_809552f0", "after", 0x134, 0), ("player.speedMoveOther", "f_809552f0", "after", 0x1ec, 0),
+         ("player.speedSet", "f_80559df0", "entry", None, 1), ("player.speedSetComponent", "f_80964bf0", "after", 0x0, 1))
 
 
 def check(cond, what):
@@ -25,51 +37,25 @@ def check(cond, what):
         raise SystemExit("FAIL: " + what)
 
 
-def lifted():
-    """One file with the three functions, each holding its anchors once"""
-    out, done = '#include "a64.h"\n', set()
-    for head, anchor, _ in oot_patches.SPEED_PLACES:
-        if head in done:
-            continue
-        done.add(head)
-        anchors = [a for h, a, _ in oot_patches.SPEED_PLACES if h == head]
-        text = head + "".join(a if a != head else "" for a in anchors) + BODY
-        out += text
-    return out
-
-
 def main():
-    src = lifted()
-    out, n = oot_patches.patch_cct_speed(src)
-    check(n == len(oot_patches.SPEED_PLACES) == 4, "the speed's places hooked %d times, not 4" % n)
-    check(out.count("hos_oot_cct_speed(c, c->x[0], 0);") == 2, "Link's move: two hooks with a frame's speed")
-    check(out.count("hos_oot_cct_speed(c, c->x[0], 1);") == 2, "the setters: two hooks with a second's speed")
-    for head, anchor, per_second in oot_patches.SPEED_PLACES:
-        check(anchor + oot_patches.SPEED_HOOK % (per_second, "second" if per_second else "frame") in out,
-              "a hook does not follow its anchor: %r" % anchor[:40])
-    check(out.count("extern void hos_oot_cct_speed(Ctx *c, uint64_t controller, int per_second);") == 1, "the hook is declared once")
-    check(oot_patches.patch_cct_speed(out) == (out, 4), "a file patched before was patched again")
-    check(oot_patches.patch_cct_speed('#include "a64.h"\nvoid f_80000000(Ctx *__restrict A64_NOESC c) {\n' + BODY) is None,
-          "a file without the places was patched")
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--cc", default="clang")
+    p.add_argument("--cargo")
+    a = p.parse_args()
+    sitehooks.use(a.cc, a.cargo)
+    runs = []
+    for name, function, at, offset, per_second in SITES:
+        x = site(name, function, at, offset)
+        check("x0:ptr:controller" in x.args and "s0:f32:speed" in x.args, "%s does not name the controller and the speed" % name)
+        check(not x.can_return, "%s's hook leaves the function" % name)
+        fn = engine_fn(x)
+        check(fn in ("hos_site_speed_per_frame", "hos_site_speed_per_second"), "%s's slot names %s" % (name, fn))
+        # (the unit the host is told is the site's: a frame's 0, a second's 1, whichever callback the slot names)
+        runs.append((x, "int %s(" % fn, (CTX, reg(0), 0x100 | per_second)))
+    hands(a.cc, runs, STUBS)
 
-    with tempfile.TemporaryDirectory() as gen:
-        path = os.path.join(gen, "code_000.c")
-        for protect, want in ((False, 0), (True, 4)):
-            with open(path, "w", encoding="utf-8", newline="") as f:
-                f.write(src)
-            stdout = sys.stdout
-            sys.stdout = open(os.devnull, "w")
-            try:
-                oot_patches.apply(gen, protect_hearts=protect)
-            finally:
-                sys.stdout.close()
-                sys.stdout = stdout
-            with open(path, encoding="utf-8") as f:
-                got = f.read().count("    hos_oot_cct_speed(c, c->x[0], ")
-            check(got == want, "apply(protect_hearts=%s) made %d hooks, not %d" % (protect, got, want))
-
-    host = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    fn = host[host.index("void hos_oot_cct_speed("):]
+    tools = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
+    fn = tools[tools.index("void hos_oot_cct_speed("):]
     fn = fn[:fn.index("\n}\n")]
     check("oot_speed_controller" in fn and "hos_move_stick_held()" in fn, "the host scales only Link's speed while he is steered")
     check(re.search(r"<= 15\.0f", fn) is not None, "the host leaves speeds over 15 m/s alone")

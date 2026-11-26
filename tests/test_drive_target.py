@@ -1,17 +1,18 @@
-"""Link's driven body's target above 60 fps (nx2/oot_patches.py patch_drive_target, host/oot_high_fps.h oot_drive_carry).
+"""Link's driven body's target above 60 fps (the hook sites physics.driveTarget*, game/oot_high_fps.h oot_drive_carry).
 
 While Link pulls himself up a ledge his animation drives his body: each update f_804f5030 (a rigid body's update before the
 physics step, on its path for a body driven to a target) reads the controller's target (+0x3c), which the game set to the
 body's position plus this frame's move, and asks the physics for (target - position) / dt. At 60 fps the body lands on the
 target. Above 60 Havok's solve delivers only part of the move (measured in the game: 1.00 at 60, 0.94 at 90, 0.86 at 120,
 0.82 at 144, 0.78 at 170 fps, close to 1 - 0.126 (1/step - 1)), and the next target starts from where the body ended up:
-the pull-up fell 0.3 m short and Link slid back on the lip (issue 1494). The patch has the host add last update's shortfall
-to the target before it is read.
+the pull-up fell 0.3 m short and Link slid back on the lip (issue 1494). The sites (game/sites/sites.toml, after each
+copy's load of the body; game/oot_sites.c) have the host add last update's shortfall to the target before it is read.
 
 An authored f_804f5030 (the game's gate to the path, the controller's flags +0x100 bit 0x80, then both copies of the path's
-load of the body and reads of the target as the lift writes them) goes through patch_file and is compiled with the host's
-part cut from host/oot_high_fps.c (Link's body and his update count from his components, the target's carry); guest memory,
-the time object and the switches are stand-ins. Each update calls hos_oot_note_link (Link's update, host/hos_main.c), then
+load of the body and reads of the target as the lift writes them) is built with the sites' hooks as the lift lowers them (tests/sitehooks.py)
+and, side by side, with the text patch's lines they replaced (OLD_CALL, as main had them), each compiled with the host's
+part cut from game/oot_high_fps.c (Link's body and his update count from his components, the target's carry); guest memory,
+the time object and the switches are stand-ins. Each update calls hos_oot_note_link (Link's update, game/oot_tools.c), then
 the body update; a stand-in physics moves the body by the measured share of the target read. The pull-up's lift (1.92 m up,
 0.08 m in, over 0.4 s) is played update by update:
 - at a cap of 60 the body follows the lift (both ways); with the body held back, nothing is carried, at a step of 1 or with
@@ -26,30 +27,78 @@ the body update; a stand-in physics moves the body by the measured share of the 
   mid-climb, reads the same target as the first, and body updates with no update of Link's before them still follow
   the game's renewed targets (none held back);
 - a body the physics holds back is given at most three frames' moves more than the game's target (it is not flung);
-- host/hos_main.c's Link update calls hos_oot_note_link on every update, before the cheats' lock and under no condition
+- game/oot_tools.c's Link update calls hos_oot_note_link on every update, before the cheats' lock and under no condition
   (the wiring the game needs; the fixture calls it itself);
-- the unpatched update compiled the same way fails the 120 fps check (the bug, shown without the fix);
-- the patch is scoped to f_804f5030, at its two places, a second run changes nothing, and a changed anchor is left alone
-  with a warning.
+- the update without the hooks (or with their flags off) compiled the same way fails the 120 fps check (the bug, shown
+  without the fix);
+- each site is its copy's load of the body into the register its callback hands on (ldr x23 or x24, [x20, #0xf0]), then
+  the target's reads the fixture models (ldp s2, s1, [x20, #0x3c]; ldr s0, [x20, #0x44]), in whole words, its hook after
+  the load, found by its signature alone (jump.takeoffVelocity is found from physics.driveTargetOther's place). That the
+  resolver finds each exactly once in made-up code with the path's two copies at their offsets, and stops naming the site
+  when its copy changes or a third copy appears, is builder/crates/sites/tests/repository.rs
+  (the_drive_target_sites_are_each_found_once_at_their_copy).
 No game files or lifted function body are used.
 
-python -I -B tests/test_drive_target.py [--cc gcc]
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_drive_target.py [--cc clang] [--cargo cargo]
 """
 import argparse
-import contextlib
-import io
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
 from srccut import between, block  # noqa: E402
+from sitecheck import BUILD, site, callback, load, slot  # noqa: E402
+import sitehooks  # noqa: E402
+
+
+def ldr_x(rt, rn, imm):
+    """ldr x<rt>, [x<rn>, #imm]"""
+    return 0xf9400000 | (imm // 8) << 10 | rn << 5 | rt
+
+
+def ldp_s(rt, rt2, rn, imm):
+    """ldp s<rt>, s<rt2>, [x<rn>, #imm]"""
+    return 0x2d400000 | (imm // 4) << 15 | rt2 << 10 | rn << 5 | rt
+
+
+def ldr_s(rt, rn, imm):
+    """ldr s<rt>, [x<rn>, #imm]"""
+    return 0xbd400000 | (imm // 4) << 10 | rn << 5 | rt
+
+
+def copy(reg):
+    """(one copy of the path as the fixture's READ has it: the body's load from the controller +240 into reg, the target's
+    reads at +60 and +68)"""
+    return (ldr_x(reg, 20, 240), ldp_s(2, 1, 20, 60), ldr_s(0, 20, 68))
+
+
+def placed(sites):
+    """each site is its copy's body load, then the target's reads, as the fixture models them (the resolver's finding
+    each exactly once: builder/crates/sites/tests/repository.rs)"""
+    for x, reg, fn in zip(sites, (23, 24), ("hos_site_drive_target", "hos_site_drive_target_other")):
+        if x.signature != tuple((w, 0xffffffff) for w in copy(reg)) or x.signature_offset != x.offset:
+            raise SystemExit("FAIL: %s is not after ldr x%d, [x20, #0xf0] before the target's reads (ldp s2, s1, [x20, #0x3c]; "
+                             "ldr s0, [x20, #0x44]), in whole words: the fixture's READ no longer models it" % (x.name, reg))
+        if x.args != ("x20:ptr:controller", "x%d:ptr:body" % reg):
+            raise SystemExit("FAIL: %s's arguments are not x20 (the controller) and x%d (the body): %r" % (x.name, reg, x.args))
+        if "hos_oot_drive_target(c->x[20], c->x[%d], OOT_TIME_SLOT);" % reg not in callback("int %s(" % fn):
+            raise SystemExit("FAIL: %s does not hand hos_oot_drive_target x20 and x%d" % (fn, reg))
+        if x.point is not None or x.fingerprint is not None or x.guards or x.inside is not None:
+            raise SystemExit("FAIL: %s is found by more than its signature (jump.takeoffVelocity is found from "
+                             "physics.driveTargetOther's place, which the resolver gives without the lift)" % x.name)
+    velocity = {s.name: s for s in load(BUILD)}["jump.takeoffVelocity"]
+    if velocity.inside != sites[1].name or velocity.point is None or velocity.point.start != sites[1].name:
+        raise SystemExit("FAIL: jump.takeoffVelocity is no longer found from physics.driveTargetOther: this check's reason "
+                         "for keeping that site's signature alone is gone")
+    print("PASS: each site is its copy's body load before the target's reads, in whole words, found by its signature alone")
 
 # (the body update as the lift writes it: the game's gate to the path, then both copies of the body's load and the target's
 # reads; the stand-in keeps the target it read in c->read)
@@ -66,8 +115,21 @@ UPDATE = ("void f_804f5030(Ctx *__restrict A64_NOESC c) {\n"
           "L_804f5e9c:;\n" + READ % 24 + KEEP +
           "L_804f5d10:;\n"
           "}\n")
-UNRELATED = UPDATE.replace("void f_804f5030(", "void f_904f5030(")
-LIFTED = '#include "a64.h"\n' + UPDATE + UNRELATED
+# (the text patch's line on main, between the body's load and the target's reads)
+OLD_CALL = ("    hos_oot_drive_target(c->x[20], c->x[%d], g_module_base + 0x80435000ULL + (int64_t)75927552 + 2192);"
+            "   /* (nx2/oot_patches.py: Link's driven body follows its target above 60 fps) */\n")
+
+
+def load_line(reg):
+    return (READ % reg).split("\n")[0] + "\n"
+
+
+def hooked(sites):
+    """UPDATE with each site's hook after its copy's load of the body (x23, then x24)"""
+    out = UPDATE
+    for reg, x in zip((23, 24), sites):
+        out = out.replace(load_line(reg), load_line(reg) + sitehooks.line(x) + "\n", 1)
+    return out
 
 FIXTURE = r'''#include <stdarg.h>
 #include <stdint.h>
@@ -319,57 +381,50 @@ int main(void) {
 def build_and_run(cc, update, host, directory):
     source, binary = Path(directory) / "fixture.c", Path(directory) / "fixture.exe"
     stubs = "" if host else "static void hos_oot_note_link(uint64_t components) { (void)components; }\n"
-    source.write_text(FIXTURE.replace("@HOST@", host + stubs).replace("@UPDATE@", update.replace('#include "a64.h"\n', "")),
-                      encoding="utf-8")
+    text = FIXTURE.replace("@HOST@", host + stubs).replace("@UPDATE@", update)
+    source.write_text(text, encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-const-variable",
-                    "-Wno-unused-label", "-I", str(ROOT / "host"), str(source), "-o", str(binary), "-lm"], check=True)
+                    "-Wno-unused-label", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"), str(source), *sitehooks.objects(directory, text),
+                    "-o", str(binary), "-lm"], check=True)
     return subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    patched, counts, _ = oot_patches.patch_file(LIFTED, "code_hot_4.c")
-    hooked = "hos_oot_drive_target(c->x[20]" in patched
-    host = ""
-    if hooked:   # (the host's part, as the game links it: cut from the source in the tree)
-        text = (ROOT / "host" / "oot_high_fps.c").read_text(encoding="utf-8")
-        host = between(text, "static volatile uint64_t link_body;", "/* The time f_81b3aa48 loads from the cloth's step context")
+    sitehooks.use(args.cc, args.cargo)
+    sites = (site("physics.driveTarget", "f_804f5030", "after", 0x1b4),
+             site("physics.driveTargetOther", "f_804f5030", "after", 0xe6c))
+    placed(sites)
+    text = (ROOT / "game" / "oot_high_fps.c").read_text(encoding="utf-8")
+    host = between(text, "static volatile uint64_t link_body;", "/* The time f_81b3aa48 loads from the cloth's step context")
+    callbacks = "\n" + callback("int hos_site_drive_target(") + "\n" + callback("int hos_site_drive_target_other(") + "\n"
+    old = UPDATE
+    for reg in (23, 24):
+        old = old.replace(load_line(reg), load_line(reg) + OLD_CALL % reg, 1)
     with tempfile.TemporaryDirectory(prefix="drive-target-") as directory:
-        result = build_and_run(args.cc, patched, host, directory)
-        print(result.stdout, end="")
-        if result.returncode != 0:
-            raise SystemExit("FAIL: Link's driven body's target above 60 fps (the patch %s)" % ("is in" if hooked else "is missing"))
-        native = build_and_run(args.cc, LIFTED, "", directory)
-        if native.returncode == 0 or "FAIL: 120 fps:" not in native.stdout:
-            raise SystemExit("FAIL: the unpatched update did not fail the 120 fps check")
-        print("PASS: the unpatched update compiles and fails the 120 fps check (%s)"
+        for what, code in (("the hooks", callbacks + "".join(slot(x) for x in sites) + hooked(sites)), ("the text patch", old)):
+            result = build_and_run(args.cc, code, host, directory)
+            print(result.stdout, end="")
+            if result.returncode != 0:
+                raise SystemExit("FAIL: Link's driven body's target above 60 fps (%s)" % what)
+        for what, code, given in (("the update without the hooks", UPDATE, ""),
+                                  ("the hooks off", callbacks + "".join(slot(x, 0) for x in sites) + hooked(sites), host)):
+            native = build_and_run(args.cc, code, given, directory)
+            if native.returncode == 0 or "FAIL: 120 fps:" not in native.stdout:
+                raise SystemExit("FAIL: %s did not fail the 120 fps check" % what)
+        print("PASS: the update without the hooks compiles and fails the 120 fps check (%s)"
               % native.stdout.split("FAIL: 120 fps: ")[1].split("\n")[0])
     # (the game needs Link's update to give his body and count his updates: the fixture calls it itself)
-    main_c = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    lift_player = block(main_c, "void hos_oot_lift_player(Ctx *c, uint64_t actor) {")
+    tools_c = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
+    lift_player = block(tools_c, "void hos_oot_lift_player(Ctx *c, uint64_t actor) {")
     call = lift_player.find("\n    hos_oot_note_link(components);\n")   # (a statement of its own, not under a condition)
     if call < 0 or call > lift_player.find("TryAcquireSRWLockExclusive(&cheats_lock)"):
-        raise SystemExit("FAIL: host/hos_main.c's hos_oot_lift_player does not call hos_oot_note_link(components) on every update of "
+        raise SystemExit("FAIL: game/oot_tools.c's hos_oot_lift_player does not call hos_oot_note_link(components) on every update of "
                          "Link's, before the cheats' lock")
-    print("PASS: Link's update gives his body and counts his updates, every update (host/hos_main.c)")
-    assert counts["driven target"] == 2 and patched.count("hos_oot_drive_target(c->x[20]") == 2
-    assert UNRELATED in patched
-    again, repeated, _ = oot_patches.patch_file(patched, "code_hot_4.c")
-    assert again == patched and repeated["driven target"] == 2
-    for altered, found in ((LIFTED.replace("c->x[20] + 240", "c->x[20] + 248", 1), 1),
-                           (LIFTED.replace("int64_t _o=60;", "int64_t _o=64;", 1), 1),
-                           (LIFTED.replace(READ % 24, (READ % 24) * 2, 1), 1),
-                           ('#include "a64.h"\n' + UNRELATED, 0)):
-        output, missing, _ = oot_patches.patch_file(altered, "code_hot_4.c")
-        assert missing["driven target"] == found, (missing["driven target"], found)
-        assert found or output == altered
-        warning = io.StringIO()
-        with contextlib.redirect_stdout(warning):
-            oot_patches.report([Path("code_hot_4.c")], [missing])
-        assert "WARNING: the driven body's target was found at %d of 2 places" % found in warning.getvalue()
-    print("PASS: scoped, idempotent, and a changed anchor is left alone with a warning")
+    print("PASS: Link's update gives his body and counts his updates, every update (game/oot_tools.c)")
 
 
 if __name__ == "__main__":

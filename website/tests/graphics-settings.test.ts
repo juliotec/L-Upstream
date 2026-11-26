@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { createMarkdownProcessor } from '@astrojs/markdown-remark';
-import { readGraphicsSettings, formatGraphicsSettings, readMenuRows, MODULES_MARKER, SHORT_CHOICES } from '../src/repo-docs/graphics-settings.ts';
+import { readGraphicsSettings, formatGraphicsSettings, readMenuRows, GAME_ROWS_MARKER, MODULES_MARKER, SHORT_CHOICES } from '../src/repo-docs/graphics-settings.ts';
 import { matchesSetting, installGraphicsSettings } from '../src/lib/graphics-settings.ts';
 
 // The settings page holds the table of every menu row's choices and defaults; the menu's source holds the rest.
@@ -11,8 +11,17 @@ const page = await readFile(new URL('../../docs/user/graphics-and-controls.md', 
 const moduleDir = new URL('../../gpu/vk/menu/', import.meta.url);
 const modules = await Promise.all((await readdir(moduleDir)).filter(name => name.endsWith('.cpp')).sort()
   .map(name => readFile(new URL(name, moduleDir), 'utf8')));
-const menu = await readFile(new URL('../../gpu/vk/vk_menu.cpp', import.meta.url), 'utf8') + MODULES_MARKER + modules.join('\n');
+const menu = await readFile(new URL('../../gpu/vk/vk_menu.cpp', import.meta.url), 'utf8') + MODULES_MARKER + modules.join('\n') +
+  GAME_ROWS_MARKER + await readFile(new URL('../../game/menu/rows.c', import.meta.url), 'utf8');
 const processor = await createMarkdownProcessor();
+
+test('game rows supply the published menu help, section and restart flag', () => {
+  const groups = readGraphicsSettings(page, menu);
+  const find = name => groups.flatMap(group => group.settings).find(setting => setting.name === name);
+  assert(groups.find(group => group.name === 'Screen')?.settings.some(setting => setting.name === 'Ultrawide menus'));
+  assert.match(find('Field of view').summary, /100% is the original view/);
+  assert.equal(find('Skip title screen').restart, true);
+});
 
 test('frame-generation visibility has a badge and still requires its documented condition', () => {
   const setting = readGraphicsSettings(page, menu).flatMap(group => group.settings)
@@ -145,6 +154,28 @@ test('the registered Simulated turf page row takes its named help; another page 
   }
 });
 
+test('the DLSS 5 rows name their conditions; their registered preset and page rows only', () => {
+  const settings = readGraphicsSettings(page, menu).flatMap(group => group.settings);
+  const find = name => settings.find(setting => setting.name === name);
+  assert.deepEqual(find('DLSS 5').badges, ['With a DLSS 5 file']);
+  assert.deepEqual(find('DLSS 5 preset').badges, ['While DLSS 5 is On']);
+  assert.deepEqual(find('DLSS 5 settings').badges, ['While DLSS 5 is On']);
+  // (the DLSS 5 model row: while On, on an RTX 50 with both files; it takes a restart, as the menu's row says)
+  assert.deepEqual(find('DLSS 5 model').badges, ['While DLSS 5 is On', 'RTX 50 with both DLSS 5 files']);
+  assert.equal(find('DLSS 5 model').restart, true);
+  assert.throws(() => readGraphicsSettings(page.replace('. Shown while DLSS 5 is On, and only on an RTX 50 card with both DLSS 5 files (Windows);', '.'), menu),
+    /no condition for DLSS 5 model/);
+  assert.throws(() => readGraphicsSettings(page.replace("Shown only with NVIDIA's `nvngx_dlssnr.dll`", 'With'), menu),
+    /no condition for DLSS 5,/);
+  assert.throws(() => readGraphicsSettings(page.replace('. Shown while DLSS 5 is On |', ' |'), menu), /no condition for DLSS 5 preset/);
+  // (gpu/vk/menu/dlss5.cpp registers them: the preset a view of the page's rows, the page row with no option pointer)
+  for (const [from, to, name] of [['.value = &preset_ui', '.value = &other_ui', 'DLSS 5 preset'],
+    ['.opens = "dlss5_settings"', '.opens = "other_page"', 'DLSS 5 settings']]) {
+    assert(menu.includes(from), from);
+    assert.throws(() => readGraphicsSettings(page, menu.replace(from, to)), new RegExp(`coverage mismatch at ${name}`));
+  }
+});
+
 test('the menu table reader joins C strings, reads escapes and skips comments', () => {
   const rows = readMenuRows(`Row rows[] = {
     // {TAB_GRAPHICS, "Commented out", &opts.x},
@@ -167,7 +198,7 @@ test('cards take the menu\'s help, the source restart flag and the table\'s cond
   assert(settings.every(setting => setting.summary), 'every card has the menu\'s description');
   assert(!settings.some(setting => /Applies after/.test(setting.summary)));
   assert.deepEqual(settings.filter(setting => setting.restart).map(setting => setting.name),
-    ['Aspect ratio', 'Output resolution', 'Custom output size', 'Profile', 'GPU device', 'Speaker layout', 'Skip title screen', 'Game language', 'Button prompts']);
+    ['Aspect ratio', 'Output resolution', 'Custom output size', 'Profile', 'DLSS 5 model', 'GPU device', 'Speaker layout', 'Skip title screen', 'Game language', 'Button prompts']);
   assert.deepEqual(find('NVIDIA Reflex').badges, ['NVIDIA GPUs only']);
   assert.deepEqual(find('HDR tone mapper').badges, ['With HDR on Native']);
   assert(find('HDR contrast').badges.includes('While HDR is on'));
@@ -182,12 +213,12 @@ test('restart, coverage and condition drift between the table and the menu stop 
   assert.notEqual(noSpeakerRestart, page, 'Speaker layout fixture must remove its restart annotation');
   assert.throws(() => readGraphicsSettings(noSpeakerRestart, menu), /restart mismatch at Speaker layout/);
   // (a row of another tab added to the menu, or one the table lists that the menu lacks)
-  assert.throws(() => readGraphicsSettings(page, menu + '\nMENU_MODULE(balance) {\n    menu::tab("audio")\n        .row({.key = "balance", .label = "Balance", .help = "x", .value = &opts.volume});\n}\n'), /Audio coverage mismatch/);
+  assert.throws(() => readGraphicsSettings(page, menu.replace(GAME_ROWS_MARKER, '\nMENU_MODULE(balance) {\n    menu::tab("audio")\n        .row({.key = "balance", .label = "Balance", .help = "x", .value = &opts.volume});\n}\n' + GAME_ROWS_MARKER)), /Audio coverage mismatch/);
   assert.throws(() => readGraphicsSettings(page.replace(/^\| \| Mute in background .*\n/m, ''), menu), /Audio coverage mismatch/);
   assert.throws(() => readGraphicsSettings(page.replace('| | Text size |', '| | Text sizes |'), menu), /Gameplay coverage mismatch/);
   // (a row the menu hides on some PCs, with no condition in the table)
   assert.throws(() => readGraphicsSettings(page.replace(' (shown only on AMD GPUs with `VK_AMD_anti_lag`)', ''), menu), /no condition for AMD Anti-Lag 2/);
-  assert.throws(() => readGraphicsSettings(page, menu.replace('.label = "Field of view",', '.label = "Field of view",\n              .shown = [] { return false; },')), /no condition for Field of view/);
+  assert.throws(() => readGraphicsSettings(page, menu.replace('.label = "Game speed",', '.label = "Game speed",\n              .shown = [] { return false; },')), /no condition for Game speed/);
 });
 
 test('escaped pipes remain choices and do not become extra cells', () => {

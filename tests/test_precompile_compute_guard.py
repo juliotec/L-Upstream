@@ -71,7 +71,7 @@ void vkDestroyPipeline(uintptr_t device,VkPipeline made,const void*allocator){CH
 
 
 def windows_target(cxx):
-    """The target the game's own build gives this compiler (third_party/a64-kit/tools/toolchain.py native_target): an
+    """The target the game's own build gives this compiler (builder/crates/build-compile/src/toolchain.rs native_target): an
     llvm-mingw clang++ builds for MinGW with -fms-extensions (__try/__except), any other for the MSVC target. llvm-mingw
     finds no Visual Studio headers, so the MSVC target alone fails there at <windows.h>."""
     machine=subprocess.run([cxx,'-dumpmachine'],capture_output=True,text=True,timeout=30).stdout.strip()

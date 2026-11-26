@@ -2,28 +2,30 @@
 
 lockfile_version = 4
 
-[[tools."github:CircleCI-Public/circleci-cli"]]
-version = "1.14.0"
-backend = "github:CircleCI-Public/circleci-cli"
-specifiers = ["1.14.0"]
+[[tools."github:gitleaks/gitleaks"]]
+version = "8.22.1"
+backend = "github:gitleaks/gitleaks"
+specifiers = ["8.22.1"]
 
-[tools."github:CircleCI-Public/circleci-cli"."platforms.linux-arm64"]
-checksum = "sha256:d1cfb57078bcd0d3ff4c20f2765574e1f1022a3ba41cf164acd36a521a7a35f0"
-url = "https://github.com/CircleCI-Public/circleci-cli/releases/download/v1.14.0/circleci-cli_1.14.0_linux_arm64.tar.gz"
-url_api = "https://api.github.com/repos/CircleCI-Public/circleci-cli/releases/assets/710985566"
-provenance = "github-attestations"
+[tools."github:gitleaks/gitleaks"."platforms.linux-arm64"]
+checksum = "sha256:598a495a402aa31d10322df04c1deebcd73c586bf7dda1d6df53572280250a85"
+url = "https://github.com/gitleaks/gitleaks/releases/download/v8.22.1/gitleaks_8.22.1_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/216772772"
 
-[tools."github:CircleCI-Public/circleci-cli"."platforms.linux-x64"]
-checksum = "sha256:5d0227b38ad65b2fb23ef1fbebfe98851c77102f76a72df2273eacca941665c4"
-url = "https://github.com/CircleCI-Public/circleci-cli/releases/download/v1.14.0/circleci-cli_1.14.0_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/CircleCI-Public/circleci-cli/releases/assets/710985669"
-provenance = "github-attestations"
+[tools."github:gitleaks/gitleaks"."platforms.linux-x64"]
+checksum = "sha256:2f92ab3b8e08319ac30836c32b90818e01519c3a4982771e4f45a7f5607872f7"
+url = "https://github.com/gitleaks/gitleaks/releases/download/v8.22.1/gitleaks_8.22.1_linux_x64.tar.gz"
+url_api = "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/216772759"
 
-[tools."github:CircleCI-Public/circleci-cli"."platforms.macos-arm64"]
-checksum = "sha256:ae3a9d0399bafc9169a6fca7bced2e0a35a51e1e870d6efc56955cb99b29941b"
-url = "https://github.com/CircleCI-Public/circleci-cli/releases/download/v1.14.0/circleci-cli_1.14.0_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/CircleCI-Public/circleci-cli/releases/assets/710985569"
-provenance = "github-attestations"
+[tools."github:gitleaks/gitleaks"."platforms.macos-arm64"]
+checksum = "sha256:6673ddc9791eb4675f46f522c68d774adf56e488c60c357efa25ef7a455abeaa"
+url = "https://github.com/gitleaks/gitleaks/releases/download/v8.22.1/gitleaks_8.22.1_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/216772770"
+
+[tools."github:gitleaks/gitleaks"."platforms.windows-x64"]
+checksum = "sha256:8e3c4f7a73d79240b7184849bacec7cedef1445d0b727ee7a2c078ec50dcc50d"
+url = "https://github.com/gitleaks/gitleaks/releases/download/v8.22.1/gitleaks_8.22.1_windows_x64.zip"
+url_api = "https://api.github.com/repos/gitleaks/gitleaks/releases/assets/216772755"
 
 [[tools."github:koalaman/shellcheck"]]
 version = "0.10.0"
@@ -44,29 +46,6 @@ url_api = "https://api.github.com/repos/koalaman/shellcheck/releases/assets/1555
 checksum = "sha256:bbd2f14826328eee7679da7221f2bc3afb011f6a928b848c80c321f6046ddf81"
 url = "https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.darwin.aarch64.tar.xz"
 url_api = "https://api.github.com/repos/koalaman/shellcheck/releases/assets/155543213"
-
-[[tools."github:open-policy-agent/conftest"]]
-version = "0.71.1"
-backend = "github:open-policy-agent/conftest"
-specifiers = ["0.71.1"]
-
-[tools."github:open-policy-agent/conftest"."platforms.linux-arm64"]
-checksum = "sha256:218c682e110ae7e826dc14a746a6f9b43eb782643dbe730b771fd305634e3f47"
-url = "https://github.com/open-policy-agent/conftest/releases/download/v0.71.1/conftest_0.71.1_Linux_arm64.tar.gz"
-url_api = "https://api.github.com/repos/open-policy-agent/conftest/releases/assets/614476733"
-provenance = "github-attestations"
-
-[tools."github:open-policy-agent/conftest"."platforms.linux-x64"]
-checksum = "sha256:c3f6b2a753bd56e377a1e51a95ae3e057f926f2e9139f7d5b5dfbbaf810f7985"
-url = "https://github.com/open-policy-agent/conftest/releases/download/v0.71.1/conftest_0.71.1_Linux_x86_64.tar.gz"
-url_api = "https://api.github.com/repos/open-policy-agent/conftest/releases/assets/614476638"
-provenance = "github-attestations"
-
-[tools."github:open-policy-agent/conftest"."platforms.macos-arm64"]
-checksum = "sha256:e1cc50d2590b6c5e3da6912666a71264bae82d60bdd62d7ae2b99971ccc8eedd"
-url = "https://github.com/open-policy-agent/conftest/releases/download/v0.71.1/conftest_0.71.1_Darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/open-policy-agent/conftest/releases/assets/614476647"
-provenance = "github-attestations"
 
 [[tools."github:rhysd/actionlint"]]
 version = "1.7.12"
@@ -92,26 +71,43 @@ url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/3849248
 provenance = "github-attestations"
 
 [[tools.node]]
-version = "22.12.0"
+version = "22.23.5"
 backend = "core:node"
-specifiers = ["22.12.0"]
+specifiers = ["22.23.5"]
 
 [tools.node."platforms.linux-arm64"]
-checksum = "sha256:9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb"
-url = "https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-arm64.tar.gz"
+checksum = "sha256:8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3"
+url = "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-arm64.tar.gz"
 
 [tools.node."platforms.linux-x64"]
-checksum = "sha256:e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044"
-url = "https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.gz"
+checksum = "sha256:c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1"
+url = "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz"
 
 [tools.node."platforms.macos-arm64"]
-checksum = "sha256:293dcc6c2408da21562d135b0412525e381bb6fe150d688edb58fe850d0f3e13"
-url = "https://nodejs.org/dist/v22.12.0/node-v22.12.0-darwin-arm64.tar.gz"
+checksum = "sha256:e7131995759b61a0170b646010d2ad35a5d37b4cb0d471f3e8317eac6f742f3d"
+url = "https://nodejs.org/dist/v22.23.5/node-v22.23.5-darwin-arm64.tar.gz"
+
+[[tools."pypi:pre-commit"]]
+version = "4.0.1"
+backend = "pypi:pre-commit"
+specifiers = ["4.0.1"]
+uv = { path = ".mise/locks/pypi-pre-commit/4.0.1", digest = "sha256:c7b98046cb101d1042bfb3fd25e00c8feb96c6825cf71657587f1dfb8c3ee461" }
+
+[[tools."pypi:ruff"]]
+version = "0.12.0"
+backend = "pypi:ruff"
+specifiers = ["0.12.0"]
+uv = { path = ".mise/locks/pypi-ruff/0.12.0", digest = "sha256:58ce5ba1d082ff945d77f7741c15fea357f8cc8b6879b0ff60f3dd3f7bf2b234" }
 
 [[tools.python]]
 version = "3.12.15"
 backend = "core:python"
 specifiers = ["3.12.15"]
+
+[tools.python."platforms.linux-arm64"]
+checksum = "sha256:b4567aa5a11f51b540c4dfd9e082ebf23e554f8ac17b85caa6cea23e83693394"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.12.15+20261021-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+provenance = "github-attestations"
 
 [tools.python."platforms.linux-x64"]
 checksum = "sha256:6d7521138fd33afddc1ccd08abb007d9a2829e38117c2576f9efdc0ec73ce772"
@@ -122,3 +118,12 @@ provenance = "github-attestations"
 checksum = "sha256:7b8d00b751db21cea87dc551a8f8165147c5fbc5251d5537d7e5497dde00a219"
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.12.15+20261021-aarch64-apple-darwin-install_only_stripped.tar.gz"
 provenance = "github-attestations"
+
+[[tools.rust]]
+version = "1.99.1"
+backend = "core:rust"
+specifiers = ["1.99.1"]
+
+[tools.rust.options]
+components = "clippy,rustfmt"
+targets = "x86_64-pc-windows-gnullvm"

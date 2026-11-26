@@ -23,15 +23,16 @@ Longshot, Hookshot and the emulators that run the game keep the same files, so a
     caption.sav         the Load screen's header and picture
 ```
 
-The save folder is `save/<user id>/` under the user folder. The user id is `5a3c9e1f0b7d24680000000000000001` in every
+The save folder is `save/<user id>/` under the [profile](profiles.md)'s `saves/` the game plays (`LONGSHOT_PROFILE`), or
+under the user folder for a game started with no profile (a developer's game folder). The user id is `5a3c9e1f0b7d24680000000000000001` in every
 Longshot and Hookshot build (`user_uid` in `host/nn_applet.c`; `host/nn_fs.c` mounts `save/<id>`).
 
 | Where | User folder |
 |---|---|
 | Linux | `$XDG_DATA_HOME/longshot` (`~/.local/share/longshot`), so every build shares it (`saves_dir` in `host/hos_main.c` moves an old `user/` beside the executable there once) |
 | Windows, launched by the launcher | `%APPDATA%\Longshot` (the launcher passes `--user`) |
-| Windows, started directly | `<game folder>\user` |
-| Any, with `--user <folder>` | `<folder>` |
+| Windows, started directly | `%APPDATA%\Longshot` too (`saves_dir` moves an old `<game folder>\user` there once, unless the folder holds an entry of the same name as any of `user`'s already or one is a link; then `<game folder>\user` stays. The move copies each entry under `.moving-<name>`, renames them in, commits by renaming `.moving-names` to `.moved-names`, then deletes the old entries: a start cut anywhere leaves every save in the place the next start uses, and `tests/test_linux_saves_move.py` cuts it at every step) |
+| Any, with `--user <folder>` | `<folder>` (its saves only without a profile) |
 
 ## The script
 

@@ -29,7 +29,6 @@ static std::string mode;
 static unsigned loads, inits, windows, threads, offscreen, signals, sleeps, flushes, waited, prepares;
 static std::vector<std::string> logs;
 void hos_discord_start() {} // Inert optional IPC startup; the fixture exercises display startup only.
-int hos_crash_helper_main(int, char**) { return -1; } // (host/hos_crash_dialog.c: not a crash window's helper, the game itself)
 
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -108,9 +107,12 @@ static void WaitForSingleObject(HANDLE h, unsigned timeout) {
     require(h == &game_token && timeout == INFINITE, "changed game-thread wait");
     ++waited;
 }
+static void hand_over(int, char**) {}   // (host/hos_main.c: started by itself in a version folder, the builder's to start)
+static int bc_claim() { return 0; }   // (host/builder_channel.c: the builder's channel ends kept; none here)
 static void load_longshot_env() {}
-static void hos_game_layout() {}   // (host/game_layout.c: the game folder's cache/ and logs/)
-static void hos_options_choose(int, char**) {}   // (host/options_path.c: the settings file, in the user folder)
+static void profile_start_slot() {}   // (host/hos_main.c: the profile's start_slot handed on)
+static void hos_game_layout() {}   // (game/game_layout.c: the game folder's cache/ and logs/)
+static void hos_options_choose() {}   // (host/options_path.c: the settings file, the profile's)
 static void driver_cache_room() {}   // (host/hos_main.c: the drivers' shader caches' size, #2033)
 static void driver_cache_folder() {}   // (host/hos_main.c: the folder __GL_SHADER_DISK_CACHE_PATH names, made)
 static void driver_env_choose() {}   // (host/hos_main.c: RADV_FORCE_VRS_CONFIG_FILE dropped)

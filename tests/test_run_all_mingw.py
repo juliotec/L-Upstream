@@ -1,12 +1,12 @@
-"""tests/run_all.py gives its checks the clone's llvm-mingw folder as LONGSHOT_MINGW, as nx2/make_game.py's
-bundled_mingw() gives it to the build: CONTRIBUTING.md's second way to get the compiler on Windows. Without it a check
-that builds with toolchain.native_target() (test_spawn_emit, test_fpx_sticky, test_fastfp_fma) asks that folder's clang,
-found on PATH, for the MSVC target, which llvm-mingw has no C++ library for: "fatal error: 'algorithm' file not found".
+"""tests/run_all.py gives its checks the clone's llvm-mingw folder as LONGSHOT_MINGW, as the builder gives it to the
+build: CONTRIBUTING.md's second way to get the compiler on Windows. Without it a check that builds with a native target
+asks that folder's clang, found on PATH, for the MSVC target, which llvm-mingw has no C++ library for: "fatal error:
+'algorithm' file not found".
 
 A copy of run_all.py runs in a scratch repository with a stand-in llvm-mingw/bin/clang and one check that writes down
 the LONGSHOT_MINGW it was started with. On Windows the folder is used when the variable is unset; a variable already
 set wins; LONGSHOT_MSVC=1 (the Visual Studio route) and a folder without its compiler leave it unset. Linux builds
-with its own clang (make_game does not look for the folder there), so it stays unset there.
+with its own clang (the builder does not look for the folder there), so it stays unset there.
 
 python -I -B tests/test_run_all_mingw.py
 """
@@ -31,7 +31,6 @@ class CloneLlvmMingw(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / "tests").mkdir()
-            (tmp / "nx2").mkdir()
             (tmp / "llvm-mingw" / "bin").mkdir(parents=True)
             if compiler:
                 (tmp / "llvm-mingw" / "bin" / CLANG).write_bytes(b"")

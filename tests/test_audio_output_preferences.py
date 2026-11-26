@@ -21,8 +21,8 @@ MAIN = r'''
 #include "options_path.h"
 #include "audio_output_devices.h"
 void hos_log(const char *fmt, ...) { (void)fmt; }
-int main(int argc, char **argv) {
-    if (!getenv("TEST_NO_PATH")) hos_options_choose(argc, argv);
+int main(void) {
+    if (!getenv("TEST_NO_PATH")) hos_options_choose();
     char id[HOS_OUTPUT_ID_CAP] = "not initialized";
     unsigned generation = 0;
     hos_audio_output_preference(id, sizeof id, &generation);
@@ -40,8 +40,8 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='audio-output-preferences-') as temp:
         temp = Path(temp)
-        game, user, relative = temp/'game', temp/'user', temp/'game'/'relative-user'
-        for folder in [game, user, relative]:
+        game, profile, other = temp/'game', temp/'profile', temp/'other'
+        for folder in [game, profile, other]:
             folder.mkdir(parents=True, exist_ok=True)
         source = temp/'main.c'
         source.write_text(MAIN, encoding='utf-8')
@@ -59,11 +59,10 @@ def main():
                             str(ROOT/'host/posix/win32_posix.c'), '-o', str(shim)], check=True)
             command += [str(shim), '-lpthread', '-ldl']
         subprocess.run(command + ['-o', str(executable)], check=True)
-        # Synthetic image marker exercises options_path's relative --user behavior, not game discovery.
         (game/'image.bin').write_text('synthetic fixture marker', encoding='utf-8')
         files = {game/'longshot_options.ini': 'audio_output_device_id=from-game\n',
-                 user/'longshot_options.ini': 'audio_output_device_id=from-user\n',
-                 relative/'longshot_options.ini': 'audio_output_device_id=from-relative-user\n',
+                 profile/'settings.ini': 'audio_output_device_id=from-profile\n',
+                 other/'longshot_options.ini': 'audio_output_device_id=from-user\n',
                  temp/'override.ini': 'audio_output_device_id=from-override\n'}
         for path, text in files.items():
             path.write_text(text, encoding='utf-8')
@@ -71,22 +70,23 @@ def main():
 
         def run(expected, *argv, **overrides):
             env = {k: v for k, v in os.environ.items() if k not in
-                   ('HOS_OPTIONS_FILE', 'TEST_NO_PATH', 'TEST_EXPECTED_ID')}
+                   ('HOS_OPTIONS_FILE', 'LONGSHOT_PROFILE', 'TEST_NO_PATH', 'TEST_EXPECTED_ID')}
             env.update(TEST_EXPECTED_ID=expected, **overrides)
             subprocess.run([str(executable), *map(str, argv)], cwd=temp, env=env, check=True, timeout=30)
 
-        run('from-user', '--user', user)
-        run('from-relative-user', '--user', 'relative-user')
-        run('from-override', '--user', user, HOS_OPTIONS_FILE=str(temp/'override.ini'))
-        run('', '--user', temp/'missing-user')
-        run('', '--user', user, HOS_OPTIONS_FILE=str(temp/'missing.ini'))
-        run('', '--user', user, HOS_OPTIONS_FILE=str(user))   # Directory: unreadable as an ini file.
+        run('from-profile', LONGSHOT_PROFILE=str(profile))
+        run('from-profile', '--user', other, LONGSHOT_PROFILE=str(profile))   # (--user names no settings file)
+        run('from-profile', LONGSHOT_PROFILE=str(profile), HOS_OPTIONS_FILE=str(temp/'override.ini'))   # (a gone switch)
+        run('', LONGSHOT_PROFILE=str(temp/'missing-profile'))
+        run('', LONGSHOT_PROFILE=str(other/'longshot_options.ini'))   # (a file, not a profile: its settings.ini is unreadable)
         run('', TEST_NO_PATH='1')
         run('from-game')
+        run('from-game', '--user', other)
         for path, original in baseline.items():
             assert path.read_bytes() == original, 'Preference lookup must not modify settings'
-        assert not (temp/'missing-user').exists() and not (temp/'missing.ini').exists()
-    print('PASS: startup output preference follows --user, relative --user, HOS_OPTIONS_FILE and missing/empty paths')
+        assert not (temp/'missing-profile').exists()
+    print('PASS: startup output preference follows the profile\'s settings.ini (not --user, not HOS_OPTIONS_FILE), the game '
+          'folder\'s without a profile, and missing/empty paths')
 
 
 if __name__ == '__main__':

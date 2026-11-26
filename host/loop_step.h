@@ -3,7 +3,7 @@
    the clock lands on the same phase and the pose never changes. Under a Frame rate cap above 60 the step is the frame's own time
    (host/nn_vi.c, hos_frame_seconds_bits: 0.36 at 165 fps), the phase moves by it each frame and wraps, so each frame draws a
    different phase of the loop: the Zoras twitch.
-   Two places make the time a skeleton is drawn at (nx2/oot_patches.py, patch_loop_steps and patch_loop_pose):
+   Two places make the time a skeleton is drawn at (the hook sites anim.loop*, game/oot_sites.c):
    - loop_step: the clock's step. The loop of one frame or less takes whole frames of it, the fractions carried per animation
      entry, so it moves as often as at 60 fps and by the same whole steps;
    - loop_pose: the time written for the skeleton to be drawn at. The loop's start: the phase a clock moving in whole frames

@@ -5,15 +5,23 @@ description: Compare the latest stable release against current main (or two othe
 
 # Benchmark a release against main
 
-Both sides are **release builds**: each built by its release's AppImage, the way a player's launcher builds it, never a
-dev pack. Ask before the runs (they run the game). Nothing built leaves the PC.
+Both sides are **release builds**: each built by its release's own builder (`longshot-builder`, or the AppImage of a
+release from before it), the way a player's launcher builds it, never a dev pack. Ask before the runs (they run the game). Nothing built leaves the PC.
 
 ## 1. The two builds
 
 1. The tags: the newest `v*` stable, and main's newest `nightly-<n>-<hash>` (on main's head, or say which commit).
-2. Download each release's `Longshot-<tag>-x86_64.AppImage` and `SHA256SUMS` into a folder of its own on a disk (never
-   `/tmp`); `sha256sum -c --ignore-missing SHA256SUMS`.
-3. Build each, through the queue, beside an existing game folder of the same dump so the 25 GB romfs is hard-linked:
+2. Download each release's builder, `longshot-builder-<tag>-linux-x64` (`Longshot-<tag>-x86_64.AppImage` for a release
+   from before it), and `SHA256SUMS` into a folder of its own on a disk (never `/tmp`);
+   `sha256sum -c --ignore-missing SHA256SUMS`.
+3. Build each through the queue. `longshot-builder` reads a .nup's romfs in place (keep the .nup where it is):
+
+   ```sh
+   python -I scripts/dev.py queue run rel-<side>-build --mode build -- <dir>/longshot-builder-<tag>-linux-x64 build \
+       --game <your .nup> --out <dir>/game-<side> --work <dir>/work-<side> --language en-US --compile-shaders most
+   ```
+
+   An AppImage, beside an existing game folder of the same dump so the 25 GB romfs is hard-linked:
 
    ```sh
    python -I scripts/dev.py queue run rel-<side>-build --mode build -- <AppImage> --cli --nup <your .nup> \

@@ -1,4 +1,4 @@
-"""The quick reads of a sample file, each printed to the terminal (scripts/perf.py stacks, threads, renderer, hotlist).
+"""The quick reads of a sample file, each printed to the terminal (scripts/perf.py stacks, threads, renderer).
 
 stacks    one thread's samples (HOS_SAMPLE=<thread> + HOS_SAMPLE_FILE, host/mkw_glue.c): a line of module+offset frames a
           sample, leaf first. The functions by inclusive share (in the stack at all) and self share (the leaf), and the leaf
@@ -12,12 +12,8 @@ threads   an all-thread file (HOS_SAMPLE_ALL; a profile folder's all.txt; HOS_SL
           how many game threads run and the functions they are in.
 renderer  an all-thread file: for the renderer's threads (named mkw_vk...), the share of samples running
           (leaf in Longshot or the GPU driver), and the functions by inclusive and self share of the running samples.
-hotlist   an all-thread file: for each sample of a game thread running in longshot.exe / longshot, the innermost lifted
-          function (f_...) is charged. Writes the functions that make up the first <share> of those samples, hottest first,
-          one a line, for the lift's A64_HOT_FUNCS (assets/profiles/hot_funcs.txt; their FP ops call the helpers' inline
-          fast paths; with A64_HOT_CHUNK=1 they are compiled together in code_hot.c).
 """
-import collections, itertools, os, stat, sys
+import collections, itertools, os, stat
 from contextlib import ExitStack
 from tempfile import TemporaryFile
 
@@ -178,46 +174,3 @@ def renderer(path, names, top=40):
     for k, c in self_.most_common(top):
         print("  %5.1f%%  %s" % (100.0 * c / max(1, nrun), k[:90]))
 
-
-# ---- hotlist
-
-# (the game's Zstd decoder: the job loop's f_80115bf0 -> f_80115c80 tree. It runs while areas load and stream, which a play
-# profile seldom samples, so it fell to the cold -O1 chunks. At the hot flags a whole decode takes 16% less time and the
-# code is no bigger; the functions match Unicorn on every register and written page either way. Listed whatever the profile says)
-ZSTD_DECODER = ("f_80115c80 f_80109790 f_80113880 f_80116490 f_801099a0 f_8010b160 f_8010ffc0 f_801102e0 f_80110860 "
-                "f_801117a0 f_80112880 f_80113080 f_801156e0 f_80115880 f_8010ad60 f_834ab610 f_834abda0 f_834ab4a0 "
-                "f_834ac0b0 f_834ac110 f_834ac2a0 f_8572f040").split()
-HOT_CAP = 1500   # (the most functions a list holds; tests/test_shipped_hot_list.py checks the committed one against it)
-
-
-def hotlist(path, maps, out_path, share=0.85, cap=HOT_CAP):
-    game = next((m for m in symbols.GAME_MODS if m in maps), None)
-    if not game:
-        sys.exit("no longshot.map (Windows) or longshot binary (Linux) in the maps folder: give --maps (or RX_MAPS)")
-    c = collections.Counter()
-    total = 0
-    for _, th, st in samples.records(path):
-        if th.startswith("mkw_vk"):
-            continue
-        frames = st.split(";")
-        if not frames[0].startswith(game + "+"):
-            continue
-        for f in frames:
-            mod, _, off = f.rpartition("+")
-            if mod != game:
-                continue
-            n = symbols.nearest(maps[game], off) or ""
-            if n.startswith("f_"):
-                c[n] += 1
-                total += 1
-                break
-    out, acc = [], 0
-    for n, k in c.most_common():
-        if acc >= share * total or len(out) >= cap:
-            break
-        out.append(n)
-        acc += k
-    out += [n for n in ZSTD_DECODER if n not in out]
-    with open(out_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("".join(n + "\n" for n in out))
-    print("%d samples in %d functions; %d functions cover %.0f%%" % (total, len(c), len(out), 100.0 * acc / max(1, total)))

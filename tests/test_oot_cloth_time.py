@@ -1,5 +1,5 @@
-"""Below 60 fps, Havok cloth (Link's cap, romfs Phive/Cloth) keeps the game's clock (host/oot_high_fps.h oot_cloth_seconds,
-host/oot_high_fps.c hos_oot_cloth_seconds, nx2/oot_patches.py patch_cloth_time).
+"""Below 60 fps, Havok cloth (Link's cap, romfs Phive/Cloth) keeps the game's clock (game/oot_high_fps.h oot_cloth_seconds,
+game/oot_high_fps.c hos_oot_cloth_seconds, the hook site cloth.time and game/oot_sites.c's hos_site_cloth_time).
 
 The simulate operator's per-frame setup, f_81b3aa48, takes its time (+8) and a count (+24) from its step context and stores, in
 its frame data, the count (+0), count x subSteps x the operator's own count (+24), the time over the instance's scale (+44) and
@@ -10,16 +10,20 @@ float f_83b6ea90 writes at 0x84d61fc8) while that step is over 1; at 60 fps and 
 number, infinite or over 8, the game's time stays. HOS_FPS_CLOTH=0 (or off, false, no) keeps the game's.
 
 The setup is lifted as the game has it (the lines of f_81b3aa48 that make the frame data, and a stand-in for the operator's own
-count), run through patch_file, compiled with stand-ins for guest memory, the repository's switch rule (gpu/vk/compat/
-longshot_env.h) and the host's hos_oot_cloth_seconds (cut from host/oot_high_fps.c), and run with the context's 60th at frame
+count), with the site's hook after the time's load as the lift lowers it (tests/sitehooks.py), compiled with stand-ins for guest memory, the repository's switch rule (gpu/vk/compat/
+longshot_env.h) and the host's hos_oot_cloth_seconds (cut from game/oot_high_fps.c), and run with the context's 60th at frame
 steps from 0.06 (1000 fps) to 4.0 (15 fps, the longest the host gives) and the bad ones, with instance scales of 1 and 2, each
 setup twice from the same context, for HOS_FPS_CLOTH unset, 1, yes, 0 and off. Each frame data must cover the frame's time over
 1 (else the game's 60th), over the instance's scale, its substeps adding up to it, with the game's counts (no more solves), the
-context left as it was and the second setup the same as the first. The patch hooks the context's time once, declares the hook,
-and leaves a file patched before, or whose code differs, as it is.
+context left as it was and the second setup the same as the first. The setup with the text patch the site replaced (OLD_LOAD,
+as main had it in place of the load) gives the same frame data in every case.
 
-python -I -B tests/test_oot_cloth_time.py
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_oot_cloth_time.py [--cc clang] [--cargo cargo]
 """
+import argparse
 import math
 import os
 import shutil
@@ -30,10 +34,19 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
 from srccut import block  # noqa: E402
+from sitecheck import site, callback, slot  # noqa: E402
+import sitehooks  # noqa: E402
+
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+CC = "clang"
+
+LOAD = "    { { uint64_t _v=recomp_load64(c,(c->x[22]+8ULL)); a64_vset64(c->vreg[0],_v); } }\n"   # (ldr d0, [x22, #8])
+# (the text patch's load on main)
+OLD_LOAD = ("    { { uint64_t _v=recomp_load64(c,(c->x[22]+8ULL)); _v=(_v&0xffffffff00000000ULL)|hos_oot_cloth_seconds((uint32_t)_v, "
+            "(uint32_t)recomp_load32(c,g_module_base + 0x84d61fc8ULL)); a64_vset64(c->vreg[0],_v); } }"
+            "   /* (nx2/oot_patches.py: the cloth's time below 60 fps) */\n")
 
 # (f_81b3aa48's lines that make the frame data, as the lift writes them: x1 the instance, x4 the step context, x5 the frame
 # data; f_81b44f80 hands back the config's subSteps. The game's x9, the operator's own count, is a min and max of three of
@@ -157,28 +170,37 @@ SWITCH = ("unset", "1", "yes", "0", "off")
 
 
 def hos_cloth(source):
-    """host/oot_high_fps.c's hos_oot_cloth_seconds, when there (the patched setup calls it)"""
+    """game/oot_high_fps.c's hos_oot_cloth_seconds, when there (the patched setup calls it)"""
     if "uint32_t hos_oot_cloth_seconds(" not in source:
         return ""
     return block(source, "uint32_t hos_oot_cloth_seconds(") + "\n"
 
 
 def compiler():
-    return shutil.which("gcc") or shutil.which("clang")
+    return shutil.which(CC)
+
+
+def setup(old=False):
+    """the setup with the site's hook after the time's load (its callback and flag on), or with the text patch's load"""
+    if old:
+        return LIFTED_CLOTH.replace(LOAD, OLD_LOAD, 1).replace('#include "a64.h"\n', "")
+    x = site("cloth.time", "f_81b3aa48", "after", 0x220)
+    return (callback("int hos_site_cloth_time(") + "\n" + slot(x)
+            + LIFTED_CLOTH.replace(LOAD, LOAD + sitehooks.line(x) + "\n", 1).replace('#include "a64.h"\n', ""))
 
 
 class ClothTimeTests(unittest.TestCase):
-    def frames(self, switch):
+    def frames(self, switch, old=False):
         """[(step, the game's count, subSteps, own count, count, own, total, time, substep)] at HOS_FPS_CLOTH=switch"""
-        patched = oot_patches.patch_file(LIFTED_CLOTH, "code_cloth.c", False)[0]
-        host = (ROOT / "host" / "oot_high_fps.c").read_text(encoding="utf-8")
-        program = RUNTIME + hos_cloth(host) + patched.replace('#include "a64.h"\n', "") + FRAMES
+        host = (ROOT / "game" / "oot_high_fps.c").read_text(encoding="utf-8")
+        program = RUNTIME + hos_cloth(host) + setup(old) + FRAMES
         with tempfile.TemporaryDirectory(prefix="longshot-cloth-") as tmp:
             tmp = Path(tmp)
             (tmp / "cloth.c").write_text(program, encoding="utf-8")
             binary = tmp / "cloth.exe"
             build = subprocess.run([compiler(), "-std=gnu11", "-Wall", "-Wno-unused-function", "-O1", "-I",
-                                    str(ROOT / "host"), str(tmp / "cloth.c"), "-o", str(binary), "-lm"],
+                                    str(ROOT / "host"), "-I", str(ROOT / "game"), str(tmp / "cloth.c"), *sitehooks.objects(tmp, program), "-o",
+                                    str(binary), "-lm"],
                                    text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             env = dict(os.environ)
@@ -216,20 +238,21 @@ class ClothTimeTests(unittest.TestCase):
                     wrong.append("%s: %s" % (at, "a second setup stored something else" if not same else "the context changed"))
         self.assertEqual(wrong, [], "%d frame data wrong:\n%s" % (len(wrong), "\n".join(wrong)))
 
-    def test_patch(self):
-        out, n = oot_patches.patch_cloth_time(LIFTED_CLOTH)
-        self.assertEqual(n, 1)
-        self.assertEqual(out.count(oot_patches.CLOTH_NEW), 1)
-        self.assertNotIn(oot_patches.CLOTH_OLD, out)
-        self.assertIn(oot_patches.CLOTH_DECL, out)
-        self.assertLess(out.index("hos_oot_cloth_seconds("), out.index("recomp_stp32(c,(_b+_o)"))   # (before the time is stored)
-        self.assertEqual(oot_patches.patch_cloth_time(out), (out, 1))   # (patched before: as it is)
-        other = LIFTED_CLOTH.replace("(c->x[22]+8ULL)", "(c->x[22]+12ULL)")   # (another game version's code)
-        self.assertEqual(oot_patches.patch_cloth_time(other), (other, 0))
-        none = LIFTED_CLOTH.replace("void f_81b3aa48", "void f_91b3aa48")
-        self.assertEqual(oot_patches.patch_cloth_time(none), (none, 0))
-        self.assertEqual(oot_patches.patch_file(LIFTED_CLOTH, "code_cloth.c", False)[1]["cloth time"], 1)
+    def test_as_the_text_patch(self):
+        if not compiler():
+            self.skipTest("no C compiler")
+        for switch in SWITCH:
+            self.assertEqual(self.frames(switch, old=True), self.frames(switch), "HOS_FPS_CLOTH %s" % switch)
+
+    def test_site(self):
+        self.assertIn("s0:f32:seconds", site("cloth.time", "f_81b3aa48", "after", 0x220).args)
 
 
 if __name__ == "__main__":
-    raise SystemExit(unittest.main(verbosity=1))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cc", default="clang")
+    ap.add_argument("--cargo")
+    args, rest = ap.parse_known_args()
+    CC = args.cc
+    sitehooks.use(args.cc, args.cargo)
+    raise SystemExit(unittest.main(argv=[sys.argv[0]] + rest, verbosity=1))

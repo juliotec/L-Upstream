@@ -114,6 +114,32 @@ static inline void hd_rumble_encode(const float v[4], int percent, uint8_t out[4
     out[3] = (uint8_t)(la9 & 0xFF);
 }
 
+/* Gain on RenHDrum's stock-SDL packets, after its envelope and NX2 curves. Standard amplitude codes
+   use the inverse of hd_rumble_amp_code's three logarithmic ranges. Keep frequency bits intact. */
+static inline float hd_rumble_amp_value(int code) {
+    if (code <= 0) return 0.0f;
+    if (code == 1) return 0.0078f;
+    if (code < 16) return exp2f(code / 4.0f) / 119.6f;
+    if (code < 32) return exp2f(code / 16.0f) / 17.0f;
+    return exp2f(code / 32.0f) / 8.7f;
+}
+static inline void hd_rumble_scale_standard(uint8_t side[4], int percent) {
+    if (percent == 100) return;
+    const float gain = percent / 100.0f;
+    const float low = hd_rumble_amp_value(2 * (side[3] - 0x40) + (side[2] >> 7)) * gain;
+    const float high = hd_rumble_amp_value(side[1] >> 1) * gain;
+    const float total = low + high;
+    const int la = hd_rumble_amp_code(total > 1.0f ? low / total : low);
+    const int ha = hd_rumble_amp_code(total > 1.0f ? high / total : high);
+    if (!la && !ha) {
+        hd_rumble_neutral(side);
+        return;
+    }
+    side[1] = (uint8_t)((side[1] & 1) | (ha << 1));
+    side[2] = (uint8_t)((side[2] & 0x7f) | ((la & 1) << 7));
+    side[3] = (uint8_t)(0x40 + la / 2);
+}
+
 /* The packet SDL's effect call takes, from the game's left and right sides' bytes: a Pro Controller (and a pair)
    plays each side on its own; a single Joy-Con plays its own side (SDL's packet has both: it gets it in both). For a
    single Joy-Con, host/pad_sdl.c passes the two sides merged (hd_rumble_merge) as both. */

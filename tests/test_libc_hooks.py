@@ -1,34 +1,27 @@
-"""The host's memcpy, memmove, memset, memcmp, strlen and strcmp (host/nn_libc.c's ENTRY_HOOK_SYMs) are spliced at the entry
-of the SDK's own functions (nx2/entry_hooks.py), do what the SDK's do, and mark what they write as the lifted stores do.
+"""The host's memcpy, memmove, memset, memcmp, strlen and strcmp (host/nn_libc.c's ENTRY_HOOK_SYMs), which the lift calls
+at the entry of the SDK's own functions (builder/crates/edits entry_hooks.rs, with its own tests), do what the SDK's do, and
+mark what they write as the lifted stores do. Checked here, with no game:
 
-The hooks were defined but nothing in the lift called them. Checked here, with no game:
-
-- The splice. A real a64_lift.Lifter over a made-up image (no translator): entry_hooks.add finds each hooked symbol where the
-  sdk module defines it, and the emit starts that function's C with the hook's call, the rest of its text unchanged; a
-  symbol another module defines, an HLE'd one, one that is no entry and one nobody defines are left out. The table goes to
-  the emit's new processes (chunks.EMIT_TABLES), lift.py installs and adds it in the standalone lift, and the lift key
-  names the hooks (a new one lifts again).
+- The hooks the host defines, with their size gates: memset from 8 bytes, memcmp from 16, the others at any size.
 - What they do, built from host/nn_libc.c as it is (gcc, any OS) over a guest window, against a byte-at-a-time model of
-  the SDK's functions as lifted code runs them: each byte stored through the soft write watch's own mark (nx2/rtgen.py's
-  A64_MARK for the 64-bit window). Sizes 0 to 300 and across pages up to 12 KB, every alignment of source and destination
+  the SDK's functions as lifted code runs them: each byte stored through the soft write watch's own mark (builder/rt/a64.h's
+  A64_MARK). Sizes 0 to 300 and across pages up to 12 KB, every alignment of source and destination
   mod 16, every overlap of a copy in both directions, memset's value as an int with high bits; memcmp and strcmp with the
   first difference at each place, bytes above 0x7f (an unsigned compare) and the result zero-extended in x0 as the SDK's
   w0 leaves it. After each call the window and the page marks are byte for byte the model's, and the marks are set after
   the data is in place (host/hos_mem.c's hos_mark_written, cut out as it is). Copies and fills over LIBC_PIECE (kept below
   the size where Windows' memmove stops caching what it writes) go in pieces with an interrupt poll between them, every
   overlap of a piece boundary both ways; memset under 8 bytes and memcmp under 16 are declined (nothing written or
-  marked) and the spliced line tests the size before it calls.
-- The spliced line in a function shaped like the lifted ones: the host does the call and the function returns; with
-  HOS_GUEST_LIBC=1 every hook declines (nothing written, nothing marked) and the function's own code runs. The first call
-  logs which of the two it is, once.
+  marked) and the entry's test of the size comes before it calls.
+- The entry's code in a function shaped like the lifted ones (if ([x2 >= least &&] entry_sym_<sym>(c)) return;, as the
+  lift writes it): the host does the call and the function returns; with HOS_GUEST_LIBC=1 every hook declines (nothing
+  written, nothing marked) and the function's own code runs. The first call logs which of the two it is, once.
 
 python -I -B tests/test_libc_hooks.py [--cc gcc]
 """
 import argparse
-import ast
 import os
 import re
-import struct
 import subprocess
 import sys
 import tempfile
@@ -37,92 +30,35 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
-sys.path.insert(0, str(ROOT / "nx2"))
 from srccut import block  # noqa: E402
-import kit  # noqa: E402,F401  (a64-kit on the path)
-import a64_lift  # noqa: E402
-import entry_hooks  # noqa: E402
 
 ENV_ON_H = str(ROOT / "gpu" / "vk" / "compat" / "longshot_env.h")
 HOOKS = {"memcpy": 0, "memmove": 0, "memset": 8, "memcmp": 16, "strlen": 0, "strcmp": 0}   # (with their size gates)
 CC = "gcc"
 
-# ---- the splice ------------------------------------------------------------------------------------------------------
-
-BASE = 0x80000000
-SDK = BASE + 0x10000
-RET = 0xd65f03c0
-F_MEMCPY, F_STRCMP, F_MEMSET_MAIN, F_STRLEN, F_PLAIN = SDK + 0x100, SDK + 0x200, BASE + 0x300, SDK + 0x400, SDK + 0x500
-NOT_ENTRY = SDK + 0x608   # (inside F_MEMMOVE_BODY: an address the lift has no function at)
+HOOK_RE = re.compile(r"^ENTRY_HOOK_SYM(?:\((\w+)\)|_FROM\((\w+),\s*(\d+)\))", re.M)
 
 
-def add_x0(n):
-    return 0x91000000 | (n << 10)   # add x0, x0, #n
+def hooks():
+    """{symbol: the smallest size (x2) the hook is called for, 0 for any} of the hooks host/*.c and game/*.c define
+    (lines that start ENTRY_HOOK_SYM, as the lift reads them)"""
+    out = {}
+    for d in (ROOT / "host", ROOT / "game"):
+        for path in sorted(d.glob("*.c")):
+            for plain, sym, least in HOOK_RE.findall(path.read_text(encoding="utf-8", errors="replace")):
+                out[plain or sym] = int(least) if sym else 0
+    return out
 
 
-WORDS = {F_MEMCPY: add_x0(1), F_MEMCPY + 4: RET, F_STRCMP: add_x0(2), F_STRCMP + 4: RET,
-         F_MEMSET_MAIN: add_x0(3), F_MEMSET_MAIN + 4: RET, F_PLAIN: add_x0(5), F_PLAIN + 4: RET,
-         SDK + 0x600: add_x0(6), SDK + 0x604: add_x0(7), NOT_ENTRY: RET}
+def line(sym, least=0):
+    """The entry's code the lift writes for a hooked function: with a size gate the call is made only from it on"""
+    gate = "c->x[2] >= %dULL && " % least if least else ""
+    return "    { extern int entry_sym_%s(Ctx *A64_NOESC); if (%sentry_sym_%s(c)) return; }" % (sym, gate, sym)
 
 
-class Module:
-    def __init__(self, name, base):
-        self.name, self.base = name, base
-
-
-class Image:
-    """Three modules' worth of symbols: memcpy and strcmp the sdk's functions, memset main's own, strlen HLE'd, memmove
-    defined in the middle of other code (no entry), memcmp nowhere"""
-    def __init__(self):
-        main, sdk = Module("main", BASE), Module("sdk", SDK)
-        self.modules = [main, sdk]
-        self.exports = {
-            "memcpy": (sdk, {"value": F_MEMCPY - SDK, "type": "func"}),
-            "strcmp": (sdk, {"value": F_STRCMP - SDK, "type": "func"}),
-            "memset": (main, {"value": F_MEMSET_MAIN - BASE, "type": "func"}),
-            "strlen": (sdk, {"value": F_STRLEN - SDK, "type": "func"}),
-            "memmove": (sdk, {"value": NOT_ENTRY - SDK, "type": "func"}),
-        }
-        self.entries = {F_MEMCPY, F_STRCMP, F_MEMSET_MAIN, F_PLAIN, SDK + 0x600}
-        self.hooks = {F_STRLEN: "imp_strlen"}
-        self.names = {}
-
-    def word(self, pc):
-        return WORDS[pc]
-
-    def in_code(self, pc):
-        return pc in WORDS
-
-    def read(self, pc, n):
-        return b"".join(struct.pack("<I", WORDS[pc + 4 * i]) for i in range(n // 4))
-
-
-def pydef(text, name):
-    """The source of a top-level Python function"""
-    tree = ast.parse(text)
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    return ast.get_source_segment(text, node)
-
-
-def texts():
-    return {w: ("    c->x[0] += %d;" % ((w >> 10) & 0xFFF), 0) for w in WORDS.values() if (w >> 24) == 0x91}
-
-
-class Splice(unittest.TestCase):
-    def setUp(self):
-        self.lifter = a64_lift.Lifter(Image())
-        self.found = entry_hooks.add(self.lifter, self.lifter.img)
-        self.lifter.discover()
-
+class Host(unittest.TestCase):
     def test_the_hooks_host_defines(self):
-        self.assertEqual(entry_hooks.hooks(), HOOKS)
-        self.assertEqual(entry_hooks.hooked_symbols(), ["memcmp>=16", "memcpy", "memmove", "memset>=8", "strcmp", "strlen"])
-
-    def test_a_gated_line(self):
-        """memset under 8 bytes stays in the lifted code: the size is tested in the line, before any call"""
-        text = entry_hooks.line("memset", 8)
-        self.assertIn("if (c->x[2] >= 8ULL && entry_sym_memset(c)) return;", text)
-        self.assertNotIn("c->x[2]", entry_hooks.line("memcpy"))
+        self.assertEqual(hooks(), HOOKS)
 
     def test_pieces_below_the_non_temporal_size(self):
         """Windows' memmove stores past the cache from about 1.75 MB (measured): a copy goes in pieces well below it"""
@@ -131,59 +67,15 @@ class Splice(unittest.TestCase):
         self.assertIsNotNone(m, "host/nn_libc.c: no LIBC_PIECE")
         self.assertLessEqual(int(m.group(1)) << int(m.group(2)), 1 << 20)
 
-    def test_found_in_the_sdk_only(self):
-        self.assertEqual(self.found, {"memcpy": F_MEMCPY, "strcmp": F_STRCMP})
-        self.assertEqual(sorted(self.lifter.entry_hooks), [F_MEMCPY, F_STRCMP])
-        self.assertTrue({F_MEMCPY, F_STRCMP} <= self.lifter.no_local)   # (the arguments are read from the context)
-        self.assertNotIn(F_MEMSET_MAIN, self.lifter.no_local)
-
-    def test_the_function_starts_with_its_hook(self):
-        for e, sym in ((F_MEMCPY, "memcpy"), (F_STRCMP, "strcmp")):
-            text = a64_lift.Lifter.emit_function(self.lifter, e, texts())[0]
-            plain = BASE_EMIT(self.lifter, e, texts())[0]
-            lines = text.splitlines()
-            self.assertEqual(lines[0], "void f_%08x(Ctx *__restrict A64_NOESC c) {" % e)
-            self.assertEqual(lines[1], entry_hooks.line(sym))
-            self.assertIn("if (entry_sym_%s(c)) return;" % sym, lines[1])
-            self.assertEqual([lines[0]] + lines[2:], plain.splitlines())   # (the lifted function kept behind it, as it was)
-        self.assertEqual(self.lifter.stats["entry_hooks"], 2)
-
-    def test_others_unchanged(self):
-        for e in (F_MEMSET_MAIN, F_PLAIN):
-            self.assertEqual(a64_lift.Lifter.emit_function(self.lifter, e, texts()), BASE_EMIT(self.lifter, e, texts()))
-            self.assertNotIn("entry_sym_", a64_lift.Lifter.emit_function(self.lifter, e, texts())[0])
-
-    def test_sent_to_the_emit_processes(self):
-        import chunks
-        self.assertIn("entry_hooks", chunks.EMIT_TABLES)
-
-    def test_the_lift_splices_them(self):
-        lift = (ROOT / "nx2" / "lift.py").read_text(encoding="utf-8")
-        tree = ast.parse(lift)
-        top = [ast.unparse(n) for n in tree.body if isinstance(n, ast.Expr)]
-        self.assertIn("entry_hooks.install()", top)   # (at module level: the emit's new processes run it too)
-        self.assertLess(top.index("lift_fixes.install()"), top.index("entry_hooks.install()"))
-        main = pydef(lift, "main")
-        self.assertIn("entry_hooks.add(L, img)", main)
-        self.assertLess(main.index("L = a64_lift.Lifter(img)"), main.index("entry_hooks.add(L, img)"))
-        self.assertLess(main.index("entry_hooks.add(L, img)"), main.index("discover.discover(L, "))   # (nx2/discover.py: L.discover())
-        key = pydef((ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8"), "lift_key")
-        self.assertIn("entry_hooks.hooked_symbols()", key)
-
-
-BASE_EMIT = a64_lift.Lifter.emit_function   # (before the wrap: a64-kit's own)
-entry_hooks.install()                       # (as nx2/lift.py does at its start)
-
 
 # ---- what the hooks do -----------------------------------------------------------------------------------------------
 
 def mark_macro():
-    """nx2/rtgen.py's A64_MARK for the 64-bit window: what every lifted store marks"""
-    tree = ast.parse((ROOT / "nx2" / "rtgen.py").read_text(encoding="utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "MARK_NATIVE_64" for t in node.targets):
-            return node.value.value
-    raise SystemExit("FAIL: nx2/rtgen.py has no MARK_NATIVE_64")
+    """builder/rt/a64.h's A64_MARK (the 64-bit window's soft write watch): what every lifted store marks"""
+    header = (ROOT / "builder" / "rt" / "a64.h").read_text(encoding="utf-8")
+    start = header.index("extern uint8_t a64_dirty[A64_DIRTY_PAGES];")
+    end = header.index("#endif", header.index("#else\n#define A64_MARK(a, n)", start)) + len("#endif")
+    return header[start:end]
 
 
 HOS_H = r'''
@@ -445,7 +337,7 @@ static void strings(void) {
     }
 }
 
-/* the line nx2/entry_hooks.py splices, in a function shaped as the lifted ones */
+/* the entry's code the lift writes, in a function shaped as the lifted ones */
 @SPLICED@
 
 int main(int argc, char **argv) {
@@ -529,8 +421,8 @@ def run_fixture(cc):
     with tempfile.TemporaryDirectory(prefix="libc-hooks-") as tmp:
         tmp = Path(tmp)
         (tmp / "hos.h").write_text(HOS_H.replace("@MARK@", mark_macro()), encoding="utf-8")
-        gates = entry_hooks.hooks()
-        spliced = SPLICED.replace("@LINE@", entry_hooks.line("memcpy")).replace("@LINE_MEMSET@", entry_hooks.line("memset", gates["memset"]))
+        gates = hooks()
+        spliced = SPLICED.replace("@LINE@", line("memcpy")).replace("@LINE_MEMSET@", line("memset", gates["memset"]))
         fixture = FIXTURE.replace("@MARK_WRITTEN@", mark).replace("@SPLICED@", spliced)
         fixture = fixture.replace("@MEMSET_MIN@", str(gates["memset"])).replace("@MEMCMP_MIN@", str(gates["memcmp"]))
         (tmp / "fixture.c").write_text(fixture, encoding="utf-8")

@@ -1,5 +1,5 @@
 """scripts/fetch.py fsr (AMD's FSR runtime): its file table, the SHA-256 checks, the retries, the copy into a game folder
-and AMD's license accepted first (here and in make_game.py), without the network.
+and AMD's license accepted first (here, and in longshot-builder: the same files), without the network.
 
 Run with: python -I tests/test_ffx_sdk.py
 """
@@ -7,8 +7,8 @@ import hashlib
 import importlib.util
 import io
 import os
+import sys
 from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest import mock
@@ -111,36 +111,6 @@ class FetchTests(unittest.TestCase):
             self.assertTrue(fsr.complete(tmp))
 
 
-class MakeGameTests(unittest.TestCase):
-    """nx2/make_game.py --fetch-fsr-runtime: AMD's runtime goes into the game folder only once it was fetched whole"""
-    def test_place_fsr_runtime(self):
-        spec = importlib.util.spec_from_file_location("make_game_ffx_under_test", ROOT / "nx2" / "make_game.py")
-        make_game = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(make_game)
-        data = {p: ("file %s" % p).encode() for p, _, _ in fsr.files}
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(fsr, "files", fake_table(data)), \
-                mock.patch.object(make_game, "ffx_script", return_value=fsr), \
-                mock.patch.dict(os.environ, {"LONGSHOT_FFX_SDK": os.path.join(tmp, "sdk")}):
-            game = os.path.join(tmp, "game")
-            os.makedirs(game)
-            self.assertIsNone(make_game.place_fsr_runtime(game))   # (nothing fetched: nothing placed)
-            fsr.fetch(os.path.join(tmp, "sdk"), opener=Opener(data), say=lambda _: None)
-            placed = make_game.place_fsr_runtime(game)
-            if make_game.LINUX:
-                self.assertIsNone(placed)   # (AMD's runtime is Windows' alone)
-            else:
-                self.assertEqual(placed, game)
-                for _, _, name in fsr.files:
-                    self.assertTrue(os.path.isfile(os.path.join(game, name)), name)
-
-
-def load_make_game():
-    spec = importlib.util.spec_from_file_location("make_game_ffx_license_under_test", ROOT / "nx2" / "make_game.py")
-    make_game = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(make_game)
-    return make_game
-
-
 class LicenseTests(unittest.TestCase):
     """AMD's license accepted before anything of AMD's is downloaded: --accept-amd-license, as NVIDIA's for DLSS"""
     def test_accepted(self):
@@ -160,21 +130,17 @@ class LicenseTests(unittest.TestCase):
             self.assertEqual(fetch.main(["fsr", "--game", "unused"]), 2)
         self.assertIn("--accept-amd-license", err.getvalue())
 
-    def test_make_game_fails_before_any_download(self):
-        make_game = load_make_game()
-        ffx = mock.Mock()
-        with mock.patch.object(make_game, "ffx_script", return_value=ffx), \
-                mock.patch.object(make_game, "say") as said, self.assertRaises(SystemExit):
-            make_game.fetch_fsr_runtime(SimpleNamespace(fetch_fsr_runtime=True, accept_amd_license=False))
-        ffx.fetch.assert_not_called()
-        self.assertIn("AMD FSR 4 needs AMD's license accepted first (--accept-amd-license).", str(said.call_args))
 
-    def test_make_game_fetches_once_accepted(self):
-        make_game = load_make_game()
-        ffx = mock.Mock(notice="notice")
-        with mock.patch.object(make_game, "ffx_script", return_value=ffx), mock.patch("sys.stdout", io.StringIO()):
-            make_game.fetch_fsr_runtime(SimpleNamespace(fetch_fsr_runtime=True, accept_amd_license=True))
-        ffx.fetch.assert_called_once()
+class BuilderTests(unittest.TestCase):
+    """longshot-builder downloads the same files at the same commit for a player's build (runtimes.rs, which also refuses
+    to download before the license is accepted, --accept-licenses, and leaves a player's own DLL alone: its own tests)"""
+    def test_the_builder_pins_the_same_files(self):
+        sys.path.insert(0, str(ROOT / "tests"))
+        from vendor_pins import builder_pins
+        repo, commit, files = builder_pins("FSR")
+        self.assertEqual(commit, fsr.commit)
+        self.assertIn(repo, fsr.base)
+        self.assertEqual([tuple(f) for f in files], [tuple(f) for f in fsr.files])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-"""A jump's takeoff above 60 fps (nx2/oot_patches.py patch_jump_speed and patch_takeoff_velocity, host/oot_high_fps.h
-oot_takeoff_match and oot_takeoff_rest_speed, host/oot_high_fps.c hos_oot_jump_speed and hos_oot_takeoff_velocity).
+"""A jump's takeoff above 60 fps (the hook sites jump.takeoffSpeed and jump.takeoffVelocity, game/oot_sites.c, game/oot_high_fps.h
+oot_takeoff_match and oot_takeoff_rest_speed, game/oot_high_fps.c hos_oot_jump_speed and hos_oot_takeoff_velocity).
 
 f_80b97d10 computes a jump's takeoff speed (sqrt(2 g h) - g dt / 2 along the character's up). f_804f5030 hands Havok Link's
 body that speed on the takeoff's update (the world's set-velocity call). On a backflip the next update hands no vertical
@@ -8,11 +8,12 @@ met the slope from the lower hop, landed and took off a second time (2.8 m again
 updates hand the takeoff speed less each step's gravity, which the variable step already moves as at 60. The patches have
 f_80b97d10 hand the speed to the host and f_804f5030 hand it each body's velocity before the set-velocity call; a body handed
 the takeoff speed in the takeoff's own update gets, on its next update, the rest of a 60 fps takeoff step's rise when the
-game asks no vertical speed there.
+game asks no vertical speed there. The sites (game/sites/sites.toml) are where the text patches they
+replaced put their calls: after f_80b97d10's last store of the vector, and before f_804f5030's set-velocity call.
 
-An authored f_80b97d10 (its last store of the vector as the lift writes it, in both of its spellings of x19) and an authored
-f_804f5030 (the velocity built on the stack and the set-velocity call as the lift writes them) go through patch_file and are
-compiled with the host's part cut from host/oot_high_fps.c; guest memory, the time object, the host clock, the switches and
+An authored f_80b97d10 (its last store of the vector as the lift writes it) and an authored f_804f5030 (the velocity built
+on the stack and the set-velocity call as the lift writes them) get each site's hook as the lift lowers it (tests/sitehooks.py) and are
+compiled with the sites' callbacks (game/oot_sites.c) and the host's part cut from game/oot_high_fps.c; guest memory, the time object, the host clock, the switches and
 Havok's call (it keeps the velocity it is handed) are stand-ins. Each case takes off at a frame rate and plays the takeoff's
 update, 0.2 ms after f_80b97d10 as in the game, and the update after it, a frame later:
 - a backflip above 60 (94, 120, 144, 240 and 1000 fps, a takeoff of 5 m/s, a takeoff speed 1.5% under the jump's, a next
@@ -25,31 +26,33 @@ update, 0.2 ms after f_80b97d10 as in the game, and the update after it, a frame
   at the next takeoff;
 - a speed that is not the takeoff's (a step up a stair), a takeoff more than 50 ms before (it then no longer waits), a next
   update more than 50 ms after it, no takeoff, and HOS_FPS_TAKEOFF=0 are left as the game has them;
-- unpatched, and with only f_80b97d10's edit, the build fails the 94 fps check (the bug, and the speed alone does nothing);
-- the patches are scoped to their functions, a second run changes nothing, and a changed anchor is left alone with a warning.
+- without the hooks, with only jump.takeoffSpeed's, and with both sites' flags off, the build fails the 94 fps check (the bug,
+  and the speed alone does nothing);
+- the sites are at those places (the speed site's signature ends with the store; the velocity site, with no words of its
+  own, is the second of the two set-velocity calls through the world's vtable slot 0x190 after physics.driveTargetOther's
+  point: a third, or one gone, stops the lift).
 No game files or lifted function body are used.
 
-python -I -B tests/test_jump_takeoff_step.py [--cc gcc]
+python -I -B tests/test_jump_takeoff_step.py [--cc clang] [--cargo cargo]
 """
 import argparse
-import contextlib
-import io
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
 from srccut import between  # noqa: E402
+from sitecheck import callback, site, slot  # noqa: E402
+import sitehooks  # noqa: E402
 
-# (the lift's two spellings of x19 in f_80b97d10: kept as the edits expect it, or in a register local)
-SPELLINGS = (("c->x[19]", ""), ("x19_", "    uint64_t x19_ = c->x[19];\n"))
+# (the set-velocity call as the lift writes it at 0x804f6694: through x8, its return address 0x804f6698)
+CALL = "{ uint64_t _t = c->x[8]; c->x[30] = 0x804f6698ULL; A64_ICALL(c, _t); }\n"
+STORE = "    { { uint64_t _v=0; memcpy(&_v,&c->vreg[2][0],4); recomp_store32(c,(c->x[19]+8ULL),_v); } }\n"
 
 
 def takeoff(name="f_80b97d10", x="c->x[19]", locals_="", offset=8):
@@ -63,7 +66,7 @@ def takeoff(name="f_80b97d10", x="c->x[19]", locals_="", offset=8):
             + "    return;\n}\n")
 
 
-def setter(name="f_804f5030", site=oot_patches.TAKEOFF_VELOCITY_SITE):
+def setter(name="f_804f5030", site=CALL):
     """(an authored f_804f5030: the body's object in x19, its linear velocity (test_vel) built at sp+192 and the set-velocity call,
     as the lift writes it, through the world's vtable +0x190 (x8))"""
     return ("void %s(Ctx *__restrict A64_NOESC c) {\n" % name
@@ -78,8 +81,15 @@ def setter(name="f_804f5030", site=oot_patches.TAKEOFF_VELOCITY_SITE):
 UNRELATED = takeoff("f_90b97d10") + setter("f_904f5030")
 
 
-def lifted(x, locals_):
-    return '#include "a64.h"\n' + takeoff(x=x, locals_=locals_) + setter() + UNRELATED
+def lifted(speed=None, velocity=None):
+    """the two functions (and two unrelated ones), with the hook of each site given after the store / before the call"""
+    text = takeoff()
+    if speed is not None:
+        text = text.replace(STORE, STORE + sitehooks.line(speed) + "\n", 1)
+    call = setter()
+    if velocity is not None:
+        call = call.replace(CALL, sitehooks.line(velocity) + "\n" + CALL, 1)
+    return text + call + UNRELATED
 
 
 FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS   /* (getenv, with the Windows C runtime) */
@@ -234,12 +244,10 @@ int main(int argc, char **argv) {
 
 def build(cc, lifted_text, host, directory, tag):
     source, binary = Path(directory) / ("fixture-%s.c" % tag), Path(directory) / ("fixture-%s.exe" % tag)
-    text = lifted_text.replace('#include "a64.h"\n', "")
-    for decl in (oot_patches.TAKEOFF_DECL, oot_patches.TAKEOFF_VELOCITY_DECL):
-        text = text.replace(decl, "")
-    source.write_text(FIXTURE.replace("@HOST@", host).replace("@LIFTED@", text), encoding="utf-8")
+    text = FIXTURE.replace("@HOST@", host).replace("@LIFTED@", lifted_text)
+    source.write_text(text, encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-const-variable",
-                    "-I", str(ROOT / "host"), str(source), "-o", str(binary)]
+                    "-I", str(ROOT / "host"), "-I", str(ROOT / "game"), str(source), *sitehooks.objects(directory, text), "-o", str(binary)]
                    + ([] if os.name == "nt" else ["-lm"]), check=True)   # (Windows: no separate maths library)
     return binary
 
@@ -248,66 +256,46 @@ def run(binary, *args, env=None):
     return subprocess.run([str(binary), *args], text=True, capture_output=True, timeout=30, env=env)
 
 
-def warned(source, text):
-    output, counts, _ = oot_patches.patch_file(source, "code_006.c")
-    buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        oot_patches.report([Path("code_006.c")], [counts])
-    return output, counts, text in buffer.getvalue()
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    text = (ROOT / "host" / "oot_high_fps.c").read_text(encoding="utf-8")
-    host = between(text, "/* A jump's takeoff speed (host/oot_high_fps.h oot_takeoff_rest_speed)", "static volatile uint64_t link_body;")
+    sitehooks.use(args.cc, args.cargo)
+    speed = site("jump.takeoffSpeed", "f_80b97d10", "after", 0x94)
+    velocity = site("jump.takeoffVelocity", "f_804f5030", "before")
+    assert speed.signature[-1] == (0xbd000a62, 0xffffffff), "jump.takeoffSpeed is not after str s2, [x19, #8]"
+    assert speed.signature_offset + 4 * (len(speed.signature) - 1) == speed.offset
+    # (before the set-velocity call: in the driven body's function, the second call through the world's vtable slot 0x190
+    # after its other copy; the lift finds it, and builder/crates/sites/src/tests.rs checks how an anchor is found)
+    assert velocity.inside == "physics.driveTargetOther" and velocity.signature is None and not velocity.guards
+    p = velocity.point
+    assert (p.kind, p.target, p.start, p.end, p.ordinal, p.of, p.shift) == ("vcall", 0x190, "physics.driveTargetOther", None, 1, 2,
+                                                                           0), \
+        "jump.takeoffVelocity is not before the set-velocity call: " + p.describe()
+    text = (ROOT / "game" / "oot_high_fps.c").read_text(encoding="utf-8")
+    host = between(text, "/* A jump's takeoff speed (game/oot_high_fps.h oot_takeoff_rest_speed)", "static volatile uint64_t link_body;")
+    callbacks = "\n" + callback("int hos_site_jump_takeoff_speed(") + "\n" + callback("int hos_site_jump_takeoff_velocity(") + "\n"
+    on, off = callbacks + slot(speed) + slot(velocity), callbacks + slot(speed, 0) + slot(velocity, 0)
     off_env = dict(os.environ, HOS_FPS_TAKEOFF="0")
     with tempfile.TemporaryDirectory(prefix="jump-takeoff-") as directory:
-        for x, locals_ in SPELLINGS:
-            source = lifted(x, locals_)
-            patched, counts, _ = oot_patches.patch_file(source, "code_006.c")
-            assert counts["jump takeoff"] == 1 and counts["takeoff velocity"] == 1, (x, counts)
-            assert "hos_oot_jump_speed(%s)" % x in patched and patched.count("hos_oot_takeoff_velocity(c->x[19], c->x[2], ") == 1
-            assert UNRELATED in patched
-            binary = build(args.cc, patched, host, directory, "patched")
-            result = run(binary)
-            print(result.stdout, end="")
-            if result.returncode != 0:
-                raise SystemExit("FAIL: a jump's takeoff above 60 fps (x19 as %s)" % x)
-            result = run(binary, "off", env=off_env)
-            print(result.stdout, end="")
-            if result.returncode != 0:
-                raise SystemExit("FAIL: HOS_FPS_TAKEOFF=0 (x19 as %s)" % x)
-            for tag, unpatched in (("native", source),
-                                   ("speed only", oot_patches.patch_jump_speed(source)[0])):
-                native = run(build(args.cc, unpatched, host, directory, tag.replace(" ", "-")))
-                if native.returncode == 0 or "FAIL: 94 fps:" not in native.stdout:
-                    raise SystemExit("FAIL: the %s build did not fail the 94 fps check (x19 as %s)" % (tag, x))
-                print("PASS: the %s build (x19 as %s) compiles and fails the 94 fps check (%s)"
-                      % ("unpatched" if tag == "native" else "f_80b97d10-only", x,
-                         native.stdout.split("FAIL: 94 fps: ")[1].split("\n")[0]))
-            again, repeated, _ = oot_patches.patch_file(patched, "code_006.c")
-            assert again == patched and repeated["jump takeoff"] == 1 and repeated["takeoff velocity"] == 1
-    base = lifted(*SPELLINGS[0])
-    store = "    { { uint64_t _v=0; memcpy(&_v,&c->vreg[2][0],4); recomp_store32(c,(c->x[19]+8ULL),_v); } }\n"
-    for altered, warning, key in (
-            (base.replace(takeoff(), takeoff(offset=12), 1), "a jump's takeoff speed was found 0 times", "jump takeoff"),
-            (base.replace(store, store * 2, 1), "a jump's takeoff speed was found 0 times", "jump takeoff"),
-            (base.replace(setter(), setter(site=oot_patches.TAKEOFF_VELOCITY_SITE.replace("0x804f6698ULL", "0x804f669cULL")), 1),
-             "the set-velocity call for a jump's takeoff was found 0 times", "takeoff velocity"),
-            (base.replace(setter(), setter(site=oot_patches.TAKEOFF_VELOCITY_SITE * 2), 1),
-             "the set-velocity call for a jump's takeoff was found 0 times", "takeoff velocity"),
-            ('#include "a64.h"\n' + UNRELATED, "a jump's takeoff speed was found 0 times", "jump takeoff")):
-        assert altered != base
-        output, counts, said = warned(altered, "WARNING: " + warning)
-        assert counts[key] == 0 and said, (key, counts[key])
-        assert oot_patches.patch_jump_speed(altered)[1] == counts["jump takeoff"]
-        if key == "takeoff velocity":
-            assert "hos_oot_takeoff_velocity" not in output
-        else:
-            assert "hos_oot_jump_speed" not in output
-    print("PASS: scoped, idempotent, and a changed anchor is left alone with a warning")
+        binary = build(args.cc, on + lifted(speed, velocity), host, directory, "hooked")
+        result = run(binary)
+        print(result.stdout, end="")
+        if result.returncode != 0:
+            raise SystemExit("FAIL: a jump's takeoff above 60 fps")
+        result = run(binary, "off", env=off_env)
+        print(result.stdout, end="")
+        if result.returncode != 0:
+            raise SystemExit("FAIL: HOS_FPS_TAKEOFF=0")
+        for tag, code in (("without the hooks", lifted()), ("with jump.takeoffSpeed's alone", on + lifted(speed)),
+                          ("with the sites' flags off", off + lifted(speed, velocity))):
+            native = run(build(args.cc, code, host, directory, str(abs(hash(tag)))))
+            if native.returncode == 0 or "FAIL: 94 fps:" not in native.stdout:
+                raise SystemExit("FAIL: the build %s did not fail the 94 fps check" % tag)
+            print("PASS: the build %s compiles and fails the 94 fps check (%s)"
+                  % (tag, native.stdout.split("FAIL: 94 fps: ")[1].split("\n")[0]))
+    print("PASS: the two sites are after the takeoff speed's store and before the set-velocity call")
 
 
 if __name__ == "__main__":

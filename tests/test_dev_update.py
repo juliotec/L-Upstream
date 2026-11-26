@@ -5,7 +5,7 @@ stopped and an interrupted build put the folder back; --rollback; the settings r
 pull requests onto the folder's commit, a pick that needs one left out refused and named, every one picked = the newest);
 the window's JSON list; --with (open pull requests' heads merged on top, with --pick too; one that conflicts refused and
 named; an update without it leaves them out); the window's search; the forge's API from the remote's URL; --logs (logs and
-crash records zipped, the minidumps and profiles left out); make_game.py's command for a
+crash records zipped, the minidumps and profiles left out); longshot-builder's command for a
 folder that keeps its game files and for one that doesn't; the build handed to a newer tree's own dev.py; a dirty worktree
 refused; a running game refused.
 
@@ -224,19 +224,29 @@ class Update(unittest.TestCase):
         self.assertEqual(self.read(EXE), "old game")
 
     def test_build_command(self):
+        """The tree's own longshot-builder (`dev.py packs run`): a build from dev.py's game into a folder it did not build, an
+        update of one it did (its longshot_build.json names the game, or an earlier builder's name for it); the work
+        folder and the log update's own"""
         tree = os.path.join(self.tmp, "tree")
-        env = mock.patch.object(build, "environment", lambda: ("py", {}))
-        files = mock.patch.object(build, "game_files", lambda c: ("R", "E"))
-        pre = mock.patch.object(build, "windows_prebuilt", lambda t: None)
-        with env, files, pre:
-            py, e, cmd = update.build_cmd(tree, self.game, "L")   # (no game files in the folder: dev.py's)
-            self.assertEqual(cmd[:9], ["py", "-I", "nx2/make_game.py", "--romfs", "R", "--exefs", "E", "--out", self.game])
-            self.assertEqual(e["LONGSHOT_KEEP_BUILD_FILES"], "1")
-            os.makedirs(os.path.join(self.game, "romfs"))
-            os.makedirs(os.path.join(self.game, ".longshot_exefs"))
-            py, e, cmd = update.build_cmd(tree, self.game, "L")   # (the folder's own)
-            self.assertEqual(cmd[:5], ["py", "-I", "nx2/make_game.py", "--update", self.game])
+        env = mock.patch.object(build, "environment", lambda: {})
+        game = mock.patch.object(build, "game_source", lambda c: "G.nup")
+        ups = mock.patch.object(build, "upscalers", lambda e: "none")
+        run = [sys.executable, "-I", os.path.join(tree, "scripts", "dev.py"), "packs", "run", "--tree", tree, "--"]
+        with env, game, ups:
+            e, cmd = update.build_cmd(tree, self.game, "L")   # (not longshot-builder's folder: dev.py's game)
+            self.assertEqual(cmd[:len(run) + 5], run + ["build", "--game", "G.nup", "--out", self.game])
+            for old in ("longshot_builder.json", "longshot.json"):
+                open(os.path.join(self.game, old), "w").close()
+                e, cmd = update.build_cmd(tree, self.game, "L")   # (an earlier builder's record, of an old name)
+                self.assertEqual(cmd[:len(run) + 2], run + ["update", self.game])
+                os.remove(os.path.join(self.game, old))
+            open(os.path.join(self.game, "longshot_build.json"), "w").close()
+            e, cmd = update.build_cmd(tree, self.game, "L")   # (the folder's own record)
+            self.assertEqual(cmd[:len(run) + 2], run + ["update", self.game])
         self.assertEqual(cmd[cmd.index("--work") + 1], update.part("work"))
+        self.assertEqual(cmd[cmd.index("--log") + 1], "L")
+        for note in (".longshot_installed.json", "longshot_build.json", "longshot_builder.json", "longshot.json"):
+            self.assertIn(note, update.BACKED_UP)   # (a rollback puts the install note back with the files)
 
     def test_newer_tree_builds_with_its_own_dev_py(self):
         tree = os.path.join(self.tmp, "tree")

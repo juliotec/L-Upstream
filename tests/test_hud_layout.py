@@ -1,4 +1,4 @@
-"""The HUD is laid out for the picture's shape, never stretched (host/hos_wide_ui.c hos_wide_ui_tick, nx2/oot_wide.py HUD).
+"""The HUD is laid out for the picture's shape, never stretched (game/hos_wide_ui.c hos_wide_ui_tick, the hook site wide.hud).
 
 At its 16:9 size (scaled with the picture's height, as at 16:9) its side panes move out to a wider screen's sides and in to
 a narrower one's; past 12:5 (a 32:9 screen) they stop at 12:5's sides, and at 48:9 (three screens) they stay on the middle
@@ -11,7 +11,7 @@ screen where the HUD's canvas is wider than the screen (16:10 and narrower) it m
 choices stay on it (Longshot #1050). The text box's button guide is the HUD's. At 16:9 nothing changes. The UI projection's
 site scales every screen not kept whole.
 
-python -I -B tests/test_hud_layout.py [--cc gcc]
+python -I -B tests/test_hud_layout.py [--cc clang] [--cargo cargo]
 """
 import argparse
 import subprocess
@@ -19,12 +19,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
 sys.path.insert(0, str(ROOT / "tests"))
-import oot_wide  # noqa: E402
+from widesites import hook  # noqa: E402
+import sitehooks  # noqa: E402
 from test_wide_ui import FIXTURE_HEAD  # noqa: E402
 
 FIXTURE_MAIN = r'''
@@ -457,7 +457,7 @@ def build_run(cc, src, tag):
         exe = Path(tmp) / (tag + (".exe" if sys.platform == "win32" else ""))
         c.write_text(src, encoding="utf-8")
         built = subprocess.run([cc, "-std=c11", "-O1", "-include", ENV_ON_H, "-Wall", "-Wno-unused-function", "-o", str(exe), str(c),
-                                "-lm"],
+                                *sitehooks.objects(tmp, src), "-lm"],
                                capture_output=True, text=True)
         check(built.returncode == 0, tag + " did not compile:\n" + built.stdout + built.stderr)
         run = subprocess.run([str(exe)], capture_output=True, text=True)
@@ -467,14 +467,14 @@ def build_run(cc, src, tag):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--cc", default="gcc")
+    p.add_argument("--cc", default="clang")
+    p.add_argument("--cargo")
     a = p.parse_args()
+    sitehooks.use(a.cc, a.cargo)
 
-    host = (ROOT / "host" / "hos_wide_ui.c").read_text(encoding="utf-8")
+    host = (ROOT / "game" / "hos_wide_ui.c").read_text(encoding="utf-8")
     backend = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")
     check("hos_wide_keep_mask &= ~2u;" in backend, "the menus could be kept whole, stretched, on a screen narrower than 16:9")
-    check(any(site == oot_wide.HUD for _, _, site in oot_wide.SITES),
-          "the UI projection's site is not installed")
 
     body = "".join(line for line in host.splitlines(keepends=True) if not line.startswith("#include"))
     decl = "extern volatile float hos_wide_ratio;\n"
@@ -482,11 +482,11 @@ def main():
     body = body.replace(decl, "", 1)
     build_run(a.cc, FIXTURE_HEAD + body + FIXTURE_MAIN, "plan")
 
-    head = FIXTURE_HEAD.replace("volatile float hos_wide_squeeze, hos_wide_ratio;", "volatile float hos_wide_squeeze;")
-    site = (SITE_MAIN.replace("SITE", oot_wide.HUD).replace("FADES", "0x%xULL" % oot_wide.KEEP_VTABLES[2])
-            .replace("LOADING", "0x%xULL" % oot_wide.KEEP_VTABLES[3]))
-    # (the site's own extern declarations, here defined above it)
-    build_run(a.cc, head + site, "site")
+    # (the UI projection's site, wide.hud, as the lift lowers it (tests/sitehooks.py): its callback from game/oot_wide_sites.c, the kept screens'
+    # vtables its address names)
+    defs, line = hook("wide.hud")
+    site = (SITE_MAIN.replace("SITE", line).replace("FADES", "WIDE_KEEP_EVENT_FADE").replace("LOADING", "WIDE_KEEP_LOADING_FADE"))
+    build_run(a.cc, FIXTURE_HEAD + "#define A64_NOESC\n" + defs + site, "site")
 
 
 if __name__ == "__main__":

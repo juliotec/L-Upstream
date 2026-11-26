@@ -10,3 +10,5 @@ paths:
       - 'specifying action ".+" in invalid format because owner and repo and ref should not be empty'
       # (Forgejo's own context, as github)
       - 'undefined variable "forgejo"'
+      # (Forgejo's: a job's ID token for the seal broker)
+      - 'unexpected key "enable-openid-connect" for "job" section'

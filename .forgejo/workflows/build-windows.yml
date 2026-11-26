@@ -1,24 +1,20 @@
-# The Windows Longshot Builder (docs/dev/reference/releases.md): LongshotBuilder-<version>-windows-x64.zip, made without game data. It holds
-# the setup (builder/setup/setup.c, built with llvm-mingw) as LongshotBuilder.exe, the builder (dotnet publish) with Longshot's
-# sources under LongshotBuilder\tools\, tools.lock, VERSION and recomplauncher.json (scripts/builder_package.py). The build
-# tools are not in it: tools.lock names them, and the setup or the launcher downloads them on the player's PC. The Windows
-# Vulkan back end is compiled too, with the same llvm-mingw: players build it on their PC, this only checks that it still
-# builds; a tag whose commit CI released already (release.yml's `checked`: its nightly)
-# skips that check, which ships nothing and passed in that run. The zip carries the version (VERSION, the builder's
-# version), so it is always made again. It is a workflow artifact; called by release.yml with the version's name, it is
-# the release's. dav1d for the AV1 movies is not built here: it is in tools.lock's CPM cache (the cpm package), and the
-# zip's job checks that package's dav1d under Wine.
-# Every job runs on a Linux runner (label release): there is no Windows one (docs/dev/reference/ci.md). The setup and the
-# Vulkan back end are cross-compiled with llvm-mingw's Linux build of tools.lock's release (scripts/builder_package.py,
-# LINUX_LLVM_MINGW), the builder (command-line only) is published for win-x64 with EnableWindowsTargeting, and the files are checked as
-# Windows files (their PE headers, resources and runtime) and started under Wine. What only a Windows PC can check is in
-# docs/dev/reference/releases.md, "Windows tester".
-name: Windows builder
+# longshot-builder for Windows (docs/dev/reference/builder.md, "What a release carries"): longshot-builder-<version>-windows-x64.exe, one program
+# (x86_64-pc-windows-gnullvm, the dist profile: scripts/longshot_builder.py, with llvm-mingw) that carries everything a
+# player's PC builds the game with: the sources, the release's third-party objects, RenHDrum's DLL and the build tools
+# (tools.lock's windows-x64 bundle), unpacked into its cache at the first use (build-driver's sources.rs). No game data is
+# involved. Called by release.yml with the version's name, it also makes the deltas from the channel's last releases, the
+# release's manifest and RecompLauncher's zip for this platform, all uploaded. It restores only the release's own caches
+# (docs/dev/reference/ci.md, The release's cache). Players build the Windows Vulkan back end on their PC; that it still
+# builds is CI's check (ci.yml's renderer job), not a release's.
+# Every job runs on a Linux runner (label release): there is no Windows one (docs/dev/reference/ci.md). Everything is
+# cross-compiled with llvm-mingw's Linux build of tools.lock's release (scripts/longshot_builder.py llvm-mingw, pinned in builder/tools/pins.sh);
+# the Linux job's longshot-builder (build-linux.yml's program before its pack, an artifact: release.yml runs this job
+# after that one) is this job's tool, so no builder is compiled for it: it makes the third-party objects and the pack,
+# and appends the pack to the Windows program, which is compiled once; that is started under Wine.
+name: longshot-builder (Windows)
 
 on:
-  # (no pull_request trigger for now: the Release workflow builds main's pushes and tags by calling this one; build a
-  # branch by hand with Run workflow)
-  workflow_dispatch:
+  # (called by the Release workflow only, with the version's name)
   workflow_call:
     inputs:
       tag:
@@ -29,35 +25,28 @@ on:
         description: the commit to build
         type: string
         required: true
-      checked:
-        description: a published release of the same commit (scripts/release.py released-as), whose run passed the build check below that ships no file; it is not run again
-        type: string
-        required: false
-        default: ''
 
 permissions:
   contents: read
 
 env:
-  # (the version this run is for, from the Release workflow; empty on other runs)
+  # (the version this run is for, from the Release workflow)
   RELEASE_TAG: ${{ inputs.tag }}
-  # (a published release of the same commit, when there is one: the Vulkan back end, checked in its run, is not built again)
-  RELEASE_CHECKED: ${{ inputs.checked }}
 
 concurrency:
   # (a fixed name: when called, github.workflow is the caller's)
-  group: build-windows-${{ inputs.tag || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: build-windows-${{ inputs.tag }}
 
 defaults:
   run:
     shell: bash
 
 jobs:
+  # (named to pair with release.yml's job that calls this workflow, which Forgejo lists beside it)
   package:
-    name: Longshot Builder zip
+    name: "longshot-builder (Windows): build"
     runs-on: release  # (a release's build: only the runners kept for them take it, docs/dev/reference/ci.md)
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,284 +59,284 @@ jobs:
         uses: https://github.com/actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-      - name: Set up .NET
-        uses: https://github.com/actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          dotnet-version: '8.0.x'
+      # (the server's release runner only: scripts/ci_release_runner.sh; docs/dev/reference/ci.md, Runners)
+      - name: The server's release runner
+        env:
+          SEAL_BROKER_PIN: ${{ vars.SEAL_BROKER_PIN }}
+        run: scripts/ci_release_runner.sh
 
-      # (llvm-objdump and llvm-readobj below read the Windows files; Wine starts them. Wine's apt, about 30 s, runs in the
-      # background beside the build steps that do not need it, and "Wine, installed" waits for it before the first that does.
-      # Detached (setsid, every descriptor elsewhere), so this step ends at once; its status is written last, whole, by mv)
+      # (Wine starts the program and the dav1d test; its apt, about 30 s, runs in the background beside the build steps,
+      # and "Wine, installed" waits for it. Detached, so this step ends at once; its status is written last, whole, by mv)
       - name: Wine (installed in the background)
         run: |
-          setsid nohup bash -c 'sudo apt-get update && sudo apt-get install -y --no-install-recommends wine64 xvfb xauth
+          # shellcheck disable=SC2016   # ($1: the inner shell's, single-quoted on purpose)
+          setsid nohup bash -c 'sudo apt-get update && sudo apt-get install -y --no-install-recommends wine64 xvfb xauth zstd
             echo $? > "$1.tmp" && mv "$1.tmp" "$1.status"' wine "$RUNNER_TEMP/wine-apt" \
             > "$RUNNER_TEMP/wine-apt.log" 2>&1 < /dev/null &
 
       - name: llvm-mingw version
         id: llvm
-        run: echo "name=$(python -I scripts/builder_package.py llvm-mingw --name --host linux)" >> "$GITHUB_OUTPUT"
-      # (a release unpacks llvm-mingw, which compiles the setup and the third-party objects the zip carries, from its checked
-      # download, not from an unpacked folder a cache holds: its archive is kept, and builder_package.py checks a kept one's
-      # size and SHA-256 before it takes it. Other runs keep the unpacked folder)
-      - if: env.RELEASE_TAG == ''
-        uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        run: echo "name=$(python -I scripts/longshot_builder.py llvm-mingw --name --host linux)" >> "$GITHUB_OUTPUT"
+      # (the release's own cache, of downloads only: the pinned Rust's archives, Cargo.lock's .crate files, tools.lock's
+      # archives, llvm-mingw. Each is checked by its SHA-256 every time it is used, against the pins in this checkout, so
+      # whoever saved the cache can't change what is built; nothing unpacked or compiled is kept. Read and written only by a
+      # run of main or a v* tag (docs/dev/reference/ci.md, The release's cache))
+      - name: Restore the release's downloads (each checked by its SHA-256 when used)
+        id: release-cache
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: https://github.com/actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/llvm
-          key: ${{ steps.llvm.outputs.name }}
-      - if: env.RELEASE_TAG != ''
-        uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/llvm/.cache
-          key: ${{ steps.llvm.outputs.name }}-archive
+          path: |
+            ${{ runner.temp }}/rust/*.tar.xz
+            ${{ runner.temp }}/rust/crates
+            ${{ runner.temp }}/tools-cache
+            ${{ runner.temp }}/llvm/.cache
+          key: release-downloads-windows-${{ hashFiles('Cargo.lock', 'third_party/renhdrum/Cargo.lock', 'scripts/renhdrum.py', 'builder/tools/pins.sh', 'tools.lock') }}
+          restore-keys: release-downloads-windows-
       - name: llvm-mingw
-        run: echo "LLVM_MINGW=$(python -I scripts/builder_package.py llvm-mingw "$RUNNER_TEMP/llvm" --host linux)" >> "$GITHUB_ENV"
+        run: echo "LLVM_MINGW=$(python -I scripts/longshot_builder.py llvm-mingw "$RUNNER_TEMP/llvm" --host linux)" >> "$GITHUB_ENV"
 
-      # (the Release workflow's name for the version: v3.1.0, or the nightly's nightly-<count>-<commit>; any other run
-      # is git describe --long's, v3.0.1-3-g1a2b3c4. The builder's MSBuild version is a release's number, else 0.0.0)
       - name: Version
+        run: echo "TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      # (the Linux longshot-builder this job runs, build-linux.yml's, before its pack: the third-party objects below, the
+      # pack and its attaching, the dry run, the deltas and the manifest (`dev release`). An artifact of this run, made on
+      # this runner by this commit's code; an artifact keeps no file mode)
+      - name: The Linux longshot-builder (build-linux.yml's)
+        uses: https://data.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e   # v4 (4.1.4 with the GHES check off)
+        with:
+          name: longshot-builder-linux-tool
+          path: ${{ runner.temp }}/host
+      - name: The Linux longshot-builder, runnable
         run: |
-          if [[ -n $RELEASE_TAG ]]; then
-            tag=$RELEASE_TAG
-          else
-            tag=$(git describe --tags --long --match 'v[0-9]*' 2>/dev/null || echo "v0.0.0-0-g$(git rev-parse --short HEAD)")
+          chmod +x "$RUNNER_TEMP/host/longshot-builder"
+          "$RUNNER_TEMP/host/longshot-builder" --version
+
+      # (every tool the Windows and the Linux builder carry is in tools.lock, every line's first URLs Longshot's store's,
+      # and every line's archive there with its size and SHA-256: checked here, with the Linux builder, before anything
+      # is uploaded. A release uploads no tool: a line whose archive is not there yet is the Make tools workflow's to make
+      # and upload. publish needs both builds, so a refusal here ships nothing)
+      - name: The tools
+        run: |
+          TOOLS="$RUNNER_TEMP/host/longshot-builder dev tools"
+          if ! $TOOLS check; then
+            echo "::error::tools.lock lacks a tool a builder needs; docs/dev/reference/releases.md, Bumping a tool"
+            exit 1
           fi
-          version=0.0.0
-          if [[ $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then version=${BASH_REMATCH[1]}; fi
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "version: $tag"
+          if ! $TOOLS check --require; then
+            echo "::error::a tools.lock line's archive is not in Longshot's store (above): a release uploads no tool. Run the Make tools workflow (Actions > Make tools, on main) for it, or fix the line; docs/dev/reference/releases.md, Bumping a tool"
+            exit 1
+          fi
 
-      # (--dependent-load-flag 0x800, LOAD_LIBRARY_SEARCH_SYSTEM32: the libraries it imports come from System32, not from
-      # the folder it was downloaded to. It is in the package as a game folder's longshot.exe; players get the Longshot Launcher)
-      - name: LongshotBuilder-Setup.exe
-        working-directory: builder/setup
+      # (tools.lock's windows-x64 bundle, at tools/<name>/ of the checkout (`longshot-builder dev tools install`, by the
+      # Linux longshot-builder above), where longshot-builder --root
+      # <checkout> takes them (build-driver's tools), each archive checked by its size and SHA-256)
+      - name: The build tools (tools.lock, windows-x64)
         run: |
-          "$LLVM_MINGW/bin/x86_64-w64-mingw32-windres" setup.rc -O coff -o "$RUNNER_TEMP/setup_rc.o"
-          "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" -O2 -mwindows -municode \
-            setup.c "$RUNNER_TEMP/setup_rc.o" \
-            -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -Wl,--dependent-load-flag=0x800 \
-            -o "$RUNNER_TEMP/LongshotBuilder-Setup.exe"
-          ls -l "$RUNNER_TEMP/LongshotBuilder-Setup.exe"
+          "$RUNNER_TEMP/host/longshot-builder" dev tools install "$PWD" --system windows-x64 --cache "$RUNNER_TEMP/tools-cache"
+          echo "BUNDLE=$PWD" >> "$GITHUB_ENV"
 
-      # (self-contained for win-x64, as the project's Release configuration has it; EnableWindowsTargeting: the Windows
-      # targeting and runtime packs come from NuGet on a system that is not Windows)
-      - name: Longshot Builder
-        run: >-
-          dotnet publish builder/LongshotBuilder/LongshotBuilder.csproj --configuration Release
-          --runtime win-x64 -p:EnableWindowsTargeting=true
-          -p:Version="$VERSION" -p:NuGetAudit=false --output "$RUNNER_TEMP/publish"
-
-      # (the third-party code's objects a player's build links instead of compiling (nx2/third_party_objects.py): made with
-      # what a player's build compiles them with, llvm-mingw's same release and tools.lock's cpm (the Vulkan, SPIR-V and VMA
-      # headers). Found by their keys alone: a set that does not fit is not used)
-      # (tools.lock's downloads, the cpm package here and for dav1d below, kept for every run, a release's too: scripts/tools.py
-      # checks a kept archive's size and SHA-256 each time it takes one, and fetches it again when they differ)
-      - uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/tools-cache
-          key: windows-tools-downloads-${{ hashFiles('tools.lock') }}
+      # (the third-party code's objects a player's build takes instead of compiling them (build-compile's prebuilt.rs): made
+      # with the bundle's llvm-mingw and CPM cache, what a player's build compiles them with)
+      # (each object whose key is the channel's newest release's taken from it, its SHA256SUMS signature checked first, as
+      # build-linux.yml's: `dev release last-objects`; the rest compiled)
       - name: The third-party objects
+        env:
+          FORGEJO_UPLOAD_API: ${{ vars.RELEASE_UPLOAD_API }}
         run: |
-          python -I scripts/tools.py install "$RUNNER_TEMP/win-tools" --system windows-x64 --only cpm --cache "$RUNNER_TEMP/tools-cache"
-          W="$RUNNER_TEMP/win-tools/LongshotBuilder/tools"
-          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" RX_CPM="$W/cpm" \
-            python -I -B nx2/third_party_objects.py make "$RUNNER_TEMP/third_party_objects" --jobs "$(nproc)"
-      # (renhdrum.dll, the DualSense haptics' back end (host/haptic.c): built here from third_party/renhdrum with
-      # scripts/renhdrum.py's pinned Rust and the llvm-mingw above, so a player's build places it beside the game with no
-      # Rust on their PC. The pinned Rust's parts are kept like the downloads above, and checked by their SHA-256 each time.
-      # --target windows: this runner is Linux, and the default is the system it runs on; without it the release shipped a
-      # Linux library named renhdrum.dll, which Windows refused at the game's start with a "Bad Image" box)
-      - uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/renhdrum-rust
-          key: renhdrum-rust-${{ hashFiles('scripts/renhdrum.py') }}
+          "$RUNNER_TEMP/host/longshot-builder" dev release last-objects --version "$TAG" --platform windows-x64 \
+            --out "$RUNNER_TEMP/last-objects"
+          last="$RUNNER_TEMP/last-objects/objects/third_party_objects"
+          [ -f "$last/set.json" ] || last=0
+          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" LONGSHOT_THIRD_PARTY_OBJECTS="$last" \
+            "$RUNNER_TEMP/host/longshot-builder" compile --work "$RUNNER_TEMP/third-party-work" \
+            --store "$RUNNER_TEMP/third-party-work/store" --root "$PWD" --jobs "$(nproc)" \
+            --third-party-objects "$RUNNER_TEMP/third_party_objects"
+      # (the game's Rust, longshot-rs over game/crates: liblongshot_rs.a with the pinned Rust, and beside it the key of the
+      # sources it was built from, which a player's build checks before it links it instead of compiling Rust:
+      # build-compile's rust.rs)
+      - name: liblongshot_rs.a
+        run: |
+          python -I scripts/longshot_builder.py game-rust --target windows --cache "$RUNNER_TEMP/rust" \
+            --out "$RUNNER_TEMP/longshot-rs/windows-x64"
+          "$RUNNER_TEMP/host/longshot-builder" dev rust-key --root "$PWD" > "$RUNNER_TEMP/longshot-rs/windows-x64/sources.key"
+
+      # (renhdrum.dll, the DualSense haptics' back end (host/haptic.c), from third_party/renhdrum with the pinned Rust and the
+      # llvm-mingw above. --target windows: this runner is Linux)
       - name: renhdrum.dll
         run: >-
-          python -I scripts/renhdrum.py build --target windows --llvm-mingw "$LLVM_MINGW" --cache "$RUNNER_TEMP/renhdrum-rust"
+          python -I scripts/renhdrum.py build --target windows --llvm-mingw "$LLVM_MINGW" --cache "$RUNNER_TEMP/rust"
           --out "$RUNNER_TEMP/renhdrum/renhdrum.dll"
-      # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none or one does not read)
-      - name: Package folder
+
+      # (the compiled Rust of the shipped builder's compile: cargo's target folder, kept for trusted runs only (a run of
+      # main or a v* tag, on the server's release runner), by platform, profile, target and the pinned Rust
+      # (scripts/renhdrum.py), then Cargo.lock; another Cargo.lock restores the newest entry of the same toolchain.
+      # Unlike the downloads above, what it holds is not checked again: docs/dev/reference/ci.md, The release's cache)
+      - name: Restore the shipped builder's compiled Rust (main's and tags' runs only)
+        id: rust-target
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: https://github.com/actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/rust-work/target
+          key: release-rust-target-windows-dist-x86_64-pc-windows-gnullvm-${{ hashFiles('scripts/renhdrum.py') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-rust-target-windows-dist-x86_64-pc-windows-gnullvm-${{ hashFiles('scripts/renhdrum.py') }}-
+      # (the program this release ships, the dist profile, compiled once, before it carries anything)
+      - name: longshot-builder-<version>-windows-x64.exe, before its pack
         run: >-
-          python -I scripts/builder_package.py package "$RUNNER_TEMP/package"
-          --publish "$RUNNER_TEMP/publish" --setup "$RUNNER_TEMP/LongshotBuilder-Setup.exe"
-          --third-party-objects "$RUNNER_TEMP/third_party_objects" --renhdrum "$RUNNER_TEMP/renhdrum/renhdrum.dll"
-      # (the release's file: the setup as LongshotBuilder.exe, the package, tools.lock, VERSION and recomplauncher.json)
-      - name: The zip
+          python -I scripts/longshot_builder.py build --target windows --profile dist --llvm-mingw "$LLVM_MINGW"
+          --cache "$RUNNER_TEMP/rust" --out "$RUNNER_TEMP/longshot-builder.exe"
+      - name: Save the shipped builder's compiled Rust (main's and tags' runs only)
+        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && steps.rust-target.outputs.cache-hit != 'true'
+        uses: https://github.com/actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/rust-work/target
+          key: release-rust-target-windows-dist-x86_64-pc-windows-gnullvm-${{ hashFiles('scripts/renhdrum.py') }}-${{ hashFiles('Cargo.lock') }}
+      # (saved as soon as the last download is made (the game's Rust, RenHDrum's and the program's: the pinned Rust with
+      # Windows' standard library, Cargo.lock's crates, RenHDrum's), not at the job's end: a later step that fails (the
+      # Wine checks, the deltas) then leaves the next run its downloads, where it saved none and the next run fetched the
+      # Rust and every crate again, one at a time. Its key names every pin of what it holds: the Rust (renhdrum.py), both
+      # Cargo.locks, llvm-mingw (builder/tools/pins.sh) and tools.lock)
+      - name: Save the release's downloads (each checked by its SHA-256 when used)
+        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && steps.release-cache.outputs.cache-hit != 'true'
+        uses: https://github.com/actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/rust/*.tar.xz
+            ${{ runner.temp }}/rust/crates
+            ${{ runner.temp }}/tools-cache
+            ${{ runner.temp }}/llvm/.cache
+          key: release-downloads-windows-${{ hashFiles('Cargo.lock', 'third_party/renhdrum/Cargo.lock', 'scripts/renhdrum.py', 'builder/tools/pins.sh', 'tools.lock') }}
+      # (what the program carries, each part a zstd member of its own (`longshot-builder dev release sources`), several
+      # compressed at once, each whose raw bytes and zstd are the last release's taken from that release's pack, its
+      # signed SHA256SUMS checked by `dev release last-objects` above (--reuse); then the
+      # program, the dist profile, compiled once, the pack appended to it and read back (`dev release attach`); checked:
+      # x86-64, Windows' own DLLs only)
+      - name: longshot-builder-<version>-windows-x64.exe
         run: |
+          command -v zstd > /dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends zstd; }
+          "$RUNNER_TEMP/host/longshot-builder" dev release sources --out "$RUNNER_TEMP/sources.pack" --version "$TAG" \
+            --third-party-objects "$RUNNER_TEMP/third_party_objects" \
+            --add "longshot-rs/prebuilt/windows-x64/liblongshot_rs.a=$RUNNER_TEMP/longshot-rs/windows-x64/liblongshot_rs.a" \
+            --add "longshot-rs/prebuilt/windows-x64/sources.key=$RUNNER_TEMP/longshot-rs/windows-x64/sources.key" \
+            --add "third_party/renhdrum/renhdrum.dll=$RUNNER_TEMP/renhdrum/renhdrum.dll" --tools "$BUNDLE/tools" \
+            --reuse "$RUNNER_TEMP/last-objects/sources.pack"
           mkdir -p dist
-          python -I scripts/builder_package.py zip "$RUNNER_TEMP/package" "$TAG" --setup "$RUNNER_TEMP/LongshotBuilder-Setup.exe" \
-            --out "dist/LongshotBuilder-$TAG-windows-x64.zip"
+          "$RUNNER_TEMP/host/longshot-builder" dev release attach "$RUNNER_TEMP/longshot-builder.exe" \
+            "$RUNNER_TEMP/sources.pack" --out "dist/longshot-builder-$TAG-windows-x64.exe"
+          python -I scripts/longshot_builder.py check "dist/longshot-builder-$TAG-windows-x64.exe"
           ls -l dist
 
-      # (what a Windows build gave and a Linux one could quietly lose: the setup's icon, manifest and version (windres),
-      # and its imports; the builder's GUI subsystem (no console window), its apphost's version and manifest, win-x64
-      # self-contained .NET 8 without WPF. scripts/check_windows_files.py says what is wrong)
-      - name: Check the Windows files
-        run: >-
-          python -I scripts/check_windows_files.py --objdump "$LLVM_MINGW/bin/llvm-objdump"
-          --readobj "$LLVM_MINGW/bin/llvm-readobj" "dist/LongshotBuilder-$TAG-windows-x64.zip"
+      # (what it carries is complete: unpacked, then a player's Windows build's dry run over it, by the Linux longshot-builder:
+      # a file the program does not carry, or a third-party object a player's build would compile, fails here)
+      - name: A player's Windows build from what it carries
+        run: |
+          "$RUNNER_TEMP/host/longshot-builder" dev release unpack "$RUNNER_TEMP/sources.pack" "$RUNNER_TEMP/carried"
+          RX_TARGET=windows LONGSHOT_MINGW="$LLVM_MINGW" \
+            "$RUNNER_TEMP/host/longshot-builder" dev release dry-run "$RUNNER_TEMP/host/longshot-builder" --root "$RUNNER_TEMP/carried" \
+            --work "$RUNNER_TEMP/dry"
+
       # (the background install the Wine step started: its log, then its status; one that never ends stops here in 10 minutes)
       - name: Wine, installed
         run: |
-          for _ in $(seq 600); do [ -f "$RUNNER_TEMP/wine-apt.status" ] && break; sleep 1; done
+          if [ ! -f "$RUNNER_TEMP/wine-apt.status" ]; then
+            echo "::notice::waiting for the background install of Wine to end (up to 10 minutes)"
+          fi
+          for s in $(seq 600); do
+            [ -f "$RUNNER_TEMP/wine-apt.status" ] && break
+            [ $((s % 60)) = 0 ] && echo "still waiting for Wine's install: $((s / 60)) of 10 minutes"
+            sleep 1
+          done
           cat "$RUNNER_TEMP/wine-apt.log"
           [ -f "$RUNNER_TEMP/wine-apt.status" ] || { echo "::error::Wine's install did not end in 10 minutes"; exit 1; }
           status=$(cat "$RUNNER_TEMP/wine-apt.status")
           [ "$status" = 0 ] || { echo "::error::Wine's install failed ($status)"; exit 1; }
-      # (the setup's --play of an empty folder and the builder's --cli with no Python: each says why it stops, with no
-      # window and nothing downloaded. A sign that they load and their imports and .NET resolve, not a test of what
-      # they do. Wine's mscoree must stay on: its loader maps .NET's IL assemblies through it. Gecko is not wanted)
-      - name: Start them under Wine
+      # (the program starts on Windows and unpacks what it carries into an empty cache: under Wine, its first start timed)
+      - name: Its first start, under Wine
         run: |
           export WINEPREFIX="$RUNNER_TEMP/wine" WINEDEBUG=-all WINEDLLOVERRIDES="mshtml="
-          xvfb-run -a python -I scripts/check_windows_files.py \
-            --wine "$(command -v wine || command -v wine64 || echo /usr/lib/wine/wine64)" "dist/LongshotBuilder-$TAG-windows-x64.zip"
-
-      # dav1d for the AV1 movies (issue 2316: the CPM cache's FFmpeg has none) is in tools.lock's CPM cache, the cpm package
-      # the setup installs on the player's PC; a maintainer makes it with scripts/windows/dav1d.sh and tools.py assemble cpm
-      # --add (docs/dev/reference/releases.md, "Bumping a tool"). That package's dav1d, checked by its SHA-256, under the test of host/dav1d_av1.c,
-      # compiled with the llvm-mingw above and run under Wine
-      - name: tools.lock's dav1d
+          wine="$(command -v wine || command -v wine64 || echo /usr/lib/wine/wine64)"
+          "$wine" "dist/longshot-builder-$TAG-windows-x64.exe" --version | tee "$RUNNER_TEMP/version.txt"
+          grep -q "^longshot-builder " "$RUNNER_TEMP/version.txt"
+          start=$(date +%s%N)
+          "$wine" "dist/longshot-builder-$TAG-windows-x64.exe" sources --cache 'C:\longshot-cache'
+          echo "first start: $(( ($(date +%s%N) - start) / 1000000 )) ms to unpack"
+      # (dav1d for the AV1 movies is the bundle's CPM cache's: its library under the test of host/dav1d_av1.c, compiled with
+      # the llvm-mingw above and run under Wine)
+      - name: The bundle's dav1d, under Wine
         run: |
-          python -I scripts/tools.py install "$RUNNER_TEMP/cpm-tool" --system windows-x64 --only cpm --cache "$RUNNER_TEMP/tools-cache"
-          dav1d=("$RUNNER_TEMP"/cpm-tool/LongshotBuilder/tools/cpm/dav1d/*)
-          [ -f "${dav1d[0]}/lib/libdav1d.a" ] || { echo "::error::tools.lock's cpm package has no dav1d"; exit 1; }
-          echo "DAV1D=${dav1d[0]}" >> "$GITHUB_ENV"
-      - name: host/dav1d_av1.c on it, under Wine
-        run: |
+          dav1d=("$BUNDLE"/tools/cpm/dav1d/*)
+          [ -f "${dav1d[0]}/lib/libdav1d.a" ] || { echo "::error::the bundle's cpm has no dav1d"; exit 1; }
           export WINEPREFIX="$RUNNER_TEMP/wine" WINEDEBUG=-all WINEDLLOVERRIDES="mshtml="
           python -I -B tests/test_dav1d_av1.py --cross "$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" \
-            --run "$(command -v wine || command -v wine64 || echo /usr/lib/wine/wine64)" --dav1d "$DAV1D"
+            --run "$(command -v wine || command -v wine64 || echo /usr/lib/wine/wine64)" --dav1d "${dav1d[0]}"
 
-      # (an artifact goes to Forgejo by its public address, ROOT_URL, behind Cloudflare, whatever address the runner has: a
-      # request there can fail once, and the action does not send a block again (2026-11-13, the launcher's nightly: one
-      # 8 MB block, "SSL alert bad record mac"). Sent once more when it failed: Forgejo takes the same name again)
-      - id: upload_1
+      # (the release's stamps (the program run under Wine), the deltas from its channel's last releases and its manifest
+      # for windows-x64; the bases are fetched through RELEASE_UPLOAD_API, the server without Cloudflare, when this runner
+      # reaches it, else as anyone does)
+      - name: The deltas and the manifest
+        env:
+          FORGEJO_UPLOAD_API: ${{ vars.RELEASE_UPLOAD_API }}
+        run: |
+          export WINEPREFIX="$RUNNER_TEMP/wine" WINEDEBUG=-all
+          "$RUNNER_TEMP/host/longshot-builder" dev release files "dist/longshot-builder-$TAG-windows-x64.exe" --version "$TAG" \
+            --platform windows-x64 --work "$RUNNER_TEMP/release" \
+            --runner "$(command -v wine || command -v wine64 || echo /usr/lib/wine/wine64)"
+
+      # (RecompLauncher's release file: the same program as Longshot.exe, made a windowed one, and recomplauncher.json,
+      # zipped by the Linux longshot-builder into dist/, so it travels with the rest and SHA256SUMS names it: the
+      # deploy runner, which signs, builds and runs no Rust)
+      - name: longshot-builder-<version>-windows-x64-recomplauncher.zip
+        run: |
+          "$RUNNER_TEMP/host/longshot-builder" dev release recomplauncher "dist/longshot-builder-$TAG-windows-x64.exe" --out dist
+          ls -l dist
+
+      # (an artifact goes to Forgejo by its public address, ROOT_URL, behind Cloudflare: a request there can fail once, and
+      # the action does not send a block again. Sent once more when it failed: Forgejo takes the same name again)
+      # (the uploads through the server's own address, RELEASE_UPLOAD_API's host on this runner's network, not git.magicbean.dev
+      # behind Cloudflare, which cut a 306 MB upload with "tls alert bad record mac" (release run 54507): upload-artifact
+      # talks to ACTIONS_RESULTS_URL, given here per step. When that fails, or the variable is unset, the upload goes the
+      # usual way, then once more)
+      # (zipped stored, compression-level 0: dist/ is compressed already (the program is mostly its zstd pack, the deltas
+      # are zstd, RecompLauncher's zip holds the program), and zipping its 300 MB again at the default level took minutes
+      # of the runner's 2 cores for almost nothing.)
+      - name: The server's own address, for the uploads
+        id: direct
+        env:
+          UPLOAD_API: ${{ vars.RELEASE_UPLOAD_API }}
+        run: |
+          if [[ $UPLOAD_API == http*://*/api/v1* ]]; then
+            echo "url=${UPLOAD_API%%/api/v1*}/" >> "$GITHUB_OUTPUT"
+            echo "uploads through ${UPLOAD_API%%/api/v1*}"
+          else
+            echo "::notice::no RELEASE_UPLOAD_API: the uploads go through the public address"
+          fi
+      - name: Upload longshot-builder-windows, through the server's own address
+        id: upload_1_direct
+        if: steps.direct.outputs.url != ''
+        continue-on-error: true
+        env:
+          ACTIONS_RESULTS_URL: ${{ steps.direct.outputs.url }}
+        uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e   # v4 (4.3.1 with the GHES check off; Forgejo's: GitHub's v4 and later refuse a server that is not github.com)
+        with:
+          name: longshot-builder-windows
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload longshot-builder-windows
+        id: upload_1
+        if: steps.direct.outputs.url == '' || steps.upload_1_direct.outcome == 'failure'
         continue-on-error: true
         uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e   # v4 (4.3.1 with the GHES check off; Forgejo's: GitHub's v4 and later refuse a server that is not github.com)
         with:
-          name: LongshotBuilder-windows
+          name: longshot-builder-windows
           path: dist/
           if-no-files-found: error
-      - if: steps.upload_1.outcome == 'failure'
+          compression-level: 0
+      - name: Upload longshot-builder-windows (again, the first try having failed)
+        if: steps.upload_1.outcome == 'failure'
         uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e   # v4 (4.3.1 with the GHES check off; Forgejo's: GitHub's v4 and later refuse a server that is not github.com)
         with:
-          name: LongshotBuilder-windows
+          name: longshot-builder-windows
           path: dist/
           if-no-files-found: error
-
-  vulkan:
-    name: Windows Vulkan back end (llvm-mingw)
-    runs-on: release  # (a release's build: only the runners kept for them take it, docs/dev/reference/ci.md)
-    timeout-minutes: 45
-    steps:
-      - name: Check out source
-        if: env.RELEASE_CHECKED == ''
-        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref }}
-          persist-credentials: false
-      # (the headers in the CPM cache layout nx2/build.py reads, at the versions scripts/linux/deps.sh pins)
-      - name: Check out pinned Vulkan headers
-        if: env.RELEASE_CHECKED == ''
-        run: scripts/fetch_commit.sh https://github.com/KhronosGroup/Vulkan-Headers 74d8a6cb930c68ef617b202c3ff3c59d919e086b _deps/cpm/vulkanheaders/v1.4.345   # v1.4.345
-      - name: Check out pinned SPIR-V headers
-        if: env.RELEASE_CHECKED == ''
-        run: scripts/fetch_commit.sh https://github.com/KhronosGroup/SPIRV-Headers 04f10f650d514df88b76d25e83db360142c7b174 _deps/cpm/spirv-headers/vulkan-sdk-1.4.341.0   # vulkan-sdk-1.4.341.0
-      - name: Check out pinned VulkanMemoryAllocator
-        if: env.RELEASE_CHECKED == ''
-        run: scripts/fetch_commit.sh https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator 1d8f600fd424278486eade7ed3e877c99f0846b1 _deps/cpm/vulkanmemoryallocator/v3.3.0   # v3.3.0
-      - name: Set up Python
-        if: env.RELEASE_CHECKED == ''
-        uses: https://github.com/actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
-      - name: llvm-mingw version
-        if: env.RELEASE_CHECKED == ''
-        id: llvm
-        run: echo "name=$(python -I scripts/builder_package.py llvm-mingw --name --host linux)" >> "$GITHUB_OUTPUT"
-      # (kept for every run, a release's too: here llvm-mingw only builds the back end, a build check no release file carries)
-      - if: env.RELEASE_CHECKED == ''
-        uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/llvm
-          key: ${{ steps.llvm.outputs.name }}
-      # (RX_TARGET=windows: nx2/build.py builds the Windows back end on Linux, README.md "The Windows game, built on Linux")
-      - name: llvm-mingw
-        if: env.RELEASE_CHECKED == ''
-        run: |
-          echo "LONGSHOT_MINGW=$(python -I scripts/builder_package.py llvm-mingw "$RUNNER_TEMP/llvm" --host linux)" >> "$GITHUB_ENV"
-          echo "RX_TARGET=windows" >> "$GITHUB_ENV"
-      # The back end's compiled objects (nx2/build.py's object cache, vk-work/objcache: each object under the SHA-1 of its
-      # source, its flags and the headers it can see), as the Linux AppImage workflow keeps its own: a build compiles only
-      # the files a change reaches, not all of them (about 30 s of a release's build, 160 s on a smaller runner). Read and
-      # written by every build of the back end, the nightly's and a release's too: it is a build check, which no release
-      # file carries, and the cache is the runner's own. The key also names llvm-mingw (its C and C++ library headers,
-      # which the objects' own keys leave out) and this file (the pinned header checkouts above).
-      - name: Object cache key
-        if: env.RELEASE_CHECKED == ''
-        id: objkey
-        env:
-          COMPILER: ${{ steps.llvm.outputs.name }}
-          PINS: ${{ hashFiles('.forgejo/workflows/build-windows.yml') }}
-          SOURCES: ${{ hashFiles('gpu/**', 'third_party/imgui/**', 'third_party/zstd/**', 'nx2/build.py') }}
-        run: |
-          echo "prefix=windows-vk-objects-$COMPILER-${PINS:0:16}-" >> "$GITHUB_OUTPUT"
-          echo "key=windows-vk-objects-$COMPILER-${PINS:0:16}-$SOURCES" >> "$GITHUB_OUTPUT"
-      - if: env.RELEASE_CHECKED == ''
-        uses: https://github.com/actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/vk-work/objcache
-          key: ${{ steps.objkey.outputs.key }}
-          restore-keys: ${{ steps.objkey.outputs.prefix }}
-      # (as scripts/linux/appimage.sh builds Linux's: the back end alone, no lift, no game)
-      - name: longshot_vk.dll
-        if: env.RELEASE_CHECKED == ''
-        env:
-          RX_VK_ONLY: '1'
-          RX_RELEASE: '1'
-        run: |
-          OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" \
-            python -I nx2/build.py --standalone --jobs "$(nproc)"
-          ls -l "$RUNNER_TEMP/vk-work/sa/build/longshot_vk.dll"
-      # (the object cache down to the objects this build used, as the Linux AppImage workflow prunes its own: each object
-      # in sa/build/obj names its key in <obj>.sha1. Nothing goes when no stamp is found)
-      - name: The object cache, down to this build's objects
-        if: env.RELEASE_CHECKED == ''
-        run: |
-          W="$RUNNER_TEMP/vk-work"
-          shopt -s nullglob
-          stamps=("$W"/sa/build/obj/*.sha1)
-          [ "${#stamps[@]}" -gt 0 ] || { echo "no object stamps: the cache is kept as it is"; exit 0; }
-          # (one key a line: a stamp holds its key with no line end)
-          declare -A used
-          while read -r k; do used[$k]=1; done < <(awk '{ sub(/\r$/, ""); print }' "${stamps[@]}")
-          for f in "$W"/objcache/*.o; do
-            k=${f##*/}
-            [ -n "${used[${k%.o}]+x}" ] || rm -f "$f"
-          done
-          left=("$W"/objcache/*.o)
-          echo "objcache: ${#left[@]} objects, $(du -sh "$W/objcache" | cut -f1)"
-      - if: env.RELEASE_CHECKED == ''
-        uses: https://github.com/actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/vk-work/objcache
-          key: ${{ steps.objkey.outputs.key }}
-      # (an artifact goes to Forgejo by its public address, ROOT_URL, behind Cloudflare, whatever address the runner has: a
-      # request there can fail once, and the action does not send a block again (2026-11-13, the launcher's nightly: one
-      # 8 MB block, "SSL alert bad record mac"). Sent once more when it failed: Forgejo takes the same name again)
-      - id: upload_2
-        if: env.RELEASE_CHECKED == ''
-        continue-on-error: true
-        uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e   # v4 (4.3.1 with the GHES check off; Forgejo's: GitHub's v4 and later refuse a server that is not github.com)
-        with:
-          name: longshot_vk-windows
-          path: ${{ runner.temp }}/vk-work/sa/build/longshot_vk.dll
-          if-no-files-found: error
-      - if: env.RELEASE_CHECKED == '' && steps.upload_2.outcome == 'failure'
-        uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e   # v4 (4.3.1 with the GHES check off; Forgejo's: GitHub's v4 and later refuse a server that is not github.com)
-        with:
-          name: longshot_vk-windows
-          path: ${{ runner.temp }}/vk-work/sa/build/longshot_vk.dll
-          if-no-files-found: error
+          compression-level: 0

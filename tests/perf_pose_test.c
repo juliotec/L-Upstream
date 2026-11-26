@@ -1,5 +1,5 @@
 /* tests/test_perf_pose.py: Link's pose for the performance summary's one-second samples, the host's code run on a made-up guest.
-   The pieces of host/hos_main.c (hos_perf_info, oot_perf_pose and what it calls, the map line's refresh) are cut out of the
+   The pieces of game/oot_tools.c (hos_perf_info, oot_perf_pose and what it calls, the map line's refresh) are cut out of the
    source by their text into perf_pose_cut.h and included below; what the game would give them is made here: guest memory (the
    camera manager's chain to the gameplay view, its eye and target, the event manager, Link's place), the clock, the locks, and
    what the save says (the map, loaded or not). Nothing is taken from a dump: the addresses are the ones the host already
@@ -66,14 +66,16 @@ static char save_map[80];
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 void rx_option_set(int id, int value) { (void)id, (void)value; }
 static int oot_item_count(Ctx *c, const char *name) { (void)c, (void)name; return save_loaded ? 0 : -1; }
-static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value) {
-    (void)c, (void)hash;
+/* (the flags service, game/flags.h: Link's age and the map, from what the save says) */
+static uint64_t game_flags_mgr(void) { return save_loaded ? 0x3000 : 0; }
+static int game_flag_bool(uint64_t mgr, uint32_t hash, int *value) {
+    (void)hash;
     *value = save_child;
-    return save_loaded;
+    return mgr != 0;
 }
-static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size) {
-    (void)c, (void)hash;
-    if (!save_loaded) return 0;
+static int game_flag_text(uint64_t mgr, uint32_t hash, char *buf, size_t size) {
+    (void)hash;
+    if (!mgr) return 0;
     snprintf(buf, size, "%s", save_map);
     return 1;
 }

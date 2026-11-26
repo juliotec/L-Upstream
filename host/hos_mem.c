@@ -339,7 +339,7 @@ void hos_region_free(uint64_t addr) {
 }
 
 /* (hookshot) whether [addr, addr + n) is guest memory the game was given: the image, the heap so far, or one address region
-   (host/cheats.c checks its reads and writes with it) */
+   (game/cheats.c checks its reads and writes with it) */
 int hos_mem_mapped(uint64_t addr, uint64_t n) {
     if (addr + n < addr) return 0;
     if (addr >= hos_image_base && addr + n <= hos_image_end) return 1;

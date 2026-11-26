@@ -1,7 +1,9 @@
 """Game-free FOV hook, camera ownership, live changes and menu wiring.
 
-Compile the actual host helper and the lifter's injected call against authored
-camera objects. No dump, lifted code or game assets are needed.
+Compile the helper with the hook site camera.lens (after the camera update's load of its vertical angle,
+game/sites/sites.toml), its callback from game/oot_sites.c and its hook as the lift lowers it (tests/sitehooks.py), against
+authored camera objects. No dump, lifted code or game assets are needed. The helper is the C that game/crates/oot/src/fov.rs
+replaced (tests/fixtures/oot_fov.c): tests/test_oot_fov_rust.py checks the Rust does what it does, case for case.
 """
 import argparse
 import re
@@ -11,64 +13,60 @@ import sys
 import tempfile
 import unittest
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_fov
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
-from menu_model_fixture import menu_text  # noqa: E402
+from menu_model_fixture import GAME_OPTION_ANSWER, game_row, menu_text  # noqa: E402
+from sitecheck import hooked, site  # noqa: E402
+import sitehooks  # noqa: E402
+
+
+# (the angle load, the half-angle's multiply and the projection angle's store, as main's nx2/oot_fov.py checked them)
+WORDS = (0xbd413e60, 0x1e210808, 0xbd00a280)
+
+
+def lens():
+    return site("camera.lens", "f_804e48c0", "after", 0xa38)
 
 
 class InstallTests(unittest.TestCase):
-    def install(self, words=None, build_id=oot_fov.BUILD_ID, existing=None):
-        class Lifter:
-            after = {} if existing is None else dict(existing)
-
-        class Image:
-            def word(self, pc):
-                return (oot_fov.WORDS if words is None else words)[(pc - oot_fov.SITE) // 4]
-
-        lifter = Lifter()
-        result = oot_fov.install(lifter, Image(), build_id)
-        return result, lifter.after
-
-    def test_supported_site_and_existing_hook(self):
-        count, after = self.install(existing={oot_fov.SITE: "prior();"})
-        self.assertEqual(count, 1)
-        self.assertEqual(after[oot_fov.SITE], "prior();\n" + oot_fov.HOOK)
-        self.assertIn("hos_oot_fov(c, c->x[19]);", after[oot_fov.SITE])
-
-    def test_rejects_wrong_build_and_each_changed_instruction(self):
-        self.assertEqual(self.install(build_id="another build"), (0, {}))
-        for i in range(len(oot_fov.WORDS)):
-            words = list(oot_fov.WORDS)
-            words[i] ^= 1
-            self.assertEqual(self.install(words=words), (0, {}))
+    def test_site(self):
+        x = lens()
+        self.assertEqual(x.signature_offset, x.offset, "camera.lens's signature does not start at the angle's load")
+        self.assertEqual([w for w, _ in x.signature], list(WORDS))
+        self.assertTrue(all(m == 0xffffffff for _, m in x.signature))
+        self.assertIn("hos_oot_fov(c, c->x[19]);\n    return 0;", hooked(x, "int hos_site_camera_lens(")[0])
 
     def test_lift_and_menu_wiring(self):
-        lift = (ROOT / "nx2/lift.py").read_text(encoding="utf-8")
-        self.assertLess(lift.index("oot_fov.install("), lift.index("discover.discover(L"))
         menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
         api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
+        api += (ROOT / "game/options.h").read_text(encoding="utf-8")   # (the game's ids, FOV's: one space with vk_api.h's)
         options = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
         replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
         self.assertIn("HOS_OPT_FOV = 51", api)
         option_ids = {name: int(value) for name, value in re.findall(r"(HOS_OPT_FOV|HOS_OPT_PROMPTS|HOS_OPT_CAMERA_SPEED)\s*=\s*(\d+)", api)}
         self.assertEqual(len(option_ids), 3)
         self.assertEqual(len(set(option_ids.values())), 3, "FOV must not alias prompts or camera speed")
-        self.assertIn("int fov = 100;", options)
-        self.assertIn('"Field of view", &opts.fov, 50, 150, 5, tx_fov', menu)
-        self.assertIn("if (id == HOS_OPT_FOV) return opts.fov;", replay)
+        # (the row is the game's, game/menu/rows.c: its value kept by its option id, 100 out of the box, answered by it)
+        row = game_row("field_of_view")
+        self.assertIsNotNone(row, "game/menu/rows.c has no Field of view row")
+        self.assertEqual((row["label"], row["option"], row["lo"], row["hi"], row["step"], row["default_value"], row["kind"]),
+                         ('"Field of view"', "HOS_OPT_FOV", "50", "150", "5", "100", "GAME_MENU_SLIDER"))
+        self.assertEqual((row["text"], row["default_text"]), ("GAME_MENU_TEXT_PERCENT", '"100% (original)"'))
+        self.assertNotIn("int fov", options)
+        self.assertIn(GAME_OPTION_ANSWER, replay)
         self.assertIn("if (id == HOS_OPT_PROMPTS) return opts.prompts;", replay)
         self.assertIn("if (id == HOS_OPT_CAMERA_SPEED) return opts.camera_speed;", replay)
-        # (scales: module sliders (gpu/vk/menu/gameplay.cpp and camera.cpp, #1633), which is_slider and stops_at_ends take)
+        # (scales: sliders (the game's Field of view, game/menu/rows.c, and camera.cpp's Camera speed, #1633), which is_slider and
+        # stops_at_ends take; game_rows.cpp makes a GAME_MENU_SLIDER a Slider)
         for name in ("is_slider", "stops_at_ends"):
             function = menu[menu.index("bool " + name):].split("\n", 1)[0]
             self.assertIn("menu::Kind::Slider", function)
-        for module, key in (("gameplay.cpp", "field_of_view"), ("camera.cpp", "camera_speed")):
-            text = (ROOT / "gpu/vk/menu" / module).read_text(encoding="utf-8")
-            self.assertRegex(text, r'\.key = "%s",[^}]*\.kind = menu::Kind::Slider,' % key)
+        text = (ROOT / "gpu/vk/menu/camera.cpp").read_text(encoding="utf-8")
+        self.assertRegex(text, r'\.key = "camera_speed",[^}]*\.kind = menu::Kind::Slider,')
+        rows_cpp = (ROOT / "gpu/vk/menu/game_rows.cpp").read_text(encoding="utf-8")
+        self.assertIn("r.kind == GAME_MENU_SLIDER ? menu::Kind::Slider", rows_cpp)
 
 
 HEAD = r'''
@@ -176,18 +174,23 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
+    sitehooks.use(args.cc, args.cargo)
     result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(InstallTests))
     if not result.wasSuccessful():
         raise SystemExit(1)
-    host = (ROOT / "host/oot_fov.c").read_text(encoding="utf-8")
+    host = (ROOT / "tests" / "fixtures" / "oot_fov.c").read_text(encoding="utf-8")
     body = "".join(line for line in host.splitlines(keepends=True) if not line.startswith("#include"))
     with tempfile.TemporaryDirectory(prefix="oot-fov-") as temporary:
         source = Path(temporary) / "fixture.c"
         executable = Path(temporary) / "fixture.exe"
-        source.write_text(HEAD + body + MAIN.replace("SITE_C", oot_fov.HOOK), encoding="utf-8")
-        subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-lm", "-o", str(executable)], check=True)
+        defs, line = hooked(lens(), "int hos_site_camera_lens(")
+        text = HEAD + body + defs + MAIN.replace("SITE_C", line)
+        source.write_text(text, encoding="utf-8")
+        subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source),
+                        *sitehooks.objects(temporary, text), "-lm", "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
 
 

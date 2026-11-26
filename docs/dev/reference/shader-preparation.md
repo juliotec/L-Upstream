@@ -1,12 +1,15 @@
 # The shader preparation at a build
 
 How a build prepares the game's shaders before the first start, what happens when the GPU driver dies or hangs on one
-of them, and the files this leaves in the game folder's `cache/`.
+of them, and the files this leaves in the shader cache folder: the game folder's `cache/`, or for a game folder built
+for a profile (play's) the shared one in the builder's cache, `<cache>/shaders/<translator stamp>/<driver>/`, which the
+game is told in `LONGSHOT_SHADER_CACHE` ([where things are](build.md#where-things-are)).
 
 ## The run
 
 A build's last step starts the game it has just built with `--prepare-shaders`
-(`nx2/make_game.py` `prepare_shaders`; `scripts/devtools/packs.py` `prepare` for a development base or runtime). The game
+(`builder/crates/build-driver/src/shaders.rs` `prepare`; `longshot-builder prepare <game folder>` for a development
+base or runtime, which `scripts/devtools/packs.py` `prepare` runs). The game
 starts the Vulkan renderer with no window and no game, does what a first start does and exits
 (`gpu/vk/vk_main.cpp` `started_up`):
 
@@ -17,7 +20,7 @@ starts the Vulkan renderer with no window and no game, does what a first start d
    pipeline cache and let go.
 4. The pipeline cache written out.
 
-Its progress goes to the Builder as `@@stage` and `@@progress` lines. A preparation that fails is never a failed build:
+Its progress goes to the builder as `@@stage` and `@@progress` lines. A preparation that fails is never a failed build:
 the build says `the shaders were not prepared now (<why>)` and the game prepares them at its first start.
 
 Three calls of this run enter the driver's compiler: `vkCreateShaderModule`, `vkCreateGraphicsPipelines` and
@@ -90,9 +93,9 @@ start, so the run puts each marker back one start (`vk_draw.cpp` `prepare_restar
 
 ## The supervisor
 
-`nx2/prepare_supervisor.py` `supervise` starts the run with a journal and a limit per entry
+`builder/crates/build-driver/src/supervisor.rs` `supervise` starts the run with a journal and a limit per entry
 (240 s, below the run's own 300 s so that a stuck shader is named before the whole run gives up;
-`LONGSHOT_PREPARE_ENTRY_S` in the Builder's environment sets another, 0 none). After each run it reads the journal:
+`LONGSHOT_PREPARE_ENTRY_S` in the builder's environment sets another, 0 none). After each run it reads the journal:
 
 | The run ended | The journal's last run left open | Then |
 |---|---|---|
@@ -113,7 +116,7 @@ preparation: a slow compile may complete if tried again in the game. The run is 
 the preparation is then given up) and 20 starts in all. Giving up is what a failed preparation always was; the
 crashed culprits found until then stay listed. The 240 s limit still needs validation on slow hardware.
 
-The Builder's log gets a line for each culprit and each restart, starting with `shader preparation:`.
+The builder's log gets a line for each culprit and each restart, starting with `shader preparation:`.
 
 ## What is left in cache/
 
@@ -143,10 +146,12 @@ every draw of its program with it.
 
 ## Testing it
 
-- `python -I -B tests/test_prepare_journal.py`: the writer compiled alone and killed inside an entry, read back by
-  the supervisor's parser; the game's own reader on the line the supervisor appends.
-- `python -I -B tests/test_prepare_supervisor.py`: the policy against a stand-in game that dies or hangs in given
-  programs, on one thread and on several.
+- `python -I -B tests/test_prepare_journal.py`: the writer compiled alone and killed inside an entry; what it writes
+  is `builder/crates/build-driver/tests/data/prepare_journal.txt`, which the supervisor's tests read back; the game's
+  own reader on the lines the supervisor appends.
+- `cargo test -p build-driver supervisor` (in `builder/`): the policy against a stand-in game that dies or hangs in
+  given programs, on one thread and on several, and the journal read; `shaders` the build's preparation with a
+  stand-in game that dies once inside the driver.
 - In the game, `RX_VK_TEST_PREPARE_FAULT` makes a journalled preparation die (`crash:`) or never return (`hang:`)
   in the first driver call of chosen programs, as a driver that fails on those shaders: `crash:<n>` every program
   whose key is a multiple of n (about one in n; `crash:1` is a driver that fails on everything, for the bounds),
@@ -154,8 +159,8 @@ every draw of its program with it.
   entry number would not be the same entry in two runs on several threads. On a built game folder:
 
   ```
-  RX_VK_TEST_PREPARE_FAULT=crash:=<key> python -I nx2/prepare_supervisor.py <game folder>
-  RX_VK_TEST_PREPARE_FAULT=hang:=<key> python -I nx2/prepare_supervisor.py <game folder> --entry-limit 20
+  RX_VK_TEST_PREPARE_FAULT=crash:=<key> longshot-builder prepare <game folder>
+  RX_VK_TEST_PREPARE_FAULT=hang:=<key> LONGSHOT_PREPARE_ENTRY_S=20 longshot-builder prepare <game folder>
   ```
 
   (a key: any program of an earlier `cache/longshot_prepare_results.txt`'s slowest rows.) The preparation then

@@ -1,0 +1,19 @@
+[package]
+name = "edits"
+description = "The changes Longshot makes to the game's functions (hook sites, the game's patches, entry hooks) as edits of the mid IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+a64.workspace = true
+cfg.workspace = true
+image.workspace = true
+mir.workspace = true
+sha1_smol.workspace = true
+sites.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

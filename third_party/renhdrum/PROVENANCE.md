@@ -24,10 +24,10 @@ upstream-root: RenHDrum-0.5.0
 
 **How it reaches the game.** `python -I scripts/renhdrum.py build` compiles it into `renhdrum.dll` (ignored by git) for
 x86_64-pc-windows-gnullvm, with a pinned Rust and the llvm-mingw the game is built with (its clang compiles libopus too),
-and the `cc` crate downloaded by the SHA-256 `Cargo.lock` gives it; the same source gives the same bytes. The Builder's release does that in CI (`.forgejo/workflows/build-windows.yml`) and ships the DLL in its package as
-`tools/third_party/renhdrum/renhdrum.dll`, and the AppImage's (`.forgejo/workflows/build-linux.yml`) builds `renhdrum.so`
-and carries it in `third_party/renhdrum/`, so a player's build puts it beside the game (`nx2/build.py`,
-`nx2/make_game.py`) and needs no Rust. `host/rumble_renhdrum.c` loads it (`renhdrum.dll`, `renhdrum.so` on Linux) from the game's own folder by full path; without it
+and the `cc` crate downloaded by the SHA-256 `Cargo.lock` gives it; the same source gives the same bytes. The release
+does that in CI (`.forgejo/workflows/build-windows.yml`, and `build-linux.yml` for `renhdrum.so`) and longshot-builder
+carries the library at `third_party/renhdrum/` in its tree (`longshot-builder dev release sources --add`), so a player's
+build puts it beside the game (build-compile) and needs no Rust. `host/rumble_renhdrum.c` loads it (`renhdrum.dll`, `renhdrum.so` on Linux) from the game's own folder by full path; without it
 every controller keeps its motors or its own HD rumble, and Test vibration says why.
 
 **A newer RenHDrum.** Replace these files with the new tag's, change the commit and the three `upstream` lines, run

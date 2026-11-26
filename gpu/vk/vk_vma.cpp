@@ -1,4 +1,4 @@
-// Vulkan Memory Allocator (v3.3.0, from Eglantine's CPM cache: nx2/build.py adds its include path): images and
+// Vulkan Memory Allocator (v3.3.0, from Eglantine's CPM cache: builder/crates/build-compile adds its include path): images and
 // device buffers are sub-allocated from large blocks (NVIDIA allows ~4096 allocations, and the imported pools
 // already take about 2400 of them). Its Vulkan functions come from vkGetInstanceProcAddr / vkGetDeviceProcAddr.
 #define VMA_IMPLEMENTATION

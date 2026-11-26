@@ -4,7 +4,8 @@ An area's saved MapIconDeactivateByAreaActor flag can outlive a debug teleport. 
 the HUD but leaves the save's copy hidden. The teleport must use the game's queued Bool setter, which owns both.
 
 Linux only (the stand-in game is a mapping of the guest's addresses). Builds oot_teleport and what it calls from the
-source over a stand-in GameDataMgr, event manager and guest functions. The fixture keeps the live flags and serialized
+source (game/oot_tools.c) (with the game services it goes through, game/flags.c and host/game_call.c) over a stand-in GameDataMgr, event manager
+and guest functions. The fixture keeps the live flags and serialized
 flags separate: only processing an engine-setter request updates both. It checks:
 
 - an accepted teleport queues the repair, preserves the caller's registers, and survives a simulated save/reload;
@@ -31,7 +32,7 @@ STAND_IN = r'''
 #include <stdarg.h>
 #include <sys/mman.h>
 
-typedef struct { uint64_t x[32]; } Ctx;
+typedef struct { uint64_t x[32]; uint64_t vreg[32][2]; uint32_t poll, pad; } Ctx;   /* (vreg: builder/rt/a64.h's, for game_call_more's float results; poll: the lifted Ctx's, which game_call never restores) */
 typedef void (*A64Fn)(Ctx *);
 static uint8_t *guest;   /* (the guest's first 4 GB, untouched pages cost nothing) */
 #define A64_PTR(a) (guest + (uint64_t)(a))
@@ -63,11 +64,6 @@ enum { MGR = 0x20000000, TABLE = 0x20001000, BOOLS = 0x20002000, EVENTS = 0x2100
        NAMES = 0x23000000 };
 static const uint32_t flags[3] = {0xcea220d3u, 0xef2b60c2u, 0x9a4dd779u};   /* IsChildhood, IsLoadingBanc, the minimap's */
 static int requests;
-static void game_get_bool(Ctx *c) {   /* f_8022d9c0(mgr, out, hash) */
-    c->x[0] = 0;
-    for (uint32_t i = 0; i < 3; i++)
-        if (flags[i] == (uint32_t)c->x[2]) *A64_PTR(c->x[1]) = *A64_PTR(BOOLS + i * 24 + 22), c->x[0] = 1;
-}
 static int set_available = 1, set_calls, set_args_bad, pending, pending_value, saved_hidden;
 static void game_set_bool(Ctx *c) {
     set_args_bad |= c->x[0] != MGR || c->x[1] > 1 || c->x[2] != flags[2];
@@ -92,12 +88,19 @@ static uint64_t answer = 1;   /* the event manager's answer: 0 when it does not 
 static void game_request(Ctx *c) { requests++, c->x[0] = answer; }
 static void game_nothing(Ctx *c) { (void)c; }
 static A64Fn a64_lookup(uint64_t a) {
-    return a == 0x8022d9c0ULL ? game_get_bool : a == 0x806a2b20ULL ? (set_available ? game_set_bool : NULL) :
+    return a == 0x806a2b20ULL ? (set_available ? game_set_bool : NULL) :
            a == 0x80d99f10ULL ? game_make_arg : a == 0x80d9a820ULL ? game_request :
-           a == 0x802dc440ULL || a == 0x8022b6f0ULL || a == 0x80cd0ea0ULL ? game_nothing : NULL;
+           a == 0x802dc440ULL || a == 0x8022b6f0ULL ? game_nothing : NULL;
 }
-static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
-static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
+/* (host/hos.h's, for host/game_call.c and flags.c: one guest thread, holding its core) */
+#define HOS_WRITTEN(p, n) ((void)0)
+static Ctx *running;   /* (the guest thread's context: main's, which game_call takes as the caller's own) */
+static Ctx *hos_ctx(void) { return running; }
+static void *hos_self(void) { return guest; }
+static int hos_vcore_held(void) { return 1; }
+static void hos_vcore_back(void) {}
+static int hos_vcore_away(void) { return 0; }
+static int hos_vcore_kicked(void) { return 0; }
 '''
 
 RUN = r'''
@@ -105,11 +108,11 @@ static void game_start(void) {
     Ctx c = {0};
     guest = mmap(NULL, 1ULL << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (guest == MAP_FAILED) exit(3);
-    recomp_store64(&c, OOT_GAMEDATA_SLOT, 0x1f000000), recomp_store64(&c, 0x1f000000, MGR);
+    recomp_store64(&c, GAME_FLAGS_SLOT, 0x1f000000), recomp_store64(&c, 0x1f000000, MGR);
     recomp_store64(&c, OOT_EVENTMGR_SLOT, 0x1f000100), recomp_store64(&c, 0x1f000100, EVENTS);
     recomp_store64(&c, MGR + 32, TABLE), recomp_store32(&c, MGR + 44, SLOTS);
     recomp_store64(&c, MGR + 24, BOOLS), recomp_store32(&c, MGR + 16, 3);
-    for (uint32_t i = 0; i < 3; i++) {   /* (open addressing from hash % size, as oot_gamedata_set_bool walks it) */
+    for (uint32_t i = 0; i < 3; i++) {   /* (open addressing from hash % size, as game/flags.c walks it) */
         uint32_t slot = flags[i] % SLOTS;
         while (recomp_load32(&c, TABLE + slot * 8)) slot = (slot + 1) % SLOTS;
         recomp_store32(&c, TABLE + slot * 8, flags[i]), recomp_store32(&c, TABLE + slot * 8 + 4, i);
@@ -125,6 +128,7 @@ static void check(int ok, const char *what) {
 
 int main(void) {
     Ctx c = {0};
+    running = &c;
     for (unsigned i = 0; i < 32; i++) c.x[i] = 0x12340000ULL + i;
     c.x[31] = 0x40000000ULL;
     const Ctx original = c;
@@ -188,14 +192,25 @@ def block_end(text, start):
     return end
 
 
+def service(name):
+    """<name>.c with its header (game/flags, host/game_call), as one text over the stand-in (its own includes of the
+    runtime's left out)"""
+    text = ""
+    for part in ("%s.h" % name, "%s.c" % name):
+        text += "".join(line for line in (ROOT / part).read_text(encoding="utf-8").splitlines(keepends=True)
+                        if not line.startswith('#include "') and not line.startswith("typedef struct GuestContext Ctx;"))
+    return text
+
+
 def build(cc, tmp, source_path=None):
-    source = (source_path or ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    source = (source_path or ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
     places = source.index("typedef struct {\n    const char *child_banc")   # (OotDestination and the table of them)
     places = source[places:source.index("};", source.index("static const OotDestination oot_destinations[] = {")) + 2]
-    start = source.index("#define OOT_GAMEDATA_SLOT")
-    end = block_end(source, source.index("static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value) {"))
+    start = source.index("#define OOT_EVENTMGR_SLOT")
+    end = block_end(source, source.index("static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {"))
     src, exe = tmp / "teleport.c", tmp / "teleport"
-    src.write_text(STAND_IN + places + "\n" + source[start:end] + RUN, encoding="utf-8")
+    # (the game services the teleport reads the flags and calls the game through: game/flags.c and host/game_call.c as they are)
+    src.write_text(STAND_IN + service("game/flags") + service("host/game_call") + places + "\n" + source[start:end] + RUN, encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-O1", "-w", str(src), "-o", str(exe)], check=True)
     return exe
 
@@ -203,7 +218,7 @@ def build(cc, tmp, source_path=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="gcc")
-    p.add_argument("--source", type=Path, help="host/hos_main.c from another revision (the regression negative)")
+    p.add_argument("--source", type=Path, help="game/oot_tools.c from another revision (the regression negative)")
     a = p.parse_args()
     if os.name == "nt" or sys.platform == "darwin":
         print("SKIP: the stand-in game maps the guest's addresses as Linux does")

@@ -339,6 +339,42 @@ def tree(pid):
     return found
 
 
+def ancestors(pid=None):
+    """[(pid, start)] of pid (this process) and every process above it, nearest first; None when its own line can't be
+    read. Windows: by parent pid, each parent started before its child (a parent that ended left a pid another process
+    may hold now)"""
+    pid = os.getpid() if pid is None else pid
+    chain, seen = [], set()
+    if common.WINDOWS:
+        snap = _win_snapshot()
+        if pid not in snap:
+            return None
+        born = _win_start(pid)
+        while pid not in seen:
+            seen.add(pid)
+            chain.append((pid, born))
+            parent = snap.get(pid, (0,))[0]
+            up = _win_start(parent) if parent and parent in snap else None
+            if up is None or (born is not None and up > born):
+                break
+            pid, born = parent, up
+        return chain
+    while pid > 0 and pid not in seen:
+        seen.add(pid)
+        try:
+            with open("/proc/%d/stat" % pid) as f:
+                stat = f.read()
+            rest = stat[stat.rindex(")") + 2:].split()
+            parent, start = int(rest[1]), int(rest[19])
+        except (OSError, ValueError, IndexError):
+            if not chain:
+                return None
+            break
+        chain.append((pid, start))
+        pid = parent
+    return chain
+
+
 def pin(root, cpus):
     """Every thread of root's tree onto cpus (children started later inherit it)"""
     if not hasattr(os, "sched_setaffinity"):

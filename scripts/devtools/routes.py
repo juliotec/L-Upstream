@@ -32,7 +32,7 @@ HEADER = {"format", "fps", "start", "source", "from", "build", "fixed_time", "st
           "clock", "map", "age", "profile", "save"}
 # (the header's texts, each to what the game writes there: no room for anything else)
 HEADER_TEXT = {"format": re.compile(r"^ls-input-recording/1$"), "source": re.compile(r"^longshot$"),
-               "from": re.compile(r"^(play|boot)$"), "build": re.compile(r"^[A-Za-z0-9 ._+()/-]{0,80}$"),   # (nx2/version.py describe's)
+               "from": re.compile(r"^(play|boot)$"), "build": re.compile(r"^[A-Za-z0-9 ._+()/-]{0,80}$"),   # (build-compile's version describe)
                "fixed_time": re.compile(r"^[0-9]{0,12}$"), "step": re.compile(r"^(per frame|wall clock)$"),
                "map": re.compile(r"^[0-9A-Za-z_-]{0,48}$"), "age": re.compile(r"^(child|adult|)$"),
                "profile": re.compile(r"^(route|full)$"), "save": re.compile(r"^[a-z0-9-]*$")}
@@ -196,7 +196,7 @@ def cmd_record(a):
     """The game started from the repository save through the queue (shared), recording a route from its load until it is
     closed; the file checked and put in assets/routes/"""
     import longshot_bridge
-    from devtools import ab, packs
+    from devtools import ab
     if not SAVE_NAME.match(a.save) or not os.path.isdir(os.path.join(SAVES, a.save)):
         die("no repository save %r in assets/saves/" % a.save)
     if not re.match(r"^[a-z0-9-]+$", a.name):
@@ -212,14 +212,14 @@ def cmd_record(a):
     opts = os.path.join(d, "options.ini")
     ab.pin_options(None, opts, False, True)
     env = {"HOS_INPUT_RECORD": rec, "HOS_INPUT_ROUTE": "1", "HOS_INPUT_SAVE": a.save, "HOS_REALTIME_STEP": "0",
-           "HOS_FIXED_TIME": "1767225600", "HOS_OPTIONS_FILE": opts, "HOS_FPS_MAX": "60"}
+           "HOS_FIXED_TIME": "1767225600", "HOS_FPS_MAX": "60"}
     wrapper = [sys.executable, "-I", os.path.join(common.SCRIPTS, "dev.py"), "queue", "run", "route-" + a.name, "--mode",
                "shared", "--desc", "recording the route %s" % a.name, "--"]
     print("%s: the game starts from %s; play the route, then close the game (its window, or the menu's Quit)" % (WHO, a.save),
           flush=True)
-    session = longshot_bridge.start_session(rt, romfs=packs.runtime_romfs(rt), run=os.path.join(d, "game"),
-                                            user=os.path.join(d, "user"), repo_save=a.save, env=env, ready="present",
-                                            timeout=1800, wrapper=wrapper)
+    session = longshot_bridge.start_session(rt, run=os.path.join(d, "game"),
+                                            user=os.path.join(d, "user"), repo_save=a.save, options=opts, env=env,
+                                            ready="present", timeout=1800, wrapper=wrapper)
     while session.info()["state"] == "running":
         time.sleep(1)
     if not os.path.isfile(rec):

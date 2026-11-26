@@ -4,7 +4,7 @@
 // The camera is taken exactly as vk_temporal.cpp's temporal_note_scene_draw takes it, from the draws into the scene's
 // colour target: their vertex stage's uniform buffer 3 holds the target's size at 0x120, this frame's view-projection at 0x30 (row major,
 // clip = M * position) and the projection at 0x70, its w row (0, 0, -1, 0) at 0xa0. The jitter the host put on the
-// projection (nx2/oot_jitter.py: P[0][2] and P[1][2]) is read back from it, given to FSR in render pixels and taken off the
+// projection (the hook sites jitter.view*: P[0][2] and P[1][2]) is read back from it, given to FSR in render pixels and taken off the
 // motion, with dlss_math.h's functions: the same jitter, read the same way, as DLSS's.
 #include "vk_fsr3_inputs.h"
 
@@ -50,7 +50,7 @@ struct Image {
 struct Camera {
     float current[16]{};      // (its view-projection, jittered)
     float projection[16]{};   // (its projection, jittered: the near plane and the field of view come from it)
-    float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: nx2/oot_jitter.py)
+    float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: the hook sites jitter.view*)
     uint32_t width = 0, height = 0;
     Texture* depth = nullptr;
     uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)

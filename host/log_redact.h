@@ -4,8 +4,8 @@
    - each line the game and the renderer log (hos_log, hos_log_at, the renderer's logf, hos_fatal) is redacted before it is
      written (host/hos_thread.c hos_vlog);
    - what other code writes to stderr itself (the Vulkan loader, SDL, a printf before the log started) is redacted in the file
-     once its run has ended: by the crash watch (host/hos_crash_dialog.c, as soon as the game is gone) and, for a run that had
-     none, by the next start, on the log it rotates to longshot_log.1.txt (host/hos_main.c). */
+     once its run has ended, by the next start, on the log it rotates to longshot_log.1.txt (host/hos_main.c). The builder's
+     crash window redacts what it shows and sends itself (builder/crates/crash/src/redact.rs). */
 #pragma once
 #include <stddef.h>
 
@@ -15,6 +15,6 @@ size_t hos_log_redact(char *out, size_t cap, const char *line);
 
 /* The log file at path redacted in place, line by line, once its run has ended (another writer would lose its place). With
    run_id, only when the file is that run's (its "run_id: <id>" line in its first 8 KB): a start since may have made a new log
-   at the path. Locked while it is rewritten, so a start and a crash watch never rewrite one file at once. 1 rewritten, 0
+   at the path. Locked while it is rewritten, so two starts never rewrite one file at once. 1 rewritten, 0
    already clean (or not that run's, or over 256 MB), -1 not opened or not written */
 int hos_log_redact_file(const char *path, const char *run_id);

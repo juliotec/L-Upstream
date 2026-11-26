@@ -6,7 +6,7 @@ night; a save in the Market, the castle or anywhere else with the flag still 1 c
 `oot_inventory_refresh` runs twice a second and already reads the map and Link's age, so the repair lives there: outside
 Hyrule Field, clear the flag with the game's own setter and log it once.
 
-This cuts the real `oot_inventory_refresh` (and `oot_first_night_fix` when the source has it) out of host/hos_main.c and
+This cuts the real `oot_inventory_refresh` (and `oot_first_night_fix` when the source has it) out of game/oot_tools.c and
 runs it against made-up save state, with no game and no romfs. On main the flag stays 1 and the first case fails for the
 report's reason; with the repair it is cleared. Run it with:
 
@@ -48,22 +48,23 @@ static void hos_log(const char *fmt, ...) { (void)fmt; }
 static void rx_option_set(int id, int value) { (void)id; (void)value; }
 static int oot_item_count(Ctx *c, const char *name) { (void)c; (void)name; return 0; }
 static int oot_pouch_count(Ctx *c, const char *name) { (void)c; (void)name; return -1; }
-static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value) {
-    (void)c;
+/* (the flags service, game/flags.h) */
+#define MGR 0x1000u
+static uint64_t game_flags_mgr(void) { return MGR; }
+static int game_flag_bool(uint64_t mgr, uint32_t hash, int *value) {
+    if (mgr != MGR) return 0;
     if (hash == 0xcea220d3u) { *value = child; return 1; }
     if (hash == 0x8592aa82u) { *value = flag; return 1; }
     return 0;
 }
-__attribute__((unused)) static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value) {
-    (void)c;
-    if (hash != 0x8592aa82u) return 0;
+__attribute__((unused)) static int game_flag_set_bool(uint64_t mgr, uint32_t hash, int value) {
+    if (mgr != MGR || hash != 0x8592aa82u) return 0;
     if (flag != value) cleared++;
     flag = value;
     return 1;
 }
-static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size) {
-    (void)c;
-    if (hash != 0x1d6189dau) return 0;
+static int game_flag_text(uint64_t mgr, uint32_t hash, char *buf, size_t size) {
+    if (mgr != MGR || hash != 0x1d6189dau) return 0;
     snprintf(buf, size, "%s", map_name);
     return 1;
 }
@@ -155,7 +156,7 @@ int main(void) {
 def cut(source, pattern, what):
     match = re.search(pattern, source, re.M | re.S)
     if not match:
-        raise SystemExit("could not find %s in host/hos_main.c" % what)
+        raise SystemExit("could not find %s in game/oot_tools.c" % what)
     return match.group()
 
 
@@ -164,7 +165,7 @@ def main():
     parser.add_argument("--cc", default=None)
     args = parser.parse_args()
     cc = parse_compiler(args.cc) if args.cc else compiler_command("CC", "gcc", "clang")
-    host = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
+    host = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
     refresh = cut(host, r"^static void oot_inventory_refresh\(Ctx \*c, int64_t now\) \{.*?^\}", "oot_inventory_refresh")
     fix = re.search(r"^static int oot_first_night_fix\(Ctx \*c, const char \*map\) \{.*?^\}", host, re.M | re.S)
     body = FIXTURE.replace("// FIX", fix.group() if fix else "").replace("// REFRESH", refresh)

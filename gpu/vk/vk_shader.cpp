@@ -352,7 +352,7 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area, uint64_t k
             logf("vk: NVN2 program %016llx (stage %u) does not lower at +%#x: %s (native op %#x, %08x %08x %08x %08x)", (unsigned long long)c.key,
                  st, lowered.error_offset, std::string(lowered.error).c_str(), op, at < native.size() ? native[at].words[0] : 0,
                  at < native.size() ? native[at].words[1] : 0, at < native.size() ? native[at].words[2] : 0, at < native.size() ? native[at].words[3] : 0);
-            // (RX_VK_DUMP_FAILED=<folder>: the native code, for nx2/lowering tests: <stage>_<key>.bin, 16-byte words)
+            // (RX_VK_DUMP_FAILED=<folder>: the native code, for scripts/lower_test.py: <stage>_<key>.bin, 16-byte words)
             if (const char* dir = getenv("RX_VK_DUMP_FAILED")) {
                 char path[512];
                 snprintf(path, sizeof path, "%s/%u_%016llx.bin", dir, st, (unsigned long long)c.key);
@@ -1438,7 +1438,7 @@ void sim_turf_pools(Shader::IR::Program& program, uint64_t code_key) {
 }
 
 // (longshot) What the program cache's records are good for, as far as the translation goes: this translator (LONGSHOT_SHADER_STAMP,
-// nx2/build.py) and what it is told of the GPU and the environment. The cache's own format and I/O are vk_progcache.cpp's, outside
+// builder/crates/build-compile) and what it is told of the GPU and the environment. The cache's own format and I/O are vk_progcache.cpp's, outside
 // the stamp, with a version of their own (kProgramCacheFormat): a change to how the cache is read or scheduled no longer throws
 // every player's translated programs away
 } // namespace
@@ -1447,7 +1447,7 @@ uint64_t translator_stamp() {
     const auto add = [&h](const void* d, size_t n) {
         for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)d)[i]) * 1099511628211ull;
     };
-    // (what translates shaders, nx2/build.py: a rebuild of anything else keeps the cache. It was the DLL's bytes, and every build
+    // (what translates shaders, builder/crates/build-compile: a rebuild of anything else keeps the cache. It was the DLL's bytes, and every build
     // lost it)
     const uint64_t translator = LONGSHOT_SHADER_STAMP;
     add(&translator, sizeof translator);
@@ -2370,7 +2370,7 @@ bool key_listed(const char* hex, const char* var) {
     return false;
 }
 // ---- (longshot) Every shader of the game before it starts, as TotK Recomp's tools/prepare_shaders.py and totk.exe --prepare-shaders: the
-// builder writes longshot_shaders.bin (nx2/shader_census.py) from the archives, each program's stages, and here each is translated
+// builder writes longshot_shaders.bin (builder/crates/build-assets/src/census.rs) from the archives, each program's stages, and here each is translated
 // for the default state (nothing bound, float inputs and outputs) and kept in longshot_programs.bin. What a draw then asks for is on
 // disk, whatever part of the game it is first met in ----
 namespace {

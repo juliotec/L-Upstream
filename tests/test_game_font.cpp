@@ -77,6 +77,11 @@ static void write(const fs::path& p, const Bytes& b) {
     fclose(f);
 }
 
+/// a folder's files as the host's romfs_read serves them (vk_imgui.cpp's reader)
+static RomfsRead folder(const fs::path& dir) {
+    return [dir](const std::string& rel, Bytes& out) { return read_file((dir / rel).string(), out); };
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) return 2;
     const fs::path root = argv[1];
@@ -99,7 +104,7 @@ int main(int argc, char** argv) {
     set_up(root / "good", zframe(sarc("zs.zsdic", dict)), zframe(bfotf(font, key)));
     {
         Reader r;
-        CHECK("opens", r.open((root / "good").string()));
+        CHECK("opens", r.open(folder(root / "good")));
         CHECK("the font back", r.read("Test") == font);
         CHECK("a font it does not have", r.read("Other").empty());
     }
@@ -113,7 +118,7 @@ int main(int argc, char** argv) {
     {
         set_up(root / "hebrew", zframe(sarc("zs.zsdic", dict)), zframe(bfotf(hebrew, key)));
         Reader r;
-        CHECK("opens", r.open((root / "hebrew").string()));
+        CHECK("opens", r.open(folder(root / "hebrew")));
         CHECK("no Latin letters: not used", r.read("Test").empty());
         CHECK("though it is a font", bfotf_font(bfotf(hebrew, key)) == hebrew);
     }
@@ -123,17 +128,17 @@ int main(int argc, char** argv) {
         pack.resize(pack.size() - 10);
         set_up(root / "truncated", pack, zframe(bfotf(font, key)));
         Reader r;
-        CHECK("a truncated dictionary pack", !r.open((root / "truncated").string()));
+        CHECK("a truncated dictionary pack", !r.open(folder(root / "truncated")));
     }
     {
         set_up(root / "offset", zframe(sarc("zs.zsdic", dict, 0x400000)), zframe(bfotf(font, key)));
         Reader r;
-        CHECK("a name offset past the archive", !r.open((root / "offset").string()));
+        CHECK("a name offset past the archive", !r.open(folder(root / "offset")));
     }
     {
         set_up(root / "prefix", zframe(sarc("zs.zsdicX", dict)), zframe(bfotf(font, key)));
         Reader r;
-        CHECK("only the exact name", !r.open((root / "prefix").string()));
+        CHECK("only the exact name", !r.open(folder(root / "prefix")));
     }
     {
         Bytes a = sarc("zs.zsdic", dict);
@@ -148,7 +153,7 @@ int main(int argc, char** argv) {
         f.resize(f.size() / 2);
         set_up(root / "font-truncated", zframe(sarc("zs.zsdic", dict)), f);
         Reader r;
-        CHECK("opens", r.open((root / "font-truncated").string()));
+        CHECK("opens", r.open(folder(root / "font-truncated")));
         CHECK("a truncated font frame", r.read("Test").empty());
     }
     CHECK("a wrong size word", bfotf_font(bfotf(font, key, 1)).empty() && bfotf_font(bfotf(font, key, -1)).empty());
@@ -161,8 +166,8 @@ int main(int argc, char** argv) {
     CHECK("the header alone", bfotf_font(bfotf(Bytes(), key)).empty());
     {
         Reader r;
-        CHECK("no folder", !r.open("") && r.read("Test").empty());
-        CHECK("a folder with nothing", !r.open((root / "none").string()));
+        CHECK("no folder", !r.open(folder(root / "no-such")) && r.read("Test").empty());
+        CHECK("a folder with nothing", !r.open(folder(root / "none")));
     }
     std::printf("PASS: the game font reader on synthetic files\n");
     return 0;

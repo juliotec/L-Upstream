@@ -91,6 +91,9 @@ int snap_render(int, int v) { return v; }
 bool full_scale(int) { return false; }
 int step_engine(int, int, unsigned) { return 0; }
 void step_render(int up, int v, int dir, int* u, int* r) { *u = up, *r = v + dir; }
+int engine(int up) { return up; }   // (#2383's stepped Render resolution: not a row here)
+void apply_fixed_stop(int up, int, int stop, int* u, int* r) { *u = up, *r = stop; }
+void step_fixed_render(int up, int v, int dir, int* u, int* r) { *u = up, *r = v + dir; }
 }
 namespace mr { constexpr int kMax = 8; }
 namespace i18n { inline void set_game_language(int) {} }
@@ -201,7 +204,7 @@ def presses(menu):
     check(re.search(r"\.on_activate = (MENU_HOOK\()?menu_rumble_test\b", test) is not None,
           "Test vibration's Confirm does not ask menu_rumble_test")
     branch = definition(menu, "void menu_rumble_test")
-    check("host->rumble_test()" in branch and "host->version >= 32" in branch,
+    check("host->rumble_test()" in branch and "host && host->rumble_test)" in branch,
           "Test vibration's Confirm does not ask the host's rumble_test")
     check('.verb = "Test"' in test, "Test vibration's Confirm is not labelled Test")
     # (its cell and its help line: the module's text and hint, as every module's button draws them (row_value_cell,
@@ -215,11 +218,14 @@ def presses(menu):
 
 def option_ids():
     """63 is the Vibration row, 64 what the host reports plays the pad; both read by host/pad_sdl.c alone"""
-    replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
+    replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h") + read("game", "options.h")
     value = {}
     for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+)([^}]*)\}", api):
-        names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
-        value.update({n: int(start) + i for i, n in enumerate(names)})
+        at = int(start) - 1
+        for n in [first + " = " + start] + [n.strip() for n in rest.split(",") if n.strip()]:
+            name, _, given = n.partition("=")   # (a later name's own value: game/options.h's HOS_OPT_SKIP_TITLE = 44)
+            at = int(given) if given.strip() else at + 1
+            value[name.strip()] = at
     check(value.get("HOS_OPT_VIBRATION") == 63 and value.get("HOS_OPT_VIBRATION_STATUS") == 64,
           "gpu/vk/vk_api.h: the Vibration options are not 63 and 64")
     check(not any(n.startswith("HOS_OPT_HAPTIC") for n in value), "gpu/vk/vk_api.h still has the haptics options")
@@ -230,7 +236,7 @@ def option_ids():
     check("if (id == HOS_OPT_VIBRATION_STATUS) return menu_vibration_status_option();" in table,
           "vk_replay.cpp: t.option does not give back what the host reported")
     users = []
-    for folder in ("host", "gpu"):
+    for folder in ("host", "gpu", "game"):
         for path in (ROOT / folder).rglob("*.c*"):
             text = path.read_text(encoding="utf-8", errors="replace")
             if re.search(r"\brx_option(_set)?\(\s*HOS_OPT_VIBRATION", text):

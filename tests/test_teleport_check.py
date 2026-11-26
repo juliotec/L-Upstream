@@ -1,10 +1,10 @@
-"""The debug teleport sends a dropped request once more (host/oot_teleport_check.h, host/hos_main.c oot_teleport_followup).
+"""The debug teleport sends a dropped request once more (game/oot_teleport_check.h, game/oot_tools.c oot_teleport_followup).
 
 A request sent in the first frames after a save has loaded was answered 0 and then dropped by the game: nothing reserved, no
 event, Link where he was; the control bridge's `teleport --arrive` timed out, in about one scripted start in four. The
 follow-up 1.5 s later read exactly that and only logged it. Game-free: the decision compiled with its cases, and the follow-up
 run on its own: teleport's state, the start of oot_teleport (its refusals, the 8 s guard among them), the bookkeeping of a
-request sent and oot_teleport_followup, all cut from host/hos_main.c, with the game's reads stubbed. It sends a dropped
+request sent and oot_teleport_followup, all cut from game/oot_tools.c, with the game's reads stubbed. It sends a dropped
 request again, once, to the same destination, also when a call in between was refused (which clears teleport.banc, the
 bridge's reply), and leaves alone one the game took (answered other than 0) or one with an event playing or a map loading
 at the check.
@@ -44,7 +44,7 @@ int main(void) {
 }
 """
 
-# The follow-up run on its own. @STATE@, @PRELUDE@, @SENT@ and @FOLLOWUP@ are cut from host/hos_main.c: oot_teleport is its
+# The follow-up run on its own. @STATE@, @PRELUDE@, @SENT@ and @FOLLOWUP@ are cut from game/oot_tools.c: oot_teleport is its
 # own start (every refusal before the game is asked) and its own bookkeeping of a request sent, around a stand-in for the
 # request the game takes.
 SEQUENCE = r"""
@@ -66,11 +66,13 @@ static uint64_t answer;
 #define EVENTS 0x1000u
 static uint64_t oot_singleton(Ctx *c, int slot) { (void)c; return slot == OOT_EVENTMGR_SLOT ? EVENTS : 0; }
 static uint64_t recomp_load64(Ctx *c, uint64_t at) { (void)c; return at == EVENTS + 104 ? (uint64_t)event_playing : 0; }
-static void oot_gamedata_string(Ctx *c, uint32_t hash, char *out, size_t size) {
-    (void)c;
+static uint64_t game_flags_mgr(void) { return 1; }
+static int game_flag_text(uint64_t mgr, uint32_t hash, char *out, size_t size) {
+    (void)mgr;
     snprintf(out, size, "%s", hash == 0xee27bf71u ? reserved : current);
+    return 1;
 }
-static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *out) { (void)c; *out = hash == 0xef2b60c2u ? loading_now : 0; return 1; }
+static int game_flag_bool(uint64_t mgr, uint32_t hash, int *out) { (void)mgr; *out = hash == 0xef2b60c2u ? loading_now : 0; return 1; }
 typedef struct { const char *adult_banc; } OotDestination;
 static const OotDestination oot_destinations[] = {{"Kokiri_Adult"}, {"Kakariko_Adult"}, {"Lake_Adult"}, {"Market_Adult"}};
 @STATE@
@@ -156,11 +158,11 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--cc", default=os.environ.get("CC", "gcc"))
     a = p.parse_args()
-    src = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
-    where = "host/hos_main.c"
+    src = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
+    where = "game/oot_tools.c"
     state = srccut.between(src, "static struct {\n    int64_t requested_at, check_at;", "\nstatic int oot_teleport(", where=where)
     prelude = srccut.between(src, "static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {",
-                             "    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);\n    A64Fn make_arg", where=where)
+                             "    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);\n", where=where)
     sent = srccut.between(src, "    teleport.requested_at = now;\n    teleport.check_at", "    return ok;   /* (sent;", where=where)
     followup = srccut.block(src, "static void oot_teleport_followup(", where=where)
     sequence = (SEQUENCE.replace("@STATE@", state).replace("@PRELUDE@", prelude).replace("@SENT@", sent)
@@ -169,14 +171,14 @@ def main():
     if "oot_teleport_followup(c, actor);" not in src:
         print("FAIL: the player's update gives the follow-up Link's actor, to send the request with")
         ok = False
-    if not (ROOT / "host" / "oot_teleport_check.h").is_file():
-        print("FAIL: no host/oot_teleport_check.h")
+    if not (ROOT / "game" / "oot_teleport_check.h").is_file():
+        print("FAIL: no game/oot_teleport_check.h")
         return 1
     with tempfile.TemporaryDirectory() as tmp:
         for name, text in (("decision", FIXTURE), ("sequence", sequence)):
             c, exe = Path(tmp) / (name + ".c"), Path(tmp) / (name + ".exe")
             c.write_text(text, encoding="utf-8")
-            subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), str(c), "-o", str(exe)],
+            subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"), str(c), "-o", str(exe)],
                            check=True)
             r = subprocess.run([str(exe)], capture_output=True, text=True)
             print(r.stdout, end="")

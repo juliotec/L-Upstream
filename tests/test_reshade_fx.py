@@ -6,13 +6,14 @@ import subprocess
 import sys
 
 
-RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}"]
+RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--cargo", "{cargo}"]
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="clang++")
     parser.add_argument("--headers", required=True, type=Path)
+    parser.add_argument("--cargo", default="cargo")
     args = parser.parse_args()
     headers = args.headers
     if not (headers / "spirv.hpp").is_file():
@@ -20,4 +21,5 @@ if __name__ == "__main__":
     if not (headers / "spirv.hpp").is_file():
         raise SystemExit(f"Missing SPIR-V headers: {headers}")
     script = Path(__file__).resolve().parents[1] / "scripts" / "reshade" / "check_fx.py"
-    subprocess.run([sys.executable, "-I", "-B", script, "--spirv-headers", headers, "--cxx", args.cxx], check=True)
+    subprocess.run([sys.executable, "-I", "-B", script, "--spirv-headers", headers, "--cxx", args.cxx,
+                    "--cargo", args.cargo], check=True)

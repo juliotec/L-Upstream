@@ -2,12 +2,12 @@
 
 A Windows build's symbols are its linker maps (longshot.map, longshot_vk.map; lld-link's format), a Linux build's are the
 binaries' own (longshot, longshot_vk.so; binutils' nm). A folder of either is the "maps" every subcommand of
-scripts/perf.py takes (--maps; by default RX_MAPS, else work/sa/build).
+scripts/perf.py takes (--maps; by default RX_MAPS, else build-linux/dev-work/build: `dev.py game`'s work folder).
 """
 import bisect, glob, os, re, shutil, subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-BUILD = os.path.join(ROOT, "work", "sa", "build")
+BUILD = os.path.join(ROOT, "build-windows" if os.name == "nt" else "build-linux", "dev-work", "build")   # (dev.py game's)
 
 # The modules whose frames are Longshot's own code (the game and the runtime, the renderer): Windows, then Linux
 GAME_MODS = ("longshot.exe", "longshot")
@@ -59,10 +59,10 @@ def demangler():
     dirs = [os.environ.get("LONGSHOT_MINGW", "")]
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        dirs += sorted(glob.glob(os.path.join(local, "Longshot", "dev", "builder", "*", "LongshotBuilder", "tools",
-                                              "llvm-mingw")), key=os.path.getmtime, reverse=True)
-        dirs += sorted(glob.glob(os.path.join(local, "LongshotLauncher", "toolchains", "*", "LongshotBuilder", "tools",
-                                              "llvm-mingw")), key=os.path.getmtime, reverse=True)
+        # (a release's longshot-builder's tools, unpacked into its cache: build-driver's sources.rs)
+        cache = os.environ.get("LONGSHOT_CACHE") or os.path.join(local, "Longshot", "Builder")
+        dirs += sorted(glob.glob(os.path.join(cache, "sources", "*", "tools", "llvm-mingw")),
+                       key=os.path.getmtime, reverse=True)
     for d in dirs:
         for exe in ("llvm-cxxfilt.exe", "llvm-cxxfilt"):
             p = os.path.join(d, "bin", exe) if d else ""

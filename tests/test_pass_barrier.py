@@ -82,7 +82,9 @@ C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\
 NGX_RECORD_CALL = re.compile(r"\bNGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)\s*\(")   # (NVIDIA NGX's create/evaluate: DLSS's, frame generation's)
 FFX_RECORD_CALL = re.compile(r"\bl\s*\.\s*dispatch\s*\(")   # (AMD FidelityFX's ffxDispatch, through its loaded pointer)
 XESS_RECORD_CALL = re.compile(r"\bl\s*\.\s*execute\s*\(")   # (Intel XeSS's xessVKExecute, through its loaded pointer)
-LIBRARY_CALL = re.compile(NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern + "|" + XESS_RECORD_CALL.pattern)
+NR_RECORD_CALL = re.compile(r"\bnr_(?:create|evaluate)_feature\s*\(")   # (DLSS 5's create/evaluate through NGX, vk_dlss.cpp)
+LIBRARY_CALL = re.compile(NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern + "|" + XESS_RECORD_CALL.pattern + "|" +
+                          NR_RECORD_CALL.pattern)
 LIBRARY_FILES = {"vk_dlss.cpp": NGX_RECORD_CALL, "vk_fsr4.cpp": FFX_RECORD_CALL, "vk_xess.cpp": XESS_RECORD_CALL}
 NOTE_OTHER = re.compile(r"(?<![\w:])(?:::\s*mkwvk\s*::\s*)?note_other_work\s*\(\s*\)\s*;")
 NOTE_WORK = re.compile(r"(?<![\w:])(?:::\s*mkwvk\s*::\s*)?note_work\s*\(\s*\)\s*;")
@@ -181,7 +183,7 @@ def check_sources():
         bad += library_problems(path.read_text(encoding="utf-8"), path.name, LIBRARY_FILES.get(path.name))
     # (controls: each way of losing a library's count is caught)
     dlss = (VK / "vk_dlss.cpp").read_text(encoding="utf-8")
-    first = dlss.index("note_other_work();")
+    first = dlss.index("note_other_work();", NGX_RECORD_CALL.search(dlss).end())   # (the count after DLSS's own first call)
     for what, broken in (("removed", dlss[:first] + dlss[first + len("note_other_work();"):]),
                          ("in a comment", dlss[:first] + "// " + dlss[first:]),
                          ("as note_work()", dlss[:first] + "note_work();" + dlss[first + len("note_other_work();"):])):

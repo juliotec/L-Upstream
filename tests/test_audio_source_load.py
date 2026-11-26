@@ -41,6 +41,10 @@ MAIN = r'''
 #include "audio_source.h"
 unsigned char guest[0x40000];
 const char *hos_romfs_dir;
+/* (the RomFS is read through host/romfs.c and its frames decoded by host/zs.c, with the game's dictionary, compiled in as
+   the game links them: the folder backend, no .nup index) */
+struct HosRomfsIndex;
+struct HosRomfsIndex *hos_romfs_index;
 static char logged[4096];
 void hos_log(const char *fmt, ...) {
     va_list ap;
@@ -81,11 +85,13 @@ int main(int argc, char **argv) {
     fputs(logged, stdout);
     if (!strcmp(argv[3], "none")) {   /* a folder without the archives: no classes, and it says so once */
         assert(strstr(logged, "audio: 0 sounds classed from 0 archives"));
+        assert(strstr(logged, "audio: 0 of 12 sound classes found, 0 of 0 sound archives read"));
         assert(hos_audio_source_of(bars + 0x200 + 0x80, &crc) == AUDIO_SOURCE_NONE);
         puts("audio source load (no archives): ok");
         return 0;
     }
     assert(strstr(logged, "audio: 6 sounds classed from 4 archives"));
+    assert(strstr(logged, "audio: 5 of 12 sound classes found, 4 of 5 sound archives read"));   /* (the count a run shows) */
     assert(strstr(logged, "Navi's voice 1") && strstr(logged, "Navi's sounds 1") && strstr(logged, "targeting 1") &&
            strstr(logged, "ocarina 2") && strstr(logged, "pick-ups 0") && strstr(logged, "low health 1"));
     assert(strstr(logged, "Item_Broken.bars.zs is not read as a sound archive"));
@@ -229,14 +235,16 @@ def main():
         inc = tmp / "host"
         inc.mkdir()
         (inc / "hos.h").write_text(HOS_H, encoding="utf-8")
-        for name in ("audio_source.c", "audio_source.h"):
+        for name in ("audio_source.c", "audio_source.h", "romfs.h", "romfs.c", "romfs_index.h", "romfs_index.c", "zs.c",
+                     "prompts_base.h", "prompts_base.c"):
             shutil.copy(ROOT / "host" / name, inc / name)
         (tmp / "gpu/vk/compat").mkdir(parents=True)
         shutil.copy(ROOT / "gpu/vk/compat/longshot_env.h", tmp / "gpu/vk/compat/longshot_env.h")
         (tmp / "main.c").write_text(MAIN, encoding="utf-8")
         exe = tmp / ("audio_source_load.exe" if os.name == "nt" else "audio_source_load")
         command = [args.cc, "-std=gnu11", "-O1", "-w", "-I", str(inc), "-I", str(ZSTD), "-DZSTD_DISABLE_ASM"]
-        sources = [str(tmp / "main.c"), str(inc / "audio_source.c")] + [str(ZSTD / s) for s in ZSTD_SOURCES]
+        sources = ([str(tmp / "main.c")] + [str(inc / n) for n in ("audio_source.c", "romfs.c", "romfs_index.c", "zs.c", "prompts_base.c")]
+                   + [str(ZSTD / s) for s in ZSTD_SOURCES])
         if os.name != "nt":
             command += ["-I", str(ROOT / "host/posix"), "-D_GNU_SOURCE"]
             sources.append(str(ROOT / "host/posix/win32_posix.c"))

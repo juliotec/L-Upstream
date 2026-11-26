@@ -7,7 +7,6 @@ A profile folder (HOS_PROFILE=1, host/profiling.c: logs/profile-<date>-<time>/):
 A sample file (HOS_SAMPLE_ALL=<file>, plain or packed; a profile folder's all.txt; HOS_SLOW_FRAMES' files):
   threads   each thread's running share; what the threads wait in when no game thread runs, and when the main thread waits
   renderer  the renderer's threads (mkw_vk...): running share, functions by inclusive and self share
-  hotlist   the hottest lifted functions, for the lift's hot list (assets/profiles/hot_funcs.txt, A64_HOT_FUNCS)
   cpu       sampled runs' CPU time by category, thread and function, as a publishable page (Windows captures)
 
 Other recordings:
@@ -16,7 +15,7 @@ Other recordings:
   ab        frame traces of a run with HOS_AB (an A/B within one run): each side's frame times and their difference
 
 --maps <folder>: the build's symbols, to name the frames: on Linux the game folder (its longshot and longshot_vk.so), on
-Windows a folder with longshot.map and longshot_vk.map of the same build. By default RX_MAPS, else work/sa/build (report:
+Windows a folder with longshot.map and longshot_vk.map of the same build. By default RX_MAPS, else build-linux/dev-work/build (report:
 the game folder the profile folder is in). The profiling/ package beside this file holds the readers; `<subcommand>
 --help` says more of each. The pages and files name lifted functions by their guest address: keep them on this PC (cpu
 without --guest-map makes the view that may be published).
@@ -55,12 +54,6 @@ def parser():
     s = add("renderer", analyses, "the renderer's threads, from a sample file")
     s.add_argument("samples")
     s.add_argument("--top", type=int, default=40)
-
-    s = add("hotlist", analyses, "the hot lifted functions, from a sample file")
-    s.add_argument("samples")
-    s.add_argument("out", help="the list to write")
-    s.add_argument("--share", type=float, default=0.85, help="the share of the game's samples the list covers (0.85)")
-    s.add_argument("--max", type=int, default=analyses.HOT_CAP, help="the most functions listed (%d)" % analyses.HOT_CAP)
 
     s = add("stacks", analyses, "one thread's stacks (HOS_SAMPLE_FILE)")
     s.add_argument("stacks")
@@ -110,8 +103,6 @@ def main(argv=None):
         analyses.threads(a.samples, symbols.Names(a.maps), a.top)
     elif a.command == "renderer":
         analyses.renderer(a.samples, symbols.Names(a.maps), a.top)
-    elif a.command == "hotlist":
-        analyses.hotlist(a.samples, symbols.load_symbols(a.maps), a.out, a.share, a.max)
     elif a.command == "stacks":
         analyses.stacks(a.stacks, symbols.Names(a.maps), a.top, a.skip, a.only)
     elif a.command == "chain":

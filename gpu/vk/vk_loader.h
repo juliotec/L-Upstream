@@ -1,5 +1,5 @@
 // The Vulkan functions the back end calls, loaded from vulkan-1.dll at start (no SDK, no import library): global,
-// instance and device level. VK_NO_PROTOTYPES is set for the whole DLL (nx2/build.py).
+// instance and device level. VK_NO_PROTOTYPES is set for the whole DLL (builder/crates/build-compile).
 #pragma once
 
 #ifdef _WIN32

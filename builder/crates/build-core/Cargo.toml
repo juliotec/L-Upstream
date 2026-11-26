@@ -1,0 +1,23 @@
+[package]
+name = "build-core"
+description = "What every stage of the builder shares: the progress protocol, errors a player reads, jobs and memory, files, keys, the work folder's lock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha1_smol.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# (prctl: a child killed with the builder, child.rs)
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
+[lints]
+workspace = true

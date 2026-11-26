@@ -1,8 +1,8 @@
-"""Above a 60 fps cap, Havok cloth is solved at most 60 times a second (host/oot_high_fps.h oot_cloth_gate, host/oot_high_fps.c
-hos_oot_cloth_solve, nx2/oot_patches.py patch_cloth_solve), with HOS_FPS_CLOTH_60=1.
+"""Above a 60 fps cap, Havok cloth is solved at most 60 times a second (game/oot_high_fps.h oot_cloth_gate, game/oot_high_fps.c
+hos_oot_cloth_solve, the hook site cloth.solve and game/oot_sites.c's hos_site_cloth_solve), with HOS_FPS_CLOTH_60=1.
 
 The cloth's solve runs as a job on the game's job workers (f_81b47080, under the job runner f_8016b620), once a frame for each
-cloth near the camera, and each solve steps the cloth a 60th of a second whatever the frame (host/oot_high_fps.h). Above 60 fps
+cloth near the camera, and each solve steps the cloth a 60th of a second whatever the frame (game/oot_high_fps.h). Above 60 fps
 it is solved every frame: at 240 fps four solves where the console makes one, so the cloth runs four times too fast and costs
 four times the CPU. Near King Zora in Zora's Domain that held the frame at about 55 fps under a cap of 240 (issue #1485: the
 solve was 45.7 % of the job workers' game code there, about 10.5 ms of CPU a frame). With the gate, a frame whose step is under
@@ -11,19 +11,23 @@ whole 60th since the frame before: about 60 solves a second, each a 60th, and ev
 frame the gate holds returns from the job at once with the job's own result (0), before the job saves anything.
 
 The job is lifted as the game has it at its head (its first line, the prologue's first store), then a stand-in for its work that
-counts the solves, run through patch_file, compiled with stand-ins for guest memory, the repository's switch rule (gpu/vk/
-compat/longshot_env.h) and the host's hos_oot_cloth_solve (cut from host/oot_high_fps.c, when there), and run for 240 frames of
+counts the solves, with the site's entry hook as the lift lowers it (tests/sitehooks.py; and its callback cut from game/oot_sites.c), compiled
+with stand-ins for guest memory, the repository's switch rule (gpu/vk/
+compat/longshot_env.h) and the host's hos_oot_cloth_solve (cut from game/oot_high_fps.c, when there), and run for 240 frames of
 3 jobs each at frame steps 0.25 (240 fps), 60/144 (144 fps), 0.5 (120 fps), 1 (60 fps) and 2 (30 fps), at a cap of 60 (no frame
 time given), with a step of 0 and NaN, and with the clock going back (a load), for HOS_FPS_CLOTH_60 unset, 1 and 0. Checked: at
 240 fps 60 frames solve, one in four; at 144 and 120, 60 give or take 1; at 60 fps and slower, at a cap of 60, for a bad step
 and with the switch unset or 0, every frame; a clock that went back solves at once; the 3 jobs of a frame always agree; a held
-job leaves the stack pointer as it was and returns 0. The patch hooks the job once, before its first line, declares the hook,
-and leaves a file patched before, or whose code differs, as it is.
+job leaves the stack pointer as it was and returns 0. The site is the job's entry and can return; the text patch it replaced
+(OLD below, as main had it) and the hook give the same frames in every case.
 
-python -I -B tests/test_oot_cloth_60.py
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_oot_cloth_60.py [--cc clang] [--cargo cargo]
 """
+import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,10 +35,14 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
 from srccut import between, block  # noqa: E402
+from sitecheck import site, callback as sitecheck_callback  # noqa: E402
+import sitehooks  # noqa: E402
+
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+
+CC = "clang"
 
 # (f_81b47080's head as the lift writes it, its prologue's first store, then a stand-in for the solve: it counts, and returns as
 # the job does, 0 in x0 and the stack pointer given back)
@@ -48,6 +56,11 @@ void f_81b47080(Ctx *__restrict A64_NOESC c) {
 return;
 }
 """
+
+# (the text patch's line on main, first in the job: the hook site cloth.solve replaced it)
+OLD = ("    if (!hos_oot_cloth_solve((uint32_t)recomp_load32(c,g_module_base + 0x84d61fc8ULL))) { c->x[0] = 0; return; }"
+       "   /* (nx2/oot_patches.py: the cloth's solves above 60 fps) */\n")
+HEAD = "void f_81b47080(Ctx *__restrict A64_NOESC c) {\n"
 
 # (stand-ins for the lift's runtime and the host: guest memory a small array, the game's frame step (a float) at 0x84d61fc8,
 # f_80706be0's object (hos_step_probe) at 0x100 with the game clock at +0xd58)
@@ -129,14 +142,23 @@ CASES = (("240 fps", 0.25, 0, -1), ("144 fps", 60.0 / 144.0, 0, -1), ("120 fps",
 
 
 def hos_solve(source):
-    """host/oot_high_fps.c's hos_oot_cloth_solve and the gate's state before it, when there (the patched job calls it)"""
+    """game/oot_high_fps.c's hos_oot_cloth_solve and the gate's state before it, when there (the patched job calls it)"""
     if "int hos_oot_cloth_solve(" not in source:
         return ""
     return between(source, "static OotClothGate cloth_gate", "int hos_oot_cloth_solve(") + block(source, "int hos_oot_cloth_solve(") + "\n"
 
 
 def compiler():
-    return shutil.which("gcc") or shutil.which("clang")
+    return CC
+
+
+def hooked():
+    """the job with the site's entry hook as the lift lowers it (tests/sitehooks.py), its flag on and its slot game/oot_sites.c's callback"""
+    x = site("cloth.solve", "f_81b47080", can_return=True)
+    callback = sitecheck_callback("int hos_site_cloth_solve(")   # (with the build's address names it uses)
+    job = sitehooks.splice_entry(LIFTED_SOLVE.replace('#include "a64.h"\n', ""), 0x81b47080, sitehooks.line(x))
+    return (callback + "\nvolatile uint8_t hos_site_on_cloth_solve = 1;\n"
+            "int (*volatile hos_site_fn_cloth_solve)(Ctx *) = hos_site_cloth_solve;\n" + job)
 
 
 class ClothSolveTests(unittest.TestCase):
@@ -146,27 +168,31 @@ class ClothSolveTests(unittest.TestCase):
         cls.binary = None
         if not compiler():
             return
-        patched = oot_patches.patch_file(LIFTED_SOLVE, "code_cloth.c", False)[0]
-        host = (ROOT / "host" / "oot_high_fps.c").read_text(encoding="utf-8")
-        program = RUNTIME + hos_solve(host) + patched.replace('#include "a64.h"\n', "") + FRAMES
+        host = (ROOT / "game" / "oot_high_fps.c").read_text(encoding="utf-8")
         tmp = Path(cls.tmp.name)
-        (tmp / "cloth60.c").write_text(program, encoding="utf-8")
-        cls.binary = tmp / "cloth60.exe"
-        cls.build = subprocess.run([compiler(), "-std=gnu11", "-Wall", "-Wno-unused-function", "-O1", "-I", str(ROOT / "host"),
-                                    str(tmp / "cloth60.c"), "-o", str(cls.binary), "-lm"], text=True, capture_output=True)
+        cls.binary, cls.old = tmp / "cloth60.exe", tmp / "cloth60-old.exe"
+        old = LIFTED_SOLVE.replace('#include "a64.h"\n', "").replace(HEAD, HEAD + OLD, 1)
+        for binary, job in ((cls.binary, hooked()), (cls.old, old)):
+            text = RUNTIME + hos_solve(host) + job + FRAMES
+            (tmp / "cloth60.c").write_text(text, encoding="utf-8")
+            cls.build = subprocess.run([compiler(), "-std=gnu11", "-Wall", "-Wno-unused-function", "-O1", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
+                                        str(tmp / "cloth60.c"), *sitehooks.objects(tmp, text), "-o", str(binary), "-lm"],
+                                       text=True, capture_output=True)
+            if cls.build.returncode:
+                return
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def frames(self, switch, step, capped, back):
+    def frames(self, switch, step, capped, back, binary=None):
         """[(frame, jobs solved of 3, held jobs right)] for one case"""
         self.assertEqual(self.build.returncode, 0, self.build.stderr)
         env = dict(os.environ)
         env.pop("HOS_FPS_CLOTH_60", None)
         if switch != "unset":
             env["HOS_FPS_CLOTH_60"] = switch
-        run = subprocess.run([str(self.binary), repr(step), str(capped), str(back)], text=True, capture_output=True,
+        run = subprocess.run([str(binary or self.binary), repr(step), str(capped), str(back)], text=True, capture_output=True,
                              timeout=30, env=env)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         rows = [tuple(int(v) for v in line.split()) for line in run.stdout.split("\n") if line]
@@ -205,20 +231,25 @@ class ClothSolveTests(unittest.TestCase):
                     wrong.append("%s: the frame the clock went back did not solve" % at)
         self.assertEqual(wrong, [], "%d cases wrong:\n%s" % (len(wrong), "\n".join(wrong)))
 
-    def test_patch(self):
-        self.assertTrue(hasattr(oot_patches, "patch_cloth_solve"), "nx2/oot_patches.py has no patch_cloth_solve")
-        out, n = oot_patches.patch_cloth_solve(LIFTED_SOLVE)
-        self.assertEqual(n, 1)
-        self.assertEqual(out.count(oot_patches.CLOTH_SOLVE_NEW), 1)
-        self.assertIn(oot_patches.CLOTH_SOLVE_DECL, out)
-        self.assertLess(out.index("hos_oot_cloth_solve("), out.index("int64_t _o=-128"))   # (before the job saves anything)
-        self.assertEqual(oot_patches.patch_cloth_solve(out), (out, 1))   # (patched before: as it is)
-        other = LIFTED_SOLVE.replace("int64_t _o=-128", "int64_t _o=-144")   # (another game version's code)
-        self.assertEqual(oot_patches.patch_cloth_solve(other), (other, 0))
-        none = LIFTED_SOLVE.replace("void f_81b47080", "void f_91b47080")
-        self.assertEqual(oot_patches.patch_cloth_solve(none), (none, 0))
-        self.assertEqual(oot_patches.patch_file(LIFTED_SOLVE, "code_cloth.c", False)[1]["cloth solve"], 1)
+    def test_as_the_text_patch(self):
+        """the hook and the text patch it replaced: the same frames solved and held, in every case"""
+        if not self.binary:
+            self.skipTest("no C compiler")
+        for switch in SWITCH:
+            for name, step, capped, back in CASES:
+                self.assertEqual(self.frames(switch, step, capped, back, self.old), self.frames(switch, step, capped, back),
+                                 "%s, HOS_FPS_CLOTH_60 %s" % (name, switch))
+
+    def test_site(self):
+        x = site("cloth.solve", "f_81b47080", can_return=True)
+        self.assertEqual(sitehooks.line(x).count("return;"), 1)
 
 
 if __name__ == "__main__":
-    raise SystemExit(unittest.main(verbosity=1))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cc", default="clang")
+    ap.add_argument("--cargo")
+    args, rest = ap.parse_known_args()
+    CC = args.cc
+    sitehooks.use(args.cc, args.cargo)
+    raise SystemExit(unittest.main(argv=[sys.argv[0]] + rest, verbosity=1))

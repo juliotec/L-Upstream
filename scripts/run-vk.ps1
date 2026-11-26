@@ -1,4 +1,5 @@
-# A test run of the standalone build (mkw-recomp's work/run-vk.ps1, for longshot.exe): the Vulkan back end
+# A test run of a built game folder (-Game, default build-windows\game: `dev.py game`'s; longshot-builder's layout, the
+# RomFS read in place from the .nup through the folder's longshot_romfs.idx, beside image.bin): the Vulkan back end
 # (the only renderer), headless unless -Window (then it never takes focus), High priority (-Priority), muted unless
 # -Sound, screenshots every -ShotEvery presents into work\runs\<name>\shots. Extra environment: -Env "A=1;B=2".
 # -BuildName "what this tests": shown under the version in the menu and on the start-up screen (LONGSHOT_BUILD_NAME).
@@ -9,7 +10,7 @@
 # -Graceful requires -Window: at the time limit ask the game to close, wait 10 s, and force only as a last resort.
 # A forced stop or a game's nonzero exit makes a graceful run fail; without -Graceful, existing stop behavior stays.
 param([int]$Seconds = 120, [string]$Name = "vk", [int]$ShotEvery = 300, [string]$Env = "", [switch]$Window,
-      [int]$MaxGB = 10, [switch]$Force, [switch]$Sound, [string]$Romfs = "", [string]$Priority = "High",
+      [int]$MaxGB = 10, [switch]$Force, [switch]$Sound, [string]$Game = "", [string]$Romfs = "", [string]$Priority = "High",
       [switch]$Graceful, [string]$BuildName = "")
 $ErrorActionPreference = "Stop"
 if ($Graceful -and -not $Window) { "-Graceful requires -Window, so the game can receive a close request"; exit 2 }
@@ -21,18 +22,23 @@ if (-not $Force) {
     $other = Get-Process mkw, longshot -ErrorAction SilentlyContinue
     if ($other) { "another game run is going ($(($other | ForEach-Object { "$($_.Name).exe $($_.Id)" }) -join ', ')): one at a time"; exit 2 }
 }
-if (-not $Romfs) {   # (the dump's romfs, from work\dump.txt: nx2/dump.py --set)
-    $cfg = Join-Path $root "work\dump.txt"
-    if (-not (Test-Path $cfg)) { "no -Romfs and no work\dump.txt (python -I nx2/dump.py --dump <folder> --set)"; exit 2 }
-    $dump = (Get-Content $cfg | Where-Object { $_ -and -not $_.StartsWith("#") } | Select-Object -First 1).Trim()
-    $Romfs = Join-Path $dump "romfs"
-}
-$exe = Join-Path $root "work\sa\build\longshot.exe"
-$image = Join-Path $root "work\sa\image\image.bin"
-$user = Join-Path $root "work\sa\user"
+if (-not $Game) { $Game = Join-Path $root "build-windows\game" }
+# (a launcher's layout keeps the game in bin\ beside image.bin; a checkout's build has it in the folder itself)
+$exe = Join-Path $Game "bin\longshot.exe"
+if (-not (Test-Path $exe)) { $exe = Join-Path $Game "longshot.exe" }
+$image = Join-Path $Game "image.bin"
+if (-not (Test-Path $image)) { "no built game in $Game (python -I scripts/dev.py game, or -Game <folder>)"; exit 2 }
+$user = Join-Path $root "work\user"
+# (the profile the game plays, kept across runs: its saves\ and settings.ini, the only place the game takes them from;
+# docs/dev/reference/profiles.md. Not $profile: PowerShell's own)
+$gameProfile = Join-Path $root "work\profile"
 $out = Join-Path $root "work\runs\$Name"
 $shots = Join-Path $out "shots"
-New-Item -ItemType Directory -Force $out, $user, $shots | Out-Null
+New-Item -ItemType Directory -Force $out, $user, $shots, (Join-Path $gameProfile "saves") | Out-Null
+if (-not (Test-Path (Join-Path $gameProfile "profile.json"))) {
+    Set-Content -Path (Join-Path $gameProfile "profile.json") -Value '{"v": 1, "name": "run-vk"}' -Encoding ascii
+}
+$env:LONGSHOT_PROFILE = $gameProfile
 if ($Window) { Remove-Item Env:HOS_HEADLESS -ErrorAction SilentlyContinue; $env:HOS_WINDOW_NOACTIVATE = "1" } else { $env:HOS_HEADLESS = "1" }
 $env:RX_VK_SHOTS = $shots
 $env:RX_VK_SHOT_EVERY = "$ShotEvery"
@@ -41,7 +47,9 @@ if ($Sound) { Remove-Item Env:HOS_AUDIO -ErrorAction SilentlyContinue } else { $
 if ($BuildName) { $env:LONGSHOT_BUILD_NAME = $BuildName } else { Remove-Item Env:LONGSHOT_BUILD_NAME -ErrorAction SilentlyContinue }
 foreach ($kv in ($Env -split ";")) { if ($kv -match "^([^=]+)=(.*)$") { Set-Item -Path ("Env:" + $matches[1]) -Value $matches[2] } }
 $t0 = Get-Date
-$p = Start-Process -FilePath $exe -ArgumentList @("`"$image`"", "--romfs", "`"$Romfs`"", "--user", "`"$user`"") `
+# (-Romfs: a romfs folder in place of the folder's index, for a game built from an unpacked dump)
+$gameArgs = @("`"$image`"", "--user", "`"$user`"") + $(if ($Romfs) { @("--romfs", "`"$Romfs`"") } else { @() })
+$p = Start-Process -FilePath $exe -ArgumentList $gameArgs `
     -WorkingDirectory $out -PassThru -NoNewWindow `
     -RedirectStandardOutput (Join-Path $out "stdout.txt") -RedirectStandardError (Join-Path $out "log.txt")
 try { $p.PriorityClass = $Priority } catch {}   # (High by default: the user, 2026-11-04; -Priority BelowNormal to yield)

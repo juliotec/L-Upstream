@@ -3,7 +3,7 @@
    smoothing and no top speed, in place of the mouse as the right stick (nn_hid.c's mouse_stick).
 
    Where the angles are: the player camera's update, f_80644c80 (a virtual method, the camera in x0), calls
-   hos_mouse_camera first (nx2/oot_patches.py, patch_mouse_camera), on the game's thread, once a frame while that camera
+   hos_mouse_camera first (the hook site camera.update, game/sites/sites.toml), on the game's thread, once a frame while that camera
    runs. The camera holds its pitch limits at +0x178 ({-85, 89} in the field), its pitch at +0x18c and its yaw at +0x1a4.
    The game turns them by the right stick in f_80649c10 (yaw, wrapped at 180) and f_8064b770 (pitch, within the limits),
    which f_80644c80 calls only while the stick is out of its dead zone (found with hardware write watchpoints on the two
@@ -108,7 +108,7 @@ static int free_look(void) {
 }
 
 /* The Controls row "Disable camera centering" (option 45), independent of the mouse mode. The game's state-3 yaw-follow
-   branch asks before it runs (nx2/oot_patches.py); 0 keeps the stock behavior, including without a renderer. (The lifted
+   branch asks before it runs (the hook site camera.followYaw); 0 keeps the stock behavior, including without a renderer. (The lifted
    game calls it: the link fails without it) */
 int hos_disable_camera_centering(void) { return rx_option(45, 0); }
 
@@ -121,7 +121,7 @@ void hos_mouse_native_free(int free) { InterlockedExchange(&game_free, free ? 1 
    mouse both turn the camera instead of undoing each other. */
 void hos_mouse_native_stick(int held) { InterlockedExchange(&stick_held, held ? 1 : 0); }
 
-/* f_80644c80's first line (nx2/oot_patches.py): cam is the player camera, the game's thread.
+/* f_80644c80's entry (the site camera.update, through game/oot_sites.c): cam is the player camera, the game's thread.
    (longshot, issue 1113) An input recording takes each update's decisions down (HOS_INPUT_RECORD: whether the mouse camera was
    on, whether the game left the camera free, whether a stick turned it, and the degrees the mouse turned it by), and a
    replay gives them back at the same update (HOS_INPUT_PLAY) in place of the mouse, the menu's row and the window's

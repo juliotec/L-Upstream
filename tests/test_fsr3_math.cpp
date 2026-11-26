@@ -54,7 +54,7 @@ int main() {
                   fm::view_distance(c, 0.0f) > 0.0f && std::isfinite(fm::view_distance(c, 0.0f)));
             CHECK("1 is the near plane", near(fm::view_distance(c, 1.0f), 1.0, 1e-3));
         }
-    {   // the jitter on the projection (nx2/oot_jitter.py) moves neither the planes nor the field of view, once taken off
+    {   // the jitter on the projection (the hook sites jitter.view*) moves neither the planes nor the field of view, once taken off
         float p[16], q[16];
         perspective(p, fov, aspect, 1.0, INFINITY, false);
         for (int i = 0; i < 16; i++) q[i] = p[i];

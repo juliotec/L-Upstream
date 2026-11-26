@@ -1,24 +1,24 @@
 """Save my pipeline list: the zip a player attaches to the "Submit your pipelines" issue (#14), made by the game's menu
-(gpu/vk/pipeline_share.h, vk_menu.cpp) and nx2/pipeline_share.py. Synthetic data only, no game:
+(gpu/vk/pipeline_share.h, vk_menu.cpp) and the builders' `longshot-builder share` (builder/crates/build-assets/src/share.rs).
+Synthetic data only, no game:
 
   - the zip holds exactly longshot_pipeline_states.bin (the bytes as the game wrote them) and longshot_pipeline_report.txt, and
-    nothing else from the game folder (saves, caches, the options file and the log stay out), from both the C++ and the Python;
+    nothing else from the game folder (saves, caches, the options file and the log stay out);
   - the report is the issue's template filled in: every field in order, the version, the OS, the GPU and its driver from the
     game's log, the output, the upscaler and the 3D's size, frame generation and HDR from longshot_options.ini, the mods the game
-    loads (host/mods.c's rule), "where you played" left empty, and no path of the player's;
+    loads (game/mods.c's rule), "where you played" left empty, and no path of the player's;
   - a list that is missing, not a list, cut short or empty is refused with the reason, and no zip is written;
-  - the C++ and the Python agree: the same fields, the same checks; the Python's names for the options are the menu's;
+  - the C++ and the builder's agree: the same fields and issue; the builder's names for the options are the menu's (share.rs's
+    own tests check its report);
   - the list holds only pipelines the game drew: state_record() is reached only from draw() (never the precompile, predicted
     pipelines or the shipped list);
   - the menu's row (Debug tab, under Developer) saves on Enter (not the Controls page's catch-all) and opens nothing in a run
-    without a window; nx2/pipeline_share.py does the same from the command line.
+    without a window.
 
 python -I -B tests/test_pipeline_share.py [--cxx g++]
 """
 import argparse
 import importlib.util
-import io
-import json
 import os
 from pathlib import Path
 
@@ -35,10 +35,29 @@ import zipfile
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-spec = importlib.util.spec_from_file_location("pipeline_share", ROOT / "nx2" / "pipeline_share.py")
-share = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(share)
+spec = importlib.util.spec_from_file_location("pipeline_states", ROOT / "scripts" / "pipeline_states.py")
+pipeline_states = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pipeline_states)
+
+
+class Share:
+    """The builders' share (builder/crates/build-assets/src/share.rs): its constants, read from the source"""
+    def __init__(self):
+        src = (ROOT / "builder" / "crates" / "build-assets" / "src" / "share.rs").read_text(encoding="utf-8")
+
+        def const(name):
+            m = re.search(r"const %s: [^=]+= (.*?);\n" % name, src, re.S)
+            assert m, "share.rs has no %s" % name
+            return m.group(1)
+        strings = lambda name: tuple(re.findall(r'"((?:[^"\\]|\\.)*)"', const(name)))
+        self.ISSUE_URL, self.LIST, self.REPORT = (strings(n)[0] for n in ("ISSUE_URL", "LIST", "REPORT"))
+        self.FIELDS, self.UPSCALERS, self.FRAMEGEN, self.HDR = (strings(n) for n in ("FIELDS", "UPSCALERS", "FRAMEGEN", "HDR"))
+        self.PERCENT = tuple(int(x) for x in re.findall(r"\d+", const("PERCENT")))
+        self.OUTPUTS = tuple((int(a), int(b)) for a, b in re.findall(r"\((\d+), (\d+)\)", const("OUTPUTS")))
+        self.WHERE = next(f for f in self.FIELDS if f.startswith("Where you played"))
+
+
+share = Share()
 
 FIXTURE = r'''
 #include "pipeline_share.h"
@@ -82,154 +101,19 @@ int main(int argc, char** argv) {
 '''
 
 
-def record(i, size=share.pipeline_states.SIZE2):
+def record(i, size=pipeline_states.SIZE2):
     r = struct.pack("<Q", i + 1) + bytes((i * 7 + k) & 0xFF for k in range(size - 8))
     # (a version 2 record's last two words: its kind, 0 for a pipeline, and padding)
-    return r[:-8] + bytes(8) if size == share.pipeline_states.SIZE2 else r
+    return r[:-8] + bytes(8) if size == pipeline_states.SIZE2 else r
 
 
 def v2_list(n):
-    return share.pipeline_states.MAGIC2 + struct.pack("<I", share.pipeline_states.SIZE2) + b"".join(record(i) for i in range(n))
+    return pipeline_states.MAGIC2 + struct.pack("<I", pipeline_states.SIZE2) + b"".join(record(i) for i in range(n))
 
 
 def with_computes(n, keys):
     """A list of n pipelines and the compute programs keys, as the game writes them (vk_draw.cpp state_record_compute)"""
-    return v2_list(n) + b"".join(share.pipeline_states.compute_record(k) for k in keys)
-
-
-def game_folder(root, list_bytes=None):
-    g = root / "game"
-    g.mkdir()
-    if list_bytes is not None:
-        (g / share.LIST).write_bytes(list_bytes)
-    # what must never go into the zip
-    for name in ("longshot_options.ini", "longshot_log.txt", "longshot_shaders.bin", "longshot_pipelines.bin", "language.txt",
-                 "longshot_pipeline_states_shipped.bin", "longshot_pipeline_states_v1.bin"):
-        (g / name).write_bytes(b"")
-    (g / "longshot_options.ini").write_text("output_res=2560x1440\ndlss=1\nresolution=3\nframe_generation=2\nhdr=0\nultrawide=0\n"
-                                            "options_version=4\n", encoding="utf-8")
-    (g / "longshot_log.txt").write_text(
-        "[hos host] longshot v2.2.0-rc.1-5-gabcdef1 (source 0123abcd)\n"
-        "[hos host] vk: device 0: Some GPU, Vulkan 1.4, driver 0x9b118180, type 2\n"
-        "[hos host] vk: Some GPU, Vulkan 1.4, driver 0x9b118180; mesh shaders offered by the driver but not used (Automatic runs "
-        "RADV on the compute path: RX_VK_MESH_SHADERS=native to try), host memory import yes, pipeline libraries yes\n"
-        "[hos host] vk: driver: SomeDriver 1.2.3\n", encoding="utf-8")
-    (g / "longshot_version.txt").write_text("version=v2.1.0\n", encoding="utf-8")
-    for d in ("mods/a/romfs", "mods/_off/romfs", "mods/-off2/romfs", "mods/contents/deep/b/romfs", "mods/notamod/x",
-              "user/save/1/slot_00"):
-        (g / d).mkdir(parents=True)
-    (g / "user/save/1/slot_00/save.bin").write_bytes(b"save")
-    return g
-
-
-def check_python(tmp):
-    t = Path(tmp)
-    data = v2_list(3)
-    g = game_folder(t, data)
-    out = t / "out"
-    path, text, n = share.make_zip(str(g), str(out), day=share.datetime.date(2026, 11, 11))
-    assert n == 3 and Path(path).name == "longshot-pipelines-2026-11-11.zip", (path, n)
-    with zipfile.ZipFile(path) as z:
-        assert z.namelist() == [share.LIST, share.REPORT], "the zip holds %s, not exactly the list and the report" % z.namelist()
-        assert z.testzip() is None
-        assert z.read(share.LIST) == data, "the list is not as the game wrote it"
-        report = z.read(share.REPORT).decode("utf-8")
-    assert report.endswith(text) and share.ISSUE_URL in report
-    lines = text.splitlines()
-    assert [l.split(":")[0] for l in lines] == ["- " + f for f in share.FIELDS], lines
-    want = {
-        "Longshot version": "v2.2.0-rc.1-5-gabcdef1 (source 0123abcd)",
-        "Output resolution": "2560x1440",
-        "Upscaler + render resolution": "NVIDIA DLSS, Quality 67% (1707x960)",
-        "Frame generation / HDR": "2x / Off",
-        "Mods or texture packs": "a, contents/deep/b",
-        "Pipelines": "3 (version 2)",
-    }
-    got = dict(l[2:].split(": ", 1) for l in lines if ": " in l)
-    for k, v in want.items():
-        assert got.get(k) == v, "%s: %r, not %r" % (k, got.get(k), v)
-    assert got["OS, GPU and driver"].endswith("; Some GPU, driver SomeDriver 1.2.3"), got["OS, GPU and driver"]
-    assert "- %s:\n" % share.WHERE in text, "where the player played is not left for them"
-    assert str(t) not in report and os.path.expanduser("~") not in report, "a path of the player's is in the report"
-    assert sorted(os.listdir(out)) == [Path(path).name], "something besides the zip was left in the folder"
-
-    # a list that names the compute programs the play ran: sent with the pipelines, the bytes as they are, and counted in the report
-    both = with_computes(2, (0x1111, 0x2222, 0x3333))
-    (g / share.LIST).write_bytes(both)
-    path2, text2, n2 = share.make_zip(str(g), str(t / "out-computes"), day=share.datetime.date(2026, 11, 11))
-    with zipfile.ZipFile(path2) as z:
-        assert z.namelist() == [share.LIST, share.REPORT] and z.read(share.LIST) == both, "the compute records are not sent as written"
-        assert "compute programs your play ran" in z.read(share.REPORT).decode("utf-8")
-    assert n2 == 5 and "- Pipelines: 5 (version 2, 3 of them compute programs)" in text2.splitlines(), text2
-    assert share.pipeline_states.compute_keys(share.pipeline_states.read_sent(str(g / share.LIST))) == [0x1111, 0x2222, 0x3333]
-    (g / share.LIST).write_bytes(data)
-    # the list is read once, and the bytes zipped are the bytes checked (a game appending between two reads changed them)
-    src = (ROOT / "nx2" / "pipeline_share.py").read_text(encoding="utf-8")
-    mz = src[src.find("def make_zip("):src.find("def main(")]
-    assert mz.count("read_list(") == 1 and "open(path" not in mz, "make_zip reads the list more than once"
-    # the part file is made fresh: a link left at <zip>.new is replaced, not followed
-    if hasattr(os, "symlink") and os.name != "nt":
-        target = t / "elsewhere.txt"
-        target.write_text("keep", encoding="utf-8")
-        os.symlink(target, Path(path + ".new"))
-        share.make_zip(str(g), str(out), day=share.datetime.date(2026, 11, 11))
-        assert target.read_text(encoding="utf-8") == "keep" and not os.path.lexists(path + ".new"), "the zip was written through a link"
-    # older logs: the driver from its number; no log: the version file; settings: handheld, DLAA, the game's own output
-    (g / "longshot_log.txt").write_text("[hos host] vk: NVIDIA GeForce RTX 3090, Vulkan 1.4, driver 0x9b118180; mesh shaders yes\n",
-                                        encoding="utf-8")
-    assert share.gpu_text(str(g)) == "NVIDIA GeForce RTX 3090, driver 620.70.6", share.gpu_text(str(g))
-    assert share.version_text(str(g)) == "v2.1.0"
-    vals = {"handheld_profile": "1", "dlss": "2", "hdr": "2", "frame_generation": "0"}
-    assert share.output_text(vals) == "1536x864 (Handheld profile)"
-    assert share.upscaler_text(vals) == "NVIDIA DLAA, Native"
-    assert share.framegen_hdr_text(vals) == "Off / Native (the game's)"
-    assert share.output_text({}) == "2048x1152 (the game's own)"
-    assert share.upscaler_text({"dlss": "0", "resolution": "0"}) == "Game's own, Auto (dynamic)"
-    assert share.upscaler_text({"dlss": "3", "resolution": "4", "output_res": "3840x2160"}) == "AMD FSR 3.1, Performance 50% (1920x1080)"
-
-    # refused: missing, not a list, cut short, empty; no zip each time
-    bad = {"missing": None, "not a list": b"PK\x03\x04" + bytes(600), "cut short": v2_list(2)[:-5],
-           "empty": share.pipeline_states.MAGIC2 + struct.pack("<I", share.pipeline_states.SIZE2)}
-    words = {"missing": "No pipeline list yet", "not a list": "not a pipeline state list", "cut short": "Delete it, play again",
-             "empty": "holds no pipelines"}
-    for name, content in bad.items():
-        if content is None:
-            (g / share.LIST).unlink(missing_ok=True)
-        else:
-            (g / share.LIST).write_bytes(content)
-        out2 = t / ("out-" + name.replace(" ", "-"))
-        try:
-            share.make_zip(str(g), str(out2))
-        except share.ShareError as e:
-            assert words[name] in str(e), (name, str(e))
-            assert str(g) not in str(e), "the reason names the player's path"
-        else:
-            raise AssertionError("a list that is %s was shared" % name)
-        assert not out2.exists() or not os.listdir(out2), "a zip was written for a list that is %s" % name
-
-    # the command the Windows builder runs
-    (g / share.LIST).write_bytes(data)
-    r = subprocess.run([sys.executable, "-I", str(ROOT / "nx2" / "pipeline_share.py"), str(g), "--out-dir", str(t / "cli"), "--json"],
-                       capture_output=True, text=True)
-    j = json.loads(r.stdout)
-    assert r.returncode == 0 and j["ok"] and j["pipelines"] == 3 and j["url"] == share.ISSUE_URL and j["template"].startswith("- "), r
-    (g / share.LIST).unlink()
-    r = subprocess.run([sys.executable, "-I", str(ROOT / "nx2" / "pipeline_share.py"), str(g), "--out-dir", str(t / "cli2"), "--json"],
-                       capture_output=True, text=True)
-    j = json.loads(r.stdout)
-    assert r.returncode == 1 and not j["ok"] and "No pipeline list yet" in j["error"], r
-
-    # the Downloads folder: user-dirs.dirs' (not the home folder itself), else ~/Downloads
-    home = t / "home"
-    (home / "Dl").mkdir(parents=True)
-    (home / ".config").mkdir()
-    (home / ".config" / "user-dirs.dirs").write_text('XDG_DOWNLOAD_DIR="$HOME/Dl"\n', encoding="utf-8")
-    env = dict(os.environ, HOME=str(home))
-    env.pop("XDG_CONFIG_HOME", None)
-    r = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, %r); import pipeline_share; "
-                        "print(pipeline_share.downloads_dir())" % str(ROOT / "nx2")], capture_output=True, text=True, env=env)
-    if os.name != "nt":
-        assert r.stdout.strip() == str(home / "Dl"), r
+    return v2_list(n) + b"".join(pipeline_states.compute_record(k) for k in keys)
 
 
 def check_cxx(cxx, tmp):
@@ -242,21 +126,17 @@ def check_cxx(cxx, tmp):
         raise SystemExit("pipeline_share.h does not compile:\n" + r.stderr[-3000:])
     run = lambda *a: subprocess.run([str(exe)] + [str(x) for x in a], capture_output=True, text=True)
     fields = run("fields").stdout.splitlines()
-    assert fields[:-3] == list(share.FIELDS), "the C++ template's fields are not the Python's: %s" % fields
+    assert fields[:-3] == list(share.FIELDS), "the C++ template's fields are not the builder's: %s" % fields
     assert fields[-3:] == [share.ISSUE_URL, share.LIST, share.REPORT], fields[-3:]
-    # the same checks as the Python's (nx2/pipeline_states.py --check)
-    cases = {"good": v2_list(4), "v1": share.pipeline_states.MAGIC + struct.pack("<I", share.pipeline_states.SIZE) +
-             record(0, share.pipeline_states.SIZE), "not a list": b"HKSTATE2" + struct.pack("<I", 528) + bytes(528),
-             "cut short": v2_list(2)[:-1], "empty": v2_list(0), "tiny": b"HKS"}
-    for name, data in cases.items():
+    # the checks of a list someone sent (scripts/pipeline_states.py --check): its count, or -1 refused
+    cases = {"good": (v2_list(4), 4), "v1": (pipeline_states.MAGIC + struct.pack("<I", pipeline_states.SIZE) +
+             record(0, pipeline_states.SIZE), 1), "not a list": (b"HKSTATE2" + struct.pack("<I", 528) + bytes(528), -1),
+             "cut short": (v2_list(2)[:-1], -1), "empty": (v2_list(0), -1), "tiny": (b"HKS", -1)}
+    for name, (data, want) in cases.items():
         p = t / ("list-" + name.replace(" ", "-"))
         p.write_bytes(data)
         n, why = (run("check", p).stdout.splitlines() + [""])[:2]
-        try:
-            py = len(share.check_list(str(p)))
-        except share.ShareError:
-            py = -1
-        assert int(n) == py, "%s: the C++ counts %s, the Python %d" % (name, n, py)
+        assert int(n) == want, "%s: the C++ counts %s, not %d" % (name, n, want)
         assert (int(n) < 0) == bool(why), (name, n, why)
         if name == "cut short":
             assert "Delete it, play again" in why, why
@@ -277,7 +157,7 @@ def check_cxx(cxx, tmp):
     assert [l.split(":")[0] for l in lines] == ["- " + f for f in share.FIELDS], lines
     assert "- %s:" % share.WHERE in lines and "- Mods or texture packs: a, deep/b" in lines and "- Pipelines: 5 (version 2)" in lines
     assert share.ISSUE_URL in report
-    # a list with compute records: the same bytes in the zip, the same Pipelines line as the Python's
+    # a list with compute records: the same bytes in the zip, its compute programs counted
     both = with_computes(2, (0x1111, 0x2222, 0x3333))
     (t / "both.bin").write_bytes(both)
     assert run("zip", t / "both.bin", t / "both.zip").returncode == 0
@@ -285,18 +165,17 @@ def check_cxx(cxx, tmp):
         assert z.read(share.LIST) == both, "the game's zip does not hold the compute records as written"
         report = z.read(share.REPORT).decode("utf-8")
     assert "- Pipelines: 5 (version 2, 3 of them compute programs)" in report.splitlines(), report
-    assert "- Pipelines: %s" % share.pipelines_text(share.pipeline_states.parse(both, "both", strict=True)) in report.splitlines()
     assert "compute programs your play ran" in report
     # a list that is not one: no zip
     assert run("zip", t / "list-cut-short", t / "bad.zip").returncode != 0 and not (t / "bad.zip").exists()
     # the Output resolution line combined the same way (the Handheld profile, the game's own size, Ultrawide)
-    for ini in ({"output_res": "2560x1440"}, {"output_res": "2560x1440", "ultrawide": "1"}, {"ultrawide": "1"}, {},
-                {"handheld_profile": "1", "ultrawide": "1"}, {"output_res": "3840x2160", "handheld_profile": "1"}):
-        w, h, _ = share.output_size(ini)
-        flags = ["1" if share._int(ini, "handheld_profile") else "0", "1" if (w, h) == share.OUTPUTS[0] else "0",
-                 "1" if share._int(ini, "ultrawide") else "0"]
-        got = run("output", w, h, *flags).stdout.strip()
-        assert got == share.output_text(ini), "Output resolution for %s: the C++ says %r, the Python %r" % (ini, got, share.output_text(ini))
+    # (size, handheld profile, the game's own size, ultrawide: the line, as the builder writes it too)
+    for w, h, handheld, own, wide, want in ((2560, 1440, 0, 0, 0, "2560x1440"), (2560, 1440, 0, 0, 1, "2560x1440 (Ultrawide on)"),
+                                            (2048, 1152, 0, 1, 1, "2048x1152 (the game's own, Ultrawide on)"),
+                                            (2048, 1152, 0, 1, 0, "2048x1152 (the game's own)"),
+                                            (1536, 864, 1, 0, 1, "1536x864 (Handheld profile)")):
+        got = run("output", w, h, handheld, own, wide).stdout.strip()
+        assert got == want, "Output resolution %dx%d: the C++ says %r, not %r" % (w, h, got, want)
     # user-dirs.dirs
     for text, want in (('XDG_DOWNLOAD_DIR="$HOME/Downloads"\n', "/home/someone/Downloads"), ('# x\nXDG_DOWNLOAD_DIR="/data/dl/"\n',
                        "/data/dl"), ('XDG_DOWNLOAD_DIR="$HOME/"\n', ""), ('XDG_MUSIC_DIR="$HOME/Music"\n', "")):
@@ -307,11 +186,15 @@ def check_cxx(cxx, tmp):
 def check_sources():
     menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     rows = (ROOT / "gpu" / "vk" / "upscaler_rows.h").read_text(encoding="utf-8")
-    # the Python names the options as the menu does
+    # the builder names the options as the menu does
     m = re.search(r"const char\* tx_upscaler\(int\) \{\s*static const char\* t\[ur::kUpscalers\] = \{(.*?)\};", menu, re.S)
     assert m and tuple(re.findall(r'"([^"]*)"', m.group(1))) == share.UPSCALERS, "the Upscaler's names differ from the menu's"
-    m = re.search(r"const char\* tx_framegen\(int v\) \{\s*static const char\* t\[\] = \{(.*?)\};", menu, re.S)
-    assert m and tuple(re.findall(r'"([^"]*)"', m.group(1))) == share.FRAMEGEN, "Frame generation's names differ from the menu's"
+    # (frame_generation= 0 Off, 1 Auto, 2..8 Fixed: the menu names the mode in tx_framegen and the Fixed multiplier in
+    # tx_framegen_mult, gpu/vk/menu/framegen.cpp, #2383)
+    m = re.search(r'const char\* tx_framegen\(int v\) \{.*?if \(v <= 0\) return "([^"]*)";\s*if \(v == 1\) return "([^"]*)";', menu, re.S)
+    mult = re.search(r"const char\* tx_framegen_mult\(int v\) \{\s*static const char\* const t\[\] = \{(.*?)\};", menu, re.S)
+    assert m and mult and (m.group(1), m.group(2), *re.findall(r'"([^"]*)"', mult.group(1))) == share.FRAMEGEN, \
+        "Frame generation's names differ from the menu's"
     hdr = (ROOT / "gpu" / "vk" / "menu" / "hdr.cpp").read_text(encoding="utf-8")   # (the HDR rows' module, #1633)
     m = re.search(r'const char\* tx_hdr\(int v\) \{ return v == 1 \? "([^"]*)" : v == 2 \? "([^"]*)" : "([^"]*)"; \}', hdr)
     assert m and (m.group(3), m.group(1), m.group(2)) == share.HDR, "HDR's names differ from the menu's"
@@ -359,7 +242,7 @@ def check_sources():
     assert 'L"WINDIR"' in menu, "explorer.exe is taken from the search path"
     assert "r.setting->hint(0, k)" in menu[menu.find("float measure_help("):][:1400] and \
         "return variant == 0 ? kShareSaidLongest : nullptr;" in menu, "the help box has no room kept for the line after a save"
-    assert "share_finish();" in menu[menu.find("void menu_tick() {"):][:400], "menu_tick never collects the worker's answer"
+    assert "share_finish();" in body_of(menu, "void menu_tick() {"), "menu_tick never collects the worker's answer"
     spawn = menu[menu.find("bool share_spawn("):]
     spawn = spawn[:spawn.index("\n}\n")]
     assert "pipe2(fds, O_CLOEXEC)" in spawn and "addclosefrom_np(&fa, 3)" in spawn, \
@@ -427,33 +310,12 @@ def check_drawn_only():
     assert all("state_record_compute(" not in text for text in others.values()), "another file writes compute records"
 
 
-def check_game_layout(tmp):
-    """A game folder in host/game_layout.c's layout: the list in cache/, the log in logs/ (the options stay beside the game):
-    both found, and the zip and the template as from a loose folder"""
-    t = Path(tmp)
-    data = v2_list(2)
-    g = game_folder(t, data)
-    (g / "cache").mkdir()
-    (g / share.LIST).rename(g / "cache" / share.LIST)
-    (g / "logs").mkdir()
-    (g / "longshot_log.txt").rename(g / "logs" / "longshot_log.txt")
-    assert share.list_path(str(g)) == str(g / "cache" / share.LIST)
-    path, text, n = share.make_zip(str(g), str(t / "out"), day=share.datetime.date(2026, 11, 14))
-    assert n == 2 and "Output resolution: 2560x1440" in text and "v2.2.0-rc.1-5-gabcdef1" in text, text
-    with zipfile.ZipFile(path) as z:
-        assert z.read(share.LIST) == data
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     check_sources()
     check_drawn_only()
-    with tempfile.TemporaryDirectory() as tmp:
-        check_python(tmp)
-    with tempfile.TemporaryDirectory() as tmp:
-        check_game_layout(tmp)
     with tempfile.TemporaryDirectory() as tmp:
         check_cxx(a.cxx, tmp)
     print("pipeline share: ok")

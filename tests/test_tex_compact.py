@@ -1,4 +1,4 @@
-"""The game's texture heap compaction asked for once in a while (host/oot_tex_compact.h, nx2/oot_patches.py patch_tex_compact).
+"""The game's texture heap compaction asked for once in a while (game/oot_tex_compact.h, the hook site texture.compactAsk).
 
 The texture data manager's per-frame step (f_80797240) asks its Compaction thread for a round at every frame none runs, and
 every texture a round moved is made again; here that is a batch of new textures to the renderer every few frames (the long frames
@@ -8,11 +8,16 @@ The rule (the header, compiled alone): a gap of 0 says yes at every ask, as the 
 yes at the first ask and then only once the gap has passed since the last yes. The switch's value: not set or empty is the
 default, a whole number its milliseconds, "off" or "never" or a negative number never, anything else the default.
 
-The patch: the request's second test also asks the host, once, in the manager's step only; a file patched before, or whose code
-differs (another game version), is left as it is; the host's function is declared.
+The site: a branch site on the request's second test (tbz w8, #1 past the ask) whose callback (game/oot_sites.c) asks the host
+only when the flag is set. The step is built with the hook as the lift lowers it (tests/sitehooks.py) and, side by side, with the text patch it replaced (OLD, as
+main had it): for every flag and answer the same way out and the same asks of the host.
 
-python -I -B tests/test_tex_compact.py
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_tex_compact.py [--cc clang] [--cargo cargo]
 """
+import argparse
 import shutil
 import subprocess
 import sys
@@ -21,8 +26,54 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import site, callback  # noqa: E402
+import sitehooks  # noqa: E402
+
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+CC = "clang"
+
+TEST = "if (!((c->x[8] >> 1) & 1)) { goto L_80001000; }\n"   # (a tbz in the lift's form; the label made up)
+OLD = ("if (!((c->x[8] >> 1) & 1) || !hos_oot_tex_compact_due()) { goto L_80001000; }"   # (the text patch's, on main)
+       "   /* (nx2/oot_patches.py: the texture heap's compaction once in a while) */\n")
+SIDE = r"""
+#include <stdint.h>
+#include <stdio.h>
+#define A64_NOESC
+typedef struct { uint64_t x[32]; } Ctx;
+static int due, asks;
+int hos_oot_tex_compact_due(void) { asks++; return due; }
+@CALLBACK@
+volatile uint8_t hos_site_on_texture_compactAsk = 1;
+int (*volatile hos_site_fn_texture_compactAsk)(Ctx *) = hos_site_tex_compact_ask;
+static int hooked(Ctx *c) {
+@HOOK@
+    return 1;   /* (asks) */
+L_80001000:;
+    return 0;
+}
+static int patched(Ctx *c) {
+@OLD@
+    return 1;
+L_80001000:;
+    return 0;
+}
+int main(void) {
+    int fails = 0;
+    for (uint64_t flags = 0; flags < 8; flags++)
+        for (due = 0; due < 2; due++) {
+            Ctx a = {{0}}, b = {{0}};
+            a.x[8] = b.x[8] = flags;
+            asks = 0;
+            const int x = hooked(&a), xa = asks;
+            asks = 0;
+            const int y = patched(&b), ya = asks;
+            if (x != y || xa != ya || x != (((flags >> 1) & 1) && due)) { printf("FAIL flags %d due %d\n", (int)flags, due); fails++; }
+        }
+    if (!fails) printf("same\n");
+    return fails != 0;
+}
+"""
 
 FIXTURE = r"""
 #include "oot_tex_compact.h"
@@ -80,28 +131,6 @@ int main(void) {
 }
 """
 
-# (the manager's step as the lift has it around the request, and the next function, which has the same two lines)
-LIFTED = '''#include "a64.h"
-void f_80797240(Ctx *__restrict A64_NOESC c) {
-    c->x[8]=recomp_load8(c,c->x[0] + 960);
-if (!((c->x[8] >> 0) & 1)) { goto L_80797334; }
-    c->x[8]=recomp_load32(c,c->x[19] + 776);
-if ((uint32_t)c->x[8] != 0) { goto L_80797288; }
-    c->x[8]=recomp_load8(c,c->x[19] + 960);
-if (!((c->x[8] >> 1) & 1)) { goto L_80797288; }
-    c->x[9] = 0x1ULL;
-L_80797288:;
-    c->x[8]=recomp_load32(c,c->x[19] + 776);
-L_80797334:;
-}
-
-void f_807974f0(Ctx *__restrict A64_NOESC c) {
-    c->x[8]=recomp_load8(c,c->x[19] + 960);
-if (!((c->x[8] >> 1) & 1)) { goto L_80797288; }
-L_80797288:;
-}
-'''
-
 
 class TexCompactTests(unittest.TestCase):
     def test_rule(self):
@@ -112,42 +141,36 @@ class TexCompactTests(unittest.TestCase):
             tmp = Path(tmp)
             (tmp / "rule.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "rule.exe"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1", "-I", str(ROOT / "host"),
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
                                     str(tmp / "rule.c"), "-o", str(binary)], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("all passed", run.stdout)
 
-    def test_patch(self):
-        out, n = oot_patches.patch_tex_compact(LIFTED)
-        self.assertEqual(n, 1)
-        self.assertEqual(out.count("hos_oot_tex_compact_due()"), 1)   # (the one call; the declaration is checked below)
-        self.assertEqual(out.count(oot_patches.TEXC_NEW), 1)
-        self.assertEqual(out.count(oot_patches.TEXC_OLD), 1)   # (the next function's own two lines, as they were)
-        step = out[out.index(oot_patches.TEXC_HEAD):out.index("void f_807974f0")]
-        self.assertIn(oot_patches.TEXC_NEW, step)
-        self.assertNotIn(oot_patches.TEXC_OLD, step)
-        self.assertIn('#include "a64.h"\n' + oot_patches.TEXC_DECL, out)
-        self.assertEqual(oot_patches.patch_tex_compact(out), (out, 1))   # (patched before: as it is)
-        other = LIFTED.replace("c->x[19] + 960);\nif (!((c->x[8] >> 1) & 1)) { goto L_80797288; }\n    c->x[9]",
-                               "c->x[19] + 964);\nif (!((c->x[8] >> 1) & 1)) { goto L_80797288; }\n    c->x[9]")
-        self.assertNotEqual(other, LIFTED)
-        self.assertEqual(oot_patches.patch_tex_compact(other), (other, 0))   # (another game version's code)
-        none = LIFTED.replace("void f_80797240", "void f_90797240")
-        self.assertEqual(oot_patches.patch_tex_compact(none), (none, 0))
+    def test_site(self):
+        x = site("texture.compactAsk", "f_80797240", "branch", 0x38)
+        self.assertIn("w8:u32:flags", x.args)
 
-    def test_patch_file_counts_it(self):
-        out, counts, lines = oot_patches.patch_file(LIFTED, "code_004.c", False)
-        self.assertEqual(counts["texture compaction"], 1)
-        self.assertIn(oot_patches.TEXC_NEW, out)
-        self.assertTrue(any("texture heap's compaction" in line for line in lines), lines)
-        again, counts, lines = oot_patches.patch_file(out, "code_004.c", False)
-        self.assertEqual(again, out)
-        self.assertEqual(counts["texture compaction"], 1)
+    def test_as_the_text_patch(self):
+        compiler = shutil.which(CC)
+        if not compiler:
+            self.skipTest("no C compiler")
+        x = site("texture.compactAsk", "f_80797240", "branch", 0x38)
+        code = (SIDE.replace("@CALLBACK@", callback("int hos_site_tex_compact_ask("))
+                .replace("@HOOK@", sitehooks.line(x).replace(sitehooks.GOTO, "goto L_80001000;") + "\n" + TEST).replace("@OLD@", OLD))
+        with tempfile.TemporaryDirectory(prefix="longshot-tex-compact-") as tmp:
+            tmp = Path(tmp)
+            (tmp / "side.c").write_text(code, encoding="utf-8")
+            binary = tmp / "side.exe"
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1", str(tmp / "side.c"),
+                                    *sitehooks.objects(tmp, code), "-o", str(binary)], text=True, capture_output=True)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_host_calls_the_rule(self):
-        host = (ROOT / "host" / "oot_tex_compact.c").read_text(encoding="utf-8")
+        host = (ROOT / "game" / "oot_tex_compact.c").read_text(encoding="utf-8")
         for needle in ('getenv("HOS_TEX_COMPACT_MS")', "oot_tex_compact_due(&compact, compact_gap, now)",
                        "int hos_oot_tex_compact_due(void) {", "#define OOT_TEX_COMPACT_DEFAULT_MS 1000\n",
                        "oot_tex_compact_gap_ns(getenv(\"HOS_TEX_COMPACT_MS\"), OOT_TEX_COMPACT_DEFAULT_MS)"):
@@ -155,4 +178,10 @@ class TexCompactTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cc", default="clang")
+    ap.add_argument("--cargo")
+    args, rest = ap.parse_known_args()
+    CC = args.cc
+    sitehooks.use(args.cc, args.cargo)
+    unittest.main(argv=[sys.argv[0]] + rest)

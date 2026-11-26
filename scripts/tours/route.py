@@ -1,5 +1,5 @@
-"""The pipeline tour's route: the Debug tab's action numbers as the source has them (host/hos_main.c,
-gpu/vk/oot_cheat_items.h, gpu/vk/vk_menu.cpp), the stops each part visits and the presses made there."""
+"""The pipeline tour's route: the Debug tab's action numbers as the source has them (game/oot_tools.c,
+game/oot_cheat_items.h, gpu/vk/vk_menu.cpp), the stops each part visits and the presses made there."""
 import os
 import re
 
@@ -18,7 +18,7 @@ def define(text, name):
 
 
 def bancs(main):
-    """Each destination's maps, child and adult (None: none), as host/hos_main.c's oot_destinations has them"""
+    """Each destination's maps, child and adult (None: none), as game/oot_tools.c's oot_destinations has them"""
     table = main.split("oot_destinations[] = {", 1)[1].split("\n};", 1)[0]
     q = r'(NULL|"[^"]*")'
     out = []
@@ -30,7 +30,7 @@ def bancs(main):
 def actions(root_read=read):
     """The action numbers and the lists they index: {age, item, bancs, teleports: [(name, adult_only)], dungeons,
     items: {pouch name: (index, kind)}}"""
-    main, items_h, menu = root_read("host/hos_main.c"), root_read("gpu/vk/oot_cheat_items.h"), root_read("gpu/vk/vk_menu.cpp")
+    main, items_h, menu = root_read("game/oot_tools.c"), root_read("game/oot_cheat_items.h"), root_read("gpu/vk/vk_menu.cpp")
     names = re.search(r"teleport_names\[\]\s*=\s*\{(.*?)\};", menu, re.S)
     notes = re.search(r"teleport_notes\[\]\s*=\s*\{(.*?)\};", menu, re.S)
     if not names or not notes:

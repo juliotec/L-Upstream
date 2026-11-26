@@ -1,9 +1,9 @@
 """At the default Frame rate cap of 60, frames slower than 60 fps keep the game's counters at the clock (HOS_FRAME_CARRY).
 
 With Game speed Real time, host/nn_vi.c realtime_step gives the engine the rate of the last frames (+0x2c8, 15 to 60), and the
-game steps 60 / rate a frame: 1.30 at 46 fps. The counters the game cuts to whole frames (nx2/oot_patches.py patch_whole_frames:
+game steps 60 / rate a frame: 1.30 at 46 fps. The counters the game cuts to whole frames (the hook sites frame.whole*:
 the time of day, the water's ripple substeps, the floor web, the Scarecrow's Song) and the clock of a loop of one frame or less
-(patch_loop_steps, patch_loop_pose: the frozen Zoras) carried their fractions only while the frames' own time is the step, a cap
+(anim.loopStep*, anim.loopPose: the frozen Zoras) carried their fractions only while the frames' own time is the step, a cap
 other than 60. At a cap of 60 the cut threw the fraction away: 46 frames of 1.30 counted 46 whole frames, not the 60 that a
 second at 60 fps counts, and the day ran at 77 %.
 

@@ -7,7 +7,7 @@
    Lifted, that is 11-17% of a core while the game streams, and during loads it runs for more than 250 ms with no OS call,
    holding a virtual core.
 
-   nx2/oot_patches.py puts hos_zstd_stream(c) first in f_80115c80. Off (HOS_NATIVE_ZSTD=0) it answers 0 and the lifted
+   The hook site zstd.stream (game/sites/sites.toml) calls hos_zstd_stream(c) at f_80115c80's entry. Off (HOS_NATIVE_ZSTD=0) it answers 0 and the lifted
    function runs. On (the default), it does what f_80115c80 does with the same calls into libzstd and answers 1 (x0 the result):
      - the stream object it is given (x0, S) is the game's, and every field the game reads is written as the game writes it:
        state byte (+0: 1 start, 2 decoding, 3 failed, 4 done), output pointer (+8), output room (+16, signed 32-bit), bytes
@@ -33,8 +33,8 @@
    while an area loads, more than the stream decode there), is zstd's decompressMultiFrame inlined in f_8010b380 (x0 the
    game's context, x1 and x2 the output and its room, x3 and x4 the frames, x5 and x6 a raw dictionary, x7 the DDict or 0).
    Its three callers set the context up in place, pass no raw dictionary, and read only the result. With
-   its own switch (HOS_NATIVE_ZSTD_FRAMES, on by default, 0: the lifted code) nx2/oot_patches.py's hos_zstd_frames(c) first
-   in f_8010b380 does the call with libzstd's own (ZSTD_decompress_usingDDict, the same multi-frame decode: skippable frames skipped,
+   its own switch (HOS_NATIVE_ZSTD_FRAMES, on by default, 0: the lifted code) the site zstd.frames calls hos_zstd_frames(c) at
+   f_8010b380's entry, which does the call with libzstd's own (ZSTD_decompress_usingDDict, the same multi-frame decode: skippable frames skipped,
    frames one after the other) and answers 1, x0 the result: the content size, or zstd's error code as the game's gives it
    (callers test only that it is one). The game's DDict is taken as above; the game's context is not written; the thread
    gives up its core for buffers of at least one maximum zstd block. Smaller decodes keep it.
@@ -333,7 +333,7 @@ static int32_t zs_chunk(ZSTD_DCtx *z, uint64_t g, uint64_t src, int32_t n) {
     return (int32_t)S_LEFT(g);
 }
 
-/* (nx2/oot_patches.py: first in f_80115c80) 1 when the call was done here, x0 its result */
+/* (the site zstd.stream: f_80115c80's entry) 1 when the call was done here, x0 its result */
 int hos_zstd_stream(Ctx *c) {
     const int mode = zs_mode();
     if (!mode) return 0;
@@ -391,7 +391,7 @@ static int zf_mode(void) {
     return m;
 }
 
-/* (nx2/oot_patches.py: first in f_8010b380) 1 when the call was done here, x0 its result */
+/* (the site zstd.frames: f_8010b380's entry) 1 when the call was done here, x0 its result */
 int hos_zstd_frames(Ctx *c) {
     if (!zf_mode()) return 0;
     const uint64_t dctx = c->x[0], dst = c->x[1], src = c->x[3], ddict = c->x[7];

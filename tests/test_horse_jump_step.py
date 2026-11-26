@@ -1,50 +1,58 @@
-"""A horse's jump blend above 60 fps (nx2/oot_patches.py patch_horse_jump, host/oot_high_fps.h oot_horse_whole_step).
+"""A horse's jump blend above 60 fps (the hook site horse.jumpStep, game/oot_high_fps.h oot_horse_whole_step).
 
 While a horse gets ready to jump an obstacle, its jump state machine (f_82c59eb0) sets each frame the blend frames into its
 JumpReady animation. With a step under 1 (slow motion at 60 fps) it takes them from last frame's plus the step. Above 60 fps
 every step is under 1, so the blend frames grew each frame, the blend into the jump hardly started, and Epona galloped through
-the fence while her body went over it. The patch puts the host's whole-frame test before the game's "step < 1" branch: a step
-that is the whole frame's (the time object's step) skips the slow-motion branch.
+the fence while her body went over it. The site horse.jumpStep (game/sites/sites.toml), a branch site on the game's
+"step < 1" branch (b.pl past the slow-motion branch), takes that branch too when the host's whole-frame test says the step is
+the whole frame's (the time object's step).
 
-An authored update with the two anchor lines (the step test and its branch) and a stand-in for the slow-motion branch goes
-through patch_file, is compiled with hos_oot_horse_whole_step cut from host/oot_high_fps.c (guest memory, the time object and
+An authored update with the step test, its branch and a stand-in for the slow-motion branch is built with the branch site's hook
+as the lift lowers it (tests/sitehooks.py) (its callback cut from game/oot_sites.c) and, side by side, with the text patch it replaced (OLD_SKIP,
+as main had it), each compiled with hos_oot_horse_whole_step cut from game/oot_high_fps.c (guest memory, the time object and
 the switches as stand-ins) and run frame by frame, carrying the blend frames from one frame to the next as the game does:
 - at 70, 120, 144 and 240 fps, with jitter between the horse's step and the frame's, the blend frames stay the game's own (they
   grew by the step each frame before the fix);
 - slow motion above 60 fps (the horse's step under the frame's), slow motion at a cap of 60, a cap of 60, a frame slower than
   60 fps and a time object with no step all take the game's own test;
-- the unpatched update compiled the same way fails the 120 fps check (the bug, shown without the fix);
-- the patch is scoped to its function, a second run changes nothing, and a changed anchor is left alone with a warning.
+- the update without the hook (or with its flag off) compiled the same way fails the 120 fps check (the bug, shown without
+  the fix).
 No game files or lifted function body are used.
+
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
 
 python -I -B tests/test_horse_jump_step.py [--cc gcc]
 """
 import argparse
-import contextlib
-import io
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
 from srccut import block  # noqa: E402
+from sitecheck import site, callback  # noqa: E402
+import sitehooks  # noqa: E402
 
 HEAD = "void f_82c59eb0(Ctx *__restrict A64_NOESC c) {\n"
-# (the step test as the lift writes it, its flag setting cut short to the stand-in's; then its branch past the slow-motion one)
-ANCHOR = ("    a64_vset64(c->vreg[9],0x3f800000ULL);\n"
-          "    { if (!a64_fcmp32(c,c->vreg[10],c->vreg[9])) { c->n = 0; } }\n"
-          "if (!c->n) { goto L_82c5ae48; }\n")
-UPDATE = ('#include "a64.h"\n' + HEAD + "    c->slow = 0;\n" + ANCHOR
-          + "    c->slow = 1;   /* (the game's branch for a step under 1: last frame's blend frames plus the step) */\n"
-          + "L_82c5ae48:;\n}\n")
-UNRELATED = HEAD.replace("f_82c59eb0", "f_92c59eb0") + ANCHOR + "    c->slow = 1;\nL_82c5ae48:;\n}\n"
-LIFTED = UPDATE + UNRELATED
+# (a step test in the lift's form, the scratch register and the label made up, its flag setting cut short to the stand-in's;
+# then its branch past the slow-motion one)
+TEST = ("    a64_vset64(c->vreg[11],0x3f800000ULL);\n"
+        "    { if (!a64_fcmp32(c,c->vreg[10],c->vreg[11])) { c->n = 0; } }\n")
+BRANCH = "if (!c->n) { goto L_80001000; }\n"
+# (the text patch's line on main, between the test and its branch)
+OLD_SKIP = ("    if (hos_oot_horse_whole_step((uint32_t)c->vreg[10][0], g_module_base + 0x80435000ULL + (int64_t)75927552 + 2192)) "
+            "{ goto L_80001000; }   /* (nx2/oot_patches.py: a horse's jump blend above 60 fps) */\n")
+
+
+def update(between=""):
+    return (HEAD + "    c->slow = 0;\n" + TEST + between + BRANCH
+            + "    c->slow = 1;   /* (the game's branch for a step under 1: last frame's blend frames plus the step) */\n"
+            + "L_80001000:;\n}\n")
 
 FIXTURE = r'''#include <stdarg.h>
 #include <stdint.h>
@@ -78,8 +86,7 @@ static void hos_log(const char *f, ...) { (void)f; }
 static int is_timed;
 static int timed(void) { return is_timed; }
 static int fps_log(void) { return 0; }
-@HOST@
-@UPDATE@
+@CODE@
 static int failures, checks;
 static float blend_frames;   /* (the animation variable the state machine sets) */
 /* one frame: the horse's step, the frame's (the time object's; 0: none), a cap above 60 or not. The blend frames as the game
@@ -131,49 +138,40 @@ int main(void) {
 '''
 
 
-def build_and_run(cc, update, host, directory):
+def build_and_run(cc, code, directory):
+    """code (the host's function and the update) built into the fixture and run"""
     source, binary = Path(directory) / "fixture.c", Path(directory) / "fixture.exe"
-    source.write_text(FIXTURE.replace("@HOST@", host).replace("@UPDATE@", update.replace('#include "a64.h"\n', "")),
-                      encoding="utf-8")
+    text = FIXTURE.replace("@CODE@", code)
+    source.write_text(text, encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-const-variable",
-                    "-I", str(ROOT / "host"),
-                    str(source), "-o", str(binary), "-lm"], check=True)
+                    "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
+                    str(source), *sitehooks.objects(directory, text), "-o", str(binary), "-lm"], check=True)
     return subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    patched, counts, _ = oot_patches.patch_file(LIFTED, "code_040.c")
-    hooked = "hos_oot_horse_whole_step(" in patched
-    host = ""
-    if hooked:   # (the host's function, as the game links it: cut from the source in the tree)
-        text = (ROOT / "host" / "oot_high_fps.c").read_text(encoding="utf-8")
-        host = block(text, "int hos_oot_horse_whole_step(uint32_t step_bits, uint64_t slot) {")
+    sitehooks.use(args.cc, args.cargo)
+    x = site("horse.jumpStep", "f_82c59eb0", "branch", 0xf70)
+    text = (ROOT / "game" / "oot_high_fps.c").read_text(encoding="utf-8")
+    host = block(text, "int hos_oot_horse_whole_step(uint32_t step_bits, uint64_t slot) {")
+    slot = ("\n" + callback("int hos_site_horse_jump_step(") + "\nvolatile uint8_t hos_site_on_horse_jumpStep = %d;\n"
+            "int (*volatile hos_site_fn_horse_jumpStep)(Ctx *) = hos_site_horse_jump_step;\n")
+    hooked = update(sitehooks.line(x).replace(sitehooks.GOTO, "goto L_80001000;") + "\n")
     with tempfile.TemporaryDirectory(prefix="horse-jump-step-") as directory:
-        result = build_and_run(args.cc, patched, host, directory)
-        print(result.stdout, end="")
-        if result.returncode != 0:
-            raise SystemExit("FAIL: a horse's jump blend frames above 60 fps (the patch %s)" % ("is in" if hooked else "is missing"))
-        native = build_and_run(args.cc, LIFTED, "", directory)
-        if native.returncode == 0 or "FAIL: 120 fps:" not in native.stdout:
-            raise SystemExit("FAIL: the unpatched update did not fail the 120 fps check")
-        print("PASS: the unpatched update compiles and fails the 120 fps check (its blend frames grow by the step)")
-    assert counts["horse jump step"] == 1
-    assert UNRELATED in patched
-    again, repeated, _ = oot_patches.patch_file(patched, "code_040.c")
-    assert again == patched and repeated["horse jump step"] == 1
-    for altered in (LIFTED.replace("c->vreg[10],c->vreg[9]", "c->vreg[11],c->vreg[9]", 1),
-                    LIFTED.replace("{ goto L_82c5ae48; }", "{ goto L_82c5ae50; }", 1),
-                    LIFTED.replace(HEAD, HEAD + ANCHOR, 1), UNRELATED):
-        output, missing, _ = oot_patches.patch_file(altered, "code_040.c")
-        assert output == altered and missing["horse jump step"] == 0
-        warning = io.StringIO()
-        with contextlib.redirect_stdout(warning):
-            oot_patches.report([Path("code_040.c")], [missing])
-        assert "WARNING: the horse's jump step test was found 0 times" in warning.getvalue()
-    print("PASS: scoped, idempotent, and a changed anchor is left alone with a warning")
+        for what, code in (("the hook", host + slot % 1 + hooked), ("the text patch", host + update(OLD_SKIP))):
+            result = build_and_run(args.cc, code, directory)
+            print(result.stdout, end="")
+            if result.returncode != 0:
+                raise SystemExit("FAIL: a horse's jump blend frames above 60 fps (%s)" % what)
+        for what, code in (("the update without the hook", update()), ("the hook off", host + slot % 0 + hooked)):
+            native = build_and_run(args.cc, code, directory)
+            if native.returncode == 0 or "FAIL: 120 fps:" not in native.stdout:
+                raise SystemExit("FAIL: %s did not fail the 120 fps check" % what)
+        print("PASS: the update without the hook, or with it off, compiles and fails the 120 fps check (its blend frames grow by the step)")
 
 
 if __name__ == "__main__":

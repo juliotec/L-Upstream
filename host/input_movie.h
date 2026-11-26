@@ -7,7 +7,7 @@
    - host/nn_hid.c's GetSixAxisSensorStates: the motion readings (the gyroscope) the game is given;
    - host/mouse_native.c's hos_mouse_camera, the player camera's update: the native mouse camera, which turns the camera's
      own angles by the mouse's motion, not by a stick;
-   - host/oot_menu.c: the mouse in the game's menus, which hands a button the focus (or the Items page its item) by calling
+   - game/oot_menu.c: the mouse in the game's menus, which hands a button the focus (or the Items page its item) by calling
      the game, where it points.
    Whichever device made it, a replay gives the game the same state at the same point.
 
@@ -56,7 +56,7 @@
          Link's position after his K-th update since the start, the I-th of frame F (written when he moved): the run's
          fingerprint; a replay compares its own update (F, I) with the last mark at or before it, exactly
      {"f":F,"cmd":"action","a":A}
-         a Debug tools action the game took at Link's update in frame F (host/hos_main.c oot_update_player_cheats: from
+         a Debug tools action the game took at Link's update in frame F (game/oot_tools.c oot_update_player_cheats: from
          the Insert menu, HOS_INPUT_LIVE's !cheat or the control bridge): 2 Mark, 3 Return, 100-123 the hour, 200-348 a
          pouch, 999 the age, 1000 + i a teleport, 3000 + an item's edit. A replay takes the live ones no more and gives
          these at their frame
@@ -403,7 +403,7 @@ typedef struct {
     char why[128];   /* (why the last playback started at run time ended before its start: "" none) */
 } HosInputMovieStatus;
 
-/* (a clock for the host's own decisions by time (host/oot_ocb_hold.c's hold, host/oot_tex_compact.c's gap): the wall clock,
+/* (a clock for the host's own decisions by time (game/oot_ocb_hold.c's hold, game/oot_tex_compact.c's gap): the wall clock,
    or while a recording is recorded or played the game clock's time (1/60 s a frame), so a decision lands on the same frame
    of the replay as of the recording; kept going on from where it was when it changes from one to the other. One a caller,
    under the caller's lock: host/input_movie.c hos_input_movie_time) */

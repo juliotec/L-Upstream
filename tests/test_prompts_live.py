@@ -1,5 +1,5 @@
 """Game-free: the button prompts following a change while the game runs (host/prompts.c). put_runs over a copy of a game
-file in a guest window: the game's own bytes come back where the runs before were, the new runs are written in their order
+file in a guest window, the game's bytes from what the build kept of it (its .base, host/prompts_base.c): they come back where the runs before were, the new runs are written in their order
 (a later one over an earlier), a run past the range found is left alone and counted, and every write is marked
 (HOS_WRITTEN: the renderer uploads it again). Guarded (the layouts, whose offsets the game makes pointers where they lie):
 a run over bytes the game changed is left alone, the rest written, and only those written are put back at the next change.
@@ -45,6 +45,7 @@ HARNESS = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "prompts_base.h"
 #define MAX_PATH 260
 typedef long LONG;
 static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
@@ -67,13 +68,21 @@ int main(int argc, char **argv) {
     enum { N = 4096, AT = 0x2000 };
     uint8_t game[N];
     for (int i = 0; i < N; i++) game[i] = (uint8_t)(i * 7);
-    FILE *f = fopen(argv[1], "wb");
-    fwrite(game, 1, N, f);
-    fclose(f);
+    (void)argv;
+    /* (what the build keeps of it: here the whole file, one run: "HPBS", 1, size, no samples, 1 run) */
+    uint8_t *b = (uint8_t *)malloc(32 + N);
+    memcpy(b, "HPBS\1\0\0\0", 8);
+    const uint64_t size = N;
+    memcpy(b + 8, &size, 8);
+    const uint32_t zero = 0, one = 1, n = N;
+    memcpy(b + 16, &zero, 4), memcpy(b + 20, &one, 4), memcpy(b + 24, &zero, 4), memcpy(b + 28, &n, 4);
+    memcpy(b + 32, game, N);
+    static HosPromptsBase src;
+    CHECK(hos_prompts_base_parse(&src, b, 32 + N));
     memcpy(window + AT, game, N);
     memset(window + AT + 100, 0xAA, 16);
     static Live l;
-    snprintf(l.path, sizeof l.path, "%%s", argv[1]);
+    l.src = &src;
     l.base = AT, l.lo = AT, l.hi = AT + N;
     const uint8_t aa[16] = {0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA};
     Run before[1] = {{100, 16, 0, aa}};
@@ -153,8 +162,8 @@ def main():
     a = p.parse_args()
     src = (ROOT / "host" / "prompts.c").read_text(encoding="utf-8")
     parts = {
-        "run": src[src.index("typedef struct { uint32_t off, len, idx; const uint8_t *data; } Run;"):].split("\n", 1)[0],
-        "live": span(src, "typedef struct {\n    char path[MAX_PATH];", "typedef struct {") .rsplit("}", 1)[0] + "} Live;",
+        "run": src[src.index("typedef HosPatchRun Run;"):].split("\n", 1)[0],
+        "live": span(src, "typedef struct {\n    const HosPromptsBase *src;", "typedef struct {") .rsplit("}", 1)[0] + "} Live;",
         "keep": block(src, "static void keep_ranges("),
         "put": block(src, "static size_t put_runs("),
     }
@@ -162,8 +171,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         c, exe = Path(tmp) / "live.c", Path(tmp) / "live"
         c.write_text(harness, encoding="utf-8")
-        subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(c), "-o", str(exe)],
-                       check=True)
+        subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "host"),
+                        str(c), str(ROOT / "host" / "prompts_base.c"), "-o", str(exe)], check=True)
         out = subprocess.run([str(exe), str(Path(tmp) / "game.bin")], capture_output=True, text=True)
         pool_gone(a.cc, src, tmp)
     check(out.returncode == 0 and out.stdout.strip() == "ok", "exit %d: %s%s" % (out.returncode, out.stdout, out.stderr))

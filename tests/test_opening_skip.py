@@ -1,4 +1,4 @@
-"""Skip opening: only the new-game story movie and Navi waking Link (host/hos_main.c).
+"""Skip opening: only the new-game story movie and Navi waking Link (game/oot_tools.c).
 
 The host function is cut out of the source and compiled with stubs, so the check needs no game dump. It checks that
 Opening_Introduction and Opening_LoadingKokiriForest are the only events skipped, that their timelines
@@ -18,11 +18,11 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
-from menu_model_fixture import menu_text  # noqa: E402
+from menu_model_fixture import GAME_OPTION_ANSWER, game_row, menu_text  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+import sitecheck  # noqa: E402
 
 
 def block(text, marker):
@@ -162,8 +162,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="")
     args = parser.parse_args()
-    source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    source = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
     api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
+    options = (ROOT / "game" / "options.h").read_text(encoding="utf-8")   # (the game's option ids, which vk_api.h includes)
     menu_h = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     menu = menu_text()   # (vk_menu.cpp and its modules' rows, #1633)
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
@@ -183,21 +184,24 @@ def main():
     need("HOS_OPT_SKIP_TITLE" not in fn and "44" not in fn, "the opening skip uses Skip title's id 44")
 
     # Skip title now occupies its reserved slot: check the declaration, not the obsolete reservation comment.
-    need(re.search(r"enum\s*\{\s*HOS_OPT_HDR_NATIVE\s*=\s*40\s*,\s*HOS_OPT_HDR_PEAK\s*,\s*"
-                   r"HOS_OPT_HDR_WHITE\s*,\s*HOS_OPT_DISCORD\s*,\s*HOS_OPT_SKIP_TITLE\s*\};", api),
-         "Skip title is not option id 44")
-    need(re.search(r"enum \{ HOS_OPT_SKIP_OPENING = 52 \};", api), "Skip opening is not option id 52")
-    need("HOS_OPT_SKIP_OPENING = 44" not in api, "Skip opening took id 44")
+    need(re.search(r"enum\s*\{\s*HOS_OPT_HDR_NATIVE\s*=\s*40\s*,\s*HOS_OPT_HDR_PEAK\s*,\s*HOS_OPT_HDR_WHITE\s*\};", api)
+         and re.search(r"enum\s*\{\s*HOS_OPT_DISCORD\s*=\s*43\s*,\s*HOS_OPT_SKIP_TITLE\s*=\s*44\s*\};", options),
+         "Skip title is not option id 44 (game/options.h, after gpu/vk/vk_api.h's HDR ids and Discord's 43)")
+    need(re.search(r"enum \{ HOS_OPT_SKIP_OPENING = 52 \};", options), "Skip opening is not option id 52 (game/options.h)")
+    need("HOS_OPT_SKIP_OPENING = 44" not in api + options, "Skip opening took id 44")
     need("skip_opening" not in api, "Skip opening added to MkwVkHost or MkwVkRenderer (it is an option id, not an interface change)")
 
-    need(re.search(r"int skip_opening = 0;", menu_h), "Skip opening does not default off")
-    row = re.search(r'\{TAB_GAMEPLAY, "Skip opening", &opts\.skip_opening, 0, 1, 1, tx_onoff,', menu)
-    need(row, "the Gameplay row is missing")
-    help_at = menu.index("Skip opening")
+    # (the row is the game's, game/menu/rows.c: kept by its option id, answered by it)
+    row = game_row("skip_opening")
+    need(row and (row["label"], row["tab"], row["kind"], row["option"], row["lo"], row["hi"]) ==
+         ('"Skip opening"', '"gameplay"', "GAME_MENU_TOGGLE", "HOS_OPT_SKIP_OPENING", "0", "1"), "the Gameplay row is missing")
+    need(row["default_value"] == "0", "Skip opening does not default off")
+    need("skip_opening" not in menu_h, "the renderer's options keep a Skip opening of their own")
+    help_at = menu.index('"Skip opening"')
     help_text = menu[help_at:help_at + 400]
     need("story movie and Navi waking Link" in help_text and "Deku Tree" in help_text and "title screen" in help_text,
          "the row's help does not say what is skipped and what is left")
-    need("if (id == HOS_OPT_SKIP_OPENING) return opts.skip_opening;" in replay, "the option callback does not answer it")
+    need(GAME_OPTION_ANSWER in replay, "the option callback does not answer it")
     option = replay.split("t.option =", 1)[1].split("};", 1)[0]
     need(not re.search(r"\bid\s*==\s*44\b", option), "the option callback handles id 44")
     need('getenv("HOS_SKIP_OPENING")' in menu, "a run cannot turn the row on without saving it")
@@ -206,23 +210,30 @@ def main():
     need("if (!oot_event_playing(c)) hos_oot_opening(c, 3);" in lift,
          "Link updating during the opening drops the skip before the flowchart finishes")
 
-    fake = ('#include "a64.h"\n' + oot_patches.OPENING_REQUEST_HEAD + "    c->x[0] = 0;\n}\n"
-            + oot_patches.OPENING_TIMELINE_HEAD + "    c->x[0] = 0;\n}\n"
-            + oot_patches.OPENING_QUERY_HEAD + "    c->x[0] = 0;\n}\n")
-    patched = oot_patches.patch_opening(fake)
-    need(patched is not None, "the three opening functions were not patched")
-    need(oot_patches.OPENING_REQUEST in patched and "return" not in oot_patches.OPENING_REQUEST,
-         "the request hook swallows the request")
-    need("return" in oot_patches.OPENING_TIMELINE and "return" in oot_patches.OPENING_QUERY,
-         "the timeline or the skip query still runs its body")
-    need(patched.count(oot_patches.OPENING_REQUEST) == 1, "the request hook was inserted more than once")
-    need(oot_patches.patch_opening(patched) == patched, "patching a file again inserted the hooks again")
-    need(oot_patches.patch_opening('#include "a64.h"\nvoid f_1(Ctx *c) {\n}\n') is None,
-         "a file without the opening functions was patched")
-    plain = oot_patches.patch_file(fake, "code_opening.c", False)
-    need(oot_patches.OPENING_REQUEST not in plain[0], "another build's functions were hooked")
-    built = oot_patches.patch_file(fake, "code_opening.c", True)
-    need(built[1]["opening skip"] == 3, "the supported build did not count three opening hooks")
+    # (the three places are hook sites now: game/sites/sites.toml, game/oot_sites.c; the lift places them)
+    sites = {x.name: x for x in sitecheck.load(sitecheck.BUILD)}
+    calls = (ROOT / "game" / "oot_sites.c").read_text(encoding="utf-8")
+    for name, function, can_return, body in (
+            ("opening.request", "f_80d9a820", False, "hos_oot_opening(c, 0);\n    return 0;"),
+            ("opening.timeline", "f_83b5bfb0", True, "return hos_oot_opening(c, 1);"),
+            ("opening.skipQuery", "f_80de6cb0", True, "return hos_oot_opening(c, 2);")):
+        x = sites.get(name)
+        need(x is not None and (x.at, x.function, bool(x.can_return)) == ("entry", function, can_return),
+             "%s is not the entry of %s%s" % (name, function, " that can return" if can_return else ""))
+        need(sitecheck.host_sites().get(sitecheck.ident(name)) == name, "game/sites.def has no slot for " + name)
+        need(body in calls, "%s's callback is not hos_oot_opening as the text patch called it" % name)
+    need(sites["opening.timeline"].can_return and not sites["opening.request"].can_return,
+         "the timeline's hook does not return when told to, or the request's swallows the request")
+    # (Skip title screen's own sites, the button waits' enter, are its alone: the opening's callback names none of them, and
+    # theirs reads Skip title's state, not Skip opening's)
+    for name in ("menu.buttonWait", "menu.buttonWaitNoDecideAnim"):
+        x = sites.get(name)
+        need(x is not None and x.at == "entry" and not x.can_return and x.function not in ("f_80d9a820", "f_83b5bfb0", "f_80de6cb0"),
+             "%s is not an entry of its own that only looks" % name)
+    wait = block(calls, "int hos_site_menu_button_wait(Ctx *A64_NOESC c) {")
+    need("hos_oot_autoload_watching()" in wait and "HOS_OPT_SKIP_OPENING" not in wait and "hos_oot_opening" not in wait,
+         "the button waits' callback is not Skip title screen's alone")
+    need("buttonWait" not in fn, "Skip opening reads the title's button waits")
 
     cc = args.cc or shutil.which("gcc") or shutil.which("clang") or shutil.which("cc")
     if cc:

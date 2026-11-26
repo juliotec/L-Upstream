@@ -1,7 +1,7 @@
 """The pipeline tour: plays the game unattended, from a new save through every debug Teleport destination as child and as
 adult, with the items, their effects and the menus, so that its graphics pipelines are met and written to the pipeline state list
 (gpu/vk/vk_draw.cpp: longshot_pipeline_states.bin). The parts' lists become the tour's source of the list a release ships,
-assets/pipeline_states/tour.bin.xz and tour.md (nx2/pipeline_states.py tour): the first start prepares those pipelines before the
+assets/pipeline_states/tour.bin.xz and tour.md (scripts/pipeline_states.py tour): the first start prepares those pipelines before the
 title. The game is driven through the control bridge (host/control.c, docs/dev/reference/control-bridge.md).
 
     python -I scripts/pipeline_tour.py tour --game <game folder> --out <dir> [--name play] [--parts ...] [--publish] [--env ...] [--ini ...]
@@ -41,7 +41,7 @@ rest copied), in games of --chunk stops (a
 fresh game each), at nice 19 on --cpus, each under the memory guard (MEM: it waits for memory before a game, and ends a game that
 holds too much or leaves the machine too little, the next game going on from there; on Linux the game runs in a systemd scope
 with a MemoryMax); merged (--compare-to <list>: what the merged list lacks of an older one); --publish writes the repository's
-tour list from them (nx2/pipeline_states.py tour, with the GPU, build, settings and route the runs logged).
+tour list from them (scripts/pipeline_states.py tour, with the GPU, build, settings and route the runs logged).
 
 --vk-profile <dir> (run and tour): the renderer's play profile recorded on the tour's route (docs/dev/developing.md, "Record
 the renderer's play profile"). The game folder's renderer must be an RX_VK_PGO=gen one (a counting pack: RX_VK_PGO=gen python -I
@@ -50,7 +50,7 @@ of Link the counters are cleared (<file>.reset: the loading, the prepare and the
 they are written (<file>.dump) and moved to <dir>/<run name>.profraw, with <run name>.json saying where they were recorded. A
 renderer that takes neither request fails the run rather than leaving nothing. The pipeline lists are made as without it (the
 counting renderer is slower, its pipelines the same). merge-profile then merges <dir>/*.profraw with the toolchain's
-llvm-profdata into work/longshot_vk.profdata (what nx2/make_game.py builds with); --publish also writes
+llvm-profdata into work/longshot_vk.profdata (a build takes it with RX_VK_PGO=<that file>); --publish also writes
 assets/profiles/longshot_vk.profdata.xz (xz -9e) and the note for assets/profiles/README.md (<dir>/README-note.md).
 
 compare: two lists' pipelines against each other (either may be a tour's merged <out>/<name>.bin, a run's states.bin or a
@@ -63,7 +63,7 @@ Each run writes <out>/<name>/: states.bin (its list), report.txt and report.json
 added, its frames and wall time), log.txt (the game's log) and steps.txt (what was sent, at which frame).
 
 Linux (the memory guard reads /proc; the bridge is a Unix socket). Standard library only. The actions' numbers come from
-host/hos_main.c, gpu/vk/oot_cheat_items.h and gpu/vk/vk_menu.cpp; the bridge's client is scripts/longshot_bridge.py;
+host/hos_main.c, game/oot_cheat_items.h and gpu/vk/vk_menu.cpp; the bridge's client is scripts/longshot_bridge.py;
 the parts are in scripts/tours/ (route, drive, memory, lists, vkprofile).
 """
 import argparse
@@ -85,7 +85,7 @@ from tours.route import PARTS, SETTLE_MAX, SETTLE_QUIET, actions, item_stops, it
 from tours.vkprofile import PGO_ENV, Profile, merge_profile, profile_end, refuse_uncounted  # noqa: E402
 
 # (in the game folder: the pipeline notes and the lists play adds to are in cache/, the shipped list beside the game
-# (gpu/vk/vk_draw.cpp state_list_path, pipe_notes_path; host/game_layout.c), and a build from before left its loose beside the
+# (gpu/vk/vk_draw.cpp state_list_path, pipe_notes_path; game/game_layout.c), and a build from before left its loose beside the
 # game, which the game's start moves into cache/. longshot_computes.bin: the compute programs earlier play dispatched, which the
 # game writes into the list when it opens it (vk_draw.cpp state_open_locked): aside too, or every run's list starts with them)
 STATE_FILES = ("cache/longshot_pipelines.bin", "cache/longshot_pipeline_states.bin", "cache/longshot_pipeline_states_v1.bin",
@@ -650,7 +650,7 @@ def published_settings(env):
 
 
 def publish(lists, run_dirs, parts, sources=None):
-    """nx2/pipeline_states.py tour: the repository's tour list replaced by these, its note from what the runs' bridges said
+    """scripts/pipeline_states.py tour: the repository's tour list replaced by these, its note from what the runs' bridges said
     (the build, the renderer: GPU and driver) and their settings"""
     gpu = build = ""
     settings, ini, minutes = {}, None, 0.0
@@ -675,7 +675,7 @@ def publish(lists, run_dirs, parts, sources=None):
             ini.update(kv.split("=", 1) for kv in meta.get("ini") or [])
         minutes += meta.get("seconds", 0) / 60
     ini = " ".join("%s=%s" % kv for kv in sorted((ini or BASE_INI).items()))
-    cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "pipeline_states.py"), "tour"] + lists + [
+    cmd = [sys.executable, "-I", os.path.join(ROOT, "scripts", "pipeline_states.py"), "tour"] + lists + [
         "--gpu", gpu or "unknown", "--build", build or "unknown",
         "--settings", ini + " " + " ".join("%s=%s" % kv for kv in sorted(settings.items())),
         "--route", "scripts/pipeline_tour.py, parts %s, from a new save (%.0f minutes of runs)" % (", ".join(parts), minutes)]
@@ -772,7 +772,7 @@ def parser():
                    "or tour.bin.xz) has that this tour's lacks, and the other way round (compare)")
     mp = sub.add_parser("merge-profile", help="the --vk-profile counters merged into the renderer's play profile")
     mp.add_argument("dir", help="the --vk-profile folder (its *.profraw)")
-    mp.add_argument("--out", help="the merged profile (default work/longshot_vk.profdata, which nx2/make_game.py builds with)")
+    mp.add_argument("--out", help="the merged profile (default work/longshot_vk.profdata, which RX_VK_PGO=<file> builds with)")
     mp.add_argument("--publish", action="store_true", help="also write assets/profiles/longshot_vk.profdata.xz (xz -9e) and "
                     "the note for assets/profiles/README.md")
     mp.add_argument("--llvm-profdata", metavar="PATH", help="this llvm-profdata, not the toolchain's (the compiler's that "

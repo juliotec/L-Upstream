@@ -1,7 +1,7 @@
 // (longshot) The program cache: longshot_programs.bin (and its .idx) beside the game, what translation made, kept between runs; its
 // reads for play, the precompile, the prediction and the prepare; and the sizes of the prepare's worker pools.
 //
-// Not part of the translator stamp (nx2/translator_files.py: vk_shader.cpp, vk_bank.cpp, vk_state.h and the recompiler's
+// Not part of the translator stamp (builder/crates/build-compile/src/generated/shader_stamp.rs: vk_shader.cpp, vk_bank.cpp, vk_state.h and the recompiler's
 // folders): a change here keeps every player's translated programs. What the cache is good for is program_cache_stamp: the
 // translator's stamp (translator_stamp, vk_shader.cpp) and kProgramCacheFormat below. A change to what a record holds or how it is
 // laid out (put_head/get_head, put_info/get_info, program_cache_save/program_cache_read, the file and index heads) must raise
@@ -18,6 +18,8 @@
 #ifndef _WIN32
 #include <fcntl.h>
 #include <sys/file.h>
+#else
+#include <fcntl.h>   // (_O_RDONLY: open_shared)
 #endif
 #include <io.h>
 #include <algorithm>
@@ -167,6 +169,71 @@ void idx_write(const std::string& path, uint64_t stamp, const std::vector<std::p
 }
 
 
+// (longshot) The per-user copy of a prepared program cache, beside the shader store whose SPIR-V its records name: what the
+// last preparation of this translator made (program_cache_publish), the start of a game folder that has none of its own
+// (disk_init), so that a new folder, or a new build of an unchanged translator, translates nothing again. Named under the
+// store's own files (spirv.pack.*, spirv.idx.*) so that the launcher's Free up space and its count of the store take them
+// with it (LongshotLauncher ShaderCaches.StoreFiles), and a store made again leaves no copy naming its old blobs: a copy of
+// another store is dropped by disk_init's own check of the file's head anyway. A copy is written beside its place and put
+// there whole (rename): a Longshot reading the old one keeps it, and the folder's own file is never shared between two
+// Longshots (its lock below)
+std::string seed_path(bool idx, uint64_t stamp) {
+    char name[64];
+    snprintf(name, sizeof name, "%s.programs-%016llx", idx ? "spirv.idx" : "spirv.pack", (unsigned long long)stamp);
+    return (std::filesystem::path(store.folder()) / name).string();
+}
+/// path opened to read, another program free to rename a file over it meanwhile (Windows: FILE_SHARE_DELETE, so a Longshot
+/// publishing a new copy under the store's lock is not refused while this one copies the old one out): nullptr when it can't be
+FILE* open_shared(const std::string& path) {
+#ifdef _WIN32
+    const HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return nullptr;
+    const int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(h);
+        return nullptr;
+    }
+    FILE* f = _fdopen(fd, "rb");
+    if (!f) _close(fd);
+    return f;
+#else
+    return fopen(path.c_str(), "rb");
+#endif
+}
+/// The name a copy is written under before it is renamed to its place: this process's own, so two Longshots copying at once
+/// never write one file; the store's prune takes such a name only once it is an hour old (spirv_pack::prune_program_copies)
+std::string fresh_name(const std::string& to) { return to + ".new-" + std::to_string((unsigned long)GetCurrentProcessId()); }
+/// Everything `from` holds, from its start, written to fresh: true when all of it was
+bool copy_out(FILE* from, const std::string& fresh) {
+    FILE* to = fopen(fresh.c_str(), "wb");
+    if (!to) return false;
+    std::vector<char> buf(1 << 20);
+    bool ok = _fseeki64(from, 0, SEEK_SET) == 0;
+    for (size_t n; ok && (n = fread(buf.data(), 1, buf.size(), from)) > 0;) ok = fwrite(buf.data(), 1, n, to) == n;
+    ok = ok && !ferror(from);
+    ok = fclose(to) == 0 && ok;
+    if (!ok) remove(fresh.c_str());
+    return ok;
+}
+/// fresh renamed to `to` (over it): true when it was; else fresh removed
+bool put_in_place(const std::string& fresh, const std::string& to) {
+    std::error_code ec, ignored;
+    std::filesystem::rename(fresh, to, ec);
+    if (ec) std::filesystem::remove(fresh, ignored);
+    return !ec;
+}
+/// Whether the file at path is a program cache of this stamp, by its head
+bool cache_of_stamp(const std::string& path, uint32_t magic, uint64_t stamp) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    uint32_t head[2]{};
+    uint64_t kept = 0;
+    const bool same = fread(head, 4, 2, f) == 2 && fread(&kept, 8, 1, f) == 1 && head[0] == magic && kept == stamp;
+    fclose(f);
+    return same;
+}
+
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -176,17 +243,22 @@ void disk_init() {
         disk_zstd = env_on("RX_VK_PROGRAM_CACHE_ZSTD");
         const std::string path = cache_path(disk_zstd ? "longshot_programs.zst.bin" : "longshot_programs.bin");   // (vk_paths.h)
         // (one Longshot at a time on a cache: a second one, started while the first wrote, took the record being written for one
-        // cut short and cut the file there, under the first, whose list of records then named bytes written over since. Held
-        // until the process ends)
+        // cut short and cut the file there, under the first, whose list of records then named bytes written over since. A lock on
+        // a file beside the cache, cache/longshot_programs.bin.lock, held until the process ends, when the system lets it go.
+        // On Windows too: a named mutex there was the session's (Local\), so a Longshot of another user or session, or a
+        // second spelling of one folder (a share, a junction), took the same cache under the first)
         {
-            uint64_t h = 0xCBF29CE484222325ull;
-            for (const char ch : path) h = (h ^ (uint8_t)tolower((unsigned char)ch)) * 1099511628211ull;
-            char name[64];
-            snprintf(name, sizeof name, "Local\\LongshotProgramCache_%016llx", (unsigned long long)h);
 #ifdef _WIN32
-            const HANDLE held = CreateMutexA(nullptr, FALSE, name);
-            const bool taken = !held || GetLastError() == ERROR_ALREADY_EXISTS;
-#else   // (linux: a lock on a file beside the cache, let go when the process ends)
+            // (no FILE_SHARE_DELETE: the lock's file can't be deleted or renamed away while held, which would let a second
+            // Longshot make a new one and lock that. A lock file that can't be opened at all counts as free, as on Linux)
+            const HANDLE held = CreateFileA((path + ".lock").c_str(), GENERIC_READ | GENERIC_WRITE,
+                                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                            nullptr);
+            OVERLAPPED ov{};
+            const bool taken = held != INVALID_HANDLE_VALUE &&
+                               !LockFileEx(held, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov);
+            if (taken) CloseHandle(held);
+#else
             const int fd = open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
             const bool taken = fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) != 0;
 #endif
@@ -209,6 +281,32 @@ void disk_init() {
         // it names; the records past it (written by a build without the index, or after a run that ended between the two
         // writes) are read as before. Anything else: all of them read as before, and the index written again)
         const std::string idx_path = path.substr(0, path.size() - 4) + ".idx";
+        // (a folder with no program cache of this translator: the store's copy, when a preparation left one. Under the store's
+        // lock, as program_cache_publish writes it: the copy and its index both of one preparation, never one of another
+        // Longshot's that replaced them between the two)
+        // (only the opens under the lock: the copy, hundreds of MB, is made from the files opened there, outside it, so
+        // another Longshot's start or publish does not wait for it; what it reads is still the pair that was there together)
+        if (store_on && !cache_of_stamp(path, magic, stamp)) {
+            FILE *seed = nullptr, *seed_idx = nullptr;
+            store.with_lock([&] {
+                if (!cache_of_stamp(seed_path(false, stamp), magic, stamp)) return;
+                seed = open_shared(seed_path(false, stamp));
+                if (seed) seed_idx = open_shared(seed_path(true, stamp));
+            });
+            if (seed) {
+                _fseeki64(seed, 0, SEEK_END);
+                const long long size = _ftelli64(seed);
+                const std::string fresh = fresh_name(path), fresh_idx = fresh_name(idx_path);
+                if (copy_out(seed, fresh) && put_in_place(fresh, path)) {
+                    // (then read without one)
+                    if (!seed_idx || !copy_out(seed_idx, fresh_idx) || !put_in_place(fresh_idx, idx_path)) remove(idx_path.c_str());
+                    logf("vk: program cache %s: begun from the shader store's copy, %lld KB (what a preparation of this "
+                         "translator made, in another game folder or before)", path.c_str(), size > 0 ? size >> 10 : 0);
+                }
+                fclose(seed);
+            }
+            if (seed_idx) fclose(seed_idx);
+        }
         std::vector<std::pair<uint64_t, DiskRecord>> order;   // (every record, in the file's order: for the index)
         bool idx_whole = false;   // (the index named every record, and nothing more)
         int64_t good = 0, whole = 0;
@@ -913,6 +1011,31 @@ size_t program_cache_fallback_steps() {
     }
     std::lock_guard lk(shader_mu);
     return start_steps::create_steps(taken, programs);
+}
+void program_cache_publish() {
+    disk_init();
+    if (!disk_on || !store_on || disk_zstd) return;
+    std::lock_guard lk(disk_mu);
+    fflush(disk_out);
+    if (disk_idx) fflush(disk_idx);
+    const uint64_t stamp = program_cache_stamp();
+    const std::string idx_path = disk_path.substr(0, disk_path.size() - 4) + ".idx";
+    // (copied beside their places outside the store's lock (this folder's files are this Longshot's alone: their lock); under
+    // it only the two renames, so disk_init opens the copy and its index as one pair, and the prune)
+    const std::string fresh = fresh_name(seed_path(false, stamp)), fresh_idx = fresh_name(seed_path(true, stamp));
+    bool ok = false;
+    FILE *cache = open_shared(disk_path), *index = open_shared(idx_path);
+    const bool copied = cache && index && copy_out(cache, fresh) && copy_out(index, fresh_idx);
+    if (cache) fclose(cache);
+    if (index) fclose(index);
+    int pruned = 0;   // (the copies of translators before the last two: removed, as each is hundreds of MB)
+    store.with_lock([&] {
+        ok = copied && put_in_place(fresh, seed_path(false, stamp)) && put_in_place(fresh_idx, seed_path(true, stamp));
+        pruned = spirv_pack::prune_program_copies(store.folder(), stamp, 2);
+    });
+    if (!ok) remove(fresh.c_str()), remove(fresh_idx.c_str());
+    logf("vk: program cache: %s the shader store, for the next game folder (%s)%s", ok ? "copied into" : "not copied into",
+         seed_path(false, stamp).c_str(), pruned ? "; older translators' copies removed" : "");
 }
 std::string program_cache_path() {
     disk_init();

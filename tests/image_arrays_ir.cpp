@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Descriptor arrays of image buffers, storage images and texture buffers through the real texture pass and SPIR-V back end:
-// synthetic compute programs, no game or GPU (nx2/test_image_arrays.py builds, runs and validates them).
+// synthetic compute programs, no game or GPU (tests/test_image_arrays.py builds, runs and validates them).
 //
 // A handle read from a constant buffer at a dynamic offset (base + element * 8) is a descriptor array: the texture pass
 // sizes it by the words left after the base (DynamicDescriptorCount) and indexes it with the element. The bases here

@@ -3,8 +3,8 @@
 The client asks for its libraries with `#pragma comment(lib, ...)` (ws2_32, advapi32, user32, secur32, dbghelp), and all
 but dbghelp's are under _MSC_VER, which the clang of llvm-mingw does not define: there nothing reads them, and a library
 missing from the link line is an undefined symbol at the link (GetUserNameExA, without secur32). So every library the
-pragmas in third_party/tracy/public name must be on the Windows link of the executable: in HOST_LIBS, or in the libraries
-nx2/build.py adds when LONGSHOT_TRACY is set. Text only: no compiler, no Tracy build, no game.
+pragmas in third_party/tracy/public name must be on the Windows link of the executable: in host_libs, or in the libraries
+the builder (builder/crates/build-compile/src/lib.rs) adds in a Tracy build. Text only: no compiler, no Tracy build, no game.
 
     python -I -B tests/test_tracy_win_libs.py
 """
@@ -18,7 +18,7 @@ from srccut import between, find   # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 TRACY = ROOT / "third_party" / "tracy" / "public"
 PRAGMA = re.compile(r'#\s*pragma\s+comment\s*\(\s*lib\s*,\s*"([\w.]+?)(?:\.lib)?"\s*\)', re.I)
-LIB = re.compile(r'"-l([\w.]+)"')
+LIB = re.compile(r'"-l([\w.]+)"')   # (a string of the Rust: "-lws2_32")
 
 
 def pragma_libs():
@@ -32,14 +32,16 @@ def pragma_libs():
 
 
 def linked_libs():
-    """The -l libraries of the executable's Windows link: HOST_LIBS' Windows half and the LONGSHOT_TRACY ones"""
-    src = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-    host = between(src, "HOST_LIBS = ", "\nGPU = ", where="nx2/build.py")
-    windows = host.split("if LINUX else", 1)[1]
-    at = find(src, '"/implib:"', where="nx2/build.py")   # (the Tracy part of the link: the client's import library)
-    tracy = src[src.rfind("\n", 0, at) + 1:src.find("\n", at)]
-    if "if TRACY" not in tracy:
-        sys.exit("FAIL: the line with /implib: in nx2/build.py is no longer the LONGSHOT_TRACY part of the link: %r" % tracy)
+    """The -l libraries of the executable's Windows link: host_libs' Windows half and the Tracy build's ones
+    (builder/crates/build-compile/src/lib.rs)"""
+    where = "builder/crates/build-compile/src/lib.rs"
+    src = (ROOT / where).read_text(encoding="utf-8")
+    host = between(src, "let host_libs: Vec<String> = if linux {", "let mut game = None;", where=where)
+    windows = host.split("} else {", 1)[1]
+    at = find(src, '"/implib:', where=where)   # (the Tracy part of the link: the client's import library)
+    tracy = src[src.rfind("if s.tracy {", 0, at):at]
+    if not tracy.startswith("if s.tracy {"):
+        sys.exit("FAIL: the /implib: line in %s is no longer the Tracy part of the link: %r" % (where, tracy))
     return {l.lower() for l in LIB.findall(windows)}, {l.lower() for l in LIB.findall(tracy)}
 
 
@@ -50,8 +52,8 @@ def main():
     host, tracy = linked_libs()
     missing = sorted(l for l in asked if l not in host | tracy)
     for l in missing:
-        print("FAIL: %s (asked for by %s) is not on the Windows link of the executable: neither in HOST_LIBS nor with "
-              "LONGSHOT_TRACY in nx2/build.py" % (l, ", ".join(asked[l])))
+        print("FAIL: %s (asked for by %s) is not on the Windows link of the executable: neither in host_libs nor "
+              "in a Tracy build (builder/crates/build-compile/src/lib.rs)" % (l, ", ".join(asked[l])))
     if missing:
         sys.exit(1)
     print("OK: the %d libraries Tracy's pragmas ask for are linked (%s)" % (len(asked), ", ".join(sorted(asked))))

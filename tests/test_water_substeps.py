@@ -1,4 +1,4 @@
-"""The water ripples step every frame above 60 fps (issue 1199; nx2/oot_patches.py patch_whole_frames, host/frame_whole.h).
+"""The water ripples step every frame above 60 fps (issue 1199; the hook site frame.wholeWater, host/frame_whole.h).
 
 The water renderer (f_800672e0) runs (int)step * substeps simulation substeps a frame, the substeps a water object's +76.
 Under a Frame rate cap above 60 the step is the frame's own time (0.56 at 108 fps). With the whole frames carried per water
@@ -7,13 +7,18 @@ stood still for a frame and then jumped (seen at the Great Fairy fountains and i
 The substeps are carried instead: at 108 fps with 4 substeps a frame, every frame runs 2 or 3 of them, the 240 a second
 the console runs at 60.
 
-The check takes the lifted lines of the site (the substeps' load, the cut, the multiply and its store), patches them with
-patch_file as the build does, and compiles them with host/nn_vi.c's own entry points cut out of it, over frames at 108 and
-144 fps, a cap of 60 and 30 fps. A lift patched by an earlier build (the whole frames' hook in place) is patched again to
-the substeps. Needs a C compiler (gcc or clang).
+The check takes the lifted lines of the site (the substeps' load, the cut, the multiply and its store) with the replace
+site's hook on the cut as the lift lowers it (tests/sitehooks.py) (game/oot_sites.c's callback), and, side by side, with the text patch's line it
+replaced, and compiles each with host/nn_vi.c's own entry points cut out of it, over frames at 108 and 144 fps, a cap of 60
+and 30 fps. (A lift is translated again whenever the site table changes: no lift patched by an earlier build is met.) Needs
+clang and cargo.
 
-python -I -B tests/test_water_substeps.py
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_water_substeps.py [--cc clang] [--cargo cargo]
 """
+import argparse
 import shutil
 import subprocess
 import sys
@@ -22,16 +27,18 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import oot_patches  # noqa: E402
 from srccut import block  # noqa: E402
+from whole_sites import hook_whole, old_whole  # noqa: E402
+import sitehooks  # noqa: E402
+
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+
+CC = "clang"
 
 HEAD = "void f_800672e0(Ctx *__restrict A64_NOESC c) {\n"
 LOAD = "    c->x[8]=recomp_load32(c,c->x[19] + 76);\n"
 CUT = "    c->x[9]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
-EARLIER = ("    c->x[9]=hos_frame_whole(c->x[21], (uint32_t)c->vreg[0][0]);   "
-           "/* (the step's whole frames: nx2/oot_patches.py) */\n")   # (the hook main's builds made)
 REST = ("    c->x[27]=g_module_base + 0x80067000ULL + (int64_t)79933440;\n"
         "    { uint64_t _r = (uint64_t)0 + (c->x[8] * c->x[9]); _r &= 0xFFFFFFFFULL; c->x[8] = _r; }\n"
         "    recomp_store32_sp(c,c->x[31] + 52,c->x[8]);\n"
@@ -114,7 +121,7 @@ int main(void) {
 
 
 def host_entry_points():
-    """host/nn_vi.c's hooks for patch_whole_frames, cut out of it"""
+    """host/nn_vi.c's entry points for the sites frame.whole*, cut out of it"""
     text = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     cuts = [block(text, "uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {")]
     if "static int carry_fractions(void)" in text:   # (its cap-60 half reads the engine's rate: tests/test_frame_carry_cap60.py)
@@ -127,31 +134,36 @@ def host_entry_points():
 
 class WaterSubstepTests(unittest.TestCase):
     def run_frames(self, lifted):
-        compiler = shutil.which("gcc") or shutil.which("clang")
+        compiler = shutil.which(CC)
         if not compiler:
             self.skipTest("no C compiler")
-        patched, counts, _ = oot_patches.patch_file(lifted, "code_000.c")
-        self.assertEqual(counts["whole sites"], 1, patched)
-        self.assertNotIn("recomp_fp_to_int(c->vreg[0][0]", patched)
+        patched, count = lifted
+        self.assertEqual(count, 1, patched)
         with tempfile.TemporaryDirectory(prefix="longshot-water-substeps-") as tmp:
             tmp = Path(tmp)
             (tmp / "a64.h").write_text(A64_H, encoding="utf-8")
             (tmp / "patched.c").write_text(patched, encoding="utf-8")
             (tmp / "t.c").write_text(DRIVER % {"host": host_entry_points()}, encoding="utf-8")
             binary = tmp / "t.exe"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(tmp), "-I", str(ROOT / "host"),
-                                    str(tmp / "t.c"), "-o", str(binary), "-lm"], text=True, capture_output=True)
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(tmp), "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
+                                    str(tmp / "t.c"), *sitehooks.objects(tmp, patched), "-o", str(binary), "-lm"],
+                                   text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_every_frame_steps_above_60(self):
-        self.run_frames(LIFTED)
+        self.run_frames(hook_whole(LIFTED))
 
-    def test_a_lift_patched_before_takes_the_substeps(self):
-        # (a work folder whose lift main's build patched keeps its translation: the next build must still reach the site)
-        self.run_frames(LIFTED.replace(CUT, EARLIER))
+    def test_as_the_text_patch(self):
+        self.run_frames(old_whole(LIFTED))
 
 
 if __name__ == "__main__":
-    raise SystemExit(unittest.main(verbosity=1))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cc", default="clang")
+    ap.add_argument("--cargo")
+    args, rest = ap.parse_known_args()
+    CC = args.cc
+    sitehooks.use(args.cc, args.cargo)
+    raise SystemExit(unittest.main(argv=[sys.argv[0]] + rest, verbosity=1))

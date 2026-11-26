@@ -1,35 +1,42 @@
-# The game-free checks' environment (tests/run_all.py --strict), for running them on any distribution: the system CI runs
-# them in (.forgejo/workflows/ci.yml, Ubuntu 24.04) with the same packages, Python packages, glslang and headers.
-# tests/test_checks_container.py checks that the versions here are ci.yml's and mise.toml's.
+# The CI images (docs/dev/reference/ci.md, The CI images): `checks` (the compilers and Rust: ci.yml's tests, rust and
+# host-windows) and `lite` (lint and the website), each a list of scripts/linux/ci_setup.sh's parts, one RUN a part so
+# a change rebuilds only its part and those after it. CI's copies are in the forge's registry,
+# git.magicbean.dev/magicbeandev/longshot-ci-<image>:<tag> (.forgejo/workflows/ci-image.yml). Locally,
+# scripts/linux/checks.sh builds `checks` and runs tests/run_all.py in it (tests/run_all.py --container), on any
+# distribution.
 #
-# The image holds the tools only. The checkout is mounted at its own path when it runs, with no network.
-# scripts/linux/checks.sh builds the image and runs it (tests/run_all.py --container).
-FROM ubuntu:24.04
+# The context is scripts/linux/ci_image.sh's inputs (`ci_image.sh context DIR`), which the tags are a hash of. An image
+# holds the tools only: the checkout is mounted at its own path when it runs, with no network.
+FROM ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b AS base
+# (ci_setup.sh env, the same lines: tests/test_checks_container.py checks them. HOME: a local run is the caller's user,
+# whose home is not in the image, and ccache and git want a writable one)
+ENV RUSTUP_HOME=/opt/rustup \
+    CARGO_HOME=/opt/cargo \
+    PRE_COMMIT_HOME=/opt/pre-commit \
+    LONGSHOT_VULKAN_HEADERS=/opt/vulkan-headers/include \
+    LONGSHOT_SPIRV_HEADERS=/opt/spirv-headers/include \
+    PATH=/opt/python/bin:/opt/cargo/bin:/opt/node/bin:/opt/glslang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/tmp
+COPY . /opt/longshot-ci/
+WORKDIR /opt/longshot-ci
 
-ENV DEBIAN_FRONTEND=noninteractive
-# (g++ clang lld spirv-tools ccache libdav1d-dev are ci.yml's, with what they recommend: clang's sanitizer libraries among
-# it. The rest is what its runner has: Python 3.12, git, curl, .NET 8)
-RUN apt-get update \
- && apt-get install -y g++ clang lld spirv-tools ccache libdav1d-dev \
- && apt-get install -y --no-install-recommends python3 python3-venv git ca-certificates curl file make cmake pkg-config \
-      zip unzip xz-utils procps dotnet-sdk-8.0 \
- && rm -rf /var/lib/apt/lists/*
-RUN python3 -m venv /opt/python \
- && /opt/python/bin/pip install --no-cache-dir --disable-pip-version-check --no-deps \
-      zstandard==0.25.0 pillow==13.0.0 numpy==2.5.4 lz4==4.4.5 unicorn==2.1.4
-RUN mkdir /opt/glslang \
- && curl -fL --retry 3 -o /opt/glslang.tar.gz \
-      https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-linux-x86_64-release.tar.gz \
- && echo '2c34071f56ecf39d16233294d3739cf43f981fd39080f2fd9dccb782101191ce  /opt/glslang.tar.gz' | sha256sum --check --strict \
- && tar -xzf /opt/glslang.tar.gz -C /opt/glslang \
- && rm /opt/glslang.tar.gz
-COPY fetch_commit.sh /opt/
-RUN /opt/fetch_commit.sh https://github.com/KhronosGroup/SPIRV-Headers 04f10f650d514df88b76d25e83db360142c7b174 /opt/spirv-headers \
- && /opt/fetch_commit.sh https://github.com/KhronosGroup/Vulkan-Headers 74d8a6cb930c68ef617b202c3ff3c59d919e086b /opt/vulkan-headers
+# (ci_setup.sh parts checks, in order)
+FROM base AS checks
+RUN scripts/linux/ci_setup.sh system
+RUN scripts/linux/ci_setup.sh python
+RUN scripts/linux/ci_setup.sh headers
+RUN scripts/linux/ci_setup.sh node
+RUN scripts/linux/ci_setup.sh tools
+RUN scripts/linux/ci_setup.sh rust
+RUN rm -rf /opt/longshot-ci
+WORKDIR /
 
-# (run as the caller's user, whose home is not in the image: ccache, .NET and git want a writable HOME)
-ENV HOME=/tmp DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
-    LONGSHOT_VULKAN_HEADERS=/opt/vulkan-headers/include LONGSHOT_SPIRV_HEADERS=/opt/spirv-headers/include \
-    PATH=/opt/python/bin:/opt/glslang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# (the checkout belongs to the caller, not to the container's user under every runtime)
-RUN git config --system --add safe.directory '*'
+# (ci_setup.sh parts lite, in order)
+FROM base AS lite
+RUN scripts/linux/ci_setup.sh system-lite
+RUN scripts/linux/ci_setup.sh python
+RUN scripts/linux/ci_setup.sh node
+RUN scripts/linux/ci_setup.sh tools
+RUN scripts/linux/ci_setup.sh hooks
+RUN rm -rf /opt/longshot-ci
+WORKDIR /

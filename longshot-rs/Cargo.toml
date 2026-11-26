@@ -1,0 +1,25 @@
+# The one staticlib the game links (liblongshot_rs.a): every Rust crate the game runs, in one library, so the program
+# carries one copy of std (two staticlibs in one link each bring their own and clash). The game's crates join it as
+# dependencies (`oot` so far), and later the host's and the renderer's; no other crate is a staticlib. Built with the
+# workspace's `game` profile (panic = "abort").
+[package]
+name = "longshot-rs"
+description = "The Rust the game links: one staticlib over the game's crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "longshot_rs"
+crate-type = ["staticlib"]
+# (what it links calls the host: a test binary would have no host to link)
+test = false
+doctest = false
+
+[dependencies]
+oot = { path = "../game/crates/oot" }
+
+[lints]
+workspace = true

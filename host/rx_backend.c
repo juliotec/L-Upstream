@@ -3,6 +3,7 @@
    Vulkan device leaves the wgr_* stand-ins in place (host/rx_nowgpu.c, host/posix/linux_stubs.c: once the WebGPU
    renderer's functions, gpu/render, which is built no more), and nothing is drawn (logged). */
 #include "hos.h"
+#include "romfs.h"
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
@@ -16,6 +17,7 @@
 #include "control.h"
 #include "../gpu/vk/compat/longshot_env.h"   /* (env_value_off: the switches' one rule) */
 #include "audio_output_devices.h"
+#include "../game/game.h"   /* (the game's hooks this file calls) */
 int hos_monitor_count(void);
 int hos_monitor_info(int index, MkwVkMonitor *out);
 void hos_monitor_select(const char *id);
@@ -81,8 +83,6 @@ int hos_binding_is_default(int button);
 int hos_rebind_control(int set, int button, int slot, int code, uint64_t approved, uint64_t *conflicts);
 int hos_prompts_face(void);         /* prompts.c */
 int hos_prompts_live_parts(void);   /* prompts.c */
-const char *hos_perf_info(char *map, int cap, int64_t movie[5], float pose[5], int *has_pose);   /* hos_main.c */
-void hos_perf_tracking(int enabled);   /* hos_main.c: read Link's pose only for the opt-in performance summary */
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 void hos_mark_written(const void *p, size_t n);
 #endif
@@ -366,14 +366,13 @@ static float host_wide_menus(uint32_t keep_mask) {   /* (MkwVkHost.wide_menus) *
     extern volatile float hos_wide_ratio;   /* (narrower than 16:9: the menus fit its width whatever the Ultrawide menus row says,
                                                never stretched up and down; the row is about wider screens) */
     if (!forced && hos_wide_ratio > 0.0f && hos_wide_ratio < 16.0f / 9.0f * 0.999f) hos_wide_keep_mask &= ~2u;
-    void hos_wide_ui_tick(void);   /* (hos_wide_ui.c: the HUD's layout for the picture's shape, each present) */
     hos_wide_ui_tick();
     return hos_wide_margin;
 }
 int hos_mouse_pointer(MkwVkPointer *out);   /* display.c, posix/display_sdl.c */
 int hos_sdl_gyro_status(void);   /* pad_sdl.c */
-extern const char *hos_romfs_dir;   /* nn_fs.c, set by hos_main.c */
-static const char *host_romfs_dir(void) { return hos_romfs_dir; }
+static uint8_t *host_romfs_read(const char *rel, size_t *n, size_t limit) { return hos_romfs_read(rel, n, limit); }
+static void host_romfs_free(void *p) { free(p); }
 const char *hos_options_file(void);   /* options_path.c */
 
 #ifdef _WIN32
@@ -453,12 +452,7 @@ static int host_take_text(int focus, uint32_t *out, int max) {
     return n;
 }
 
-/* (hookshot) the Mods tab: host/mods.c, host/cheats.c */
-int hos_mod_info(int i, const char **name, const char **detail, const char **note, int *enabled);
-void hos_mod_edit(int i, int op);
-uint64_t hos_mods_changed(void);
-int hos_cheat_info(int i, const char **name, const char **mod, const char **note, int *kind, int *on);
-void hos_cheat_set(int i, int on);
+/* (hookshot) the Mods tab: game/mods.c, game/cheats.c */
 
 int nvn_output_preview_request(uint32_t width, uint32_t height);
 /* (longshot, issue 1113) MkwVkHost's input recordings (version 42): host/input_movie.c's start, stop and status, for the
@@ -506,7 +500,7 @@ static const MkwVkHost vk_host = {
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
-    host_romfs_dir, host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts, host_screen_size,
+    host_wide_menus, host_slept_ns, host_fps_timing, hos_prompts_live_parts, host_screen_size,
     host_take_text, hos_options_file,
     hos_audio_output_count, hos_audio_output_info, hos_audio_output_select, hos_audio_output_state,
     hos_mic_test, hos_perf_info, host_main_thread_times, host_out_of_memory,
@@ -527,6 +521,8 @@ static const MkwVkHost vk_host = {
 #else
     NULL,
 #endif
+    host_romfs_read, host_romfs_free,   /* (version 46, longshot: the RomFS through host/romfs.h; 47: its only way) */
+    game_menu_rows,   /* (version 48, longshot: the game's Insert menu rows, game/menu/) */
 };
 
 static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
@@ -637,7 +633,7 @@ int rx_start(void *hwnd) {
     /* (longshot: Vulkan, the only renderer; RX_BACKEND, which once picked the WebGPU one, is not read) */
     const char *dll = "longshot_vk.dll";
     const MkwVkRenderer *r = load_vulkan(dll);
-    /* (the crash report's renderer: host/hos_crash_dialog.h. Before start(), which prepares the shaders: a crash in there
+    /* (the crash report's renderer: builder/crates/crash/src/facts.rs reads it. Before start(), which prepares the shaders: a crash in there
        is a crash of this renderer too) */
     if (r) hos_log("report: renderer Vulkan");
     if (r && r->start(hwnd)) {
@@ -677,7 +673,7 @@ void rx_close_asked(void) {
     }
 #endif
     /* (first, before anything that takes time: the player asked to quit, so however the process ends from here (a second
-       close of a window that stopped answering) the crash window says nothing; a crash still counts: host/hos_crash_dialog.h) */
+       close of a window that stopped answering) the crash window says nothing; a crash still counts: builder/crates/crash/src/facts.rs) */
     void hos_crash_quit_asked(void);
     hos_crash_quit_asked();
     if (!vk_module) return;
@@ -740,7 +736,7 @@ void rx_nvn_present(const nvn_tex *t, const int crop[4]) { nvn_present_with_gene
 void rx_nvn_present_trial(const nvn_tex *t, const int crop[4], uint64_t generation) {
     nvn_present_with_generation(t, crop, generation);
 }
-/* (longshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
+/* (longshot, the hook sites jitter.view*) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
    space (what P[0][2] and P[1][2] get), into out, for the projection matrix at guest address projection (row major, as the
    game fills its views' uniform buffers from it); 0 when there is none: DLSS and FSR off (or a renderer without them: rx_option
    HOS_OPT_DLSS_JITTER_W and _H, the scene's size in pixels, are 0), or a projection that is not one of the picture's

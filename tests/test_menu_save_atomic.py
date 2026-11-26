@@ -69,14 +69,18 @@ enum { HOS_BIND_PAD, HOS_BIND_KEY, HOS_BIND_SPRINT_AUTO };
 struct Out { unsigned w, h; };
 struct Options { int preset = 1, fps_cap = 0, vram_budget = 1, output_res = 0, ultrawide = 1, game_lang = 0, budget = 1,
                  hold_toggle = 0, sprint_toggle = 0, gpu_device = 0; } opts;
-struct Row { const char* name; int* value; };
+// (a module's row's own setting: save() writes no line for an unsaved one, a view of other rows, #2383)
+struct Setting { bool unsaved = false; };
+struct Row { const char* name; int* value; const Setting* setting = nullptr; };
+const Setting unsaved_view{true};
+int dyn_res_ui = 1;
 int output_pick = 0;
 std::string output_want, output_saved_name;
 int monitor_pick = 0;
 std::string monitor_want, monitor_saved_name; // Real save() also persists this identity; this fixture tests atomicity.
 Row rows[] = {{"Quality preset", &opts.preset}, {"Game frame rate cap", &opts.fps_cap}, {"VRAM budget", &opts.vram_budget},
               {"Output resolution", &opts.output_res}, {"Aspect ratio", &opts.ultrawide}, {"Game language", &opts.game_lang},
-              {"Output device", &output_pick}};
+              {"Output device", &output_pick}, {"Dynamic resolution", &dyn_res_ui, &unsaved_view}};
 std::string dir;
 std::mutex options_save_mu;
 std::vector<std::string> logged;
@@ -154,6 +158,7 @@ std::string first_save() {
     save();
     const std::string s = slurp(ini_path());
     CHECK(has(s, "game_frame_rate_cap=0\n") && has(s, "discord_app_id=1234567890\n") && has(s, "key_walk="));
+    CHECK(!has(s, "dynamic_resolution="));   // (an unsaved row: no line)
     logged.clear();
     return s;
 }

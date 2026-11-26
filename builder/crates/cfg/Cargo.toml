@@ -1,0 +1,15 @@
+[package]
+name = "cfg"
+description = "Discovery: the game's functions, their control flow, jump tables, PLT stubs and setjmp owners"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+a64.workspace = true
+image.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

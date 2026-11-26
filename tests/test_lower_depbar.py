@@ -20,7 +20,7 @@ def main():
     a = p.parse_args()
     with tempfile.TemporaryDirectory(prefix="lower-depbar-") as tmp:
         exe = Path(tmp) / "lower_depbar_test"
-        # (the lowering header is not warning-clean; nx2/lower_test.py builds it with -Wno-everything as well)
+        # (the lowering header is not warning-clean; scripts/lower_test.py builds it with -Wno-everything as well)
         subprocess.run([a.cxx, "-std=c++20", "-O1", "-w",
                         "-I" + str(ROOT / "gpu/vk/eden"), "-I" + str(ROOT / "gpu/vk/compat"),
                         str(ROOT / "tests/lower_depbar_test.cpp"), "-o", str(exe)], check=True)

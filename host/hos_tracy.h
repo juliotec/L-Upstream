@@ -1,6 +1,6 @@
 /* (longshot) The Tracy profiler's zones, for the host (C) and the Vulkan back end (C++): docs/dev/reference/profiling.md, Tracy.
 
-   A build made with LONGSHOT_TRACY=1 (nx2/build.py) defines TRACY_ENABLE: Tracy's client (third_party/tracy) is compiled
+   A build made with LONGSHOT_TRACY=1 (builder/crates/build-compile) defines TRACY_ENABLE: Tracy's client (third_party/tracy) is compiled
    into the game's executable alone, which exports its C API; the back end's module calls the same client through it, so
    the process has one. Every other build, a player's among them, gets the empty macros below: nothing of Tracy is
    compiled, and a call site costs nothing. Call sites use these macros only and never include Tracy themselves.
@@ -40,9 +40,8 @@
 #endif
 #define HT_COLOR_WAIT 0x8B3A3Au
 #define HT_COLOR_LOCK 0xD04040u
-#define HT_COLOR_GAME 0x2E6B8Au   /* (the lifted game code's own zones: nx2/tracy_funcs.py) */
 
-/* (the client is started by the game's main alone, hos_tracy_start in host/hos_tracy_game.c: the crash window's helper,
+/* (the client is started by the game's main alone, hos_tracy_start in host/hos_main.c: the crash window's helper,
    which is the same executable, has none, so it takes no port and a capture never connects to it. Until then, and in the
    helper for good, a zone is off. The back end's module is loaded after the start) */
 #ifdef TRACY_IMPORTS
@@ -81,20 +80,12 @@ static inline void ht_zone_end_(TracyCZoneCtx *z) { ___tracy_emit_zone_end(*z); 
 #define HT_PLOT(name, v) do { if (HT_ON) ___tracy_emit_plot(name, (double)(v)); } while (0)
 #define HT_THREAD_NAME(name) do { if (HT_ON) ___tracy_set_thread_name(name); } while (0)
 /* (the game's fibers, nn::os::SwitchToFiber: the zones after an enter are that fiber's, after a leave the thread's own) */
-#ifdef TRACY_FIBERS   /* (a build with LONGSHOT_TRACY_FIBERS=1 too: nx2/build.py) */
+#ifdef TRACY_FIBERS   /* (a build with LONGSHOT_TRACY_FIBERS=1 too: builder/crates/build-compile) */
 #define HT_FIBER_ENTER(name) do { if (HT_ON) ___tracy_fiber_enter(name); } while (0)
 #define HT_FIBER_LEAVE() do { if (HT_ON) ___tracy_fiber_leave(); } while (0)
 #else
 #define HT_FIBER_ENTER(name) do {} while (0)
 #define HT_FIBER_LEAVE() do {} while (0)
-#endif
-/* (the lifted game code's zones, nx2/tracy_funcs.py: off with HOS_TRACY_GAME=0, read at the start) */
-#ifndef TRACY_IMPORTS
-#ifdef __cplusplus
-extern "C" int hos_tracy_game_on;
-#else
-extern int hos_tracy_game_on;
-#endif
 #endif
 
 /* (the zones made once per draw, thousands a frame: on unless RX_VK_TRACY_DRAWS=0, read once per source file) */

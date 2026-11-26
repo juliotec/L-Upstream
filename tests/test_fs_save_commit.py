@@ -35,6 +35,8 @@ HOOKS = [
     "_ZN2nn2fs10RenameFileEPKcS2_",
 ]
 UID = "00000000000000000000000000000001"
+# (the RomFS's reader nn_fs.c calls, host/romfs.c over host/romfs_index.c, compiled in as the game links them)
+ROMFS = [str(ROOT / "host" / "romfs.c"), str(ROOT / "host" / "romfs_index.c")]
 ERROR = 0x2EE202
 SYMS = {
     "mount": "13MountSaveDataEPKcRKNS_7account3UidE",
@@ -128,6 +130,9 @@ int hos_mods_dir_extras(const char *r, const char *b, void (*f)(void *, const ch
 int hos_blank_cached_icon(const char *g, const char *h) { (void)g; (void)h; return 0; }
 int hos_ultrawide_redirect(const char *g, char *o, size_t n) { (void)g; (void)o; (void)n; return 0; }
 int hos_stand_in_damaged(const char *g, char *p, size_t n) { (void)g; (void)p; (void)n; return 0; }
+/* (host/romfs.c is compiled in: the folder backend, no index; a .nup's stored frames are never decoded here) */
+size_t hos_zs_frame(void *d, size_t cap, const void *s, size_t n) { (void)d; (void)cap; (void)s; (void)n; return 0; }
+size_t hos_zs_frame_head(void *d, size_t cap, const void *s, size_t n) { (void)d; (void)cap; (void)s; (void)n; return 0; }
 #ifndef _WIN32
 BOOL __real_MoveFileExA(LPCSTR a, LPCSTR b, DWORD flags);
 /* (failure injection at the boundary; successful calls always use the real POSIX implementation) */
@@ -884,9 +889,92 @@ def process_cases(libpath, tmp):
             worker.close()
 
 
+def save_dir_worker(libpath, user, save_dir, want):
+    """One process (the save folder is chosen once a run): the game's saves in the profile's saves/ (LONGSHOT_PROFILE), or
+    its refusal; with no profile, the user folder's ("none"). A HOS_SAVE_DIR the environment brings (a switch that is gone)
+    changes nothing"""
+    lib = ctypes.CDLL(libpath)
+    lib.hos_save_dir_choose.restype = ctypes.c_int
+    lib.hos_save_dir_refused.restype = ctypes.c_char_p
+    lib.hos_save_dir_source.restype = ctypes.c_char_p
+    label = "the profile's saves folder "
+    if want == "none":
+        f = Fs(lib, Path(user))
+        assert lib.hos_save_dir_choose() == 1 and lib.hos_save_dir_source() is None, "no profile: the user folder's"
+        assert not Path(save_dir).exists(), "HOS_SAVE_DIR's folder was made"
+        print("PASS (save dir): no profile keeps the saves in the user folder, HOS_SAVE_DIR's folder left alone", flush=True)
+        return
+    if want != "ok":
+        f = Fs(lib, Path(user))
+        assert lib.hos_save_dir_choose() == 0, "%s (%s) was taken" % (save_dir, want)
+        why = lib.hos_save_dir_refused().decode()
+        assert label in why and want in why, why
+        print("PASS (save dir, %s): refused: %s" % (want, why), flush=True)
+        return
+    saves = Path(save_dir)
+    f = Fs(lib, Path(user))
+    assert lib.hos_save_dir_choose() == 1
+    assert lib.hos_save_dir_source().decode() == "LONGSHOT_PROFILE"
+    assert (saves / "save").is_dir() and (saves / "save-work").is_dir(), "the profile's saves folders made"
+    assert not list((saves / "save").iterdir()), "the write test left nothing"
+    f.mount()
+    f.replace("slot_00/progress.sav", b"profile two")
+    assert f.commit() == 0
+    assert (saves / "save" / UID / "slot_00/progress.sav").read_bytes() == b"profile two"
+    assert (saves / "save-work" / UID).is_dir(), "the work copy beside it"
+    assert not (Path(user) / "save" / UID / "slot_00").exists(), "nothing in the user folder's saves"
+    assert not (Path(user) / "save-work" / UID).exists(), "nor its work copies"
+    other = os.environ.get("HOS_SAVE_DIR")
+    assert not other or not Path(other).exists(), "HOS_SAVE_DIR's folder was made"
+    # (the control bridge's save folder, host/control.c: where the saves are)
+    lib.hos_fs_save_root.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    lib.hos_fs_save_root.restype = ctypes.c_int
+    root = ctypes.create_string_buffer(2048)
+    assert lib.hos_fs_save_root(root, len(root)) == 1
+    lib.hos_fs_save_end()
+    assert root.value.decode().replace("\\", "/") == "%s/save/%s" % (save_dir, UID), root.value
+    f.unmount()
+    print("PASS (save dir): saves and work copies in the profile's saves/, none in the user folder%s; the bridge's root "
+          "follows" % (", HOS_SAVE_DIR ignored" if other else ""), flush=True)
+
+
+def save_dir_cases(libpath, tmp):
+    base = tmp / "profiles"
+    base.mkdir()
+    # ((profile or None, the folder the worker checks, want, HOS_SAVE_DIR or None))
+    cases = [(str(base / "two/"), str(base / "two/saves"), "ok", None),
+             (str(base / "three"), str(base / "three/saves"), "ok", str(base / "elsewhere")),
+             (None, str(base / "gone"), "none", str(base / "gone")),
+             ("profile", "profile/saves", "not a whole path", None)]
+    if os.geteuid() != 0:
+        locked = base / "locked"
+        locked.mkdir()
+        (base / "five/saves/save").mkdir(parents=True)
+        (base / "five/saves/save-work").mkdir()
+        (base / "five/saves/save").chmod(0o500)
+        cases += [(str(locked / "inner"), str(locked / "inner/saves"), "could not be made", None),
+                  (str(base / "five"), str(base / "five/saves"), "cannot write", None)]
+        locked.chmod(0o500)
+    try:
+        for i, (profile, saves, want, other) in enumerate(cases):
+            env = {k: v for k, v in os.environ.items() if k not in ("HOS_SAVE_DIR", "LONGSHOT_PROFILE")}
+            if profile is not None:
+                env["LONGSHOT_PROFILE"] = profile
+            if other is not None:
+                env["HOS_SAVE_DIR"] = other
+            user = tmp / ("user-%d-%s" % (i, want.replace(" ", "-")))
+            subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--save-dir-worker", str(libpath), str(user),
+                            saves.rstrip("/"), want], env=env, check=True)
+    finally:
+        if os.geteuid() != 0:
+            (base / "locked").chmod(0o700)
+            (base / "five/saves/save").chmod(0o700)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--worker", nargs=2, metavar=("LIB", "ROOT"))
+    parser.add_argument("--save-dir-worker", nargs=4, metavar=("LIB", "USER", "SAVE_DIR", "WANT"))
     parser.add_argument("--windows-worker", nargs=2, metavar=("LIB", "ROOT"))
     parser.add_argument("--cc", default=os.environ.get("CC", "gcc"))
     parser.add_argument("--source", type=Path, default=ROOT / "host/nn_fs.c")
@@ -894,6 +982,9 @@ def main():
     args = parser.parse_args()
     if args.worker:
         process_worker(*args.worker)
+        return
+    if args.save_dir_worker:
+        save_dir_worker(*args.save_dir_worker)
         return
     if args.windows_worker:
         libpath, root = args.windows_worker
@@ -920,8 +1011,8 @@ def main():
     if sys.platform not in ("linux", "win32"):
         print("SKIP: requires Windows or the Linux file layer")
         return
-    # (the build hooks the functions it finds as HLE(name) at the start of a line, nx2/standalone.py: one declared
-    #  through another macro is left to the game's own SDK code, which takes our handle for a pointer)
+    # (the build hooks the functions it finds as HLE(name) at the start of a line, builder/crates/lift whole/host.rs: one
+    #  declared through another macro is left to the game's own SDK code, which takes our handle for a pointer)
     hooked = set(re.findall(r"^HLE\((\w+)\)", args.source.read_text(encoding="utf-8"), re.M))
     for name in HOOKS:
         assert name in hooked, "not declared as HLE(%s) at the start of a line: the build would not hook it" % name
@@ -937,7 +1028,7 @@ def main():
             subprocess.run([args.cc, "-std=gnu11", "-shared", "-O1", "-Wall", "-Wextra", "-Wno-unused-parameter",
                             "-I", str(tmp), "-I", str(ROOT / "host"),
                             "-include", str(ROOT / "gpu/vk/compat/longshot_env.h"),
-                            str(args.source.resolve()), str(tmp / "stubs.c"),
+                            str(args.source.resolve()), str(tmp / "stubs.c"), *ROMFS,
                             "-Wl,--export-all-symbols", "-o", str(libpath)], check=True)
             # The owner handle is held to process exit, as in the game.
             subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()),
@@ -949,13 +1040,14 @@ def main():
                  "-include", str(ROOT / "gpu/vk/compat/longshot_env.h")]
         subprocess.run([args.cc, "-std=gnu11", "-fPIC", "-O1", "-Wall", "-Wextra", "-I", str(ROOT / "host/posix"),
                         "-c", str(ROOT / "host/posix/win32_posix.c"), "-o", str(tmp / "posix.o")], check=True)
-        subprocess.run(flags + [str(args.source.resolve()), str(tmp / "stubs.c"),
+        subprocess.run(flags + [str(args.source.resolve()), str(tmp / "stubs.c"), *ROMFS,
                                str(tmp / "posix.o"), "-Wl,--wrap=MoveFileExA", "-Wl,--wrap=DeleteFileA",
                                "-Wl,--wrap=pthread_rwlock_wrlock", "-Wl,--wrap=pthread_rwlock_rdlock", "-Wl,-Bsymbolic",
                                "-lpthread", "-ldl", "-o", str(libpath)], check=True)
         run_cases(ctypes.CDLL(str(libpath)), tmp, args.case)
         if args.case == "all":
             process_cases(libpath, tmp)
+            save_dir_cases(libpath, tmp)
     print("PASS: save commit HLE checks")
 
 

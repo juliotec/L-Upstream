@@ -1,0 +1,203 @@
+# The CI images (docs/dev/reference/ci.md, The CI images), checks and lite: the tools ci.yml's checks use, installed by
+# scripts/linux/ci_setup.sh's parts on Ubuntu 24.04 (scripts/linux/checks.Dockerfile's base, the same digest), pushed
+# to the forge's registry as git.magicbean.dev/magicbeandev/longshot-ci-<image>:<tag>, the tag a hash of the inputs
+# and the image's name (scripts/linux/ci_image.sh). ci.yml asks the registry for its commit's tags; until they are
+# there, its jobs install the tools themselves.
+#
+# Main only: on a push to main that changes the inputs, or by hand on main. A pull request never runs this file and never
+# pushes: its jobs in ci.yml install its own tools instead. An image in the registry is never replaced (its tag is its
+# inputs' hash, and a tag there is left as it is).
+#
+# The runners give a job no Docker, so the images are not built with `docker build`:
+# 1. build (the server's release runner, scripts/ci_release_runner.sh) runs the image's ci_setup.sh parts in a job
+#    container of the Dockerfile's base and keeps each part's folders (ci_setup.sh paths) as a layer of its own, in the
+#    parts' order, each made the same way every time (sorted, no times, no owners), so a part whose files didn't
+#    change is the same layer and a runner that has it pulls only the others; the layers are an artifact;
+# 2. push (deploy, which compiles and runs nothing of the checkout's) stacks those layers on the same base with crane
+#    (go-containerregistry's, pinned by SHA-256), sets the images' environment (ci_setup.sh env) and pushes with
+#    PACKAGES_TOKEN_SEALED, a write:package token the seal broker opens for main's runs only, through RELEASE_UPLOAD_API's
+#    host (Cloudflare cuts uploads at 100 MB). No game data is involved.
+name: CI image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/linux/checks.Dockerfile
+      - scripts/linux/ci_setup.sh
+      - scripts/linux/ci_image.sh
+      - scripts/ci_rust.sh
+      - scripts/fetch_commit.sh
+      - mise.toml
+      - mise.lock
+      - .pre-commit-config.yaml
+      - .forgejo/workflows/ci-image.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ci-image
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: The CI image's layers (${{ matrix.image }})
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        image: [checks, lite]
+    runs-on: release
+    # (the Dockerfile's FROM, the same digest: tests/test_checks_container.py)
+    container: ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+    timeout-minutes: 60
+    env:
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - name: git and curl
+        run: |
+          apt-get update -q
+          apt-get install -y -q --no-install-recommends git ca-certificates curl
+      # (no actions/checkout: the base has no Node until ci_setup.sh installs it)
+      - name: Check out main
+        env:
+          ORIGIN: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          git init -q .
+          git fetch -q --depth=1 "$ORIGIN" "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+      - name: The server's release runner
+        env:
+          SEAL_BROKER_PIN: ${{ vars.SEAL_BROKER_PIN }}
+        run: scripts/ci_release_runner.sh
+      - name: The tools
+        run: scripts/linux/ci_setup.sh --github-env --image "$IMAGE"
+      # (a layer a part, NN-<part>.tar.gz in the parts' order: the folders it installs into, the system part's but
+      # /usr/local/bin, which is tools'. Not the job's own mounts: the container's hosts files, the tool cache)
+      - name: The layers
+        run: |
+          set -euo pipefail
+          out=$RUNNER_TEMP/layers
+          mkdir -p "$out"
+          scripts/linux/ci_image.sh tag "$IMAGE" > "$out/tag"
+          i=0
+          for part in $(scripts/linux/ci_setup.sh parts "$IMAGE"); do
+            i=$((i + 1))
+            read -ra paths <<< "$(scripts/linux/ci_setup.sh paths "$part")"
+            exclude=()
+            [[ $part == tools ]] || exclude=(--exclude=./usr/local/bin)
+            tar -C / --one-file-system --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner "${exclude[@]}" \
+              --exclude=./etc/hostname --exclude=./etc/hosts --exclude=./etc/resolv.conf --exclude=./etc/ld.so.cache \
+              --exclude=./opt/hostedtoolcache --exclude=./var/lib/apt/lists \
+              -cf - "${paths[@]}" | gzip -n -6 > "$out/$(printf %02d "$i")-$part.tar.gz"
+          done
+          ls -l "$out"
+      # (through the server's own address, RELEASE_UPLOAD_API's host, not Cloudflare, which cut this upload with a 524
+      # (run 54505); when that fails or the variable is unset, the usual way)
+      - name: The server's own address, for the upload
+        id: direct
+        env:
+          UPLOAD_API: ${{ vars.RELEASE_UPLOAD_API }}
+        run: |
+          if [[ $UPLOAD_API == http*://*/api/v1* ]]; then
+            echo "url=${UPLOAD_API%%/api/v1*}/" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::no RELEASE_UPLOAD_API: the upload goes through the public address"
+          fi
+      - name: Upload ci-image-${{ matrix.image }}, through the server's own address
+        id: upload_direct
+        if: steps.direct.outputs.url != ''
+        continue-on-error: true
+        env:
+          ACTIONS_RESULTS_URL: ${{ steps.direct.outputs.url }}
+        uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e   # v4 (4.3.1 with the GHES check off; Forgejo's: GitHub's v4 and later refuse a server that is not github.com)
+        with:
+          name: ci-image-${{ matrix.image }}
+          path: ${{ runner.temp }}/layers
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Upload ci-image-${{ matrix.image }}
+        if: steps.direct.outputs.url == '' || steps.upload_direct.outcome == 'failure'
+        uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e   # v4 (4.3.1 with the GHES check off; Forgejo's: GitHub's v4 and later refuse a server that is not github.com)
+        with:
+          name: ci-image-${{ matrix.image }}
+          path: ${{ runner.temp }}/layers
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  push:
+    name: The CI image, pushed (${{ matrix.image }})
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        image: [checks, lite]
+    runs-on: deploy
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+    enable-openid-connect: true   # (the ID token the seal broker checks: this job only)
+    timeout-minutes: 60
+    env:
+      SEAL_BROKER_PIN: ${{ vars.SEAL_BROKER_PIN }}
+      UPLOAD_API: ${{ vars.RELEASE_UPLOAD_API }}
+      IMAGE: ${{ matrix.image }}
+      CRANE_URL: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
+      CRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
+    steps:
+      - name: Check out the commit
+        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download ci-image-${{ matrix.image }}
+        uses: https://data.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e   # v4 (4.1.4 with the GHES check off)
+        with:
+          name: ci-image-${{ matrix.image }}
+          path: ${{ runner.temp }}/layers
+      - name: crane
+        run: |
+          curl -fsSL --retry 5 --proto '=https' -o "$RUNNER_TEMP/crane.tar.gz" "$CRANE_URL"
+          echo "$CRANE_SHA256  $RUNNER_TEMP/crane.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/crane.tar.gz" -C "$RUNNER_TEMP" crane
+          "$RUNNER_TEMP/crane" version
+      - name: Push it
+        env:
+          SEALED: ${{ secrets.PACKAGES_TOKEN_SEALED }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          tag=$(cat "$RUNNER_TEMP/layers/tag")
+          [[ $tag =~ ^[0-9a-f]{16}$ ]] || { echo "::error::no tag from the build job: '$tag'"; exit 1; }
+          crane=("$RUNNER_TEMP/crane" --platform linux/amd64)
+          # (the registry as this runner reaches it without Cloudflare: RELEASE_UPLOAD_API's host; the image is the same
+          # package at git.magicbean.dev, where the jobs pull it)
+          api=${UPLOAD_API:-$SERVER/api/v1}
+          host=${api#*://}
+          host=${host%%/*}
+          if [[ $api == http://* ]]; then crane+=(--insecure); fi
+          repo=magicbeandev/longshot-ci-$IMAGE
+          public=${SERVER#*://}/$repo:$tag
+          ref=$host/$repo:$tag
+          if "${crane[@]}" manifest "$ref" > /dev/null 2>&1; then
+            echo "::notice::$public is in the registry already: left as it is"
+            exit 0
+          fi
+          token=$(printf '%s' "$SEALED" | scripts/ci_secret.sh unseal)
+          echo "::add-mask::$token"
+          # (the token's own user is the one that counts: the name is only for the login's form)
+          printf '%s' "$token" | "${crane[@]}" auth login "$host" -u ci-image --password-stdin
+          base=$(sed -n 's/^FROM \(ubuntu:[^ ]*\) AS base$/\1/p' scripts/linux/checks.Dockerfile)
+          envs=()
+          while IFS= read -r line; do envs+=(--env "$line"); done < <(scripts/linux/ci_setup.sh env)
+          # (the base with the images' environment first, then the layers on it as the tag itself: the tag only ever
+          # names the whole image)
+          "${crane[@]}" mutate "$base" "${envs[@]}" -t "$host/$repo:base-$tag"
+          layers=()
+          for f in "$RUNNER_TEMP"/layers/*.tar.gz; do layers+=(-f "$f"); done
+          "${crane[@]}" append -b "$host/$repo:base-$tag" "${layers[@]}" -t "$ref"
+          digest=$("${crane[@]}" digest "$ref")
+          echo "pushed $public@$digest"
+          echo "### CI image $IMAGE: \`$public@$digest\`" >> "$GITHUB_STEP_SUMMARY"

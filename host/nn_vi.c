@@ -2,6 +2,7 @@
    layer, and the display's vsync event, signaled at 60 Hz by a host thread. HDR and VRR are reported unsupported,
    so the game takes its SDR path. Frames are paced at the native NVN layer's window acquire (the end of this file). */
 #include "hos.h"
+#include "../game/game.h"   /* (the game's hooks: GAME_PHASE_ACQUIRE at the window acquire, hos_vi_native_acquire; the cheats each present) */
 #include "../gpu/vk/vk_api.h"   /* (HOS_OPT_HDR_*, HOS_OPT_CAMERA_SPEED: the Insert menu's HDR and Camera speed, answered by the renderer) */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -236,7 +237,23 @@ int hos_vi_native_interval(Ctx *c, int requested) {
    that behaviour */
 static int64_t shown_at[16];
 static volatile LONG64 shown_count;
+/* (longshot) The frame phase GAME_PHASE_ACQUIRE (game/phases.h) runs first, on the game's main thread, once a game frame
+   in every state, with the frame's number (the acquisitions before it). Here because:
+   - the main thread acquires a window texture once a frame in play, menus, pause, loading and movies alike, and
+     this host code is the first the acquire runs;
+   - it is outside the game's locks, as far as is known: the console blocks right here until a texture is free, which is
+     why the pacing below sleeps here and not in the present (nvn_native.c's nvnWindowAcquireTexture: the game presents
+     with locks held), and the pacing has slept here for up to a frame on every frame since. Not proven for every lock: a
+     Tracy capture of play, pause, a load and a movie would show a worker waiting on the main thread across it;
+   - before the HOS_NO_PACING and first-frame returns, so it runs paced or not, and before the sleep, whose end it does not
+     move: the time callbacks take comes out of the frame's wait (`until` comes from next_frame_at and shown_at, which only
+     hos_vi_native_presented writes, on this same thread, so a callback cannot move it; `now` is read after them);
+   - nvnWindowAcquireTexture has given the thread's virtual core up around this function, so a callback leaves the core to
+     the game's workers meanwhile; one that calls into the game goes through game_call, which takes a core back first.
+   With nothing added it costs one relaxed load. */
 void hos_vi_native_acquire(int active) {
+    static uint64_t acquired;   /* (the main thread's alone) */
+    game_phase_run(GAME_PHASE_ACQUIRE, acquired++);
     static int no_pacing = -1, double_buffered = -1;
     if (no_pacing < 0) no_pacing = env_on("HOS_NO_PACING");
     if (double_buffered < 0) double_buffered = env_on("HOS_VI_DOUBLE");
@@ -302,33 +319,34 @@ static void scan_dt(long long presents) {
    1/15 s, as TotK Recomp's frame_rate.c (slower frames slow the game down, as on the console), at least 1/60 s (the game's
    own limit holds it at 60). HOS_REALTIME_STEP=0: the shipping whole steps. */
 extern volatile uint64_t hos_gfx_module;
-volatile int hos_fixed_resolution = 0;   /* (the lifted code reads these: nx2/oot_patches.py) */
+volatile int hos_fixed_resolution = 0;   /* (the hook sites dynres.* and render.fixedScale* read these: game/oot_sites.c) */
 volatile uint32_t hos_fixed_scale_bits = 0x3f800000;   /* (HOS_RES_SCALE: the fixed path's scale) */
 volatile int hos_dynres_runs = 0;   /* (the dynamic path's frames: it fills fields the 3D reads, +8 +16 +168) */
-volatile float hos_text_scale = 1.0f;   /* (the letters' clock of a text pane, f_80b1e140: nx2/oot_patches.py) */
+volatile float hos_text_scale = 1.0f;   /* (the letters' clock of a text pane, f_80b1e140: game/oot_text_step.c) */
 /* The Insert menu's Text speed (0 Normal, 1 2x, 2 4x, 3 Instant), HOS_TEXT_SPEED=<0..3> over it: what the time of a letter
    animation's step is multiplied by. Instant: the page at once, as the game's own skip on A */
 static float text_scale(const char *env, int menu) {
     const int v = env && *env ? atoi(env) : menu;
     return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f;
 }
-volatile float hos_camera_scale = 1.0f;   /* (the right stick's camera turn speeds, f_80643f10 and three more: nx2/oot_patches.py) */
+volatile float hos_camera_scale = 1.0f;   /* (the right stick's camera turn speeds, f_80643f10 and three more: the camera.*Speed sites, game/oot_sites.c) */
 /* The Insert menu's Camera speed, in percent of the game's own turn speed (50 to 400; anything else, as without the Vulkan
    renderer's menu: the game's): what the turn speeds are multiplied by. Even the fastest of the game's own camera speeds turned
    slowly for players; it still picks the speed this multiplies */
 static float camera_scale(int percent) {
     return (percent >= 50 && percent <= 400 ? percent : 100) / 100.0f;
 }
-volatile int hos_scene_rgba16f = 0;   /* (the scene buffer RGBA16F, not R11G11B10F, f_80672260: nx2/oot_patches.py; HDR set to
+volatile int hos_scene_rgba16f = 0;   /* (the scene buffer RGBA16F, not R11G11B10F, f_80672260: the hook site render.sceneFormat; HDR set to
                                          Native with the PsychoV35 tone mapper: the temporal upscalers take only
                                          R11G11B10F, so Vanilla keeps it) */
 volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code when the frame-time hook is in this build; its
-                                            +0xd58 is the game clock in 1/60 s: nx2/oot_patches.py) */
-volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
+                                            +0xd58 is the game clock in 1/60 s: the site frame.stepProbe, game/sites.def) */
+volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step; the
+                                                   value frame.seconds the frame.stepDivide and frame.globalStepDivide sites' inline rules read) */
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
    that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock
    as the movie's picture does (otherwise the narration runs ahead above 60 fps). 1, the game's own step, otherwise, and with
-   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (nx2/oot_patches.py).
+   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (the hook site movie.frameCount).
    The step is more than 1 when a frame takes longer than a 60th (up to 4, realtime_step's longest), and the count then passes
    values over. The timeline does not need each one: it fires the events whose time lies between its last frame and the new one,
    walking a list sorted by time (f_8124cfc0, which the in-engine timelines run with a rate times the time step). Measured at 36
@@ -392,7 +410,7 @@ static int carry_fractions(void) {
     const int rate = __atomic_load_n((const int *)GP(mod + 0x2c8), __ATOMIC_RELAXED);
     return rate >= 15 && rate <= 60 && 60 % rate != 0;
 }
-/* (nx2/oot_patches.py patch_whole_frames) the whole frames a game counter at `at` takes for an amount of the frame step (its
+/* (the hook sites frame.whole*, game/oot_sites.c) the whole frames a game counter at `at` takes for an amount of the frame step (its
    float's bits): with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
 #include "frame_whole.h"
 static FrameWhole frame_whole_state;
@@ -431,7 +449,7 @@ uint32_t hos_frame_whole_times(uint64_t at, uint32_t amount_bits, uint32_t times
     ReleaseSRWLockExclusive(&frame_whole_lock);
     return whole;
 }
-/* (nx2/oot_patches.py patch_loop_steps, patch_loop_pose) the step of an animation entry's clock, and the time a skeleton is drawn at,
+/* (the hook sites anim.loop*, game/oot_sites.c) the step of an animation entry's clock, and the time a skeleton is drawn at,
    for a loop of one frame or less while the frames' own time is the step: whole frames, and the loop's start (host/loop_step.h,
    the frozen Zoras would twitch above a 60 cap), and at a cap of 60 while the step is not a whole frame (carry_fractions).
    Anything else, and a whole step, as the game has it. */
@@ -449,7 +467,7 @@ uint32_t hos_loop_step(uint64_t at, uint32_t step_bits, uint32_t start_bits, uin
 uint32_t hos_loop_pose(uint32_t time_bits, uint32_t start_bits, uint32_t end_bits) {
     return loop_pose(time_bits, start_bits, end_bits, carry_fractions());
 }
-volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
+volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: the site render.fixedScaleFlags) */
 /* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
    step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.
    Keep at most four nominal frames of debt so unpaced fast presents cannot leave a long recovery. Steps beyond
@@ -588,7 +606,7 @@ static void realtime_step(int64_t now) {
     for (unsigned i = 0; i < count; i++) sum += samples[i];
     /* (longshot) A cap above 60: the engine's own rate is 60 / <whole display intervals>, and its controller puts 60 back over a
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
-       The step is then the frames' own time at the two places the engine makes it (nx2/oot_patches.py, hos_frame_seconds_bits):
+       The step is then the frames' own time at the two places the engine makes it (the hook sites frame.stepDivide and frame.globalStepDivide, hos_frame_seconds_bits):
        this same average, at most 1/15 s as below and at least 1/240 s (a 1000th uncapped: a shorter frame stepped a 240th ran the
        game fast), and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
@@ -677,8 +695,7 @@ void hos_vi_native_presented(const int64_t phases[4]) {
     }
     const int64_t n = InterlockedIncrement64(&presents);
     present_trace(n, now, phases);
-    {   /* (hookshot) the mods' cheats that are on, once a presented frame (host/cheats.c) */
-        void hos_cheats_frame(void);
+    {   /* (hookshot) the mods' cheats that are on, once a presented frame (game/cheats.c) */
         hos_cheats_frame();
     }
     {   /* HOS_MKW_INTERVAL=<0|1|2>: the interval MKW's pacer is held at, through its own override (+0x210, any

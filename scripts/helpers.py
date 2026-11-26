@@ -1,8 +1,8 @@
 """What the build, SDK and third-party scripts share: the checkout's root, SHA-256 of a file, pinned downloads, archives
-(read, unpacked, written deterministically), atomic writes and subprocesses that stop with a clear message. Python's
+(read and unpacked), atomic writes and subprocesses that stop with a clear message. Python's
 standard library only.
 
-tools.py, fetch.py, renhdrum.py, check_third_party.py, builder_package.py and shaders.py import it. python -I leaves
+fetch.py, renhdrum.py, check_third_party.py, longshot_builder.py and shaders.py import it. python -I leaves
 scripts/ off sys.path, so each puts its own folder there first. (The release tool, release.py, lives in MagicBeanDev/Tooling
 and does not import it.)
 """
@@ -15,7 +15,6 @@ import urllib.request
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ZIP_DATE = (2026, 1, 1, 0, 0, 0)   # (every member's date: the same files give the same zip)
 
 
 def sha256_file(path):
@@ -103,32 +102,6 @@ def extract(archive, folder):
         t.extractall(folder, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
 
 
-def walk_files(folder):
-    """[(path relative to folder with /, full path)] of every file under folder"""
-    return [(os.path.relpath(os.path.join(d, n), folder).replace(os.sep, "/"), os.path.join(d, n))
-            for d, _, names in os.walk(folder) for n in names]
-
-
-def write_zip(path, entries, modes=None):
-    """entries {name: bytes, or a file's path} as a deterministic zip at path (through path.new): sorted, ZIP_DATE,
-    deflated at level 6, each member 0644, or, with modes {name: st_mode}, a Unix member with its own mode (a link's
-    bytes are its target). Returns (SHA-256, size)"""
-    with zipfile.ZipFile(path + ".new", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        for name in sorted(entries):
-            info = zipfile.ZipInfo(name, date_time=ZIP_DATE)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            if modes:
-                info.create_system = 3
-            info.external_attr = (modes[name] if modes else 0o644) << 16
-            data = entries[name]
-            if not isinstance(data, bytes):
-                with open(data, "rb") as f:
-                    data = f.read()
-            z.writestr(info, data, compresslevel=6)
-    os.replace(path + ".new", path)
-    return sha256_file(path), os.path.getsize(path)
-
-
 def write_text(path, text):
     """text into path as UTF-8 with \\n line ends, through path.new: never a half-written file"""
     with open(path + ".new", "w", encoding="utf-8", newline="\n") as f:
@@ -150,6 +123,13 @@ def run(cmd, what=None, cwd=None):
     return r.stdout.decode("utf-8", "replace")
 
 
-def git_files(*paths, root=ROOT):
-    """The files git tracks under paths, relative to root with /"""
-    return [f for f in run(["git", "ls-files", "-z", "--", *paths], "git ls-files", cwd=root).split("\0") if f]
+def through_link(folder, rel):
+    """The first folder of rel (a relative path with /, under folder) that is a symbolic link already there, or None.
+    An unpacker writes nothing whose path goes through a link it wrote (a/b -> .., then a/b/c -> .. escapes), nor over
+    a path that is there already (a link there would be written through)"""
+    parts = rel.split("/")
+    for i in range(1, len(parts) + 1):
+        p = os.path.join(folder, *parts[:i])
+        if os.path.islink(p):
+            return "/".join(parts[:i])
+    return None

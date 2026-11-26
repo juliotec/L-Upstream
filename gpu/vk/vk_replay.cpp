@@ -524,7 +524,7 @@ void fo_collect(const Recording& r, const uint64_t* t);
 int rec_mc_mode[kRecordings];
 int64_t st_gpu_mc_ns[3], st_mc_frames[3];
 bool ab_running() {
-    return host->version >= 34 && host->ab_frame && host->now_ns && host->ab_frame(0, host->now_ns()) >= 0;
+    return host->ab_frame && host->now_ns && host->ab_frame(0, host->now_ns()) >= 0;
 }
 void gpu_time_collect(Recording& r) {
     if (!ts_pool || !ts_pending[r.slot]) return fo_collect(r, nullptr);
@@ -4975,7 +4975,7 @@ void status_tick() {
         // -1 none, 0 or 1, 2 or 3 in a transition; scripts/perf.py ab)
         static int64_t l_at;
         const int64_t at = host->now_ns ? host->now_ns() : 0;
-        const int ab_side = host->version >= 34 && host->ab_frame ? host->ab_frame(l_at, at) : -1;
+        const int ab_side = host->ab_frame ? host->ab_frame(l_at, at) : -1;
         static int64_t l_sp[8];   // (TEST, local: the texture steps' times, vk_texture.cpp step_ns)
         int64_t sp[8];
         texture_step_times(sp);
@@ -5851,7 +5851,7 @@ void do_present(const nvn_tex* t, const int crop[4], uint64_t native_generation 
 bool output_preview_request(uint32_t width, uint32_t height) {
     std::lock_guard settings(menu_mu);
     if (opts.hdr || opts.reflex || opts.dlss || framegen_on()) return false;
-    if (host->version < 41 || !host->output_preview_request || !output_preview_path.load(std::memory_order_acquire)) return false;
+    if (!host->output_preview_request || !output_preview_path.load(std::memory_order_acquire)) return false;
     std::lock_guard lk(output_trial_mu);
     if (output_trial.request.generation || TrialClock::now() < output_preview_queued_until) return false;
     if (!host->output_preview_request(width, height)) return false;
@@ -8249,7 +8249,7 @@ bool replay_start() {
     return true;
 }
 
-/// (longshot) The host's camera jitter (nx2/oot_jitter.py, host/rx_backend.c): the scene's size while a temporal upscaler
+/// (longshot) The host's camera jitter (the hook sites jitter.view*, host/rx_backend.c): the scene's size while a temporal upscaler
 /// draws, NVIDIA DLSS or AMD FSR 4 (vk_temporal.cpp) or AMD FSR 3.1 (vk_fsr3_inputs.cpp), whichever it is (one at a time: the
 /// Upscaler row); 0, no jitter, otherwise
 void jitter_sample(MkwVkJitter* out) {
@@ -8279,6 +8279,9 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_register_texture = register_texture_queued;
     t.nvn_event_signal = event_signal_queued;
     t.option = [](int id) -> int {   // (3: the fixed path's scale in 1/10000, vk_menu.cpp; DLAA: full scale, vk_dlss.cpp)
+        // (the game's rows, game/menu/: Field of view, Text speed and size, Skip title screen, Skip opening, Discord status,
+        // Ultrawide menus, by their option ids; a Toggle's 0 or 1)
+        if (int v; menu_game_option(id, &v)) return v;
         if (id == 11) return opts.stick_dead_zone;
         if (id == HOS_OPT_WALK_MODE) return opts.walk_mode;
         if (id == HOS_OPT_WALK_SPEED) return opts.walk_speed;
@@ -8291,28 +8294,22 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_HDR_TONEMAP) return scene_tonemap_on();
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
         if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
-        if (id == HOS_OPT_DISCORD) return opts.discord != 0;
         if (id == HOS_OPT_VOLUME) return opts.volume;
         if (id == HOS_OPT_AUDIO_OUTPUT) return opts.audio_output;
         if (id == HOS_OPT_MUTE_BACKGROUND) return opts.mute_background;
         if (id == HOS_OPT_DISABLE_CAMERA_CENTERING) return opts.disable_camera_centering;
         if (id == HOS_OPT_SPRINT) return opts.sprint;
         if (id == HOS_OPT_SPRINT_TOGGLE)
-            return host && host->version >= 40 && host->binding ? host->binding(HOS_BIND_SPRINT_TOGGLE, 0, 0) : 0;
-        if (id == HOS_OPT_TEXT_SIZE) return opts.text_size;
+            return host && host->binding ? host->binding(HOS_BIND_SPRINT_TOGGLE, 0, 0) : 0;
         if (id == HOS_OPT_CAMERA_SPEED) return opts.camera_speed;
         if (id == HOS_OPT_PROMPTS) return opts.prompts;
-        if (id == HOS_OPT_FOV) return opts.fov;
         if (id == HOS_OPT_TRANSITION_AUTOSAVE) return menu_transition_autosave();
         if (id == HOS_OPT_SHADOW_RES) return menu_shadow_res();
         if (id == HOS_OPT_DAMAGE_TAKEN) return menu_damage_taken();
-        if (id == HOS_OPT_SKIP_OPENING) return opts.skip_opening;
         if (id == HOS_OPT_FPS_CAP) return opts.fps_cap;
         if (id == HOS_OPT_HOLD_TOGGLE) return opts.hold_toggle;
         if (id == HOS_OPT_MOUSE_INVERT_X) return opts.mouse_invert_x;
         if (id >= HOS_OPT_HUD_LAYOUT && id <= HOS_OPT_HUD_MINIMAP) return menu_hud_option(id);
-        if (id == HOS_OPT_WIDE_MENUS) return opts.wide_menus;
-        if (id == HOS_OPT_SKIP_TITLE) return opts.skip_title != 0;
         if (id == HOS_OPT_PAD_SPEAKER_VOLUME) return opts.pad_speaker_volume;
         if (id == HOS_OPT_PAD_SPEAKER_SYNC) return opts.pad_speaker_sync;
         if (id == HOS_OPT_PAD_SPEAKER_HEADPHONES) return opts.pad_speaker_headphones;
@@ -8327,7 +8324,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_VIBRATION) return opts.vibration;
         if (id == HOS_OPT_DS_HD_HAPTICS) return opts.ds_hd_haptics;
         if (id == HOS_OPT_VIBRATION_STATUS) return menu_vibration_status_option();
-        return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
+        return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) : 0;
     };

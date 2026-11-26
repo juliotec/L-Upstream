@@ -3,7 +3,7 @@
 Windows samples name longshot.exe / longshot_vk.dll, read through the linker maps; Linux samples name longshot /
 longshot_vk.so, read through the binaries' own symbols (nm). Before, the Linux names were unknown: the threads reader
 counted every Linux thread as never running (0.0%) and named nothing. A small position-independent executable called
-longshot prints its functions' offsets from its load address, as a sample has them; perf.py threads and hotlist must
+longshot prints its functions' offsets from its load address, as a sample has them; perf.py threads must
 name and count them. A synthetic linker map checks the Windows path. The ELF part needs a C compiler and nm (skipped without them).
 python -I -B tests/test_prof_symbols.py [--cc gcc]
 """
@@ -61,9 +61,6 @@ def windows_map(tmp):
     samples.write_text("".join("%d sead::MainThread|longshot.exe+1010;longshot.exe+1110\n" % (2 * i) for i in range(1, 6)))
     out = run("threads", [str(samples)], maps)
     check("100.0%  sead::MainThread" in out, "threads: the Windows main thread runs in every sample\n" + out)
-    hot = tmp / "win_hot.txt"
-    run("hotlist", [str(samples), str(hot)], maps)
-    check(hot.read_text().split()[0] == "f_80002000", "hotlist: the innermost lifted function from the map, first")
 
 
 def linux_elf(tmp, cc):
@@ -89,9 +86,6 @@ def linux_elf(tmp, cc):
     out = run("threads", [str(samples)], maps)
     check("100.0%  sead::MainThread" in out, "threads: a Linux thread in longshot is running\n" + out)
     check("0.0%  Presentation_Thread" in out, "threads: a Linux thread in libc is blocked\n" + out)
-    hot = tmp / "linux_hot.txt"
-    run("hotlist", [str(samples), str(hot)], maps)
-    check(hot.read_text().split()[0] == "f_80001000", "hotlist: the lifted function named from the ELF symbols, first")
     sys.path.insert(0, str(SCRIPTS))
     from profiling import symbols
     addrs, names = symbols.load_symbols(str(maps))["longshot"]

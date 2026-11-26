@@ -1,0 +1,26 @@
+[package]
+name = "ui"
+description = "The builder's windows under --output user: a build's progress, an error, the crash window, the first run's .nup picker (Slint: winit and the software renderer only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crash.workspace = true
+# (only the winit back end and the software renderer: no Qt, no FemtoVG or Skia, no GPU; X11 and Wayland are loaded at
+# run time by winit, not linked)
+slint = { workspace = true }
+# (the system's file chooser: Windows' own; on Linux the XDG desktop portal, zenity when there is none; no GTK)
+rfd = { workspace = true }
+
+# (Slint's fonts (fontique) ask fontconfig for the system's fonts: opened at run time, not linked, so the builder loads
+# glibc's libraries only; without fontconfig the windows draw with their own embedded Inter and Noto Sans Black)
+[target.'cfg(target_os = "linux")'.dependencies]
+fontique = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
+
+[lints]
+workspace = true

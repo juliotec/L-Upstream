@@ -14,7 +14,7 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
-from menu_model_fixture import menu_text, output_engine  # noqa: E402
+from menu_model_fixture import game_row, menu_text, output_engine  # noqa: E402
 
 
 def definition(text, name):
@@ -57,9 +57,23 @@ def fixture(source):
                            and member not in preset_rows and values == {str(defaults[member])})
     auto_members = sorted(set(sets) & names.keys() - set(reset_members))
     members = list(dict.fromkeys(["ultrawide", "output_res", "resolution", "dlss", *auto_members, *reset_members, *preset_rows,
-                                 "framegen_by", "game_lang", "dlss_model", "gpu_device", "mic", "fov"]))
+                                 "framegen_by", "game_lang", "dlss_model", "gpu_device", "mic"] +
+                                 (["fov"] if "fov" in names else [])))
     rows = "\n".join('    {TAB_GRAPHICS, "%s", &opts.%s, 0, 100, 1, %s, nullptr},' %
                      (names[member], member, text_functions.get(member, "tx_number")) for member in members)
+    # (Field of view: the game's row now, game/menu/rows.c, its value kept apart from opts and its default its own
+    # (vk_menu.cpp menu_game_row); in an older checkout, opts.fov)
+    fov = "game_fov" if "fov" not in names else "opts.fov"
+    if fov == "game_fov":
+        g = game_row("field_of_view", source)
+        rows += '\n    {TAB_GAMEPLAY, %s, &game_fov, %s, %s, %s, tx_number, nullptr},' % (g["label"], g["lo"], g["hi"], g["step"])
+        game_stand_in = (r'''
+int game_fov = 100;   // (the game's Field of view row's value, as gpu/vk/menu/game_rows.cpp keeps it)
+GameMenuRow game_fov_row{};
+const GameMenuRow* menu_game_row(const int* value) { return value == &game_fov ? &game_fov_row : nullptr; }
+''', "game_fov_row.default_value = %s; game_fov = %s;" % (g["default_value"], g["default_value"]), " && game_fov == fov_before")
+    else:
+        game_stand_in = ("", "", "")
     formatter = definition(menu, "std::string changed_rows_text")
     modern = "std::string&" in formatter.split("{")[0]
     policy = definition(menu, "bool report_default_depends_on_pc") if modern else ""
@@ -97,12 +111,13 @@ def fixture(source):
 #include "host/hos_wide_size.h"
 #include "gpu/vk/display_modes.h"
 #include "gpu/vk/upscaler_rows.h"
+#include "game/game.h"   // (GameMenuRow: the game's rows' defaults, changed_rows_text)
 namespace mkwvk::menu { struct Setting; }   // (Row.setting: a module's row, #1633)
 using namespace mkwvk;
 namespace ur = upscaler_rows;
 ''' + options + r'''
 Options opts;
-''' + auto_for + r'''
+''' + game_stand_in[0] + auto_for + r'''
 namespace mkwvk::i18n {
 int lang_saved; // language.txt's language, as the stand-in reads it
 int game_lang_index() { return lang_saved; }
@@ -148,6 +163,7 @@ int main(int argc, char** argv) {
     if (which == "output-context" || which == "aspect-changed-wide") screen_w = 3440, screen_h = 1440;
     if (which == "reordered-shapes") screen_w = 1280, screen_h = 1024;
     opts = Options{};
+    ''' + game_stand_in[1] + r'''
     outputs_sync(); // the real startup conversion, not a guessed display-list index
     // subject: a row whose default depends on this PC; at_default: rows at their known defaults, in neither list;
     // known: the lines a row away from its known default gives, among the changes
@@ -200,16 +216,17 @@ int main(int argc, char** argv) {
         opts.output_res = parse_output("1920x1080"); opts.upscale = 2;
         opts.sharpness = 50; opts.pace = 1; opts.handheld = 0;
     } else if (which == "stable-sentinels") {
-        opts.gpu_device = 1; opts.mic = 2; opts.fov = 110;
+        opts.gpu_device = 1; opts.mic = 2; ''' + fov + r''' = 110;
     } else if (which == "model-env" || which == "model-fixed") {
         opts.dlss_model = 1;
     } else if (which == "model-small-card") {
         vram = 6ull << 30; // (the K row draws CNN preset E under 7 GB: upscaler_rows.h cnn_for_vram)
     } else return 2;
     const Options before = opts;
+    [[maybe_unused]] const int fov_before = ''' + fov + r''';
     std::string pc;
     const std::string changed = ''' + call + r''';
-    CHECK(''' + unchanged + r''', "report mutated live options");
+    CHECK(''' + unchanged + game_stand_in[2] + r''', "report mutated live options");
     if (!subject.empty()) {
         CHECK(changed.find(subject + ": ") == std::string::npos, "context-dependent row falsely called changed");
         CHECK(pc.find(subject + ": " + expected_current + " (default depends on this PC") != std::string::npos,

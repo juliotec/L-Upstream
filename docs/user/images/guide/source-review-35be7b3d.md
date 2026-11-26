@@ -11,9 +11,9 @@ capture conditions are unchanged.
 | `gpu/render/rx_nvn.h` | The C11/C++ static-assert macro (`NVN_STATIC_ASSERT`). Internal to the renderer headers; no menu row. |
 | `gpu/vk/device_policy.h` | The ASTC-to-BC small-run policy (`bc_small_runs`) for RADV and NVIDIA's driver. Device policy, no menu row. |
 | `gpu/vk/menu/reshade.cpp` | A help line for **Rescan ReShade presets**, on the Post-processing section below this Graphics view. |
-| `gpu/vk/menu/sprint.cpp` | Sprint's comment now names `host/oot_sprint.c`; the row is on the Controls tab, not Graphics. |
+| `gpu/vk/menu/sprint.cpp` | Sprint's comment now names `game/oot_sprint.c`; the row is on the Controls tab, not Graphics. |
 | `gpu/vk/menu_i18n.h` | Translations for the Output resolution preview, Sprint's Toggle and the default Toggle. The fixture is English; the pictured Graphics labels, values and help are unchanged. |
-| `gpu/vk/vk_api.h` | Comment-only updates naming `host/oot_sprint.c`; no ABI, option or row change. |
+| `gpu/vk/vk_api.h` | Comment-only updates naming `game/oot_sprint.c`; no ABI, option or row change. |
 | `gpu/vk/vk_internal.h` | An `import_stats_log` declaration. Internal to the renderer; no menu row. |
 | `gpu/vk/vk_menu.cpp` | Adds the **Simulated turf** page and its `TAB_SIM_TURF` plumbing, `options_version=7`, and Sprint's default Toggle. The Simulated turf row is below this first unscrolled Graphics view; the top tab strip, Quality preset, Resolution and upscaling, Frame generation and latency, and Screen rows are unchanged. |
 | `gpu/vk/vk_menu.h` | Sprint's comment and its default Toggle; no pictured Graphics default changes. |

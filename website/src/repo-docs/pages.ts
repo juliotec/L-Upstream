@@ -8,7 +8,7 @@ import { contentPages, pageForSource } from '../content-pages.ts';
 import { editUrl, siteUrl, sourceUrl } from '../site.ts';
 import { repositoryAssets } from './assets.ts';
 import { formatInstallHub } from './format-install.ts';
-import { formatGraphicsSettings, MODULES_MARKER } from './graphics-settings.ts';
+import { formatGraphicsSettings, GAME_ROWS_MARKER, MODULES_MARKER } from './graphics-settings.ts';
 import { formatCommonIssues } from './format-common-issues.ts';
 
 // Astro runs from website/; the documents are in the repository around it.
@@ -22,7 +22,8 @@ const publicAssets = repositoryAssets;
 // (the Insert menu: vk_menu.cpp and its feature modules, gpu/vk/menu/*.cpp)
 const menuModules = readdirSync(repoFile('gpu/vk/menu')).filter(name => name.endsWith('.cpp')).sort()
   .map(name => `gpu/vk/menu/${name}`);
-export const sourceFiles = [...new Set([...Object.values(contentPages), 'gpu/vk/vk_menu.cpp', ...menuModules])].map(repoFile);
+const gameMenu = 'game/menu/rows.c';
+export const sourceFiles = [...new Set([...Object.values(contentPages), 'gpu/vk/vk_menu.cpp', ...menuModules, gameMenu])].map(repoFile);
 export function isSourceFile(file: string): boolean {
   return sourceFiles.includes(path.resolve(file));
 }
@@ -62,8 +63,9 @@ export async function renderPage(slug: string): Promise<RepoPage> {
   if (source === 'docs/user/saves.md') text = '\n<div class="save-transfer-guide">\n\n' + text.trim() + '\n\n</div>\n';
   if (source === 'docs/user/graphics-and-controls.md') {
     const modules = await Promise.all(menuModules.map(file => readFile(repoFile(file), 'utf8')));
-    text = await formatGraphicsSettings(text, await readFile(repoFile('gpu/vk/vk_menu.cpp'), 'utf8') + MODULES_MARKER + modules.join('\n'),
-      await createMarkdownProcessor());
+    const menu = await readFile(repoFile('gpu/vk/vk_menu.cpp'), 'utf8') + MODULES_MARKER + modules.join('\n') +
+      GAME_ROWS_MARKER + await readFile(repoFile(gameMenu), 'utf8');
+    text = await formatGraphicsSettings(text, menu, await createMarkdownProcessor());
   }
   return { title, markdown: text, editUrl: editUrl(source),
     ...(source === 'docs/user/common-issues.md' ? { tableOfContents: false as const } : {}) };

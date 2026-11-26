@@ -87,7 +87,7 @@ void hos_thread_adopt_guest(HosThread *t) {
 int hos_thread_prio(HosThread *t) { return t->priority; }
 
 int hos_trace;
-extern const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/hos_image.c */
+extern const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/image.c */
 static _Thread_local HosThread *cur;
 static SRWLOCK threads_lock = SRWLOCK_INIT;
 static HosThread *threads[1024];
@@ -685,6 +685,7 @@ void hos_thread_destroy(HosThread *t) {
     ReleaseSRWLockExclusive(&threads_lock);
     if (t->handle) CloseHandle(t->handle);
     if (t->wake) CloseHandle(t->wake);
+    hos_setjmp_forget(&t->ctx);
     free(t);
 }
 
@@ -1722,13 +1723,6 @@ static void fiber_switch(Ctx *from, HosFiber *to) {
 #ifdef TRACY_ENABLE
     /* (the zones from here on are the fiber's, or the thread's own again: a fiber's open zones follow it to the thread
        that runs it next, and Tracy checks each one's begins and ends by itself) */
-    {
-        extern _Thread_local int hos_tracy_calls_open;
-        static volatile LONG told;
-        if (hos_tracy_calls_open && InterlockedIncrement(&told) <= 5)
-            hos_log("tracy: a fiber switch (to %s) with %d game call zones open on %s", to ? to->tracy_name : "the thread's own",
-                    hos_tracy_calls_open, t->name);
-    }
     if (to) HT_FIBER_ENTER(to->tracy_name);
     else HT_FIBER_LEAVE();
 #endif
@@ -1751,6 +1745,7 @@ HLE(_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi) {
     } else if (f->host) {
         DeleteFiber(f->host);
     }
+    hos_setjmp_forget(&f->ctx);   /* (a fiber set up again: its setjmp slots were the old one's) */
     memset(&f->ctx, 0, sizeof f->ctx);
     f->fn = ARG(1), f->arg = ARG(2), f->stack = ARG(3), f->size = ARG(4);
     f->started = f->done = 0;
@@ -1765,7 +1760,7 @@ HLE(_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi) {
 
 HLE(_ZN2nn2os13FinalizeFiberEPNS0_9FiberTypeE) {
     HosFiber *f = fiber_of_ft(ARG(0));
-    if (f && f->host && &f->ctx != c) { DeleteFiber(f->host); f->host = NULL; f->done = 1; }
+    if (f && f->host && &f->ctx != c) { DeleteFiber(f->host); f->host = NULL; f->done = 1; hos_setjmp_forget(&f->ctx); }
 }
 
 HLE(_ZN2nn2os15GetCurrentFiberEv) {
@@ -2219,6 +2214,19 @@ void hos_vcore_back(void) {
     if (t->away_at) t->blocked_total += hos_now_ns() - t->away_at, t->away_at = 0;
     if (!t->vc_held) vc_acquire(t);
 }
+/* (host/game_call.c game_call) 1 when the calling thread may run guest code as it stands: virtual cores off, not a guest
+   thread, it holds a core, or it runs without one since an escape (until its next block); 0 when it gave its core up
+   (from hos_vcore_away to hos_vcore_back) and is to take one back before any guest code */
+int hos_vcore_held(void) {
+    HosThread *t = cur;
+    return !hos_vcores_on() || !t || t->vc_held || t->vc_escaped;
+}
+/* (host/game_call.c game_call) 1 while another thread asks the calling one to give its core up (vc_acquire's kick, which
+   also sets the context's poll): a call that puts the context back keeps the poll set while the ask stands */
+int hos_vcore_kicked(void) {
+    HosThread *t = cur;
+    return t && __atomic_load_n(&t->vc_kick, __ATOMIC_RELAXED) != 0;
+}
 /* Lifted code calls this from its interrupt polls with the loop's guest registers still in host registers (a64_poll_cur,
    mkw_glue.c: the poll hands over no context, so the compiler need not spill them). It, and everything it calls, must never
    read or write the thread's guest context (Ctx) or run guest code: what it would see there may be older than the loop. A
@@ -2255,6 +2263,8 @@ int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
 int hos_vcores_on(void) { return 0; }
 int hos_vcore_away(void) { return 0; }
 void hos_vcore_back(void) {}
+int hos_vcore_held(void) { return 1; }
+int hos_vcore_kicked(void) { return 0; }
 void hos_vcore_checkpoint(void) {}
 void hos_vcore_yield(void) {}
 int hos_cv_sleep(void *cv, void *lk, unsigned ms) {

@@ -32,7 +32,6 @@ PACKS_SOURCE = ROOT / "scripts" / "devtools" / "packs.py"
 def packs_main(argv):
     """`dev.py packs ARGV`"""
     return dev.main(["packs"] + list(argv))
-make_game = load("make_game_under_test", ROOT / "nx2" / "make_game.py")
 
 
 def check(what, ok):
@@ -47,52 +46,33 @@ def write(p, data=b"x"):
 
 def test_route():
     r = packs.route
-    check("the replay alone builds the renderer alone", r(["gpu/vk/vk_replay.cpp", "tests/test_x.py"]) == "renderer")
-    check("the recompiler builds the renderer alone", r(["gpu/vk/eden/shader_recompiler/ir_opt/x.cpp"]) == "renderer")
-    check("imgui builds the renderer alone", r(["third_party/imgui/imgui.cpp"]) == "renderer")
-    check("a host change builds the game", r(["host/hos_thread.c"]) == "game")
-    check("a game patch builds the game", r(["nx2/oot_patches.py"]) == "game")
-    check("a renderer file and a host file build the game (both modules)", r(["gpu/vk/vk_draw.cpp", "host/nvn_native.c"]) == "game")
-    check("gpu/render (the op stream host/ includes) builds the game", r(["gpu/render/x.h"]) == "game")
-    check("a build script builds the game", r(["nx2/build.py"]) == "game")
-    check("docs and tests build nothing", r(["docs/dev/setup.md", "tests/test_a.py", "README.md"]) is None)
-    check("a renderer shader and its generated header build the renderer alone (only the renderer is kept)",
-          r(["gpu/vk/shaders/fg_copy.comp", "gpu/vk/shaders/fg_copy_comp_spv.h"]) == "renderer")
+    for f in ("gpu/vk/vk_replay.cpp", "gpu/vk/eden/shader_recompiler/ir_opt/x.cpp", "third_party/imgui/imgui.cpp",
+              "host/hos_thread.c", "gpu/render/x.h", "builder/crates/lift/src/lib.rs", "Cargo.lock", "Cargo.toml", "longshot-rs/src/lib.rs", "builder/rt/a64.h",
+              "assets/profiles/guest.profile", "assets/pipeline_states/tour.bin.xz", "assets/prompt_faces/x.png",
+              "assets/longshot.ico", "assets/addresses.ini", "VERSION"):
+        check("%s (read by longshot-builder) builds the game" % f, r([f]) == "game")
+    check("docs and tests build nothing", r(["docs/dev/setup.md", "tests/test_a.py", "README.md", "builder/README.md"]) is None)
     check("the forge's workflows build nothing", r([".forgejo/workflows/ci.yml", ".forgejo/pull_request_template.md"]) is None)
-    check("an unknown path builds the game", r(["somewhere/new.c"]) == "game")
-    check("developer tools, CI's settings and nx2/'s checks build nothing",
-          r(["scripts/perf.py", "scripts/profiling/cpu.py", "mise.toml", ".circleci/config.yml", "nx2/test_insn.py"]) is None)
-    for f in ("scripts/fetch.py", "scripts/tools.py", "scripts/helpers.py", "scripts/linux/deps.sh", "scripts/dev.py",
-              "scripts/devtools/build.py", "scripts/devtools/packs.py", "scripts/devtools/common.py", "scripts/devtools/jobqueue.py",
-              "builder/linux/linux_tools.py", "tools.lock", "requirements.txt", "nx2/lower_test.py", "nx2/test_data.txt"):
-        check("%s (read by the build or its environment) builds the game" % f, r([f]) == "game")
+    check("developer tools and CI's settings build nothing",
+          r(["scripts/perf.py", "scripts/profiling/cpu.py", "scripts/dev.py", "scripts/devtools/packs.py", "mise.toml",
+             "tools.lock", "scripts/longshot_builder.py",
+             "assets/routes/a.route", "assets/saves/x/save.bin"]) is None)
+    check("a renderer file and a host file build the game", r(["gpu/vk/vk_draw.cpp", "host/nvn_native.c"]) == "game")
 
 
-def test_not_built():
-    """No file of the build or of the environment dev.py gives it (BUILD_READERS) names a path of packs.NOT_BUILT: as a string
-    that is that path or ends in it, or as os.path.join's parts in a row. Messages and docstrings may name them (they hold a space)"""
-    import ast
-    readers = [f for f in (ROOT / "nx2").glob("*.py") if not f.name.startswith("test_")]
-    readers += list((ROOT / "third_party" / "a64-kit").rglob("*.py"))
-    readers += [ROOT / f for f in ("builder/linux/linux_tools.py", "scripts/dev.py", "scripts/fetch.py", "scripts/tools.py",
-                                   "scripts/helpers.py", "scripts/devtools/build.py", "scripts/devtools/packs.py",
-                                   "scripts/devtools/common.py", "scripts/devtools/jobqueue.py")]
-    named = []
-    for f in readers:
-        tree = ast.parse(f.read_bytes(), str(f))
-        tree.body = [n for n in tree.body if not (isinstance(n, ast.Assign) and   # (the list itself)
-                                                  any(getattr(t, "id", None) == "NOT_BUILT" for t in n.targets))]
-        strings =[[a.value.replace("\\", "/") for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-                   for n in ast.walk(tree) if isinstance(n, ast.Call)]
-        strings += [[n.value.replace("\\", "/")] for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-        for parts in strings:
-            joined = "/".join(p.strip("/") for p in parts if p and " " not in p)
-            for e in packs.NOT_BUILT:
-                e = e.rstrip("/")
-                if joined == e or joined.endswith("/" + e) or joined.startswith(e + "/") or ("/" + e + "/") in joined:
-                    named.append("%s names %s" % (f.relative_to(ROOT), e))
-    check("the build reads nothing route() builds nothing for (%s)" % "; ".join(sorted(set(named))), not named)
-    check("packs.py itself is not in NOT_BUILT", not any("scripts/devtools/packs.py".startswith(e) for e in packs.NOT_BUILT))
+def test_built_covers_what_rust_reads():
+    """Every path of the tree that longshot-builder's sources name (builder/crates' root.join("...") and "<dir>/..." strings)
+    is one packs.BUILT covers: a change there builds the game"""
+    named = set()
+    for f in (ROOT / "builder" / "crates").rglob("*.rs"):
+        if "/tests/" in f.as_posix() or f.name == "tests.rs" or f.name.endswith("_tests.rs"):   # (a module's tests' file)
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        named |= set(re.findall(r'root\.join\("([^"]+)"\)', text))
+    named = {n for n in named if n.split("/")[0] in ("host", "game", "gpu", "third_party", "assets")}
+    check("builder/ names tree paths (%s)" % sorted(named)[:3], named)
+    missed = sorted(n for n in named if not n.startswith(packs.BUILT) and not packs.built_paths([n + "/x.c"]))
+    check("every tree path builder/ reads is BUILT (%s)" % missed, not missed)
 
 
 def test_clone(d):
@@ -112,29 +92,28 @@ def test_clone(d):
 
 
 def test_stamp_matches_build(d):
-    """A runtime prepares again when its build's shader stamp moved: the files nx2/translator_files.py names (the same module
-    nx2/build.py makes LONGSHOT_SHADER_STAMP with), read from the checkout packed, or that module itself; a checkout from before
-    it at any change"""
-    src = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-    check("nx2/build.py makes LONGSHOT_SHADER_STAMP with translator_files.stamp",
-          'shader_stamp = "-DLONGSHOT_SHADER_STAMP=0x%sull" % translator_files.stamp(vk)' in src)
-    check("cmd_pack prepares by translator_changed and cache_format_changed",
-          'prepare = translator_changed(tree, changed) or cache_format_changed(tree, b["commit"], changed) or SEED in extra' in
-          PACKS_SOURCE.read_text(encoding="utf-8"))
-    tree, old = d / "tree", d / "old"
-    write(tree / "nx2" / "translator_files.py", (ROOT / "nx2" / "translator_files.py").read_bytes())
-    old.mkdir()
-    for path, prepares in (("gpu/vk/eden/shader_recompiler/ir_opt/texture_pass.cpp", True), ("gpu/vk/sirit/src/a.cpp", True),
-                           ("gpu/vk/compat/longshot_env.h", True), ("gpu/vk/vk_shader.cpp", True),
-                           ("gpu/vk/vk_bank.cpp", True), ("gpu/vk/vk_state.h", True), ("nx2/translator_files.py", True),
-                           ("gpu/vk/vk_api.h", False), ("gpu/vk/vk_draw.cpp", False), ("gpu/vk/vk_menu.cpp", False),
-                           ("nx2/build.py", False)):
-        check("%s %s the runtime prepare again" % (path, "makes" if prepares else "does not make"),
-              packs.translator_changed(str(tree), [path]) == prepares)
-    check("nothing changed: no prepare", not packs.translator_changed(str(tree), []))
-    # (a checkout too old to name its stamped files prepares again at any change, as packs.translator_changed says)
-    check("a checkout without nx2/translator_files.py prepares again",
-          packs.translator_changed(str(old), ["gpu/vk/vk_api.h"]) and packs.translator_changed(str(old), ["gpu/vk/vk_draw.cpp"]))
+    """A runtime prepares again when its build's shader stamp moved: the translator_stamp longshot-builder writes in the
+    game folder's longshot_version.txt (build-driver's build.rs, of build-compile's generated/shader_stamp.rs), compared
+    with the base's: the builder's own key, not a copy of its list of files"""
+    src = (ROOT / "builder" / "crates" / "build-driver" / "src" / "build.rs").read_text(encoding="utf-8")
+    check("the build writes translator_stamp= into longshot_version.txt",
+          'translator_stamp={translator}' in src and '"longshot_version.txt"' in src)
+    base, same, moved, none = d / "stamp-base", d / "stamp-same", d / "stamp-moved", d / "stamp-none"
+    for folder, stamp in ((base, "aa"), (same, "aa"), (moved, "bb")):
+        write(folder / "longshot_version.txt", b"version=x\ncompiler_stamp=cc\ntranslator_stamp=" + stamp.encode() + b"\n")
+    none.mkdir()
+    check("the stamp read", packs.translator_stamp(str(base)) == "aa")
+    check("the same stamp: no prepare", not packs.translator_changed(str(base), str(same)))
+    check("another stamp: the runtime prepares again", packs.translator_changed(str(base), str(moved)))
+    check("a folder without one: prepares again", packs.translator_changed(str(base), str(none)))
+
+
+def test_setting_flags():
+    """dev.py's LONGSHOT_NGX_SDK goes to longshot-builder as --ngx-sdk (its flag; the variable is the builder's for one
+    more release), not when the command line has one already"""
+    check("--ngx-sdk from the environment", packs.setting_flags({"LONGSHOT_NGX_SDK": "/sdk"}) == ["--ngx-sdk", "/sdk"])
+    check("none without it", packs.setting_flags({}) == [] and packs.setting_flags({"LONGSHOT_NGX_SDK": " "}) == [])
+    check("the command line's wins", packs.setting_flags({"LONGSHOT_NGX_SDK": "/sdk"}, ["build", "--ngx-sdk", "/x"]) == [])
 
 
 def test_cache_format(d):
@@ -161,21 +140,16 @@ def test_cache_format(d):
     check("the file not changed: no prepare", not packs.cache_format_changed(str(repo), base, ["gpu/vk/vk_draw.cpp"]))
 
 
-def test_renderer_files_the_game_reads():
-    """The renderer files the game is built from take the full route, so the runtime gets the game built from them too"""
-    found = packs.renderer_read_by_game(str(ROOT))
-    for f in ("gpu/vk/vk_api.h", "gpu/vk/dlss_math.h", "gpu/vk/compat/longshot_env.h"):
-        check("%s found as read by the game (%s)" % (f, sorted(found)), f in found)
-        check("%s takes the full route" % f, packs.route([f]) == "game")
-    check("a renderer file the game does not read stays renderer-only", "gpu/vk/vk_replay.cpp" not in found)
-
-
 def test_stamped_objects_match_build():
-    """The objects named in MODULES as holding the version are the files nx2/build.py gives it to"""
-    src = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-    stamped = re.findall(r'\[stamp_def\] if os\.path\.basename\((?:s|src)\) == "([^"]+)"', src)
-    check("nx2/build.py's version files found (anchor: '[stamp_def] if os.path.basename(...) == ...')", stamped)
-    check("they are packs.STAMPED_SOURCES", sorted(stamped) == sorted(os.path.basename(s) for s in packs.STAMPED_SOURCES))
+    """The objects named in MODULES as holding the version are the files build-compile gives it to"""
+    src = (ROOT / "builder" / "crates" / "build-compile" / "src" / "plan.rs").read_text(encoding="utf-8")
+    check("plan.rs gives version.c and vk_version.cpp the version",
+          'if name == "version.c"' in src and '"vk_version.cpp" => f.push(i.version.clone())' in src)
+    check("they are packs.STAMPED_SOURCES", sorted(os.path.basename(s) for s in packs.STAMPED_SOURCES) ==
+          ["version.c", "vk_version.cpp"])
+    lib = (ROOT / "builder" / "crates" / "build-compile" / "src" / "lib.rs").read_text(encoding="utf-8")
+    for _, _, rsp, _ in packs.MODULES:
+        check("build-compile writes %s" % rsp, 'l.out.join("%s")' % rsp in lib)
 
 
 def test_caches_named_in_renderer():
@@ -211,56 +185,15 @@ def test_module_changed(d):
 
 
 def test_inputs_beside_the_objects():
-    lift = {os.path.relpath(f, ROOT).replace(os.sep, "/") for f in make_game.lift_sources()}
-    build = packs.build_scripts(str(ROOT))
-    for f in ("nx2/build.py", "nx2/win_manifest.py", "nx2/version.py", "third_party/a64-kit/tools/toolchain.py"):
-        check("%s found among the build's scripts (%s)" % (f, sorted(build)), f in build)
-    check("what build.py imports in a function (chunks.py, split_giants.py), and what those import at their top",
-          {"nx2/chunks.py", "nx2/split_giants.py", "nx2/lifted_c.py"} <= build)
-    check("the lift's own scripts are not the build's", "nx2/lift.py" not in build)
-    check("nor what chunks.py's functions for the lift import (%s)" % sorted(build), not {"nx2/oot_patches.py", "nx2/poll.py"} & build)
-    lic = lambda *p: packs.link_inputs_changed(list(p), lift, build)
-    check("a game patch shows in the objects", not lic("nx2/oot_patches.py", "host/hos_thread.c"))
-    check("toolchain.py's link options, though the lift reads it too: both modules", lic("third_party/a64-kit/tools/toolchain.py"))
-    check("make_game.py's own helpers show in the game folder", not lic("nx2/pipeline_states.py"))
-    check("make_game.py sets build.py's environment (the hot order): both modules", lic("nx2/make_game.py"))
-    check("the Windows manifest does not: both modules", lic("nx2/win_manifest.py"))
-    check("nor build.py's flags", lic("nx2/build.py"))
-    check("nor a library", lic("third_party/sdl2/SDL2.lib"))
-    check("nor a shader source", lic("gpu/vk/shaders/blit.comp"))
-    data = sorted(f for f in lift if f.endswith((".txt", ".json")))
-    check("a translator data file shows in the objects (%s)" % data[:1], data and not lic(data[0]))
-    md = packs.stamped_may_differ
-    check("the version object's own source", md(["host/version.c"], "host/version.c"))
-    check("a header: the version files include none", not md(["gpu/vk/oot_cheat_items.h"], "host/version.c"))
-    check("another source alone: only the version differs there", not md(["host/nvn_native.c"], "host/version.c"))
+    lic = packs.link_inputs_changed
+    check("a host source shows in the objects", not lic(["host/hos_thread.c", "docs/x.md"]))
+    check("longshot-builder's own code (flags, links): both modules", lic(["builder/crates/build-compile/src/link.rs"]))
+    check("a library: both modules", lic(["third_party/sdl2/SDL2.lib"]))
+    check("a shader source: both modules", lic(["gpu/vk/shaders/blit.comp"]))
+    check("rust's documents do not", not lic(["builder/README.md"]))
     for src in packs.STAMPED_SOURCES:
         check("%s includes nothing, so no other file reaches its object" % src,
               "#include" not in (ROOT / src).read_text(encoding="utf-8"))
-
-
-def test_renderer_untouched():
-    """A game pack builds the game alone (RX_GAME_ONLY) only when no file the renderer is built from changed"""
-    lift = {os.path.relpath(f, ROOT).replace(os.sep, "/") for f in make_game.lift_sources()}
-    ru = lambda paths, env=None: packs.renderer_untouched(paths, lift, env or {})
-    check("a host C file the renderer does not compile", ru(["host/hos_thread.c", "docs/dev/setup.md"]))
-    check("the version's own file", ru(["host/version.c"]))
-    check("a game patch (a file of the lift)", ru(["nx2/oot_patches.py"]))
-    check("a host header may reach the renderer", not ru(["host/hos.h"]))
-    check("the renderer's own copy of the POSIX layer", not ru(["host/posix/win32_posix.c"]))
-    check("the renderer's counters' writer", not ru(["host/pgo_rt.c"]))
-    check("a renderer file", not ru(["host/hos_thread.c", "gpu/vk/vk_draw.cpp"]))
-    check("the op stream", not ru(["gpu/render/x.h"]))
-    check("a build script", not ru(["nx2/build.py"]))
-    check("a renderer profile for the pack", not ru(["host/hos_thread.c"], {"RX_VK_PGO": "gen"}))
-    check("LONGSHOT_TRACY's zones are the renderer's too", not ru(["host/hos_thread.c"], {"LONGSHOT_TRACY": "1"}))
-    check("the game's profile alone", ru([], {"RX_PGO": "x.profdata"}))
-    src = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-    check("nx2/build.py builds no renderer under RX_GAME_ONLY",
-          'game_only = kit.env_on("RX_GAME_ONLY")' in src and "build_vk = a.standalone and not game_only and" in src)
-    check("RX_GAME_ONLY is the compile's alone (not in the lift key)", "RX_GAME_ONLY" in make_game.COMPILE_ONLY_ENV)
-    check("cmd_pack keeps only the game's module of a game-only build",
-          "MODULES[:1] if game_only else MODULES" in PACKS_SOURCE.read_text(encoding="utf-8"))
 
 
 def refused(what, argv, reason):
@@ -276,14 +209,14 @@ def refused(what, argv, reason):
 def test_guards(d):
     base = d / "base"
     write(base / "game" / "user" / "save0.bin", b"played")
-    refused("a base built into a played game folder", ["base", str(base), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)],
+    refused("a base built into a played game folder", ["base", str(base), "--game", "g.nup", "--tree", str(ROOT)],
             "new game folder")
     f = packs.pack_folders(str(base))
     refused("a base whose work folder is its packs' own",
             lambda: packs.check_folders(str(base), {"work": f["game_work"], "game": str(base / "game")}), "packs are built")
     write(base / "game" / packs.GAME, b"g")
     write(base / "game" / packs.RENDERER, b"r")
-    packs.write_base(str(base), {"commit": "c" * 40, "work": str(d / "w"), "game": str(base / "game"), "romfs": "r", "exefs": "e"})
+    packs.write_base(str(base), {"commit": "c" * 40, "work": str(d / "w"), "game": str(base / "game"), "game_source": "g.nup"})
     refused("a base whose game folder is inside its packs' output folder",
             lambda: packs.check_folders(str(d / "b2"), {"work": str(d / "w"),
                                                         "game": os.path.join(packs.pack_folders(str(d / "b2"))["game_out"], "g")}),
@@ -299,9 +232,6 @@ def test_guards(d):
         _winapi.CreateJunction(target, str(link))
     refused("a base whose game folder is its packs' output folder through a link",
             lambda: packs.check_folders(str(d / "b3"), {"work": str(d / "w"), "game": str(link)}), "where its packs are built")
-    write(d / "launcher" / "bin" / packs.GAME, b"g")
-    refused("a launcher's game folder (modules in bin/)",
-            lambda: packs.write_base(str(d / "b4"), {"commit": "c" * 40, "game": str(d / "launcher")}), "plain game folder")
     refused("a runtime inside the base's game folder", ["rt", str(base), str(base / "game" / "runtime")], "folder of its own")
     check("...and nothing written there", not (base / "game" / "runtime").exists())
     for name in ("../game", "..", "a/b", str(d)):
@@ -310,38 +240,12 @@ def test_guards(d):
 
 
 def test_pack_folders(d):
-    """Every pack of a base builds in the same two folders, so a game pack after the first finds the translation there. The lift
-    key leaves the folders' paths out (make_game.py LIFT_PATH_ENV): the same in another folder"""
+    """Every pack of a base builds in the same two folders (longshot-builder keeps the lift there by its key; the objects
+    come from the stores), never inside packs/"""
     f = packs.pack_folders(str(d))
-    check("the same folders for every pack", f == packs.pack_folders(str(d)) and not f["game_work"].startswith(os.path.join(str(d), "packs")))
-    exefs, work, out = d / "exefs", Path(f["game_work"]), Path(f["game_out"])
-    write(exefs / "main", b"NSO0 one")
-    env = lambda w, o: {"OOT_WORK": str(w), "OOT_DUMP": str(o), "RX_RELEASE": "1", "A64_HOT_CHUNK": "1"}
-    key = make_game.lift_key(str(exefs), str(work), env(work, out))
-    check("the key is the same in the same folders", key == make_game.lift_key(str(exefs), str(work), env(work, out)))
-    check("...and in another (the folders' paths are not in it)",
-          key == make_game.lift_key(str(exefs), str(d / "other"), env(d / "other", out)))
-    base = d / "base-work"
-    write(base / "objcache" / "ab" / "abcdef.o", b"object")
-    write(base / "system_headers.txt", b"headers")
-    write(base / "sa" / "gen" / "code_0001.c", b"lifted")
-    packs.link_objects(str(base), str(work))
-    check("the base's objects, hard-linked", os.path.samefile(work / "objcache" / "ab" / "abcdef.o", base / "objcache" / "ab" / "abcdef.o"))
-    check("the compiler's header note copied", (work / "system_headers.txt").read_bytes() == b"headers")
-    check("no lifted C of the base's (another folder's key)", not (work / "sa").exists())
-    (work / "objcache" / "ab" / "mine.o").write_bytes(b"pack")
-    packs.link_objects(str(base), str(work))
-    check("a work folder already there is left as it is", (work / "objcache" / "ab" / "mine.o").exists())
-    real_link = os.link
-
-    def cross_drive(src, dst):
-        raise OSError(18, "Invalid cross-device link")
-    os.link = cross_drive
-    try:
-        packs.link_objects(str(base), str(d / "other-drive"))
-    finally:
-        os.link = real_link
-    check("on another drive the objects are copied", (d / "other-drive" / "objcache" / "ab" / "abcdef.o").read_bytes() == b"object")
+    check("the same folders for every pack", f == packs.pack_folders(str(d)) and
+          not f["game_work"].startswith(os.path.join(str(d), "packs")))
+    check("a work folder and a game folder", sorted(f) == ["game_out", "game_work"])
 
 
 def test_generated_and_runtime(d):
@@ -349,6 +253,7 @@ def test_generated_and_runtime(d):
     base_dir, game, out = d / "base", d / "base" / "game", d / "out"
     write(game / "romfs" / "a" / "data.bin", b"romfs")
     write(game / "romfs" / "prompts" / "icon.bntx", b"base icon")
+    write(game / "texts" / "a.txt", b"base text")
     write(game / game_mod, b"base game")
     write(game / vk_mod, b"base renderer")
     write(game / "cache" / "longshot_programs.bin", b"cache")
@@ -372,12 +277,15 @@ def test_generated_and_runtime(d):
     os.makedirs(out / "romfs" / "a")
     os.link(game / "romfs" / "a" / "data.bin", out / "romfs" / "a" / "data.bin")
     write(out / "romfs" / "prompts" / "icon.bntx", b"new icon")
+    write(out / "texts" / "a.txt", b"new text")
+    write(out / ".longshot_installed.json", b"another folder's note")
     write(out / game_mod, b"built game")
     write(out / "cache" / "longshot_programs.bin", b"other cache")
     write(out / "cache" / "longshot_vk_pipelines_play_5.bin", b"a play cache the pack's build has")
     write(out / "language.txt", b"en-US")
     gen, gone = packs.generated_changes(str(game), str(out), outputs)
-    check("a regenerated file is kept, the same ones, the modules and the caches are not: %s" % gen, gen == ["romfs/prompts/icon.bntx"])
+    check("a regenerated file is kept; the same ones, the modules, the caches, the builder's notes and the romfs are not: %s"
+          % gen, gen == ["texts/a.txt"])
     check("generated files the build no longer makes are gone; saves, settings and the game's own files are not: %s" % gone,
           gone == ["longshot_pipeline_states_shipped.bin", "prompts/Common.bntx"])
     check("a base that recorded no outputs loses nothing", packs.generated_changes(str(game), str(out))[1] == [])
@@ -392,21 +300,15 @@ def test_generated_and_runtime(d):
     write(out / "image.bin", b"image")
     write(out / packs.SEED, b"shader list")
     write(out / ".longshot_installed.json", b"{}")
-    work = d / "pack-work"
-    work.mkdir()
-    keep = packs.kept_outputs(make_game, str(work), str(game / "romfs"), str(out))
-    check("no shader list note: the list is not kept (%s)" % sorted(keep), packs.SEED not in keep)
-    make_game.note_shader_list(str(work), str(game / "romfs"), str(out / packs.SEED))
-    keep = packs.kept_outputs(make_game, str(work), str(game / "romfs"), str(out))
-    check("the modules, image.bin, the install note and a current shader list are kept (%s)" % sorted(keep),
-          keep == {packs.GAME, packs.RENDERER, "image.bin", make_game.INSTALLED_NOTE, packs.SEED})
-    packs.clear_output(str(out), keep)
-    check("the output folder keeps romfs and what the next build checks itself (%s)" % sorted(os.listdir(out)),
-          sorted(os.listdir(out)) == sorted(["romfs", packs.GAME, "image.bin", packs.SEED, make_game.INSTALLED_NOTE]))
+    write(out / "longshot_build.json", b"{}")
+    packs.clear_output(str(out), packs.PACK_KEEPS)
+    check("the output folder keeps romfs and what longshot-builder checks itself (%s)" % sorted(os.listdir(out)),
+          sorted(os.listdir(out)) == sorted(["romfs", packs.GAME, "image.bin", "longshot_build.json",
+                                             ".longshot_installed.json"]))
     packs.clear_output(str(out))
     check("the output folder keeps only romfs for the next build", sorted(os.listdir(out)) == ["romfs"])
     check("...its links intact", os.path.samefile(out / "romfs" / "a" / "data.bin", game / "romfs" / "a" / "data.bin"))
-    b = {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "romfs": "r", "exefs": "e"}
+    b = {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "game_source": "g.nup"}
     packs.write_base(str(base_dir), b)
     for name, files, generated, on in (("cpu", {game_mod: "h"}, ["romfs/prompts/icon.bntx"], b["commit"]),
                                        ("cpu2", {game_mod: "h"}, [], b["commit"]), ("old", {vk_mod: "h"}, [], "o" * 40)):
@@ -509,6 +411,20 @@ def test_rt_refresh(d):
     check("an older runtime's unknown file goes", not (rt / "stale-from-an-old-pack.bin").exists())
     check("...its caches and saves stay", (rt / "cache" / "longshot_programs.bin").read_bytes() == b"grown in play" and
           (rt / "user" / "save0.bin").exists())
+    # (the base moved, its translator the same: the runtime's warm caches stay)
+    made = json.loads((rt / "dev_packs.json").read_text())
+    made["base"] = "0" * 40
+    (rt / "dev_packs.json").write_text(json.dumps(made))
+    write(game / "cache" / "longshot_programs.idx", b"the base's")
+    packs_main(["rt", str(base_dir), str(rt)])
+    grown = rt / "cache" / "longshot_programs.bin"
+    check("a moved base with the same translator keeps the caches", grown.read_bytes() == b"grown in play")
+    # (the translator changed: what the runtime's game made for the old one is dropped, the base's caches taken instead)
+    write(game / "longshot_version.txt", b"release=x\ntranslator_stamp=another\n")
+    packs_main(["rt", str(base_dir), str(rt)])
+    check("a new translator's caches are dropped", not grown.exists() or grown.read_bytes() != b"grown in play")
+    check("...the base's taken", (rt / "cache" / "longshot_programs.idx").read_bytes() == b"the base's")
+    check("...the saves stay", (rt / "user" / "save0.bin").exists())
     write(d / "not-a-runtime" / "precious.txt", b"mine")
     refused("a folder that is not a runtime", ["rt", str(base_dir), str(d / "not-a-runtime")], "not a runtime")
     check("...untouched", (d / "not-a-runtime" / "precious.txt").read_bytes() == b"mine")
@@ -547,60 +463,6 @@ def _pack(base_dir, b, name, meta):
     return [name]
 
 
-def test_romfs_in_place(d):
-    """A pack reads the romfs where it is unless LONGSHOT_PACK_ROMFS=copy; a --romfs-in-place base records it, its preparation
-    names the romfs, and its runtimes get no romfs, say the game takes --romfs and record it, so dev.py ab starts it so"""
-    check("a pack's build reads the romfs in place", packs.pack_env({}) == {"LONGSHOT_NO_PREPARE": "1", "LONGSHOT_ROMFS_IN_PLACE": "1"})
-    check("LONGSHOT_PACK_ROMFS=copy links it", packs.pack_env({"LONGSHOT_PACK_ROMFS": "copy"}) == {"LONGSHOT_NO_PREPARE": "1"})
-    ab_source = (ROOT / "scripts" / "devtools" / "ab.py").read_text(encoding="utf-8")
-    check("dev.py ab starts a runtime with its romfs", re.search(r"start_session\(\s*s\[\"runtime\"\], romfs=packs\.runtime_romfs\(s\[\"runtime\"\]\)",
-                                                             ab_source) is not None)
-    if packs.CROSS:
-        return
-    got, calls = {}, []
-
-    def fake_make_game(tree, b, work, game, env):
-        got.update(env)
-        for m in packs.MODULES:
-            write(Path(game) / m[0], b"built")
-            if m[1]:
-                write(Path(work) / "sa" / "build" / m[1], b"map")
-        write(Path(game) / "cache" / "longshot_programs.bin", b"programs")
-
-    def fake_run(argv, **kw):
-        calls.append(list(argv))
-        return packs.subprocess.CompletedProcess(argv, 0)
-    saved = packs.make_game, packs.changed_files, packs.head, packs.subprocess.run, os.environ.pop("LONGSHOT_NO_PREPARE", None)
-    packs.make_game, packs.changed_files, packs.head = fake_make_game, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
-    packs.subprocess.run = fake_run
-    romfs = d / "dump" / "romfs"
-    try:
-        packs_main(["base", str(d / "b"), "--romfs", str(romfs), "--exefs", "e", "--tree", str(ROOT), "--romfs-in-place"])
-        b = json.loads((d / "b" / "base.json").read_text())
-        check("the base's build reads the romfs in place (%s)" % got, got.get("LONGSHOT_ROMFS_IN_PLACE") == "1")
-        check("base.json says so", b.get("romfs_in_place") is True)
-        check("its preparation names the romfs (%s)" % calls,
-              len(calls) == 1 and calls[0][-2:] == ["--romfs", os.path.abspath(romfs)])
-        rt = d / "rt"
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            packs_main(["rt", str(d / "b"), str(rt)])
-        check("its runtime has no romfs", not (rt / "romfs").exists())
-        check("...and the base's files", (rt / "cache" / "longshot_programs.bin").read_bytes() == b"programs")
-        check("...and says the game takes --romfs (%s)" % out.getvalue(), "--romfs " + os.path.abspath(romfs) in out.getvalue())
-        check("...and dev.py ab passes it", packs.runtime_romfs(str(rt)) == os.path.abspath(romfs))
-        with contextlib.redirect_stdout(io.StringIO()):
-            packs_main(["rt", str(d / "b"), str(rt)])   # (refreshed in place: still no romfs, still recorded)
-        check("a refreshed runtime still has none", not (rt / "romfs").exists() and packs.runtime_romfs(str(rt)) == os.path.abspath(romfs))
-    finally:
-        packs.make_game, packs.changed_files, packs.head, packs.subprocess.run = saved[:4]
-        if saved[4] is not None:
-            os.environ["LONGSHOT_NO_PREPARE"] = saved[4]
-    base_dir, _ = fake_base(d / "plain")
-    packs_main(["rt", str(base_dir), str(d / "rt-plain")])
-    check("a runtime with its own romfs is started without --romfs", packs.runtime_romfs(str(d / "rt-plain")) is None)
-
-
 def fake_base(d):
     """A base with a game folder: romfs, both modules, two caches"""
     base_dir, game = d / "base", d / "base" / "game"
@@ -609,128 +471,94 @@ def fake_base(d):
     write(game / packs.RENDERER, b"base renderer")
     write(game / "cache" / "longshot_programs.bin", b"programs")
     write(game / "cache" / "longshot_vk_pipelines.bin", b"pipelines")
-    packs.write_base(str(base_dir), {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "romfs": "r",
-                                     "exefs": "e"})
+    packs.write_base(str(base_dir), {"commit": "c" * 40, "work": str(base_dir / "work"), "game": str(game), "game_source": "g.nup"})
     return base_dir, game
 
 
-def test_renderer_build_jobs():
-    """A pack of the renderer alone in the job queue compiles several files at once: nx2/build.py run by itself compiles one at a
-    time, so the command carries --jobs: LONGSHOT_JOBS when it is set, as the game's build takes it, else the CPU threads shared
-    among the job queue's slots of its kind. Outside the queue with LONGSHOT_JOBS unset (the Test Farm) it has no --jobs, as
-    before"""
-    cmd = packs.renderer_build_cmd
-    q = {"LONGSHOT_JOB_MODE": "build"}
-    check("the renderer is built alone by build.py", cmd(q, 16)[1:4] == ["-I", "nx2/build.py", "--standalone"])
-    check("outside the queue, LONGSHOT_JOBS unset: no --jobs", cmd({}, 16)[1:] == ["-I", "nx2/build.py", "--standalone"])
-    check("...nor with it empty", "--jobs" not in cmd({"LONGSHOT_JOBS": ""}, 16))
-    check("outside the queue, LONGSHOT_JOBS is the compilers at once", cmd({"LONGSHOT_JOBS": "14"}, 16)[-2:] == ["--jobs", "14"])
-    check("...and 0 is automatic", cmd({"LONGSHOT_JOBS": "0"}, 16)[-2:] == ["--jobs", "4"])
-    check("LONGSHOT_JOBS is the compilers at once", cmd(dict(q, LONGSHOT_JOBS="14"), 16)[-2:] == ["--jobs", "14"])
-    check("in the queue, unset: one for every four threads", cmd(q, 16)[-2:] == ["--jobs", "4"])
-    check("a pack in one of two build slots: half the threads", cmd(q, 24, slots=2)[-2:] == ["--jobs", "12"])
-    check("LONGSHOT_JOBS over the slots", cmd(dict(q, LONGSHOT_JOBS="5"), 24, slots=2)[-2:] == ["--jobs", "5"])
-    from unittest import mock
-    with mock.patch.object(common, "read_config", lambda name: {}):   # (not this PC's job_queue.json)
-        check("outside the queue: four", packs.queue_slots({}) == 4)
-        check("a build job: the build slots", packs.queue_slots({"LONGSHOT_JOB_MODE": "build"}) ==
-              int(packs.jobqueue.DEFAULTS["LONGSHOT_QUEUE_BUILD_SLOTS"]))
-        check("...as the queue's settings say",
-              packs.queue_slots({"LONGSHOT_JOB_MODE": "build", "LONGSHOT_QUEUE_BUILD_SLOTS": "3"}) == 3)
-        check("a light job: the light slots", packs.queue_slots({"LONGSHOT_JOB_MODE": "light", "LONGSHOT_QUEUE_LIGHT_SLOTS": "6"}) == 6)
-        check("a GPU job: four", packs.queue_slots({"LONGSHOT_JOB_MODE": "shared"}) == 4)
-    check("0 and empty are automatic too", cmd(dict(q, LONGSHOT_JOBS="0"), 24)[-2:] == ["--jobs", "6"]
-          and cmd(dict(q, LONGSHOT_JOBS=""), 8)[-2:] == ["--jobs", "2"])
-    check("never none", cmd(q, 1)[-2:] == ["--jobs", "1"] and cmd(q, 3)[-2:] == ["--jobs", "1"])
-    for bad in ("many", "-2", "1.5"):
-        try:
-            cmd({"LONGSHOT_JOBS": bad}, 16)
-        except SystemExit as e:
-            check("a LONGSHOT_JOBS that is no count is named", "LONGSHOT_JOBS" in str(e))
-        else:
-            check("LONGSHOT_JOBS=%s is refused" % bad, False)
-
-
 def test_outputs_before_prepare(d):
-    """The base's outputs are what make_game.py made, recorded before the preparation: a file the preparation writes beside the
+    """The base's outputs are what longshot-builder made, recorded before the preparation: a file the preparation writes beside the
     game (here one no list names) is never an output, so no pack can delete it; the preparation gets the Compile shaders level"""
     calls = []
 
-    def fake_make_game(tree, b, work, game, env):
-        calls.append(("make_game", env.get("LONGSHOT_NO_PREPARE")))
+    def fake_build(program, tree, b, work, game):
+        calls.append(("build", b["game_source"]))
         for m in packs.MODULES:
             write(Path(game) / m[0], b"built")
             if m[1]:
-                write(Path(work) / "sa" / "build" / m[1], b"map")
+                write(Path(work) / "build" / m[1], b"map")
         write(Path(game) / "longshot_shaders.bin", b"seed")
 
-    def fake_run(argv, **kw):
-        calls.append(("prepare", list(argv[1:])))
-        game = Path(kw["cwd"])
+    def fake_run(argv, cwd):
+        calls.append(("prepare", list(argv)))
+        game = Path(cwd)
         write(game / "cache" / "longshot_vk_pipelines.stamp", b"stamp")
         write(game / "cache" / "longshot_pipelines.bin.predicted_keys", b"keys")
         write(game / "longshot_some_future_cache.dat", b"a file a later renderer writes")
-        return packs.subprocess.CompletedProcess(argv, 0)
-    saved = packs.make_game, packs.changed_files, packs.head, packs.subprocess.run
-    packs.make_game, packs.changed_files, packs.head = fake_make_game, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
-    packs.subprocess.run = fake_run
+        return 0, []
+    saved = packs.longshot_builder, packs.changed_files, packs.head, packs.run_events, packs.builder
+    packs.longshot_builder, packs.changed_files, packs.head = fake_build, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
+    packs.builder = lambda tree, keep: "longshot-builder"
+    packs.run_events = fake_run
     try:
-        packs_main(["base", str(d / "b"), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)])
+        packs_main(["base", str(d / "b"), "--game", "g.nup", "--tree", str(ROOT)])
     finally:
-        packs.make_game, packs.changed_files, packs.head, packs.subprocess.run = saved
+        packs.longshot_builder, packs.changed_files, packs.head, packs.run_events, packs.builder = saved
     outputs = json.loads((d / "b" / "base.json").read_text())["outputs"]
-    check("make_game.py builds without preparing (%s)" % calls, calls and calls[0] == ("make_game", "1"))
+    check("longshot-builder builds first, from the base's game (%s)" % calls, calls and calls[0][0] == "build")
     if not packs.CROSS:
         prep = [c for c in calls if c[0] == "prepare"]
-        check("the preparation runs once, after the build, with the Compile shaders level (%s)" % prep,
-              len(prep) == 1 and prep[0][1][:1] == ["--prepare-shaders"] and "--compile-shaders" in prep[0][1])
+        check("the preparation runs once, after the build, supervised by longshot-builder prepare with the Compile shaders "
+              "level (%s)" % prep, len(prep) == 1 and prep[0][1][:3] == ["longshot-builder", "prepare", str(d / "b" / "game")]
+              and "--compile-shaders" in prep[0][1])
         check("what the preparation wrote is not an output (%s)" % outputs,
               not {"cache/longshot_vk_pipelines.stamp", "cache/longshot_pipelines.bin.predicted_keys", "longshot_some_future_cache.dat"}
               & set(outputs))
-    check("what make_game.py made is (%s)" % outputs, "longshot_shaders.bin" in outputs)
+    check("what longshot-builder made is (%s)" % outputs, "longshot_shaders.bin" in outputs)
 
 
 def test_prepare_outcomes(d):
-    """A base whose preparation fails (exit 3: no usable Vulkan) is kept, base.json written with the reason, as make_game.py's
+    """A base whose preparation fails (exit 3: no usable Vulkan) is kept, base.json written with the reason, as longshot-builder's
     own preparation leaves the work to the first start; LONGSHOT_NO_PREPARE skips it by value (0 still prepares)"""
     if packs.CROSS:
         return
 
-    def fake_make_game(tree, b, work, game, env):
+    def fake_build(program, tree, b, work, game):
         for m in packs.MODULES:
             write(Path(game) / m[0], b"built")
             if m[1]:
-                write(Path(work) / "sa" / "build" / m[1], b"map")
-    for name, env, code, prepares, why in (("vulkan", None, 3, True, "no usable Vulkan here"),
+                write(Path(work) / "build" / m[1], b"map")
+    vulkan = {"v": 1, "type": "warning", "code": "shaders_not_prepared",
+              "text": "The shaders were not prepared now (no usable Vulkan here): the game prepares them at its first start."}
+    for name, env, code, prepares, why in (("vulkan", None, (1, [vulkan]), True, "no usable Vulkan here"),
                                            ("oserror", None, OSError("cannot start"), True, "cannot start"),
-                                           ("skip", "1", 0, False, "LONGSHOT_NO_PREPARE is set"),
-                                           ("zero", "0", 0, True, None)):
+                                           ("silent", None, (1, []), True, "longshot-builder prepare stopped with exit status 1"),
+                                           ("skip", "1", (0, []), False, "LONGSHOT_NO_PREPARE is set"),
+                                           ("zero", "0", (0, []), True, None)):
         calls = []
 
-        def fake_run(argv, **kw):
+        def fake_run(argv, cwd):
             calls.append(argv)
-            if isinstance(code, OSError):   # (the game could not start)
+            if isinstance(code, OSError):   # (longshot-builder could not start)
                 raise code
-            if kw.get("check") and code:   # (as subprocess.run does)
-                raise packs.subprocess.CalledProcessError(code, argv)
-            return packs.subprocess.CompletedProcess(argv, code)
-        saved = packs.make_game, packs.changed_files, packs.head, packs.subprocess.run, os.environ.get("LONGSHOT_NO_PREPARE")
-        packs.make_game, packs.changed_files, packs.head = fake_make_game, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
-        packs.subprocess.run = fake_run
+            return code
+        saved = packs.longshot_builder, packs.changed_files, packs.head, packs.run_events, packs.builder, os.environ.get("LONGSHOT_NO_PREPARE")
+        packs.longshot_builder, packs.changed_files, packs.head = fake_build, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
+        packs.builder = lambda tree, keep: "longshot-builder"
+        packs.run_events = fake_run
         if env is None:
             os.environ.pop("LONGSHOT_NO_PREPARE", None)
         else:
             os.environ["LONGSHOT_NO_PREPARE"] = env
         try:
-            packs_main(["base", str(d / name), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT)])
+            packs_main(["base", str(d / name), "--game", "g.nup", "--tree", str(ROOT)])
         except (packs.subprocess.CalledProcessError, OSError):
             pass
         finally:
-            packs.make_game, packs.changed_files, packs.head, packs.subprocess.run = saved[:4]
-            if saved[4] is None:
+            packs.longshot_builder, packs.changed_files, packs.head, packs.run_events, packs.builder = saved[:5]
+            if saved[5] is None:
                 os.environ.pop("LONGSHOT_NO_PREPARE", None)
             else:
-                os.environ["LONGSHOT_NO_PREPARE"] = saved[4]
+                os.environ["LONGSHOT_NO_PREPARE"] = saved[5]
         bj = d / name / "base.json"
         check("%s: the base is kept (base.json written)" % name, bj.exists())
         b = json.loads(bj.read_text()) if bj.exists() else {}
@@ -748,18 +576,19 @@ def test_seed(d):
     for name, data in (("longshot_programs.bin", b"loose beside the game: not a cache of this layout"), ("image.bin", b"game")):
         write(seed / name, data)
 
-    def fake_make_game(tree, b, work, game, env):
+    def fake_build(program, tree, b, work, game):
         for m in packs.MODULES:
             write(Path(game) / m[0], b"built")
             if m[1]:
-                write(Path(work) / "sa" / "build" / m[1], b"map")
-    saved = packs.make_game, packs.changed_files, packs.head, packs.subprocess.run
-    packs.make_game, packs.changed_files, packs.head = fake_make_game, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
-    packs.subprocess.run = lambda argv, **kw: packs.subprocess.CompletedProcess(argv, 0)
+                write(Path(work) / "build" / m[1], b"map")
+    saved = packs.longshot_builder, packs.changed_files, packs.head, packs.run_events, packs.builder
+    packs.longshot_builder, packs.changed_files, packs.head = fake_build, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
+    packs.builder = lambda tree, keep: "longshot-builder"
+    packs.run_events = lambda argv, cwd: (0, [])
     try:
-        packs_main(["base", str(d / "b"), "--romfs", "r", "--exefs", "e", "--tree", str(ROOT), "--seed", str(seed)])
+        packs_main(["base", str(d / "b"), "--game", "g.nup", "--tree", str(ROOT), "--seed", str(seed)])
     finally:
-        packs.make_game, packs.changed_files, packs.head, packs.subprocess.run = saved
+        packs.longshot_builder, packs.changed_files, packs.head, packs.run_events, packs.builder = saved
     game = d / "b" / "game"
     for name in ("longshot_vk_pipelines.bin", "longshot_vk_pipelines_play_4.bin", "longshot_vk_pipelines.stamp"):
         check("the seed's cache/%s is copied into cache/" % name, (game / "cache" / name).exists())
@@ -863,39 +692,209 @@ def test_busy_folders_above_hidden(d):
     check("a folder inside is still made", (base / "new").is_dir())
 
 
-def test_upscaler_args():
-    """(the Test Farm's upscaler builds) make_game.py's options from the environment: FSR 4 by LONGSHOT_FSR, the AMD and Intel
-    runtimes from folders already fetched, DLSS by LONGSHOT_NGX_SDK alone (make_game.py reads it)"""
-    a = packs.upscaler_args
-    check("nothing asked: no option", a({}) == [])
-    check("LONGSHOT_FSR=0 is off", a({"LONGSHOT_FSR": "0"}) == [])
-    check("FSR 4", a({"LONGSHOT_FSR": "1"}) == ["--fsr"])
-    check("FSR 4 with AMD's fetched runtime", a({"LONGSHOT_FSR": "1", "LONGSHOT_FFX_SDK": "/sdk/ffx"})
-          == ["--fsr", "--fetch-fsr-runtime", "--accept-amd-license"])
-    check("AMD's runtime without FSR 4: no option", a({"LONGSHOT_FFX_SDK": "/sdk/ffx"}) == [])
-    check("Intel's XeSS library", a({"LONGSHOT_XESS_SDK": "/sdk/xess"}) == ["--fetch-xess-runtime", "--accept-intel-license"])
-    check("DLSS: no option, make_game.py reads LONGSHOT_NGX_SDK", a({"LONGSHOT_NGX_SDK": "/sdk/ngx"}) == [])
-    names = {o for o in a({"LONGSHOT_FSR": "1", "LONGSHOT_FFX_SDK": "f", "LONGSHOT_XESS_SDK": "x"})}
-    source = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
-    check("every option is make_game.py's", all('"%s"' % o in source for o in names))
+def test_env_upscalers():
+    """(the Test Farm's upscaler builds, main's #2402) with no --upscaler, a base builds with the upscalers the environment
+    names: DLSS by LONGSHOT_NGX_SDK, FSR 4 by LONGSHOT_FSR, XeSS by LONGSHOT_XESS_SDK; a vendor's runtime fetched under its
+    license (LONGSHOT_FFX_SDK, LONGSHOT_XESS_SDK) is that license accepted, for longshot-builder to fetch its own"""
+    e = packs.env_upscalers
+    check("nothing asked: none", e({}) == ([], []))
+    check("LONGSHOT_FSR=0 is off", e({"LONGSHOT_FSR": "0"}) == ([], []))
+    check("FSR 4", e({"LONGSHOT_FSR": "1"}) == (["fsr4"], []))
+    check("FSR 4 with AMD's fetched runtime", e({"LONGSHOT_FSR": "1", "LONGSHOT_FFX_SDK": "/sdk/ffx"}) == (["fsr4"], ["amd"]))
+    check("AMD's runtime without FSR 4: nothing", e({"LONGSHOT_FFX_SDK": "/sdk/ffx"}) == ([], []))
+    check("Intel's XeSS library", e({"LONGSHOT_XESS_SDK": "/sdk/xess"}) == (["xess"], ["intel"]))
+    check("DLSS by the developer's own SDK, no license", e({"LONGSHOT_NGX_SDK": "/sdk/ngx"}) == (["dlss"], []))
+    ups, lic = e({"LONGSHOT_NGX_SDK": "n", "LONGSHOT_FSR": "1", "LONGSHOT_FFX_SDK": "f", "LONGSHOT_XESS_SDK": "x"})
+    check("each a longshot-builder upscaler (%s)" % ups, set(ups) <= set(packs.UPSCALERS) and len(ups) == 3)
+    main_rs = (ROOT / "builder" / "crates" / "longshot-builder" / "src" / "main.rs").read_text(encoding="utf-8")
+    check("--upscaler and --accept-licenses are longshot-builder's", "dlss,fsr4,xess" in main_rs and "nvidia,amd,intel" in main_rs)
+    check("each license a vendor it takes", set(lic) <= {"nvidia", "amd", "intel"})
+    # (a base: the environment's when --upscaler names none, its licenses passed to every build of it; --upscaler wins)
+    for given, env, want, want_lic in (("", {"LONGSHOT_FSR": "1", "LONGSHOT_XESS_SDK": "x"}, ["fsr4", "xess"], ["intel"]),
+                                       ("dlss", {"LONGSHOT_FSR": "1"}, ["dlss"], [])):
+        argv = []
+
+        def fake_build(program, tree, b, work, game):
+            argv.append(b)
+            for m in packs.MODULES:
+                write(Path(game) / m[0], b"built")
+        saved = (packs.longshot_builder, packs.changed_files, packs.head, packs.builder, dict(os.environ))
+        packs.longshot_builder, packs.changed_files, packs.head = fake_build, (lambda tree, commit: set()), (lambda tree, *a: "c" * 40)
+        packs.builder = lambda tree, keep: "longshot-builder"
+        for k in ("LONGSHOT_NGX_SDK", "LONGSHOT_FSR", "LONGSHOT_FFX_SDK", "LONGSHOT_XESS_SDK"):
+            os.environ.pop(k, None)
+        os.environ.update(env, LONGSHOT_NO_PREPARE="1")
+        try:
+            with tempfile.TemporaryDirectory(prefix="dev-packs-ups-") as t:
+                packs_main(["base", str(Path(t) / "b"), "--game", "g.nup", "--tree", str(ROOT)] +
+                           (["--upscaler", given] if given else []))
+        finally:
+            packs.longshot_builder, packs.changed_files, packs.head, packs.builder = saved[:4]
+            os.environ.clear()
+            os.environ.update(saved[4])
+        b = argv[0]
+        check("--upscaler %r with %s: %s, licenses %s" % (given, env, b.get("upscalers"), b.get("licenses")),
+              b.get("upscalers") == want and b.get("licenses") == want_lic)
+    # (the command longshot-builder is given)
+    seen = []
+    saved = packs.run, packs.store
+    packs.run, packs.store = (lambda cmd, cwd, env=None, events=False: seen.append(cmd)), (lambda: "store")
+    try:
+        packs.longshot_builder("lb", ".", {"game_source": "g.nup", "upscalers": ["fsr4"], "licenses": ["amd"]}, "w", "o")
+    finally:
+        packs.run, packs.store = saved
+    cmd = seen[0]
+    check("the build is given the base's upscalers and licenses (%s)" % cmd,
+          cmd[cmd.index("--upscaler") + 1] == "fsr4" and cmd[cmd.index("--accept-licenses") + 1] == "amd")
+
+
+def test_json(d):
+    """`dev.py packs --json` (or LONGSHOT_BUILD_JSON=1): longshot-builder is run with --output json and its event lines reach
+    stdout as it wrote them, this script's own lines going to stderr; without it, with --output text (never a window)"""
+    import subprocess
+    if os.name == "nt":
+        return
+    fake = d / "longshot-builder"
+    fake.write_text("#!/bin/sh\necho '{\"v\":1,\"type\":\"error\",\"code\":\"nup_moved\",\"text\":\"'\"$*\"'\"}'\n")
+    fake.chmod(0o755)
+    snippet = ("import sys; sys.path.insert(0, sys.argv[1]); from devtools import packs; packs.JSON = sys.argv[3] == '1'; "
+               "packs.longshot_builder(sys.argv[2], '.', {'game_source': 'g.nup'}, 'w', 'o')")
+    def run(json_on):
+        env = dict(os.environ, LONGSHOT_STORE=str(d / "store"))
+        return subprocess.run([sys.executable, "-I", "-c", snippet, str(ROOT / "scripts"), str(fake), "1" if json_on else "0"],
+                              cwd=d, env=env, capture_output=True, text=True)
+    on = run(True)
+    lines = on.stdout.splitlines()
+    check("one event line on stdout, as the builder wrote it: %r" % on.stdout,
+          len(lines) == 1 and json.loads(lines[0])["code"] == "nup_moved")
+    check("the builder was asked for JSON", lines[0].rstrip('"}').endswith("--output json"))
+    check("this script's own lines on stderr", on.stderr.startswith("+ ") and "+ " not in on.stdout)
+    off = run(False)
+    check("without --json: the command line on stdout, the builder asked for text",
+          off.stdout.startswith("+ ") and "--output text" in off.stdout and "--output json" not in off.stdout)
+    # (the switch: the option, or the variable)
+    parsed = dev.parser().parse_args(["packs", "--json", "base", "x", "--game", "g"])
+    check("--json parses before the subcommand", packs.json_wanted(parsed))
+    os.environ["LONGSHOT_BUILD_JSON"] = "1"
+    try:
+        check("LONGSHOT_BUILD_JSON=1 asks for it", packs.json_wanted(argparse_namespace()))
+    finally:
+        del os.environ["LONGSHOT_BUILD_JSON"]
+    check("neither: text", not packs.json_wanted(argparse_namespace()))
+
+
+def argparse_namespace(**kw):
+    import argparse
+    return argparse.Namespace(**kw)
+
+
+def test_builder_lock_not_held_across_the_queue(d):
+    """packs.builder never holds the cargo target's lock while it waits for a queue slot: a running job that builds
+    longshot-builder itself (inside the job: directly, under that lock) would wait for the lock while this waited for that
+    job's slot. Queued, the job it asks for takes the lock itself (`dev.py packs builder`); run directly, the compile
+    holds it"""
+    from devtools import jobqueue
+    saved_env = {k: os.environ.get(k) for k in ("LONGSHOT_DEV_HOME", "LONGSHOT_CARGO", "LONGSHOT_BUILD")}
+    saved = packs.why_direct, jobqueue.run
+    os.environ["LONGSHOT_DEV_HOME"] = str(d / "home")
+    os.environ.pop("LONGSHOT_BUILD", None)
+    (d / "home" / "cargo").mkdir(parents=True)
+    lock = common.dev_path("cargo") + ".lock"
+    tree, keep = d / "tree", d / "keep" / "longshot-builder"
+    (tree / "builder").mkdir(parents=True)
+    asked = []
+
+    def fake_run(name, mode, cmd, environ=None, cwd=None, desc=None, **kw):
+        try:
+            with common.Lock(lock, wait=False):
+                held = False
+        except BlockingIOError:
+            held = True
+        asked.append((name, mode, cmd, held))
+        return 0
+
+    # (a cargo that says whether the lock was held while it ran, and leaves a program where cargo puts it)
+    cargo = d / "cargo.py"
+    cargo.write_text(
+        "import fcntl, os, sys\n"
+        "f = open(%r, 'a+')\n"
+        "try:\n    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); held = 'free'\n"
+        "except OSError:\n    held = 'held'\n"
+        "out = os.path.join(os.environ['CARGO_TARGET_DIR'], 'release')\n"
+        "os.makedirs(out, exist_ok=True)\n"
+        "open(os.path.join(out, 'longshot-builder'), 'w').write(held)\n" % lock, encoding="utf-8")
+    cargo_sh = d / "cargo"
+    cargo_sh.write_text("#!/bin/sh\nexec %s %s \"$@\"\n" % (sys.executable, cargo), encoding="utf-8")
+    cargo_sh.chmod(0o755)
+    os.environ["LONGSHOT_CARGO"] = str(cargo_sh)
+    try:
+        packs.why_direct, jobqueue.run = (lambda environ: None), fake_run
+        check("queued: the program's place", packs.builder(str(tree), str(keep)) == str(keep))
+        check("queued: one job (%s)" % asked, len(asked) == 1 and asked[0][1] == "build")
+        check("the lock is not held while the job waits for its slot", not asked[0][3])
+        cmd = asked[0][2]
+        check("the job is dev.py packs builder for the tree and the program (%s)" % cmd,
+              cmd[2].endswith(os.path.join("scripts", "dev.py")) and cmd[3:] == ["packs", "builder", "--tree", str(tree), "--keep", str(keep)])
+        if os.name != "nt":
+            # (the job itself, or a build inside a job: directly, under the lock)
+            packs.why_direct = lambda environ: "inside a job"
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                packs.builder(str(tree), str(keep))
+            check("run directly, the compile holds the lock", keep.read_text() == "held")
+            check("and lets it go", not os.path.exists(str(keep) + ".new"))
+            with common.Lock(lock, wait=False):
+                pass
+    finally:
+        packs.why_direct, jobqueue.run = saved
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_run_other_commands_get_the_dev_folders(d):
+    """`dev.py packs run -- <a command that is no build>` (stamps, check, prepare...) runs longshot-builder with the
+    development folder's builder-cache/ too, never the player's cache"""
+    if os.name == "nt":
+        return
+    saved = {k: os.environ.get(k) for k in ("LONGSHOT_DEV_HOME", "LONGSHOT_BUILD", "LONGSHOT_CACHE")}
+    seen = d / "seen.txt"
+    program = d / "longshot-builder"
+    program.write_text('#!/bin/sh\nprintf "%%s\\n" "$LONGSHOT_CACHE" > %s\n' % seen, encoding="utf-8")
+    program.chmod(0o755)
+    try:
+        os.environ["LONGSHOT_DEV_HOME"] = str(d / "home")
+        os.environ["LONGSHOT_BUILD"] = str(program)
+        os.environ.pop("LONGSHOT_CACHE", None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = packs_main(["run", "--tree", str(d), "--", "stamps"])
+        check("packs run's status (%s)" % rc, rc == 0)
+        cache, = seen.read_text(encoding="utf-8").splitlines()
+        check("the development folder's cache (%s)" % cache, cache == common.dev_path("builder-cache"))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def main():
-    test_upscaler_args()
+    test_env_upscalers()
+    test_setting_flags()
     test_route()
-    test_not_built()
-    test_renderer_files_the_game_reads()
+    test_built_covers_what_rust_reads()
     test_stamped_objects_match_build()
     test_caches_named_in_renderer()
     test_inputs_beside_the_objects()
-    test_renderer_untouched()
-    test_renderer_build_jobs()
     with tempfile.TemporaryDirectory(prefix="longshot-dev-packs-") as d:
         d = Path(d)
         for name, t in (("mc", test_module_changed), ("pf", test_pack_folders), ("rt", test_generated_and_runtime),
                         ("guard", test_guards), ("inside", test_resolves_inside), ("outputs", test_outputs_before_prepare), ("prepare", test_prepare_outcomes), ("seed", test_seed), ("warm", test_warm), ("busy", test_busy), ("hidden", test_busy_folders_above_hidden),
                         ("stamp", test_stamp_matches_build), ("format", test_cache_format), ("clone", test_clone),
-                        ("refresh", test_rt_refresh), ("in-place", test_romfs_in_place)):
+                        ("refresh", test_rt_refresh), ("json", test_json), ("cargo-lock", test_builder_lock_not_held_across_the_queue),
+                        ("run-env", test_run_other_commands_get_the_dev_folders)):
             (d / name).mkdir()
             t(d / name)
     print("test_dev_packs: ok")

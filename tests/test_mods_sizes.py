@@ -1,6 +1,6 @@
-"""Mods that grow files load together: host/mods.c's list, order and switches, and the resource size table it merges.
+"""Mods that grow files load together: game/mods.c's list, order and switches, and the resource size table it merges.
 
-Linux only (built over host/posix/win32_posix.c's file functions). Builds host/mods.c (from its index on), host/restbl.c,
+Linux only (built over host/posix/win32_posix.c's file functions). Builds game/mods.c (from its index on), host/restbl.c,
 host/zs.c's reads and writes and zstd's decoder (third_party/zstd) into one program, makes a synthetic game folder (a
 RomFS with a synthetic RESTBL table and synthetic .zs files: no game data) and mods, and checks:
 
@@ -11,10 +11,11 @@ RomFS with a synthetic RESTBL table and synthetic .zs files: no game data) and m
 - mods.json (tests/test_mods_list.py has the file's other rules, on Windows too): the menu's moves and switches written
   at once, the next start's order and switches read from it (a
   mod switched off serves nothing), "changed since the start" is 0 when moved back;
-- ExeFS patch files against the build's exefs_patches.txt: built in, or waiting for the next build;
+- ExeFS patch files against the build's exefs_patches.txt: built in, or waiting for the next build (the list is the
+  builder's own, game-files' list_text through its mods example, so a change of its lines' shape fails here);
 - with no mods folder nothing is served and nothing is written.
 
-python -I -B tests/test_mods_sizes.py [--cc gcc]
+python -I -B tests/test_mods_sizes.py --cargo cargo [--cc gcc]
 """
 import argparse
 import json
@@ -25,6 +26,8 @@ import sys
 import tempfile
 import zlib
 from pathlib import Path
+
+RUN_ALL_ARGS = ["--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 ZSTD = ROOT / "third_party/zstd/lib"
@@ -78,6 +81,18 @@ int main(int argc, char **argv) {
     hos_mods_init(NULL);
     char out[1024];
     const char *table = "System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs";
+    if (!strcmp(mode, "long")) {   /* (a mod's file whose host path passes MAX_PATH: left out, never a cut path served) */
+        static char rel[8192], served[8192];
+        char rel_file[1100];
+        snprintf(rel_file, sizeof rel_file, "%s/long_rel.txt", argv[1]);
+        FILE *rf = fopen(rel_file, "rb");
+        CHECK(rf && fgets(rel, sizeof rel, rf));
+        fclose(rf);
+        CHECK(!hos_mods_romfs(rel, served, sizeof served));
+        CHECK(hos_mods_romfs("New/D.bgyml.zs", out, sizeof out));   /* (its short one is served) */
+        printf("PASS: a mod's file whose path is too long is left out\n");
+        return 0;
+    }
     if (!strcmp(mode, "none")) {
         CHECK(!hos_mods_romfs(table, out, sizeof out) && !hos_mods_romfs("Model/A.bfres.zs", out, sizeof out));
         char cache[1100];
@@ -138,12 +153,13 @@ int main(int argc, char **argv) {
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="gcc")
+    p.add_argument("--cargo", required=True, help="builds game-files' mods example, which writes exefs_patches.txt")
     a = p.parse_args()
     if os.name == "nt" or sys.platform == "darwin":
         print("SKIP: the posix layer's checks run on Linux")
         return
     posix = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
-    mods = (ROOT / "host/mods.c").read_text(encoding="utf-8")
+    mods = (ROOT / "game/mods.c").read_text(encoding="utf-8")
     zs = (ROOT / "host/zs.c").read_text(encoding="utf-8")
     pieces = [
         block(posix, "static DWORD error_of(int e) {"),
@@ -160,7 +176,7 @@ def main():
         block(posix, "HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *fd) {"),
         block(posix, "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {"),
         block(posix, "BOOL FindClose(HANDLE h) {"),
-        zs[zs.index("typedef struct { unsigned id; ZSTD_DDict *dict; } Dict;"):],
+        zs[zs.index("typedef struct { unsigned id; ZSTD_DDict *dict; char name[48]; } Dict;"):],
         mods[mods.index("typedef struct { char *key; char *host; char *rel;"):],
     ]
     fixture = r'''#define _GNU_SOURCE
@@ -182,26 +198,33 @@ def main():
 #include "zstd.h"
 #include "restbl.h"
 #include "mods_list.h"
+#include "romfs.h"
+#include "romfs_index.h"
+#include "prompts_base.h"
 static DWORD last_error;
 static char game_root[1024];
+#define HOS_PATH_CAP MAX_PATH   /* (host/hos_paths.h, as on Linux: game/mods.c's path buffers) */
 const char *hos_options_file(void) { return ""; }   /* (host/options_path.c: no settings file, so mods.json is the game folder's) */
-void Sleep(DWORD ms) { usleep(ms * 1000); }   /* (host/mods.c waits before it tries a write again) */
+void Sleep(DWORD ms) { usleep(ms * 1000); }   /* (game/mods.c waits before it tries a write again) */
 const char *hos_romfs_dir;
-static void hos_log(const char *f, ...) { if (getenv("MODS_TEST_LOG")) { va_list a; va_start(a, f); vfprintf(stderr, f, a); va_end(a); fputc(10, stderr); } }
+HosRomfsIndex *hos_romfs_index;   /* (host/romfs.c's folder backend reads the romfs above: no .nup index here) */
+void hos_log(const char *f, ...);
+void hos_log(const char *f, ...) { if (getenv("MODS_TEST_LOG")) { va_list a; va_start(a, f); vfprintf(stderr, f, a); va_end(a); fputc(10, stderr); } }
 static int64_t hos_now_ns(void) { return 0; }
 static DWORD hos_game_path_a(char *buf, DWORD size) { return (DWORD)snprintf(buf, size, "%shookshot", game_root); }
 int hos_prompts_romfs(const char *key, const char *mod, char *out, size_t cap) { (void)key; (void)mod; (void)out; (void)cap; return 0; }
 uint32_t hos_prompts_font_entry(uint32_t entry) { (void)entry; return 0; }   /* (prompts.c: no prompts' font) */
-int hos_texts_romfs(const char *key, const char *mod, char *out, size_t cap) { (void)key; (void)mod; (void)out; (void)cap; return 0; }   /* (host/texts.c: no texts of the build's here) */
+int hos_texts_romfs(const char *key, const char *mod, char *out, size_t cap) { (void)key; (void)mod; (void)out; (void)cap; return 0; }   /* (game/texts.c: no texts of the build's here) */
 ''' + "\n".join(pieces) + FIXTURE_MAIN
     with tempfile.TemporaryDirectory(prefix="mods-sizes-") as tmp:
         tmp = Path(tmp)
         src = tmp / "fixture.c"
         src.write_text(fixture, encoding="utf-8")
         exe = tmp / "fixture"
-        subprocess.run([a.cc, "-std=gnu11", "-O1", "-I", str(ROOT / "host/posix"), "-I", str(ROOT / "host"), "-I", str(ZSTD),
+        subprocess.run([a.cc, "-std=gnu11", "-O1", "-I", str(ROOT / "host/posix"), "-I", str(ROOT / "host"), "-I", str(ROOT / "game"), "-I", str(ZSTD),
                         "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0", "-Wno-unused-function",
-                        str(src), str(ROOT / "host/restbl.c"), str(ROOT / "host/mods_list.c")] + [str(ZSTD / f) for f in ZSTD_FILES] +
+                        str(src), str(ROOT / "host/restbl.c"), str(ROOT / "game/mods_list.c"), str(ROOT / "host/romfs.c"),
+                        str(ROOT / "host/romfs_index.c"), str(ROOT / "host/prompts_base.c")] + [str(ZSTD / f) for f in ZSTD_FILES] +
                        ["-o", str(exe)],
                        check=True)
 
@@ -224,10 +247,11 @@ int hos_texts_romfs(const char *key, const char *mod, char *out, size_t cap) { (
         put(m / "02-second/romfs" / TABLE, raw_frame(restbl({"Other/C.byml": 9000, "Tex/B.bntx": 100})))
         put(m / "03-added/romfs/New/D.bgyml.zs", raw_frame(bytes(700)))
         put(m / "-off/romfs/Model/A.bfres.zs", raw_frame(bytes(99999)))       # (off by its name: never seen)
-        h = 0x811C9DC5
-        for b in b"@nsobid-00\n":
-            h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
-        (game / "exefs_patches.txt").write_text("# list\n01-first\tbuilt.pchtxt\t%08x\tcode\t\n" % h, encoding="utf-8")
+        # (the list as the builder writes it: built.pchtxt applied as code, new.ips not in it)
+        listed = subprocess.run([a.cargo, "run", "-q", "-p", "game-files", "--example", "mods", "--",
+                                 "exefs-list", "01-first", str(m / "01-first/exefs/built.pchtxt"), "code", ""],
+                                cwd=ROOT, capture_output=True, check=True).stdout
+        (game / "exefs_patches.txt").write_bytes(listed)
 
         def run(mode, root):
             r = subprocess.run([str(exe), str(root), mode], capture_output=True, text=True, timeout=60)
@@ -245,6 +269,31 @@ int hos_texts_romfs(const char *key, const char *mod, char *out, size_t cap) { (
         bare = tmp / "bare"
         put(bare / "romfs" / TABLE, raw_frame(restbl({"Model/A.bfres": 1300})))
         run("none", bare)
+        # (the game folder padded so its romfs folder's path is 60 bytes or more whatever the scratch folder's is: a short
+        # one, such as /tmp's, left the host path of the file below within MAX_PATH)
+        long_game = tmp / "long"
+        long_game = tmp / ("long" + "-" * max(0, 60 - len(str(long_game / "mods/04-long/romfs"))))
+        put(long_game / "romfs" / TABLE, raw_frame(restbl({"Model/A.bfres": 1300})))
+        put(long_game / "mods/04-long/romfs/New/D.bgyml.zs", raw_frame(bytes(700)))
+        # (a RomFS path of 4,040 bytes, 19 folders and a file: it fits MAX_PATH (4096 here), and so does its last
+        # folder's listing, but not the file's host path with the game folder before it; made folder by folder, as no
+        # one path reaches it)
+        top = long_game / "mods/04-long/romfs"
+        if len(str(top)) < 60:
+            raise SystemExit("test_mods_sizes: the scratch folder's path is too short for the long path's case")
+        fd, parts = os.open(top, os.O_RDONLY), []
+        for _ in range(19):
+            os.mkdir("d" * 200, dir_fd=fd)
+            nxt = os.open("d" * 200, os.O_RDONLY, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+            parts.append("d" * 200)
+        leaf = "f" * 212 + ".bgyml.zs"
+        with os.fdopen(os.open(leaf, os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=fd), "wb") as out:
+            out.write(raw_frame(bytes(700)))
+        os.close(fd)
+        (long_game / "long_rel.txt").write_text("/".join(parts + [leaf]), encoding="utf-8")
+        run("long", long_game)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-/* (longshot) Profile-guided builds (RX_PGO=gen, nx2/build.py): what clang's -fprofile-instr-generate needs, in place of compiler-rt's
+/* (longshot) Profile-guided builds (RX_PGO=gen, builder/crates/build-compile): what clang's -fprofile-instr-generate needs, in place of compiler-rt's
    profile library, which this toolchain lacks. The counters sit in sections .lprfc/.lprfd/.lprfn; this writes them in LLVM's raw
    format for llvm-profdata.
    HOS_PGO=<path>: every 500 ms, if <path>.reset exists the counters are cleared, and if <path>.dump exists they are written to <path>;
@@ -121,7 +121,7 @@ static DWORD WINAPI pgo_thread(void *arg) {
     return 0;
 }
 
-/* (the renderer's copy reads a variable of its own, nx2/build.py: -DPGO_ENV="RX_VK_PGO_FILE") */
+/* (the renderer's copy reads a variable of its own, builder/crates/build-compile: -DPGO_ENV="RX_VK_PGO_FILE") */
 #ifndef PGO_ENV
 #define PGO_ENV "HOS_PGO"
 #endif

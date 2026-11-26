@@ -2,16 +2,19 @@
 
 The game's movie player counts its updates while a movie plays, and a cutscene that shows a movie places its narration, its
 rumble and its end by that count. The movie's picture and sound follow the clock, so at 120 fps the cues came twice too early:
-narration lines started over each other. nx2/oot_patches.py makes the count's step hos_movie_frames(player), and host/nn_vi.c
-answers 1 while the host gives no frame time (a cap of 60: as shipped) and the frames' time in 60ths, the rest carried to the
-player's next update, while it does (HOS_FPS_MOVIE=0: 1 then too, for comparisons). A game version whose code differs keeps
-its own code and the build goes on with a warning.
+narration lines started over each other. The hook site movie.frameCount (game/sites/sites.toml, a replace site on the
+count's add) makes the count's step hos_movie_frames(player) (game/oot_sites.c), and host/nn_vi.c answers 1 while the host
+gives no frame time (a cap of 60: as shipped) and the frames' time in 60ths, the rest carried to the player's next update,
+while it does (HOS_FPS_MOVIE=0: 1 then too, for comparisons). The update is built with the hook as the lift lowers it (tests/sitehooks.py) and,
+side by side, with the text patch it replaced (OLD, as main had it): both pass the same checks, and the game's own count fails
+them. A game version with no site table keeps its own code.
+
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
 
 python -I -B tests/test_movie_frame_count.py [--cc gcc]
 """
 import argparse
-import contextlib
-import io
 import os
 import re
 import subprocess
@@ -19,21 +22,21 @@ import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import site, callback  # noqa: E402
+import sitehooks  # noqa: E402
 
-# (the shape of the lifted update: the count loaded, one added, stored; the same lines in another function stay as they are)
+# (the lifted update's three instructions: the count loaded, one added, stored; OLD_ADD the text patch's add on main)
+LOAD = "    c->x[8]=recomp_load32(c,c->x[20] + 760);\n"
+ADD = "    { uint64_t _a=c->x[8], _b=1ULL; uint64_t _r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }\n"
+OLD_ADD = ADD.replace("_b=1ULL", "_b=hos_movie_frames(c->x[20])")
 STORE = "    recomp_store32(c,c->x[20] + 760,c->x[8]);\n"
-LIFTED = ('#include "a64.h"\n'
-          "void f_83b7c710(Ctx *__restrict A64_NOESC c) {\n"
-          "    c->x[8] = 0x1ULL;\n" + oot_patches.MOVIE_OLD + STORE + "}\n"
-          "void f_83b7c870(Ctx *__restrict A64_NOESC c) {\n" + oot_patches.MOVIE_OLD + STORE + "}\n")
 HOST_ANCHOR = "uint32_t hos_movie_frames(uint64_t player) {"
 
 
@@ -66,8 +69,10 @@ static volatile uint64_t movie_seen_at;   /* (the host's: the extracted code rea
 static int64_t clock_ns = 1000000000LL;
 static int64_t hos_now_ns(void) { return clock_ns; }
 @HOST@
-/* (the lifted update with the patch, on a small guest: the count at +760 of the player) */
+/* (the lifted update with the hook or the patch, on a small guest: the count at +760 of the player) */
+#define A64_NOESC
 typedef struct { uint64_t x[31]; } Ctx;
+@CALLBACK@
 static uint32_t guest[2][256];
 static uint32_t recomp_load32(Ctx *c, uint64_t a) { (void)c; return guest[a >> 12][(a & 0xfff) / 4]; }
 static void recomp_store32(Ctx *c, uint64_t a, uint64_t v) { (void)c; guest[a >> 12][(a & 0xfff) / 4] = (uint32_t)v; }
@@ -183,63 +188,41 @@ int main(int argc, char **argv) {
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--cc", default="gcc")
+    p.add_argument("--cc", default="clang")
+    p.add_argument("--cargo")
     a = p.parse_args()
+    sitehooks.use(a.cc, a.cargo)
 
-    out = oot_patches.patch_movie_frames(LIFTED)
-    check(out is not None and out.count("_b=hos_movie_frames(c->x[20])") == 1, "the count's step is not the host's, once")
-    update = out[out.index("void f_83b7c710"):out.index("void f_83b7c870")]
-    check("hos_movie_frames" in update and "hos_movie_frames" not in out[out.index("void f_83b7c870"):],
-          "the same lines in another function were patched")
-    check(out.startswith('#include "a64.h"\n' + oot_patches.MOVIE_DECL), "the lifted file does not declare the host's function")
-    back = out.replace(oot_patches.MOVIE_DECL, "", 1).replace(oot_patches.MOVIE_NEW, oot_patches.MOVIE_OLD)
-    check(back == LIFTED, "more than the count's step changed")
-    check(oot_patches.patch_movie_frames(out) == out, "a second run changed a patched file")
-    check(oot_patches.patch_movie_frames(LIFTED.replace("f_83b7c710", "f_83b7c714")) is None,
-          "a file without the function was not left to the caller")
-    for what, other in (("another step", LIFTED.replace("_b=1ULL", "_b=2ULL")),
-                        ("another field", LIFTED.replace("+ 760", "+ 764")),
-                        ("the lines twice", LIFTED.replace(STORE + "}\nvoid f_83b7c870", STORE + oot_patches.MOVIE_OLD + STORE + "}\nvoid f_83b7c870"))):
-        check(oot_patches.patch_movie_frames(other) == other, "a function with %s was patched (another game version)" % what)
-
-    with tempfile.TemporaryDirectory(prefix="movie-count-") as tmp:
-        f = Path(tmp) / "code_000.c"
-        f.write_text(LIFTED, encoding="utf-8", newline="")
-        for run in ("first", "second"):   # (the second over the patched file: counted as made, nothing written)
-            log = io.StringIO()
-            with contextlib.redirect_stdout(log):
-                oot_patches.apply(tmp)
-            check("WARNING: the movie's frame count" not in log.getvalue(), "the %s run warns though the count is patched" % run)
-            check(f.read_text(encoding="utf-8") == out, "the %s run did not leave the patched file" % run)
-        other = LIFTED.replace("_b=1ULL", "_b=2ULL")
-        f.write_text(other, encoding="utf-8", newline="")
-        log = io.StringIO()
-        with contextlib.redirect_stdout(log):
-            oot_patches.apply(tmp)
-        check("WARNING: the movie's frame count was found 0 times" in log.getvalue(), "no warning for a count that was not found")
-        check(f.read_text(encoding="utf-8") == other, "another version's function was changed")
+    x = site("movie.frameCount", "f_83b7c710", "replace", 0xb8)
+    check(("x20:ptr:player" in x.args) and ("w8:u32:count" in x.args), "the site does not name the player and the count")
+    hooked = LOAD + sitehooks.line(x) + "\n" + ADD + sitehooks.REPLACE_END + "\n" + STORE
+    slot = (callback("int hos_site_movie_frame_count(") + "\nvolatile uint8_t hos_site_on_movie_frameCount = 1;\n"
+            "int (*volatile hos_site_fn_movie_frameCount)(Ctx *) = hos_site_movie_frame_count;\n")
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
-    lifted = oot_patches.MOVIE_NEW + STORE
-    fixture = FIXTURE.replace("@HOST@", block(vi, HOST_ANCHOR)).replace("@LIFTED@", lifted)
+    host = block(vi, HOST_ANCHOR)
     with tempfile.TemporaryDirectory(prefix="movie-count-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
-        c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
-        subprocess.run([str(exe)], env=env, check=True)
-        subprocess.run([str(exe)], env=dict(env, HOS_FPS_MOVIE="1"), check=True)   # (read by its value: 1 is on)
-        subprocess.run([str(exe), "off"], env=dict(env, HOS_FPS_MOVIE="0"), check=True)
-        r = subprocess.run([str(exe), "off"], env=env, capture_output=True, text=True)
-        check(r.returncode != 0 and "FAIL:" in r.stderr, "the count is the game's own without HOS_FPS_MOVIE=0")
-        # (the negative control: the game's own step of one an update fails the same checks at 120 fps)
-        plain = Path(tmp) / "plain.c"
-        plain.write_text(FIXTURE.replace("@HOST@", block(vi, HOST_ANCHOR)).replace("@LIFTED@", oot_patches.MOVIE_OLD + STORE),
-                         encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(plain), "-o", str(exe)], check=True)
-        r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
-        check(r.returncode != 0 and "FAIL:" in r.stderr, "the unpatched count passes the checks: they prove nothing")
+        # (the hook, its flag on; the hook with its flag off, the game's own add; the text patch it replaced)
+        for what, callback_c, lifted, works in (("the hook", slot, hooked, True),
+                                                ("the hook off", slot.replace("_frameCount = 1;", "_frameCount = 0;"), hooked, False),
+                                                ("the text patch", "uint32_t hos_movie_frames(uint64_t player);\n", LOAD + OLD_ADD + STORE, True)):
+            text = FIXTURE.replace("@HOST@", host).replace("@CALLBACK@", callback_c).replace("@LIFTED@", lifted)
+            c.write_text(text, encoding="utf-8")
+            subprocess.run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+                            "-Wno-unused-variable", str(c), *sitehooks.objects(tmp, text), "-o", str(exe)], check=True)
+            r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
+            if not works:   # (the negative control: the game's own step of one an update fails the same checks at 120 fps)
+                check(r.returncode != 0 and "FAIL:" in r.stderr, "%s passes the checks: they prove nothing" % what)
+                continue
+            check(r.returncode == 0, "%s: %s" % (what, r.stdout + r.stderr))
+            subprocess.run([str(exe)], env=dict(env, HOS_FPS_MOVIE="1"), check=True)   # (read by its value: 1 is on)
+            subprocess.run([str(exe), "off"], env=dict(env, HOS_FPS_MOVIE="0"), check=True)
+            r = subprocess.run([str(exe), "off"], env=env, capture_output=True, text=True)
+            check(r.returncode != 0 and "FAIL:" in r.stderr, "%s: the count is the game's own without HOS_FPS_MOVIE=0" % what)
+    print("PASS: a movie's frame count steps by the frames' time through its hook site, as through the text patch")
 
 
 if __name__ == "__main__":

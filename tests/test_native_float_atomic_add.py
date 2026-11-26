@@ -32,6 +32,9 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val",
 RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}
 
 ROOT = Path(__file__).resolve().parents[1]
+# (a headers folder the compiler searches anyway, /usr/include: no -isystem for it, which would put it before the C++
+# library's own and break <cstdlib>'s #include_next <stdlib.h>)
+SYSTEM_INCLUDES = (Path("/usr/include"), Path("/usr/local/include"))
 VK = ROOT / "gpu" / "vk"
 SPIRV = VK / "eden" / "shader_recompiler" / "backend" / "spirv"
 
@@ -311,7 +314,7 @@ def check_switch(cxx, tmp, vulkan_headers):
     drivers = " && ".join("VK_DRIVER_ID_%s == %d" % kv for kv in DRIVERS.items())
     cpp.write_text(SWITCH_FIXTURE.replace("@@DRIVERS@@", drivers).replace("@@WANTED@@", wanted), encoding="utf-8")
     # (-isystem: the renderer's headers are not this check's to warn about)
-    headers = ["-isystem", str(VK)] + (["-isystem", str(vulkan_headers)] if vulkan_headers else [])
+    headers = ["-isystem", str(VK)] + (["-isystem", str(vulkan_headers)] if vulkan_headers and Path(vulkan_headers).resolve() not in SYSTEM_INCLUDES else [])
     r = subprocess.run([cxx, "-std=c++20", "-include", str(VK / "compat" / "longshot_env.h"), "-Wall", "-Wextra", "-Werror",
                         *headers, str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
     if r.returncode:

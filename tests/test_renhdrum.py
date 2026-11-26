@@ -15,11 +15,9 @@ out); libopus is compiled by the same C compiler that links it, its paths relati
 crates Cargo.lock names, unpacked from the cache (each checked by its Cargo.lock SHA-256, one that is not refused); what
 fails the check is not copied out. A Rust download whose SHA-256 is not the pinned one is refused and not kept.
 
-The Builder's release builds the DLL (.forgejo/workflows/build-windows.yml) and scripts/builder_package.py --renhdrum puts
-it where nx2/build.py looks in a player's tools (tools/third_party/renhdrum/renhdrum.dll), refusing one that fails the
-check or is not a Windows DLL; the step builds it for Windows, on the Linux runner the release is made on (without
---target it built a Linux library there); scripts/check_windows_files.py wants it in the zip. The AppImage's workflow builds the .so and scripts/linux/
-appimage.sh carries it. third_party/renhdrum holds the source, with its upstream archive named.
+The release builds the DLL and the .so (.forgejo/workflows/build-windows.yml, build-linux.yml; the DLL for Windows on the
+Linux runner, --target windows) and longshot-builder carries them at third_party/renhdrum/ in its tree (longshot-builder dev release
+sources --add), where a player's build takes them. third_party/renhdrum holds the source, with its upstream archive named.
 
     python -I -B tests/test_renhdrum.py
 """
@@ -206,7 +204,7 @@ class Build(unittest.TestCase):
         self.cc = os.path.join(self.dir, "cc" + exe)   # (linux: the C compiler that links it)
         open(self.cc, "wb").close()
         os.chmod(self.cc, 0o755)
-        self.bin = os.path.join(self.cache, "rust", "bin")
+        self.bin = os.path.join(self.cache, "builder", "bin")
 
     def build(self, dll, target="windows"):
         calls = []
@@ -249,11 +247,11 @@ class Build(unittest.TestCase):
         flags = env["RUSTFLAGS"]
         for want in ("-C target-feature=+crt-static", "--no-insert-timestamp", "--remap-path-prefix=%s=renhdrum" % cwd):
             self.assertIn(want, flags)
-        self.assertTrue(env["CARGO_HOME"].startswith(self.cache))
+        self.assertTrue(env["CARGO_HOME"].startswith(self.cache + "-renhdrum-work"), "the build is made beside the cache, never in it")
         self.assertEqual(env["CC_x86_64_pc_windows_gnullvm"], self.linker)   # (libopus: the compiler that links it)
         self.assertEqual(env["AR_x86_64_pc_windows_gnullvm"], os.path.join(self.mingw, "bin", "llvm-ar" + (".exe" if os.name == "nt" else "")))
         self.assertIn("-ffile-prefix-map=", env["CFLAGS_x86_64_pc_windows_gnullvm"])
-        self.assertFalse(os.path.exists(os.path.join(self.cache, "work")), "the work folder is left behind")
+        self.assertFalse(os.path.exists(self.cache + "-renhdrum-work"), "the work folder is left behind")
 
     def test_the_linux_build(self):
         rc, out, calls = self.build(elf(), "linux")
@@ -365,36 +363,16 @@ class Ships(unittest.TestCase):
         for name in bound:
             self.assertIn(name + "(", header)
 
-    def test_the_release_builds_and_packs_it(self):
-        wf = (ROOT / ".forgejo" / "workflows" / "build-windows.yml").read_text(encoding="utf-8")
-        step = wf[wf.index("- name: renhdrum.dll"):wf.index("- name: Package folder")]
-        self.assertIn('scripts/renhdrum.py build --target windows --llvm-mingw "$LLVM_MINGW"', step)
-        package = wf[wf.index("- name: Package folder"):]
-        self.assertIn('--renhdrum "$RUNNER_TEMP/renhdrum/renhdrum.dll"', package[:package.index("- name: The zip")])
-        checker = load("check_windows_files_under_test", ROOT / "scripts" / "check_windows_files.py")
-        self.assertIn("tools/third_party/renhdrum/renhdrum.dll", checker.BUILDER)
-
-    def test_the_package(self):
-        bp = load("builder_package_under_test", ROOT / "scripts" / "builder_package.py")
-        with tempfile.TemporaryDirectory() as d:
-            publish, setup = os.path.join(d, "publish"), os.path.join(d, "setup.exe")
-            os.makedirs(publish)
-            open(setup, "wb").close()
-            for name, data, want in (("good.dll", pe(), 0), ("bad.dll", pe(exports=()), 1), ("elf.dll", elf(), 1)):
-                dll, out = os.path.join(d, name), os.path.join(d, "out-" + name)
-                with open(dll, "wb") as f:
-                    f.write(data)
-                a = mock.MagicMock(out=out, publish=publish, setup=setup, third_party_objects=None, renhdrum=dll)
-                with mock.patch.object(bp, "tracked", lambda *p: []), mock.patch.object(bp, "state_list", lambda t: 0), \
-                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(bp.package(a), want, name)
-                shipped = os.path.join(out, "tools", "third_party", "renhdrum", "renhdrum.dll")
-                self.assertEqual(os.path.isfile(shipped), want == 0, name)
-        # (a player's build takes it from there: the tools' copy of the checkout's layout)
-        build = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        self.assertIn('rh = os.path.join(kit.HERE, "..", "third_party", "renhdrum", name)', build)
-        self.assertIn('copy_renhdrum(out, "renhdrum.dll")', build)
-        self.assertIn('copy_renhdrum(out, "renhdrum.so")', build)
+    def test_the_release_builds_and_carries_it(self):
+        for wf, target, name in (("build-windows.yml", "windows", "renhdrum.dll"), ("build-linux.yml", "linux", "renhdrum.so")):
+            text = (ROOT / ".forgejo" / "workflows" / wf).read_text(encoding="utf-8")
+            with self.subTest(wf):
+                self.assertIn("scripts/renhdrum.py build --target %s" % target, text)
+                self.assertIn('--add "third_party/renhdrum/%s=$RUNNER_TEMP/renhdrum/%s"' % (name, name), text)
+        # (a player's build takes it from there: the tree longshot-builder carries, its compile)
+        build = (ROOT / "builder" / "crates" / "build-compile" / "src" / "lib.rs").read_text(encoding="utf-8")
+        self.assertIn('root.join("third_party/renhdrum/renhdrum.dll")', build)
+        self.assertIn('root.join("third_party/renhdrum/renhdrum.so")', build)
 
 
 if __name__ == "__main__":

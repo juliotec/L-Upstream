@@ -1,7 +1,8 @@
 # System requirements
 
 **Your game copy:** program `0400486024DEC000` · update **v131072** · build `e0f3ccfa`. Use a `.nup` file, or the
-`romfs` and `exefs` folders. Other game versions are not supported. The launcher checks the files you choose before it
+`romfs` and `exefs` folders, and keep it where it is: the game reads its files from it. Other game versions are not
+supported. The launcher checks the files you choose before it
 builds; if it reports another build, compare its message with `e0f3ccfa`. The launcher's own version (such as
 `v1.0.0-rc.4`) has nothing to do with the game's update or build.
 
@@ -16,7 +17,7 @@ performance depends on the resolution and settings you choose.
 | **Mesh shaders** | Not required: without them, Longshot draws through a slower compute fallback. | **Strongly recommended:** NVIDIA RTX 20 series and newer, or AMD RX 6000 series and newer. |
 | **Video memory (VRAM)** | **4 GB**, with the in-game Minimum (4GB) quality preset. | **12 GB or more.** |
 | **System memory (RAM)** | **16 GB.** See the memory note below. | **32 GB or more.** |
-| **Storage** | **About 60 GB free while building.** A hard drive works, but builds are much slower. | **An SSD with about 60 GB free.** |
+| **Storage** | **About 5 GB free** for the build (the builder keeps about 2 GB of it for quick updates; [how it adds up](../dev/reference/build.md#disk-space)), besides your game copy. A hard drive works, but builds are much slower. | **An SSD with about 5 GB free.** |
 
 **Memory:** recent runs used roughly 13 to 19 GiB for the game alone, depending on the build, the driver and the scene,
 so even a 16 GB PC can need swap. Leave room for the desktop and other programs. Swap can prevent an out-of-memory exit,
@@ -30,8 +31,8 @@ for what to set.
 **Drivers:** an up-to-date graphics driver with Vulkan 1.3. On Linux, Mesa or NVIDIA's driver; Ubuntu 22.04, Debian 12,
 Fedora, Arch and SteamOS all work.
 
-**Download:** an internet connection. The launcher installs the builder, which brings its own compiler and tools: there
-is nothing else to install.
+**Download:** an internet connection. The launcher installs the builder, one file that brings its own compiler and tools
+(an update downloads only what changed): there is nothing else to install.
 
 **We do not host, store, or distribute game files.** You need your own supported copy, and Longshot builds it on your
 PC. Next: [install Longshot](getting-started.md).

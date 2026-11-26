@@ -1,4 +1,4 @@
-"""The game folder's cache/ and logs/ (host/game_layout.c), on Linux with the POSIX shim: a game folder a build from before left
+"""The game folder's cache/ and logs/ (game/game_layout.c), on Linux with the POSIX shim: a game folder a build from before left
 its caches and logs in, loose beside the game, started once. No game: authored placeholder files only.
 
 - cache/, cache/prompts and logs/ are made;
@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 
 RUN_ALL_ARGS = ["--cc", "gcc"]
-RUN_ALL_SKIP = {"windows": "builds host/game_layout.c with the Linux POSIX shim"}
+RUN_ALL_SKIP = {"windows": "builds game/game_layout.c with the Linux POSIX shim"}
 ROOT = Path(__file__).resolve().parents[1]
 
 MAIN = r'''
@@ -46,7 +46,7 @@ CUT_SHORT = ("mkw_vk_pipelines.bin.tmp", "mkw_vk_pipelines_play_4.bin.tmp", "mkw
 OLD_LOCKS = ("longshot_programs.bin.lock", "longshot_programs.zst.bin.lock")
 MADE_AGAIN = ("prompts/Common.bntx.zs", "prompts/Common.key", "prompts/External.bfotf.zs", "prompts/rsizetable.mod.zs")
 STAY = ("image.bin", "language.txt", "longshot_options.ini", "longshot_env.txt", "longshot_shaders.bin",
-        "longshot_pipeline_states_shipped.bin", "prompts/Common.bntx", "prompts/External.bfotf", "prompts/rsizetable.zs",
+        "longshot_pipeline_states_shipped.bin", "prompts/Common.bntx.base", "prompts/External.bfotf", "prompts/rsizetable.zs",
         "prompts/xbox/textures.bin", "user/save/0100/file")
 
 
@@ -89,9 +89,11 @@ def main():
         tmp = Path(tmp)
         (tmp / "main.c").write_text(MAIN)
         built = tmp / "layout"
-        inc = ["-std=gnu11", "-I", str(ROOT / "host" / "posix"), "-I", str(ROOT / "host")]
+        # (host/game_host.h's part game_layout.c uses, the game folder's paths: the whole of it needs the lift's runtime)
+        (tmp / "game_host.h").write_text('#include "hos_paths.h"\n')
+        inc = ["-std=gnu11", "-I", str(tmp), "-I", str(ROOT / "host" / "posix"), "-I", str(ROOT / "host"), "-I", str(ROOT / "game")]
         layout_o = tmp / "game_layout.o"   # (no warning in it; the shim is built as the game builds it)
-        subprocess.run([a.cc, *inc, "-Wall", "-Wextra", "-Werror", "-c", str(ROOT / "host" / "game_layout.c"), "-o", str(layout_o)],
+        subprocess.run([a.cc, *inc, "-Wall", "-Wextra", "-Werror", "-c", str(ROOT / "game" / "game_layout.c"), "-o", str(layout_o)],
                        check=True)
         subprocess.run([a.cc, *inc, str(layout_o), str(ROOT / "host" / "posix" / "win32_posix.c"), str(tmp / "main.c"),
                         "-o", str(built), "-lpthread", "-ldl"], check=True)

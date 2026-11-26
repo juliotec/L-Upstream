@@ -1,0 +1,28 @@
+[package]
+name = "game-files"
+description = "The player's game files: the .nup read and unpacked, the code modules loaded, the dump checked, the mods' ExeFS patches and layout, the game's title, the disk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+build-core.workspace = true
+lz4_flex.workspace = true
+ruzstd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+
+[features]
+# (the tests' synthetic .nup builder, `testkit`, for another crate's tests: builder/crates/synthetic-game)
+testkit = []
+
+[lints]
+workspace = true

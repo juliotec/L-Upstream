@@ -12,6 +12,10 @@ int main() {
     using ur::DLAA;
     using ur::DLSS;
     using ur::GAME;
+    CHECK("NR engines", ur::supports_nr(ur::DLSS) && ur::supports_nr(ur::DLAA) && ur::supports_nr(ur::FSR3) &&
+                        ur::supports_nr(ur::FSR4) && ur::supports_nr(ur::FSR4_AA));
+    CHECK("unvalidated NR routes excluded", !ur::supports_nr(ur::GAME) && !ur::supports_nr(ur::OFF) &&
+                        !ur::supports_nr(ur::XESS) && !ur::supports_nr(ur::XESS_AA));
     // (the values saved before keep their shares; the new ones are DLSS's ratios, each a twelfth of the output)
     CHECK("saved values keep their shares", ur::percent(0) == 0 && ur::percent(1) == 100 && ur::percent(2) == 75 &&
                                                 ur::percent(3) == 67 && ur::percent(4) == 50);

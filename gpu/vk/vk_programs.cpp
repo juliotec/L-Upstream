@@ -388,12 +388,9 @@ void programs_load_decide(bool native_mesh) {
              load_default::kStartRamMb);
     const load_default::Choice c = load_default::choose(getenv("RX_VK_LOAD"), native_mesh, marker,
                                                         env_on("RX_VK_PROGRAM_CACHE_ZSTD"), precompile_wanted());
-    const bool host_v14 = (!getenv("RX_VK_LOAD") && host && host->version <= 14);
-    const bool load_create = host_v14 ? false : c.create;
-    load_mode.store(load_create ? 1 : 0, std::memory_order_release);
+    load_mode.store(c.create ? 1 : 0, std::memory_order_release);
     logf("vk: programs are loaded %s: %s (RX_VK_LOAD=create or start says which)",
-         load_create ? "when the game makes them (create)" : "before the title (start)",
-         host_v14 ? "executable host has version <= 14 (load-on-create requires host >= 21)" : c.why);
+         c.create ? "when the game makes them (create)" : "before the title (start)", c.why);
 }
 bool programs_load_at_create() { return load_mode.load(std::memory_order_acquire) == 1; }
 namespace {

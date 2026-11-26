@@ -16,7 +16,7 @@ so new engines are added at the end.
 | 0 | The game's own network | — | Nothing. The TAAU stand-in replaces it where the network would run on software multiplies (`RX_VK_TAAU_KEYS`) |
 | 1, 2 | NVIDIA DLSS, DLAA | [`vk_dlss.cpp`](../../../gpu/vk/vk_dlss.cpp) | A build with NVIDIA's NGX SDK (`LONGSHOT_NGX`), an RTX GPU, NGX's runtime |
 | 3 | AMD FSR 3.1 | [`vk_fsr3.cpp`](../../../gpu/vk/vk_fsr3.cpp) | Nothing extra. AMD's shaders are compiled into every build (`scripts/shaders.py fsr3`) |
-| 4, 5 | AMD FSR 4, its native AA | [`vk_fsr4.cpp`](../../../gpu/vk/vk_fsr4.cpp) | A build with `--fsr` (`LONGSHOT_FSR`) and AMD's FSR 4 library on the player's PC |
+| 4, 5 | AMD FSR 4, its native AA | [`vk_fsr4.cpp`](../../../gpu/vk/vk_fsr4.cpp) | A build with `--upscaler fsr4` and AMD's FSR 4 library on the player's PC |
 | 6 | Off | `temporal_off` in [`vk_temporal.cpp`](../../../gpu/vk/vk_temporal.cpp) | Nothing. The network is skipped and its input is stretched with a linear filter |
 | 7, 8 | Intel XeSS, its Native AA | [`vk_xess.cpp`](../../../gpu/vk/vk_xess.cpp) | Windows, and Intel's `libxess.dll` beside the game |
 
@@ -34,24 +34,27 @@ instead runs on its own inputs (`vk_fsr3_inputs.cpp`), which carry the camera's 
 
 ## Vendor files
 
-`make_game.py` fetches a vendor's files only when asked and only with its license accepted: a fetch flag without the
-matching `--accept-*-license` stops the build. `scripts/fetch.py` does the download, at one pinned commit, and checks
-every file against its SHA-256 ([setup](../setup.md#upscaler-sdks-optional)). Each kept folder is reused by the next
-build, which downloads only what is missing or changed. How players turn them on is in
+`longshot-builder` downloads a vendor's files only when asked (`--upscaler dlss,fsr4,xess`) and only with its license
+accepted (`--accept-licenses nvidia,amd,intel`, which a launcher passes once the player said yes; `license_not_accepted`
+otherwise). Each file comes from its vendor at one pinned release, is checked against its SHA-256, and is kept in the
+builder's cache (`<cache>/runtimes/`) for every later build (`builder/crates/build-driver/src/runtimes.rs`). The accepted
+licenses are kept in the profile's `profile.json` (`licenses`, each for its pin), so its updates need no new answer
+until a pin moves. `scripts/fetch.py` downloads the same
+files for a developer ([setup](../setup.md#upscaler-sdks-optional)). How players turn them on is in
 [advanced setup](../../user/advanced.md#optional-upscalers).
 
-| Engine | `make_game.py` | Kept in | The game looks in, in order |
+| Engine | `--upscaler` | What the build puts in the game folder | The game looks in, in order |
 |---|---|---|---|
-| DLSS | `--fetch-ngx-sdk --accept-nvidia-license`, or `LONGSHOT_NGX_SDK=<sdk folder>` for an SDK you fetched. Both runtimes (`nvngx_dlss`, `nvngx_dlssg`) go into the game folder's `ngx` | `LONGSHOT_NGX_SDK`, else `work/ngx-sdk` | `RX_VK_DLSS_DIR`, the game folder's `ngx`, then `%LOCALAPPDATA%\Longshot\ngx` (Windows) or `$XDG_DATA_HOME/longshot/ngx`, else `~/.local/share/longshot/ngx` (Linux). NGX takes the newest runtime it finds across them |
-| FSR 4 | `--fsr --fetch-fsr-runtime --accept-amd-license` (Windows): FSR SDK v2.4.0 (FSR 4.1.2), `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll`, with `LICENSE-AMD-FSR-SDK.md` | `LONGSHOT_FFX_SDK`, else `work/ffx-sdk` | `RX_VK_FSR_DIR`, the executable's folder (`bin`), then the game folder |
-| XeSS | `--fetch-xess-runtime --accept-intel-license` (Windows): `libxess.dll` 2.0.2.68 (78 MB), with Intel's license and notices | `LONGSHOT_XESS_SDK`, else `work/xess-sdk` | `RX_VK_XESS_DIR`, the executable's folder, then the game folder |
+| DLSS | `dlss`: DLSS v310.9.16; built in from NVIDIA's SDK (`LONGSHOT_NGX_SDK` overrides it, and nothing of NVIDIA's is downloaded) | `nvngx_dlss`, `nvngx_dlssg` in `ngx/` | `RX_VK_DLSS_DIR`, the game folder's `ngx`, then `%LOCALAPPDATA%\Longshot\ngx` (Windows) or `$XDG_DATA_HOME/longshot/ngx`, else `~/.local/share/longshot/ngx` (Linux). NGX takes the newest runtime it finds across them |
+| FSR 4 | `fsr4`: built in from AMD's MIT headers in `third_party/fidelityfx` | Windows: FSR SDK v2.4.0 (FSR 4.1.2), `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll`, with `LICENSE-AMD-FSR-SDK.md`, beside the game | `RX_VK_FSR_DIR`, the executable's folder (`bin`), then the game folder |
+| XeSS | `xess` (in every Windows build) | Windows: `libxess.dll` 2.0.2.68 (78 MB), with Intel's license and notices, beside the game | `RX_VK_XESS_DIR`, the executable's folder, then the game folder |
 
-- A game folder that already holds other versions of AMD's or Intel's files (a newer SDK put there by hand) keeps
-  them, and the build says so.
-- `--fsr` is kept by a rebuild with `--update`; `--no-fsr` takes it out. XeSS is in every Windows build and runs once
-  `libxess.dll` is there.
-- On Linux both fetch flags only say there is nothing to fetch: AMD publishes no Linux FSR 4 runtime (a Vulkan
-  `amd_fidelityfx_upscaler_vk.so` put beside the game stands in), and there is no XeSS for Linux.
+- A vendor DLL in the game folder that is not the pinned one (a newer one put there by hand) is left alone.
+
+- `longshot-builder update` keeps the folder's upscalers; `--upscaler` given to it changes them (`--upscaler none` takes
+  them out).
+- On Linux AMD publishes no FSR 4 runtime (a Vulkan `amd_fidelityfx_upscaler_vk.so` put beside the game stands in),
+  and there is no XeSS for Linux.
 - `RX_VK_FSR_DIR` and `RX_VK_XESS_DIR` are paths, which `longshot_env.txt` leaves out: set them in the environment or a
   `HOS_ENV_FILE` file. `RX_VK_DLSS_DIR` is the one path `longshot_env.txt` takes ([switches](switches.md#longshot_envtxt)).
 - Never put NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's driver. Without `nvngx_dlssg.dll` in a
@@ -107,7 +110,8 @@ AMD's own `IsSupported` choose (FP8 on RDNA 4, full INT8 on RDNA 3 and Strix Hal
 on Strix Point and Van Gogh); Lite forces the INT8 Lite provider.
 
 The hook is for one file: FSR SDK 2.4's `amd_fidelityfx_upscaler_vk.dll` (4.1.2.4555), named by the SHA-256
-`scripts/fetch.py` pins for it (`fsr4_models.cpp`, `kKnown`). `fsr4_models::load_known` hashes the file beside AMD's
+the builder (`build-driver` `runtimes.rs`, checked against the table by its test) and `scripts/fetch.py` pin for it
+(`fsr4_models.cpp`, `kKnown`). `fsr4_models::load_known` hashes the file beside AMD's
 loader; only when it is that file does it load it from that path (before the loader asks for the name, so the loader's
 own load finds this module), pin it, check that the module's file is the one hashed, and scan it. Any other file is not
 loaded here and not scanned. `fsr4_models::install` then patches only each provider's `IsSupported` entry (`vtable[2]`),
@@ -179,7 +183,7 @@ chain's images.
 
 ## Camera jitter
 
-The jitter is applied in the game's code (`nx2/oot_jitter.py`, in every lift): the scene's projection gets a Halton (2, 3)
+The jitter is applied in the game's code (the hook sites `jitter.view*`, game/oot_sites.c): the scene's projection gets a Halton (2, 3)
 sub-pixel offset in its uniform buffers only, so shadows and culling see the unjittered camera.
 
 1. After each evaluation, the chain publishes one `MkwVkJitter` (render width, height, sequence length) in a

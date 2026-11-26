@@ -1,0 +1,17 @@
+[package]
+name = "passes"
+description = "Transformations of the mid IR: what the lifter does to a function between the semantics and LLVM IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mir.workspace = true
+
+[dev-dependencies]
+a64.workspace = true
+sem.workspace = true
+
+[lints]
+workspace = true

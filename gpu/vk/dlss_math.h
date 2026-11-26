@@ -26,7 +26,7 @@ static inline void dlss_jitter_pixels(unsigned frame, int phases, float out[2]) 
     out[1] = dlss_halton(i, 3) - 0.5f;
 }
 
-/* The frame's jitter for a projection matrix p (row major, as the game fills its views' uniform buffers: nx2/oot_jitter.py),
+/* The frame's jitter for a projection matrix p (row major, as the game fills its views' uniform buffers: the hook sites jitter.view*),
    in clip space (what p[0][2] and p[1][2] get) into out, for a scene of w x h pixels; 0 (none) when p is not one of the
    picture's: not perspective (its w row is not 0 0 -1 0: a shadow map's, the HUD's) or not of 16:9 or the window's ratio
    wide (0: 16:9 only), or when there is no scene size (DLSS not drawing) */

@@ -1,0 +1,17 @@
+[package]
+name = "image"
+description = "The game's image: built from its code modules (laid out where the emulator loads them, patched, relocated and bound) and read back as the lift lays it out"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+build-core.workspace = true
+game-files.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

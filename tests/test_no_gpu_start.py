@@ -11,15 +11,16 @@ window:
 - What the PC says of its graphics driver when no device is listed (gpu/vk/compat/longshot_no_gpu.h, on made-up /sys and
   /proc trees): an NVIDIA card with NVIDIA's driver not loaded on a real-time kernel, not loaded on another kernel, loaded
   with no Vulkan device, and anything else not known; the cards' PCI ids in the line.
-- The crash window (host/hos_crash_dialog.h) takes the line emitted by pick_device and suggests troubleshooting for the
-  observations, or "found no graphics card" when nothing more is known. A
-  log without the line keeps the Vulkan 1.3 message.
+- The crash window is the builder's (builder/crates/crash/src/facts.rs, whose own tests check its decisions): when the
+  crate is in the tree, its text reads the line pick_device emits, each cause key the probe writes, the displays' line and
+  the Vulkan 1.3 one, and has each cause's troubleshooting. Without the crate that part is skipped.
 
     python -I -B tests/test_no_gpu_start.py --cc clang --cxx clang++
 """
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -124,23 +125,7 @@ static const char *fixture_root;
 #include "pick_device.inc"
 int main(int argc, char **argv) { (void)argc; fixture_root = argv[1]; return pick_device() ? 1 : 0; }
 """
-DIALOG = r"""
-#include "hos_crash_dialog.h"
-int main(int argc, char **argv) {
-    HosCrashLog f;
-    memset(&f, 0, sizeof f);
-    for (int i = 1; i < argc; i++) hos_crash_log_line(&f, argv[i]);
-    HosCrashRecord r;
-    hos_crash_record_parse("", &r);
-    const int v = hos_crash_verdict(&r, &f, 1, 1, 0), cause = hos_crash_cause(v, &r, &f, 1, 1);
-    char message[2000];
-    hos_crash_message(message, sizeof message, v, hos_crash_stage(&f), cause, 0);
-    printf("vulkan=%d failed=%d verdict=%d\n%s\n", f.vulkan, hos_crash_start_failed(&f), v, message);
-    return 0;
-}
-"""
-HEAD = ["[hos host] longshot nightly-680-9dd41326 (source e287b3d8)", "[hos host] run_id: 0123456789abcdef0123456789abcdef"]
-START_SHOWN = 3   # (HOS_CRASH_SHOW_START)
+FACTS_RS = ROOT / "builder" / "crates" / "crash" / "src" / "facts.rs"
 
 
 def write(root, files):
@@ -175,7 +160,7 @@ PCS = {
                 "sys/kernel/realtime": "1\n"}, "unknown"),
     "empty": ({}, "unknown"),
 }
-MESSAGES = {   # (what the window must say for each cause, and what it must not)
+MESSAGES = {   # (what the window says for each cause)
     "nvidia-rt": (("real-time", "standard kernel"), "Update your graphics driver"),
     "nvidia-unloaded": (("NVIDIA's kernel module isn't loaded", "Restart your PC"), "real-time"),
     "nvidia-vulkan": (("NVIDIA's kernel module is loaded", "Vulkan"), "real-time"),
@@ -229,14 +214,13 @@ def check_display(cxx, tmp):
     return lines
 
 
-def check_probe_and_window(cc, cxx, tmp, display_lines):
+def check_probe(cxx, tmp):
     if not NO_GPU_H.is_file():
         raise SystemExit("FAIL: nothing asks the PC why Vulkan listed no GPU (%s missing): the window after a start where "
                          "NVIDIA's driver is not loaded (a real-time kernel) can only say to update the graphics driver"
                          % NO_GPU_H.relative_to(ROOT).as_posix())
     suffix = ".exe" if os.name == "nt" else ""
-    (tmp / "dialog.c").write_text(DIALOG, encoding="utf-8")
-    probe, dialog = tmp / ("probe" + suffix), tmp / ("dialog" + suffix)
+    probe = tmp / ("probe" + suffix)
     main_src = (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8")
     (tmp / "pick_device.inc").write_text(block(main_src, "bool pick_device() {") + "\n", encoding="utf-8")
     (tmp / "pick.cpp").write_text(PICK, encoding="utf-8")
@@ -246,7 +230,6 @@ def check_probe_and_window(cc, cxx, tmp, display_lines):
                             timeout=120, creationflags=flags)
     if result.returncode:
         raise SystemExit("FAIL: pick_device does not compile:\n" + result.stdout + result.stderr)
-    compile_c(cc, tmp / "dialog.c", dialog, ROOT / "host")
     for name, (files, want) in PCS.items():
         root = tmp / ("pc-" + name)
         root.mkdir()
@@ -258,24 +241,29 @@ def check_probe_and_window(cc, cxx, tmp, display_lines):
         cards = "1002:744c" if name == "amd" else "10de:2d05" if files else ""
         if cards not in line or "10de:22eb" in line or "8086:7ae0" in line:
             raise SystemExit("FAIL: %s: the graphics cards in the line are wrong: %r" % (name, line))
-        log = HEAD + ["[hos host] " + s for s in output] + ["[hos host] vk: pick_device failed",
-                      "[hos host] rx: mkwvk_init returned NULL: nothing is drawn"] + display_lines[:1]
-        out = run(dialog, *log)
-        if not out.startswith("vulkan=1 failed=1 verdict=%d" % START_SHOWN):
-            raise SystemExit("FAIL: %s: the window does not show a start that failed: %s" % (name, out))
-        need, never = MESSAGES[want]
-        if any(n not in out for n in need) or never in out:
-            raise SystemExit("FAIL: %s (%s): the window does not name the cause (wants %s, never %r):\n%s"
-                             % (name, want, need, never, out))
-    print("PASS: the PC's driver for %d made-up PCs, and the window names each cause" % len(PCS))
-    out = run(dialog, *HEAD, "[hos host] vk: no Vulkan 1.3 GPU")
-    if "Vulkan 1.3" not in out or "found no graphics card" in out:
-        raise SystemExit("FAIL: a log without the line (devices, none with Vulkan 1.3) lost its message:\n" + out)
-    for line in display_lines:
-        out = run(dialog, *HEAD, line)
-        if not out.startswith("vulkan=1 failed=1 verdict=%d" % START_SHOWN):
-            raise SystemExit("FAIL: the crash window does not read %r as a start that failed: %s" % (line, out))
-    print("PASS: devices without Vulkan 1.3 keep their message; both displays' line is a start that failed")
+    print("PASS: the PC's driver for %d made-up PCs, each cause in the line" % len(PCS))
+
+
+def check_window(display_lines):
+    """The builder's crash window reads these lines (builder/crates/crash/src/facts.rs): its text, when it is here"""
+    if not FACTS_RS.is_file():
+        print("SKIP: %s is not in this tree: the crash window's reading of the lines is not checked"
+              % FACTS_RS.relative_to(ROOT).as_posix())
+        return
+    # (a Rust string continued on the next line, joined, so a phrase split there is found)
+    facts = re.sub(r"\\\n\s*", "", FACTS_RS.read_text(encoding="utf-8"))
+    need = ['"] vk: no Vulkan device (cause "', '"] vk: no Vulkan 1.3 GPU"']
+    need += ['"nvidia-rt"', '"nvidia-unloaded"', '"nvidia-vulkan"']
+    if any(not line.startswith("[hos host] display: the renderer did not start") for line in display_lines):
+        raise SystemExit("FAIL: the displays' line is not the one the crash window reads: %r" % display_lines)
+    need.append('"] display: the renderer did not start"')
+    for cause, (phrases, _never) in MESSAGES.items():
+        need += list(phrases)
+    missing = [n for n in need if n not in facts]
+    if missing:
+        raise SystemExit("FAIL: %s does not read or say %s: the window after a start with no GPU cannot name its cause"
+                         % (FACTS_RS.relative_to(ROOT).as_posix(), ", ".join(map(repr, missing))))
+    print("PASS: the builder's crash window reads the no-GPU line, its causes and both displays' line")
 
 
 def main():
@@ -298,7 +286,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="longshot-no-gpu-", dir=temp_root) as folder:
         tmp = Path(folder)
         lines = check_display(cc, tmp)
-        check_probe_and_window(cc, cxx, tmp, lines)
+        check_probe(cxx, tmp)
+    check_window(lines)
     return 0
 
 

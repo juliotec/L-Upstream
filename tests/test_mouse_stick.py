@@ -102,7 +102,7 @@ def main():
     args = parser.parse_args()
     hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
     cut = "\n".join((
-        between(hid, "enum { MOUSE_TICK_NS", "/* (host/oot_menu.c) A drag"),   # the panning: its move and its tick
+        between(hid, "enum { MOUSE_TICK_NS", "/* (game/oot_menu.c) A drag"),   # the panning: its move and its tick
         between(hid, "static int invert = -1;", "static void mouse_setup(void)"),
         block(hid, "static void mouse_setup(void)"),
         block(hid, "static int mouse_stick("),

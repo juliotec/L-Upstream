@@ -1,18 +1,16 @@
 """An incomplete dump's damaged textures are read as a whole texture of their kind, whoever unpacked the romfs
-(host/nn_fs.c OpenFile, host/oot_damaged_files.c).
+(host/nn_fs.c OpenFile, game/oot_damaged_files.c).
 
-The 23.3 GB dumps hold three .zs textures that start with zeros instead of a zstd frame. The builder copies a stand-in
-over each (nx2/nup.py stand_in_damaged), but only in a romfs it unpacked itself; a romfs another tool unpacked kept them,
+The 23.3 GB dumps hold three .zs textures that start with zeros instead of a zstd frame. The builder points each at a
+stand-in (builder/crates/game-files romfs.rs stand_ins), but only in a .nup's index; a romfs another tool unpacked kept them,
 and the game asked for the model that uses the Great Fairy Fountain's floor about 15 times a second for as long as Link
-stood in Kokiri or the Market. The actual OpenFile is compiled with host/oot_damaged_files.c and a made-up romfs in a
+stood in Kokiri or the Market. The actual OpenFile is compiled with game/oot_damaged_files.c and a made-up romfs in a
 temporary folder (no game bytes), and checked:
 
 - a damaged texture (zeros where the frame starts) opens its stand-in's bytes, and one warning names both, once;
 - the same name whole (a dump that is complete) is read as it is, with no line;
 - another file is read as it is;
-- a damaged texture whose stand-in is missing (or damaged too) is read as it is, with a warning, once;
-- each pair in host/oot_damaged_files.c's table is what nx2/nup.py's stand_in_for picks for that damaged file, so the
-  host and the builder put the same texture in its place.
+- a damaged texture whose stand-in is missing (or damaged too) is read as it is, with a warning, once.
 
 python -I -B tests/test_damaged_rom_files.py [--cxx clang++]
 """
@@ -28,13 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: p
 from srccut import block   # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import nup   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ENV_ON_H = str(ROOT / "gpu" / "vk" / "compat" / "longshot_env.h")
-HOST_FILE = ROOT / "host" / "oot_damaged_files.c"
+HOST_FILE = ROOT / "game" / "oot_damaged_files.c"
 
 FAIRY = "Tex/CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm.bntx.zs"
 FAIRY_STAND_IN = "Tex/CmnTex_Map_Sand_FairyFountain_Sand_A_Nrm.bntx.zs"
@@ -68,6 +64,16 @@ typedef struct { DWORD Offset, OffsetHigh; } OVERLAPPED;
 #define FILE_ATTRIBUTE_NORMAL 0x80
 #endif
 typedef struct { uint64_t x[32]; } Ctx;
+/* (the RomFS's reader, host/romfs.c over host/romfs_index.c, compiled as C and linked in: the folder backend, no index) */
+extern "C" {
+#include "romfs.h"
+#include "romfs_index.h"
+const char *hos_romfs_dir;
+HosRomfsIndex *hos_romfs_index;
+size_t hos_zs_frame(void *d, size_t cap, const void *s, size_t n) { (void)d, (void)cap, (void)s, (void)n; return 0; }
+size_t hos_zs_frame_head(void *d, size_t cap, const void *s, size_t n) { (void)d, (void)cap, (void)s, (void)n; return 0; }
+void hos_log(const char *f, ...);   /* (romfs.c's too: below) */
+}
 #define HLE(sym) void imp_##sym(Ctx *c)
 #define ARG(n) (c->x[n])
 #define RET(v) (c->x[0] = (uint64_t)(v))
@@ -148,7 +154,7 @@ static Save *save_for_path(const char *path, char *rel) { (void)path, (void)rel;
 static int save_relative(const char *p) { (void)p; return 0; }
 static int save_path(char *out, const char *root, const char *rel) { (void)out, (void)root, (void)rel; return 0; }
 static SaveNote *save_note(Save *s, const char *rel, char kind) { (void)s, (void)rel, (void)kind; return NULL; }
-typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; Save *save; char relative[HOS_FS_PATH]; } Handle;
+typedef struct { HANDLE h; int writable; char path[HOS_FS_PATH]; Save *save; char relative[HOS_FS_PATH]; HosRomfsFile *rom; } Handle;
 static Handle *opened;
 static uint64_t new_handle(Handle *h) { opened = h; return 7; }
 static int writes_open;
@@ -172,7 +178,12 @@ static int open_and_read(const char *rel, char *out, size_t cap) {
     if (c.x[0] || !opened) return 0;
     static char whole[1 << 16];
     DWORD n = 0;
-    ReadFile(opened->h, whole, sizeof whole, &n, NULL);
+    if (opened->rom) {   /* (a file of the RomFS: read through romfs.h, as nn_fs.c's read_at does) */
+        const int64_t got = hos_romfs_file_read(opened->rom, 0, whole, sizeof whole);
+        n = got > 0 ? (DWORD)got : 0;
+    } else {
+        ReadFile(opened->h, whole, sizeof whole, &n, NULL);
+    }
     /* (its first 4 bytes, a |, and its last 24, as text: a zero as 0, the frame's magic as dots) */
     size_t at = 0;
     for (size_t i = 0; i < n && at + 1 < cap; i++) {
@@ -183,7 +194,8 @@ static int open_and_read(const char *rel, char *out, size_t cap) {
         out[at++] = b < 32 || b > 126 ? (b ? '.' : '0') : (char)b;
     }
     out[at] = 0;
-    CloseHandle(opened->h);
+    if (opened->rom) hos_romfs_file_close(opened->rom);
+    else CloseHandle(opened->h);
     free(opened);
     return 1;
 }
@@ -199,6 +211,7 @@ static void unhex(char *out, size_t cap, const char *hex) {
 }
 int main(int argc, char **argv) {
     unhex(romfs, sizeof romfs, argv[1]);
+    hos_romfs_dir = romfs;
     unhex(mod, sizeof mod, argv[2]);
     char overlay[HOS_FS_PATH + 16] = "HOS_FS_OVERLAY=";
     unhex(overlay + strlen(overlay), sizeof overlay - strlen(overlay), argv[3]);
@@ -226,14 +239,14 @@ def write(path, data):
 
 
 def table():
-    """host/oot_damaged_files.c's (damaged, stand-in) pairs; none before it was written"""
+    """game/oot_damaged_files.c's (damaged, stand-in) pairs; none before it was written"""
     if not HOST_FILE.exists():
         return []
     return re.findall(r'\{\s*"(Tex/[^"]+)",\s*"(Tex/[^"]+)"\s*\}', HOST_FILE.read_text(encoding="utf-8"))
 
 
 def stand_ins_source():
-    """host/oot_damaged_files.c as it is, without its includes (the harness has the declarations); none before it was
+    """game/oot_damaged_files.c as it is, without its includes (the harness has the declarations); none before it was
     written, when OpenFile does not call it"""
     if not HOST_FILE.exists():
         return ""
@@ -252,22 +265,13 @@ def main():
             failures.append(what)
 
     pairs = table()
-    check("host/oot_damaged_files.c names the three damaged textures of the 23.3 GB dumps",
+    check("game/oot_damaged_files.c names the three damaged textures of the 23.3 GB dumps",
           sorted(d for d, _ in pairs) == sorted((FAIRY, GATE, GANON)))
-    with tempfile.TemporaryDirectory(prefix="damaged-tex-") as temporary:
-        # (nup.stand_in_for's choice among the six: the damaged files as in the dump, zeros first; their stand-ins whole)
-        tex = Path(temporary) / "Tex"
-        for damaged, stand_in in pairs:
-            write(Path(temporary) / damaged, bytes(12288) + b"rest")
-            write(Path(temporary) / stand_in, ZSTD + b"whole")
-        damaged_paths = {os.path.normpath(os.path.join(temporary, d)) for d, _ in pairs}
-        for damaged, stand_in in pairs:
-            picked = nup.stand_in_for(os.path.normpath(os.path.join(temporary, damaged)), damaged_paths)
-            check("%s: the host reads %s, nup.stand_in_for picks %s" % (damaged, stand_in, picked and os.path.relpath(picked, temporary)),
-                  picked and Path(picked) == tex / Path(stand_in).name)
 
     src = (ROOT / "host" / "nn_fs.c").read_text(encoding="utf-8")
     helpers = "\n".join(block(src, marker) for marker in (
+        "static const char *romfs_rel(const char *path) {",
+        "const char *hos_fs_romfs_rel(const char *path) {",
         "HANDLE hos_fs_open_read(const char *path) {",
         "static void fs_overlay_path(const char *guest, char *path, size_t cap) {",
         "int hos_fs_resolve_read(const char *guest, char *path, size_t cap) {"))
@@ -283,7 +287,14 @@ def main():
         folder = Path(temporary)
         (folder / "fixture.cpp").write_text(fixture, encoding="utf-8")
         exe = folder / ("fixture.exe" if os.name == "nt" else "fixture")
-        subprocess.run([compiler, "-std=c++17", "-include", ENV_ON_H, "-O1", "-w", str(folder / "fixture.cpp"), "-o", str(exe)],
+        objects = []
+        for name in ("romfs.c", "romfs_index.c"):
+            obj = folder / (name + ".o")
+            subprocess.run([compiler, "-x", "c", "-std=gnu11", "-O1", "-w", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"), "-c",
+                            str(ROOT / "host" / name), "-o", str(obj)], check=True, timeout=120)
+            objects.append(str(obj))
+        subprocess.run([compiler, "-std=c++17", "-include", ENV_ON_H, "-O1", "-w", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
+                        str(folder / "fixture.cpp"), *objects, "-o", str(exe)] + ([] if os.name == "nt" else ["-lpthread"]),
                        check=True, timeout=120)
 
         def run(romfs, *opens, mod=None, overlay=None):
@@ -350,7 +361,7 @@ def main():
         for failure in failures:
             print("FAIL: " + failure)
         raise SystemExit("an incomplete dump's damaged textures are not read as their stand-ins")
-    print("ok: damaged textures read as their stand-ins, whole ones as they are, the table as nup.stand_in_for picks")
+    print("ok: damaged textures read as their stand-ins, whole ones as they are, the table's three")
 
 
 if __name__ == "__main__":

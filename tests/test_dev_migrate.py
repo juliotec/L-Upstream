@@ -1,5 +1,5 @@
 """`dev.py migrate` and `dev.py paths` (scripts/devtools/home.py) on made-up folders, no build and no game: the old places
-(~/.cache/longshot-{dev,objects,lifts,queue}, job_queue.json and dev_build.json of ~/.config/longshot) move into the
+(~/.cache/longshot-{dev,queue}, job_queue.json and dev_build.json of ~/.config/longshot) move into the
 development folder, by a rename or, across drives, by a checked copy that keeps hard links; a link is left at each old
 place (Linux), base.json names the new folders, and the markers it held are gone. Tooling's files beside the settings stay.
 A busy base or a job in the queue stops it before anything moves; a part the development folder has already is merged,
@@ -51,8 +51,7 @@ class Migrate(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.home = os.path.join(t, "data", "longshot-dev")
-        self.old = {"dev": os.path.join(t, "cache", "longshot-dev"), "objects": os.path.join(t, "cache", "longshot-objects"),
-                    "lifts": os.path.join(t, "cache", "longshot-lifts"), "queue": os.path.join(t, "cache", "longshot-queue"),
+        self.old = {"dev": os.path.join(t, "cache", "longshot-dev"), "queue": os.path.join(t, "cache", "longshot-queue"),
                     "config": os.path.join(t, "config", "longshot")}
         base = os.path.join(self.old["dev"], "bases", "0123456789ab")
         write(os.path.join(base, "base.json"), json.dumps({"commit": "0123456789ab", "work": os.path.join(base, "work"),
@@ -60,10 +59,8 @@ class Migrate(unittest.TestCase):
         write(os.path.join(base, "game", "longshot"), "game")
         write(os.path.join(self.old["dev"], "bases", "0123456789ab.lock"))
         write(os.path.join(self.old["dev"], "builder", "k", "clang"), "tool")
-        write(os.path.join(self.old["objects"], "ab", "obj.o"), "object")
         os.makedirs(os.path.join(base, "work", "objcache"))
-        os.link(os.path.join(self.old["objects"], "ab", "obj.o"), os.path.join(base, "work", "objcache", "obj.o"))
-        write(os.path.join(self.old["lifts"], "lift", "a.c"), "lifted")
+        os.link(os.path.join(self.old["dev"], "builder", "k", "clang"), os.path.join(base, "work", "objcache", "obj.o"))
         write(os.path.join(self.old["queue"], "history.jsonl"), "{}\n")
         write(os.path.join(self.old["config"], "job_queue.json"), '{"LONGSHOT_QUEUE_BUILD_SLOTS": 3}')
         write(os.path.join(self.old["config"], "dev_build.json"), '{"fsr": true}')
@@ -80,35 +77,36 @@ class Migrate(unittest.TestCase):
         h, nb = self.home, os.path.join(self.home, "bases", "0123456789ab")
         self.assertEqual(read(os.path.join(nb, "game", "longshot")), "game")
         self.assertEqual(read(os.path.join(h, "builder", "k", "clang")), "tool")
-        self.assertEqual(read(os.path.join(h, "stores", "lifts", "lift", "a.c")), "lifted")
         self.assertEqual(read(os.path.join(h, "queue", "history.jsonl")), "{}\n")
         self.assertEqual(json.loads(read(os.path.join(h, "config", "dev_build.json"))), {"fsr": True})
-        self.assertTrue(os.path.samefile(os.path.join(h, "stores", "objects", "ab", "obj.o"),
-                                         os.path.join(nb, "work", "objcache", "obj.o")))
+        self.assertTrue(os.path.samefile(os.path.join(h, "builder", "k", "clang"),
+                                         os.path.join(nb, "work", "objcache", "obj.o")))   # (hard links kept)
         b = json.loads(read(os.path.join(nb, "base.json")))
         self.assertEqual((b["work"], b["game"], b["romfs"]), (os.path.join(nb, "work"), os.path.join(nb, "game"), "/games/romfs"))
         self.assertFalse(os.path.exists(os.path.join(nb, packs.BUSY)))
         self.assertEqual(read(os.path.join(self.old["config"], "forge.json")), "token")
         self.assertFalse(os.path.islink(self.old["config"]))
         if LINKS:
-            for name, new in (("dev", h), ("objects", os.path.join(h, "stores", "objects")),
-                              ("lifts", os.path.join(h, "stores", "lifts")), ("queue", os.path.join(h, "queue"))):
+            for name, new in (("dev", h), ("queue", os.path.join(h, "queue"))):
                 self.assertTrue(os.path.islink(self.old[name]), name)
                 self.assertTrue(os.path.samefile(self.old[name], new), name)
             self.assertTrue(os.path.samefile(os.path.join(self.old["config"], "job_queue.json"),
                                              os.path.join(h, "config", "job_queue.json")))
         # (what the tools use now, and nothing left to move)
-        self.assertEqual(packs.lift_store(), os.path.join(h, "stores", "lifts"))
         self.assertEqual(jobqueue.settings()["LONGSHOT_QUEUE_BUILD_SLOTS"], "3")
         self.assertEqual(home.plan(jobqueue.queue_dir(jobqueue.settings())), [])
-        self.assertIn("nothing to move", self.migrate()[1])
+        rc, said = self.migrate()
+        self.assertIn("nothing to move", said)
+        # (the build tools' old folder, moved with the rest: said, never deleted, since an older dev.py still reads it)
+        self.assertIn("%s holds the build tools of dev.py before tools-store/" % os.path.join(h, "builder"), said)
+        self.assertTrue(os.path.isdir(os.path.join(h, "builder")))
 
     def test_dry_run_moves_nothing(self):
         rc, said = self.migrate(dry_run=True)
         self.assertEqual(rc, 0)
-        self.assertIn(self.old["objects"] + " -> " + os.path.join(self.home, "stores", "objects"), said)
+        self.assertIn(self.old["queue"] + " -> " + os.path.join(self.home, "queue"), said)
         self.assertFalse(os.path.exists(self.home))
-        self.assertEqual(packs.lift_store(), self.old["lifts"])   # (read where it is until then)
+        self.assertEqual(jobqueue.state_dir(jobqueue.settings()), self.old["queue"])   # (read where it is until then)
 
     def test_rename(self):
         rc, said = self.migrate()
@@ -151,15 +149,15 @@ class Migrate(unittest.TestCase):
         self.assertFalse(os.path.lexists(a) or os.path.lexists(b))
 
     def test_merge_into_a_development_folder_already_there(self):
-        write(os.path.join(self.home, "stores", "lifts", "lift", "a.c"), "newer")
-        write(os.path.join(self.old["lifts"], "lift", "b.c"), "b")
+        write(os.path.join(self.home, "queue", "history.jsonl"), "newer\n")
+        write(os.path.join(self.old["queue"], "b.txt"), "b")
         rc, said = self.migrate()
         self.assertEqual(rc, 0, said)
-        self.assertEqual(read(os.path.join(self.home, "stores", "lifts", "lift", "a.c")), "newer")
-        self.assertEqual(read(os.path.join(self.home, "stores", "lifts", "lift", "b.c")), "b")
-        self.assertEqual(read(os.path.join(self.old["lifts"], "lift", "a.c")), "lifted")   # (both had it: left, said)
-        self.assertIn("left " + os.path.join(self.old["lifts"], "lift", "a.c"), said)
-        self.assertFalse(os.path.islink(self.old["lifts"]))
+        self.assertEqual(read(os.path.join(self.home, "queue", "history.jsonl")), "newer\n")
+        self.assertEqual(read(os.path.join(self.home, "queue", "b.txt")), "b")
+        self.assertEqual(read(os.path.join(self.old["queue"], "history.jsonl")), "{}\n")   # (both had it: left, said)
+        self.assertIn("left " + os.path.join(self.old["queue"], "history.jsonl"), said)
+        self.assertFalse(os.path.islink(self.old["queue"]))
         self.assertTrue(os.path.isdir(os.path.join(self.home, "bases", "0123456789ab")))
 
     def test_busy_base_stops_it(self):
@@ -181,13 +179,16 @@ class Migrate(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             home.cmd_paths(argparse.Namespace(name="work"))
-            home.cmd_paths(argparse.Namespace(name="stores/lifts"))
+            home.cmd_paths(argparse.Namespace(name="queue"))
             home.cmd_paths(argparse.Namespace(name=None))
         lines = out.getvalue().splitlines()
-        self.assertEqual(lines[:2], [os.path.join(self.home, "work"), self.old["lifts"]])
+        self.assertEqual(lines[:2], [common.work_dir(common.ROOT), self.old["queue"]])
+        self.assertEqual(os.path.dirname(lines[0]), os.path.join(self.home, "work"), "a work folder per checkout")
         self.assertIn("dev.py migrate moves", out.getvalue())
+        self.assertIn("tools-store", [rel for rel, _ in common.LAYOUT])
+        self.assertNotIn("builder", [rel for rel, _ in common.LAYOUT], "builder/ is the old folder, not a part")
         with mock.patch.dict(os.environ, RX_TARGET="windows"):
-            self.assertEqual(home.work_dir(), os.path.join(self.home, "work-windows"))
+            self.assertEqual(os.path.dirname(home.work_dir()), os.path.join(self.home, "work-windows"))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ such arrays (or image, image-buffer and texture-buffer arrays at all) was never 
   interface) defined before it, as vk_programs.cpp includes it after windows.h: a member named near stopped the Windows build;
 - every program the program cache sees is counted, translated (program_cache_save, before it returns for a cache that is off)
   or read (program_cache_read, program_cache_read_light), the summary is logged after the preparation and when the window
-  closes, and none of it is in the translator's stamp (nx2/translator_files.py): no player's programs are translated again
+  closes, and none of it is in the translator's stamp (builder/crates/build-compile/src/generated/shader_stamp.rs): no player's programs are translated again
   for it.
 
 No Vulkan, GPU or game. python -I -B tests/test_descriptor_array_census.py [--cxx clang++] [--source <tree>]
@@ -198,13 +198,14 @@ def source_checks(tree, vk):
         fails.append("vk_draw.cpp prepare_run: the census is not logged after the preparation's line")
     if 'descriptor_arrays_log("close");' not in block((vk / "vk_main.cpp").read_text(encoding="utf-8"), "void mkwvk_close_asked(void)"):
         fails.append("vk_main.cpp mkwvk_close_asked: the census is not logged when the window closes")
-    # (none of it in the translator's stamp: nx2/translator_files.py, which nx2/build.py stamps with since #370, hashes eden/,
-    # sirit/, compat/ and three files of gpu/vk)
-    listing = tree / "nx2" / "translator_files.py"
+    # (none of it in the translator's stamp: the builder's shader_stamp.rs hashes eden/, sirit/, compat/ and three files
+    # of gpu/vk)
+    listing = tree / "builder" / "crates" / "build-compile" / "src" / "generated" / "shader_stamp.rs"
     text = listing.read_text(encoding="utf-8") if listing.exists() else ""
-    top_list, file_list = re.search(r"^DIRS = \(([^)]*)\)", text, re.M), re.search(r"^FILES = \(([^)]*)\)", text, re.M)
+    top_list = re.search(r"^const DIRS: \[&str; \d+\] = \[([^\]]*)\]", text, re.M)
+    file_list = re.search(r"^const FILES: \[&str; \d+\] = \[([^\]]*)\]", text, re.M)
     if not (top_list and file_list):
-        fails.append("nx2/translator_files.py: the translator's stamp list was not found")
+        fails.append("builder/crates/build-compile/src/generated/shader_stamp.rs: the translator's stamp list was not found")
     else:
         tops = re.findall(r'"([^"]+)"', top_list.group(1))
         stamped = set(re.findall(r'"([^"]+)"', file_list.group(1)))

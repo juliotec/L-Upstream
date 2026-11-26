@@ -1,0 +1,17 @@
+[package]
+name = "launcher-profile"
+description = "A launcher profile's folder: profile.json v1 read and written keeping what it does not know, and the folder's layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# (serde and serde_json alone: the game may link it later)
+[dependencies]
+serde.workspace = true
+# (raw_value: each value the file has kept as its text, so a key this crate does not know is written back as it was)
+serde_json = { workspace = true, features = ["raw_value"] }
+
+[lints]
+workspace = true

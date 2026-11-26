@@ -40,7 +40,7 @@ NEEDS_MEASUREMENTS = "needs measurements"   # (the label of a PR sent back to WI
 TYPES = ("feat", "fix", "perf", "refactor", "docs", "test", "ci", "build", "chore", "revert")
 TITLE = re.compile(r"^(%s)(\([\w./-]+\))?!?: \S" % "|".join(TYPES))
 # The files the game runs, by path prefix: forge.py pr create wants --tested-in-game for a branch that changes one
-GAME_PATHS = ("gpu/", "host/", "nx2/", "assets/", "third_party/")
+GAME_PATHS = ("gpu/", "host/", "game/", "longshot-rs/", "builder/", "assets/", "third_party/")   # (builder/: the builder lifts the game's code)
 
 REQUIRED = ("Summary", "Testing", "Measurements", "Risks")
 TESTED, STILL = "Tested", "Still to test"

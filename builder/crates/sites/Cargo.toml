@@ -1,0 +1,17 @@
+[package]
+name = "sites"
+description = "The game's hook sites: the tables read, each site found in the game's code and placed for the mid IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+a64.workspace = true
+cfg.workspace = true
+image.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

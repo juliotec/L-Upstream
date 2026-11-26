@@ -64,7 +64,9 @@ DEFAULT_SCENE = "hyrule-field"
 # the window behind the one in front)
 COMMON_ENV = {"HOS_FPS_MAX": "1000", "RX_VK_FRAME_TRACE": "1", "HOS_AUDIO_MUTE": "1", "HOS_DISCORD": "0",
               "HOS_WINDOW_NOACTIVATE": "1"}
-# (the pinned options file's rows set for every run: the title skipped (host/oot_autoload.c), V-Sync Off, frame generation Off)
+# (the pinned options file's rows set for every run: the title skipped (game/oot_autoload.c: A as the game waits on the title,
+# its file list and its check, the sites menu.buttonWait; by the clock on a build without them), V-Sync Off, frame
+# generation Off)
 SKIP_TITLE, VSYNC_OFF, FRAMEGEN_OFF = ("skip_title_screen", 1), ("vsync", 2), ("frame_generation", 0)
 # (and the Render resolution at 67 %, DLSS's and FSR's Quality share (gpu/vk/upscaler_rows.h kPercent[3]), where the options
 # file leaves it at Auto: the game's dynamic resolution sizes the 3D to the GPU's load, so a change that saves GPU time comes
@@ -119,9 +121,10 @@ def differing(a, b):
 
 
 def wired_switches(root=common.ROOT):
-    """The switches HOS_AB can flip within a run: those whose reader calls hos_ab_value("NAME", ...) (host/hos_ab.c)"""
+    """The switches HOS_AB can flip within a run: those whose reader calls hos_ab_value("NAME", ...) (host/hos_ab.c), in
+    host/, gpu/ or the game's code (game/)"""
     names = set()
-    for top in ("host", "gpu"):
+    for top in ("host", "game", "gpu"):
         for d, _, files in os.walk(os.path.join(root, top)):
             for f in files:
                 if f.endswith((".c", ".cpp", ".h")):
@@ -649,7 +652,7 @@ def run_one(plan, side, k, pinned):
     open(no_env, "w").close()
     env = dict(plan["common_env"])
     env.update(s["env"])
-    env.update(HOS_OPTIONS_FILE=opts, HOS_ENV_FILE=no_env)
+    env.update(HOS_ENV_FILE=no_env)
     if scene["hour"] is not None:   # (the Debug tab's clock: a live input line, with the Debug tab's tools on)
         open(live, "w").close()
         env.update(HOS_INPUT_LIVE=live, HOS_OOT_CHEATS="1")
@@ -665,13 +668,14 @@ def run_one(plan, side, k, pinned):
     try:
         say("%s%d: queued (timing); %s" % (side, k, desc))
         session = longshot_bridge.start_session(
-            s["runtime"], romfs=packs.runtime_romfs(s["runtime"]),   # (a --romfs-in-place base's runtime has none)
+            s["runtime"],
             run=os.path.join(d, "game"), user=os.path.join(d, "user"), save=scene["folder"], slot=scene["slot"],
-            repo_save=scene["save"], env=env, ready="present", timeout=1800, wrapper=wrapper)
+            repo_save=scene["save"], options=opts, env=env, ready="present", timeout=1800, wrapper=wrapper)
         lap(clock, "start")   # (the queue's wait, the boot, to the first frame)
         phase = "title and load"
         g = drive.Game(session.connect(30), d, "", live=live)
-        end = time.monotonic() + 300   # (the title skipped by the game: its presses start 20 s after the first controller read)
+        end = time.monotonic() + 300   # (the title skipped by the game: its presses come as the game waits on each screen,
+        # or from 20 s after the first controller read on a build without the sites; kept at 300 s for a cold start's shaders)
         while True:
             st = g.status()
             if st["map"] and st["fresh"] and st["event"] is False and st["loading"] is False:
@@ -854,7 +858,7 @@ def cmd_ab(a):
             say("would build: dev.py base (when missing), dev.py pack, and each runtime when stale")
         else:
             hashes = {"B": checkout_commit(a.dirty)}
-            build.cmd_base(argparse.Namespace(rev=None, romfs_in_place=False))
+            build.cmd_base(argparse.Namespace(rev=None))
             build.cmd_pack(argparse.Namespace())
             rts = {"B": fresh_runtime(False), "A": fresh_runtime(True)}
             hashes["A"] = packs.read_base(build.base_for())["commit"]

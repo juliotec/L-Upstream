@@ -1,6 +1,6 @@
-"""Every game-free check in one run: each tests/test_*.py and nx2/test_*.py in its own process, the C++ unit tests under
+"""Every game-free check in one run: each tests/test_*.py in its own process, the C++ unit tests under
 gpu/vk/tests and a byte-compile of every tracked Python file. All of them run even when one fails; the failures are
-printed whole at the end, with a table of every check (slowest first), also to $GITHUB_STEP_SUMMARY when it is set.
+printed whole at the end, with a table of every check (slowest first). $GITHUB_STEP_SUMMARY, when it is set, gets the\nfailures first, each with its first error line, then that table.
 Exits 1 when anything failed. On Linux a check that ends or times out takes every process it started with it.
 
     python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [--shard K/N]
@@ -15,16 +15,22 @@ SPIR-V or Vulkan headers, spirv-val) fails instead of being skipped (CI installs
 test skips on this OS too. --list prints the checks a run would start, one a line, and runs none. --junit FILE also
 writes the results as JUnit XML. Standard library only: no package is installed for the runner itself.
 
-A test says what it needs in its own file, with up to three top-level assignments of plain literals (after its
+The shader recompiler's SPIR-V fixtures (tests/global_load_16, tests/native_suatom, tests/f2i_immediate) are three checks:
+each built with cmake (CC, CXX), its program run to emit the modules, and every module checked by spirv-val (Linux).
+
+A test says what it needs in its own file, with up to four top-level assignments of plain literals (after its
 docstring and imports). The runner reads them with ast and never imports the test; a test that declares none runs with
 no arguments and its own defaults.
 
     RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # its command-line arguments
     RUN_ALL_MODULES = ["zstandard"]                                       # Python packages it imports
     RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}       # OS ("linux", "windows") -> why it is skipped
+    RUN_ALL_ALONE = True                                                  # it measures time or CPU: run alone, after
+                                                                          # the others, one at a time
 
-{name} in an argument is a tool or folder find_tools looks for (cc, cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
-dotnet, dav1d); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
+{name} in an argument is a tool or folder find_tools looks for (cc, cxx, clang, vulkan_headers, spirv_headers, spirv_val,
+glslang, dav1d, cargo, llvm_mc, cmake; clang is a C compiler that is clang on every OS, $CLANG else PATH's, for the checks
+that link an object clang made); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
 with --strict. A check skipped on both OSes (a GPU, the game) names both. A declaration that is not a plain literal of
 that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stops the run with the file and line; so
 does one set or changed anywhere but its own top-level line (inside an if or a try, .append(...), +=, a subscript).
@@ -47,6 +53,7 @@ import importlib.util
 import itertools
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -63,7 +70,7 @@ OS = "windows" if WINDOWS else "linux"
 
 # What a check needs is declared in the test file itself, as top-level literals the runner reads with ast (the test is
 # never imported): see the docstring above and read_declarations below.
-DECLARATIONS = ("RUN_ALL_ARGS", "RUN_ALL_MODULES", "RUN_ALL_SKIP")
+DECLARATIONS = ("RUN_ALL_ARGS", "RUN_ALL_MODULES", "RUN_ALL_SKIP", "RUN_ALL_ALONE")
 # (a list's or a dict's methods that change it in place: a declaration changed that way is not what the runner reads)
 MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "update", "setdefault", "popitem", "sort",
             "reverse", "__setitem__", "__delitem__", "__iadd__", "__ior__"}
@@ -90,10 +97,11 @@ def which(*names):
 
 
 def header_dir(env, cpm_name, probe):
-    """A headers folder: the environment variable, else the CPM cache nx2/build.py reads (RX_CPM, build-linux/deps/cpm)"""
+    """A headers folder: the environment variable, else the CPM cache the build reads (RX_CPM, else the checkout's
+    tools/cpm: mise run tools)"""
     if os.environ.get(env):
         return os.environ[env]
-    for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "build-linux", "deps", "cpm")):
+    for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "tools", "cpm")):
         d = os.path.join(cpm or "", cpm_name)
         if cpm and os.path.isdir(d) and os.listdir(d):
             inc = os.path.join(d, sorted(os.listdir(d))[-1], "include")
@@ -104,13 +112,13 @@ def header_dir(env, cpm_name, probe):
 
 def dav1d_prefix():
     """A dav1d to build against (its include/dav1d/dav1d.h, and lib/libdav1d.a or the system's -ldav1d): LONGSHOT_DAV1D, else
-    the CPM cache's (scripts/windows/dav1d.sh), the Linux dependencies' (scripts/linux/deps.sh), the system's"""
+    the CPM cache's (RX_CPM, else the checkout's tools/cpm), the checkout's tools/ffmpeg (mise run tools), the system's"""
     roots = [os.environ.get("LONGSHOT_DAV1D")]
-    for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "build-linux", "deps", "cpm")):
+    for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "tools", "cpm")):
         d = os.path.join(cpm or "", "dav1d")
         if cpm and os.path.isdir(d) and os.listdir(d):
             roots.append(os.path.join(d, sorted(os.listdir(d))[-1]))
-    roots += [os.path.join(ROOT, "build-linux", "deps", "ffmpeg"), "/usr"]
+    roots += [os.path.join(ROOT, "tools", "ffmpeg"), "/usr"]
     for r in roots:
         if r and os.path.exists(os.path.join(r, "include", "dav1d", "dav1d.h")):
             return r
@@ -118,13 +126,13 @@ def dav1d_prefix():
 
 
 def bundled_mingw():
-    """(windows) The clone's llvm-mingw folder as LONGSHOT_MINGW for every check, as nx2/make_game.py's bundled_mingw() gives
-    it to the build (CONTRIBUTING.md: the variable, or that folder). Without it a check that builds with
+    """(windows) The checkout's tools/llvm-mingw (mise run tools) as LONGSHOT_MINGW for every check, as the builder gives it
+    to the build (CONTRIBUTING.md: the variable, or that folder). Without it a check that builds with
     toolchain.native_target() asks that folder's clang, found on PATH, for the MSVC target: "'algorithm' file not found".
     LONGSHOT_MINGW set already wins; LONGSHOT_MSVC=1 (the Visual Studio route) and a folder without its clang leave it unset"""
     if not WINDOWS or os.environ.get("LONGSHOT_MINGW") or os.environ.get("LONGSHOT_MSVC") == "1":
         return
-    here = os.path.join(ROOT, "llvm-mingw")
+    here = os.path.join(ROOT, "tools", "llvm-mingw")   # (mise run tools)
     if os.path.isfile(os.path.join(here, "bin", "clang.exe")):
         os.environ["LONGSHOT_MINGW"] = here
 
@@ -136,9 +144,12 @@ def find_tools():
         "vulkan_headers": header_dir("LONGSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
-        "dotnet": which("dotnet"),
         "cc": os.environ.get("CC") or which("gcc", "clang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
+        "clang": which(os.environ.get("CLANG", ""), "clang", "clang-23"),
+        "cargo": which("cargo"),
+        "llvm_mc": os.environ.get("LLVM_MC") or which("llvm-mc"),
+        "cmake": which("cmake"),
     }
 
 
@@ -146,6 +157,7 @@ class Check:
     def __init__(self, name, run, why_skip=None):
         self.name, self.run, self.why_skip = name, run, why_skip
         self.status, self.secs, self.output = "skip", 0.0, ""
+        self.alone = False
 
 
 class DeclarationError(Exception):
@@ -158,7 +170,7 @@ def read_declarations(path, rel, tools):
     why}}, empty where the test declares nothing. A file that does not parse declares nothing and says why in
     "unparsed" (its check fails with that, on every OS, without running); a bad declaration raises DeclarationError naming
     the file and line."""
-    found = {"args": [], "modules": [], "skip": {}, "unparsed": None}
+    found = {"args": [], "modules": [], "skip": {}, "alone": False, "unparsed": None}
     with open(path, "rb") as f:
         source = f.read()
     try:
@@ -228,6 +240,11 @@ def read_declarations(path, rel, tools):
                 raise bad(node, "RUN_ALL_SKIP names an unknown OS %s (known: %s)" % (", ".join(map(repr, unknown)),
                                                                                     ", ".join(OSES)))
             found["skip"] = dict(v)
+            continue
+        if name == "RUN_ALL_ALONE":
+            if v is not True:
+                raise bad(node, "RUN_ALL_ALONE must be True (or not set)")
+            found["alone"] = True
             continue
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             raise bad(node, "%s must be a list of strings" % name)
@@ -406,6 +423,61 @@ def cpp_checks(tools, timeout):
     return out, ([] if cxx else ["a C++ compiler"])
 
 
+# (the shader recompiler's SPIR-V fixtures: each built with cmake against the SPIR-V headers, its modules emitted and
+# every one checked by spirv-val. --uniform-buffer-standard-layout: the back end's device has
+# uniformBufferStandardLayout, so constant buffers are u32 arrays of stride 4; native_suatom's modules have none)
+SPIRV_FIXTURES = (
+    ("tests/global_load_16", [["global_load_16_ir"], ["global_load_16_ir", "--cas-loops", {"RX_VK_FOLLOW_STORES": "1"}]], True),
+    ("tests/native_suatom", [["native_suatom"]], False),
+    ("tests/f2i_immediate", [["f2i_immediate"]], True),
+)
+
+
+def spirv_fixture_checks(tools, timeout):
+    """SPIRV_FIXTURES, a check each: (name, run) pairs, and what they need that is missing here"""
+    out = []
+
+    def fixture(rel, runs, std_layout):
+        def run():
+            with tempfile.TemporaryDirectory(prefix="spirv-fixture-") as tmp:
+                env = dict(os.environ, CC=tools["cc"] or "", CXX=tools["cxx"] or "")
+                build, logs = os.path.join(tmp, "build"), []
+                headers = os.path.dirname(tools["spirv_headers"].rstrip("/\\"))   # (the folder above include/)
+                for cmd in ([tools["cmake"], "-S", os.path.join(ROOT, rel), "-B", build, "-DREPO_ROOT=" + ROOT,
+                             "-DSPIRV_HEADERS_ROOT=" + headers],
+                            [tools["cmake"], "--build", build, "--parallel", str(os.cpu_count() or 2)]):
+                    r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+                    logs.append(r.stdout)
+                    if r.returncode:
+                        return Result(r.returncode, b"".join(logs))
+                modules = os.path.join(build, "modules")
+                for argv in runs:
+                    extra = dict(env, **argv[-1]) if isinstance(argv[-1], dict) else env
+                    argv = [a for a in argv if not isinstance(a, dict)]
+                    r = subprocess.run([os.path.join(build, argv[0]), *argv[1:], modules], env=extra,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+                    logs.append(r.stdout)
+                    if r.returncode:
+                        return Result(r.returncode, b"".join(logs))
+                spv = sorted(f for f in os.listdir(modules) if f.endswith(".spv")) if os.path.isdir(modules) else []
+                if not spv:
+                    return Result(1, b"".join(logs) + b"no .spv module emitted\n")
+                for f in spv:
+                    cmd = [tools["spirv_val"], "--target-env", "vulkan1.3"]
+                    cmd += ["--uniform-buffer-standard-layout"] if std_layout else []
+                    r = subprocess.run(cmd + [os.path.join(modules, f)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       timeout=timeout)
+                    if r.returncode:
+                        return Result(r.returncode, b"".join(logs) + ("spirv-val %s:\n" % f).encode() + r.stdout)
+                return Result(0, b"".join(logs) + ("%d modules valid\n" % len(spv)).encode())
+        return run
+    for rel, runs, std_layout in SPIRV_FIXTURES:
+        out.append((rel, fixture(rel, runs, std_layout)))
+    missing = [what for what, key in (("cmake", "cmake"), ("a C++ compiler", "cxx"), ("a C compiler", "cc"),
+                                      ("spirv-val", "spirv_val"), ("the SPIR-V headers", "spirv_headers")) if not tools[key]]
+    return out, missing
+
+
 def load_times(path=TIMES):
     """{check: seconds} for this OS from tests/run_all_times.json; {} when it is missing or unreadable (the order is
     then by name, and the parts of --shard are still whole)"""
@@ -533,6 +605,18 @@ def compile_all():
     return Result(1 if bad else 0, text.encode())
 
 
+ERROR_WORDS = re.compile(r"error|fail|mismatch|traceback|assert|timeout|not found|refused", re.I)
+
+
+def first_error(output):
+    """A failed check's first line that says what went wrong (an error, a failure, an assertion), else its last line"""
+    lines = [l.strip() for l in output.splitlines() if l.strip()]
+    for l in lines:
+        if ERROR_WORDS.search(l) and not l.startswith(("PASS", "ok ", "Ran ")):
+            return l
+    return lines[-1] if lines else "(no output)"
+
+
 def write_junit(path, checks, wall):
     """The run's checks as JUnit XML (one testcase each, named and filed by its path; a failure carries its output, a
     skip its reason), for a CI that shows test results from it"""
@@ -613,7 +697,7 @@ def main():
     tools = find_tools()
 
     checks = []
-    tests = sorted(d + "/" + f for d in ("tests", "nx2") for f in os.listdir(os.path.join(ROOT, d))
+    tests = sorted("tests/" + f for f in os.listdir(os.path.join(ROOT, "tests"))
                    if f.startswith("test_") and f.endswith(".py"))
     stale = stale_tables()
     if stale:
@@ -651,6 +735,7 @@ def main():
         reason = decls[rel]["skip"].get(OS)
         run, missing = python_check(rel, decls[rel], tools, a.timeout)
         c = Check(rel, run)
+        c.alone = decls[rel]["alone"]
         if decls[rel]["unparsed"]:   # (no skip to read: the same failure on every OS, not run)
             c.run = lambda why=decls[rel]["unparsed"]: Result(1, (why + "\n").encode())
         elif reason and not a.no_skip and not picked(rel):
@@ -666,6 +751,20 @@ def main():
     for name, run in cpp:
         c = Check(name, run)
         if missing:
+            c.why_skip = "not found here: " + ", ".join(missing)
+            if a.strict:
+                c.why_skip = None
+                c.run = lambda m=missing: Result(1, ("not found: %s (--strict)\n" % ", ".join(m)).encode())
+        checks.append(c)
+    fixtures, missing = spirv_fixture_checks(tools, a.timeout)
+    if not everything and not any(c.startswith(("gpu/", "tests/global_load_16/", "tests/native_suatom/",
+                                                "tests/f2i_immediate/")) for c in changed):
+        fixtures = []   # (--changed: they build the shader recompiler and their own folder)
+    for name, run in fixtures:
+        c = Check(name, run)
+        if WINDOWS and not a.no_skip and not picked(name):
+            c.why_skip = "built with cmake and checked by spirv-val: checked on Linux"
+        elif missing:
             c.why_skip = "not found here: " + ", ".join(missing)
             if a.strict:
                 c.why_skip = None
@@ -710,10 +809,17 @@ def main():
     t0 = time.time()
     print("%d checks, %d skipped, %d at once (%s%s)" % (len(to_run), len(checks) - len(to_run), a.jobs, OS, part),
           flush=True)
+    # (RUN_ALL_ALONE: a check that measures time or CPU, run one at a time after the others, on an idle machine)
     with concurrent.futures.ThreadPoolExecutor(max(1, a.jobs)) as ex:
-        for c in concurrent.futures.as_completed([ex.submit(one, c) for c in to_run]):
+        for c in concurrent.futures.as_completed([ex.submit(one, c) for c in to_run if not c.alone]):
             c = c.result()
             print("%-7s %6.1fs  %s" % (c.status, c.secs, c.name), flush=True)
+    alone = [c for c in to_run if c.alone]
+    if alone:
+        print("%d checks alone, one at a time: %s" % (len(alone), ", ".join(c.name for c in alone)), flush=True)
+    for c in alone:
+        one(c)
+        print("%-7s %6.1fs  %s  (alone)" % (c.status, c.secs, c.name), flush=True)
     wall = time.time() - t0
 
     failed = [c for c in to_run if c.status != "pass"]
@@ -738,13 +844,20 @@ def main():
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         mark = {"pass": "pass", "FAIL": "**FAIL**", "TIMEOUT": "**TIMEOUT**", "skip": "skip"}
-        lines = ["### Tests (%s): %s" % (OS, head), "", "| Result | Time | Check | Note |", "|---|---:|---|---|"]
+        lines = ["### Tests (%s): %s" % (OS, head), ""]
+        if failed:
+            lines += ["Failed:", ""]
+            for c in failed:
+                lines.append("- **%s** `%s`: `%s`" % (c.status, c.name, first_error(c.output).replace("`", "'")[:200]))
+            lines.append("")
+        lines += ["<details><summary>Every check</summary>", "", "| Result | Time | Check | Note |", "|---|---:|---|---|"]
         for c in order:
             note = c.why_skip or ""
             if c.status in ("FAIL", "TIMEOUT"):
                 last = [l for l in c.output.strip().splitlines() if l.strip()][-1:] or [""]
                 note = "`%s`" % last[0].replace("|", "\\|").replace("`", "'")[:160]
             lines.append("| %s | %s | `%s` | %s |" % (mark[c.status], "" if c.why_skip else "%.1f s" % c.secs, c.name, note))
+        lines += ["", "</details>"]
         with open(summary, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n\n")
     if a.junit:

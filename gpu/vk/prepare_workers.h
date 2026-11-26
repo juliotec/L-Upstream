@@ -1,7 +1,7 @@
 // (longshot) How many workers the shader preparation's first part runs on (vk_draw.cpp prepare_run: every program translated,
 // and the driver's compile of each compute program's variants, for its cache).
 //
-// Half the CPUs (half_cpus), as before, unless the process heap is the segment heap (nx2/win_manifest.py's heapType). The
+// Half the CPUs (half_cpus), as before, unless the process heap is the segment heap (builder/crates/build-compile/src/generated/res.rs's heapType). The
 // driver's compiler allocates and frees from every worker at once, through the process heap: on the NT heap the workers queue
 // on its one lock (sampled on AMD's Windows driver 26.10.1: amdvlk64.dll -> RtlAllocateHeap / RtlFreeHeap ->
 // RtlEnterCriticalSection, 76% of the workers' samples waiting), so 12 workers on a 6-core, 12-thread Ryzen 5 5600 kept 3.75

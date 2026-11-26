@@ -75,7 +75,7 @@ inline std::string left_text(double secs) {
     return b;
 }
 
-/// The version as players see it, from the build's name (nx2/version.py: "<release> (source 1a2b3c4d)"), without the source
+/// The version as players see it, from the build's name (builder/crates/build-compile/src/generated/version.rs: "<release> (source 1a2b3c4d)"), without the source
 /// fingerprint (the log's first line and bug reports keep it): a release as its tag, "v3.0.0" or "v3.0.0-rc.1"; a nightly
 /// ("nightly-46-434712bb") as the launcher names it, "Nightly 46 · 434712bb"; a build between tags ("v3.0.0-rc.1-2-g619c897-dirty",
 /// git describe) as its tag and "dev"; anything else as it is

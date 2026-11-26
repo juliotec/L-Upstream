@@ -29,6 +29,8 @@ inline unsigned fsr4_bits(bool fsr4_ok) { return fsr4_ok ? bit(FSR4) | bit(FSR4_
 /// Intel XeSS's two, the same way (xess_ok: xess_why() == XESS_OK)
 inline unsigned xess_bits(bool xess_ok) { return xess_ok ? bit(XESS) | bit(XESS_AA) : 0u; }
 inline bool is_dlss(int upscaler) { return upscaler == DLSS || upscaler == DLAA; }
+// NR's inputs are validated for DLSS/DLAA and the shared FSR paths. XeSS is excluded until validated.
+inline bool supports_nr(int upscaler) { return is_dlss(upscaler) || upscaler == FSR3 || upscaler == FSR4 || upscaler == FSR4_AA; }
 inline bool is_fsr4(int upscaler) { return upscaler == FSR4 || upscaler == FSR4_AA; }
 inline bool is_xess(int upscaler) { return upscaler == XESS || upscaler == XESS_AA; }
 /// The engines that take Native PsychoV35's RGBA16F scene unless RX_VK_PSYCHOV35_DLSS=0 (vk_temporal.cpp temporal_scene_format):

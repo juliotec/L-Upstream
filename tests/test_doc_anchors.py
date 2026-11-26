@@ -1,5 +1,5 @@
 """Anchors from code to the docs that hold its rules (`// doc: docs/dev/reference/architecture.md#rules-from-mkw`): every
-anchor in our own code (host/, gpu/, nx2/, scripts/, builder/; not eden, sirit or third_party) names a file under docs/
+anchor in our own code (host/, gpu/, scripts/; not eden, sirit or third_party) names a file under docs/
 that exists and, after #, a heading in it (GitHub's anchor for it). The functions that enforce a documented rule keep
 theirs: an agent reading one sees where its rule is written before it "simplifies" a capture or a wait away.
 
@@ -11,7 +11,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-DIRS = ("host", "gpu", "nx2", "scripts", "builder")
+DIRS = ("host", "game", "gpu", "scripts")
 SKIP = {"eden", "sirit", "third_party", "__pycache__", "node_modules", "bin", "obj"}
 EXTS = {".c", ".cc", ".cpp", ".h", ".hpp", ".py", ".cs", ".sh", ".comp", ".frag", ".vert", ".glsl"}
 ANCHOR = re.compile(r"(?://|#)\s*doc: (\S+?)(?:#([^\s)]+))?(?=[\s)]|$)")
@@ -27,7 +27,6 @@ REQUIRED = [
     ("gpu/vk/vk_replay.cpp", "// (the GPU's time as the game measures it", RULES),
     ("gpu/vk/vk_draw.cpp", "/// A clear after draws of the open pass", RULES),
     ("gpu/vk/vk_draw.cpp", "/// A draw that samples a target this pass already wrote", RULES),
-    ("nx2/build.py", "def rss_mb(proc):", "docs/dev/reference/build.md#the-compiler-memory-gate"),
     ("gpu/vk/vk_framegen.cpp", "/// (longshot) Whether display_main shows a fixed multiplier's set at its times", FG_RULES),
     ("gpu/vk/vk_framegen.cpp", "/// (longshot) The GPU's delay that a fixed multiplier's sets are shown at", FG_RULES),
     ("gpu/vk/vk_framegen.cpp", "/// Present ahead (display_main): a set's copies go to the GPU together", FG_RULES),

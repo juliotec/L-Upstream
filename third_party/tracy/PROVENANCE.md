@@ -5,7 +5,7 @@ f2a4f2529e7e71844c9e434b877770a21ecf7587, archive sha256
 Kept: public/ (the client: TracyClient.cpp, the C and C++ API headers in tracy/, client/, common/ and its libbacktrace)
 and LICENSE. Left out: the viewer, the capture and export tools, the manual, the examples and the tests.
 
-A developer's option, never in a player's build: nx2/build.py compiles public/TracyClient.cpp only when LONGSHOT_TRACY=1
+A developer's option, never in a player's build: longshot-builder (build-compile) compiles public/TracyClient.cpp only when LONGSHOT_TRACY=1
 (docs/dev/reference/profiling.md), into the game's executable, with TRACY_ONLY_LOCALHOST and TRACY_NO_BROADCAST (it listens on
 127.0.0.1 alone and announces nothing on the network), TRACY_ON_DEMAND, TRACY_NO_CRASH_HANDLER and
 TRACY_NO_CODE_TRANSFER. The host and the Vulkan back end reach it through host/hos_tracy.h's macros, which are empty in

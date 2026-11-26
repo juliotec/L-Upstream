@@ -13,44 +13,46 @@ fine.
 | Build | How | Use it for |
 |---|---|---|
 | Against a base | `dev.py pack` ([below](#test-a-change-against-a-base)) | Any change you want to run in the game |
-| Renderer only | `dev.py vk`, or `RX_VK_ONLY=1` | A change under `gpu/vk/` that the game isn't built from |
-| Fast | `dev.py game --quick`, or `RX_HOT_OPT=O1 mise run build-dev` | Checking that something works: a start, a menu, a log, a screenshot |
-| Default | `mise run build`, `dev.py game`, `mise run build-dev` | Anything you measure, and every release |
+| Renderer only | `dev.py vk` | A change under `gpu/vk/` that the game isn't built from |
+| Again, in place | `longshot-builder update <game folder>` | Your own game folder after a change: only the units and files the change touched compile |
+| Fast | `dev.py game --quick`, or `RX_HOT_OPT=O1` | Checking that something works: a start, a menu, a log, a screenshot |
+| Default | `mise run build -- <longshot-builder args>`, `dev.py game`, `longshot-builder build` | Anything you measure, and every release |
+
+`dev.py vk` is `longshot-builder compile --only renderer`; `mise run build-dev` is `longshot-builder compile` alone, over a
+work folder already lifted.
 
 **Never measure a fast build.** It compiles the hot code at `-O1`: no fps, frame times, build times or profiles from it.
-`build-dev` compiles an already lifted tree; lift one first with
-`python -I nx2/lift.py --standalone --write` ([the steps by hand](reference/build.md#the-steps-by-hand)). `dev.py` is
-`scripts/dev.py`: run it with `python -I scripts/dev.py ...` (`mise run dev -- ...` is the same). `dev.py --help` lists
-its commands.
+`dev.py` is `scripts/dev.py`: run it with `python -I scripts/dev.py ...` (`mise run dev -- ...` is the same).
+`dev.py --help` lists its commands. `longshot-builder` is `target/release/longshot-builder` once built (`cargo build
+--release -p longshot-builder`); its commands and options are in [the build](reference/build.md).
 
 ### What is kept between builds
 
-- **Objects:** under `dev.py` they go to a store shared by every work folder and base, your
-  development folder's `stores/objects` ([where dev data lives](reference/build.md#where-dev-data-lives)), or
-  `LONGSHOT_OBJ_STORE` (`0` for none). A plain `make_game.py` build (`mise run build`) uses a store only when
-  `LONGSHOT_OBJ_STORE` is set. It hard-links, so keep it on the drive your builds are on.
-- **Translations** (the lifted C): the same way, `stores/lifts` under `dev.py`, or `LONGSHOT_LIFT_STORE`, shared by every
-  build with the same lift key.
-- **Kept files:** in the checkout's own `work/` (`--work work`), or with `LONGSHOT_KEEP_BUILD_FILES=1`, the lifted C and
-  objects stay, so the next build compiles only what changed. In any other work folder, `make_game.py`'s default
-  included, only the last build's objects (and the translation's smaller files) are kept.
+- **The work folder**, one per game folder (the cache's `work/`, or `--work`): the read stage's files, the lift's
+  gen/ and the compile's objects, so the next build of that folder lifts and compiles only what changed. It stays until
+  you delete it.
+- **The stores**, shared by every work folder: the object store (objects by key) and the lifts' store (whole lifts
+  by key), kept by their last use within the cache's budget ([the build](reference/build.md#the-caches-budget)). Under `dev.py` they are your development folder's `store/` ([where dev data
+  lives](reference/build.md#where-dev-data-lives)); otherwise `--store`, `LONGSHOT_STORE`, or the cache's `store/`. A
+  work folder's objects are hard links to the store's, so keep the store on the drive your builds are on.
 
 ### What builds again
 
-- **An object** is named by its source, flags and the headers it reads (`object_key` in `nx2/build.py`), so a header edit
-  recompiles only the files that include it. `hos_main.c` and `vk_menu.cpp` carry the version, a fingerprint of every
-  source under `host/`, `gpu/` and `nx2/`, so they compile again whenever any of those changes.
-- **The lift** runs again only when its key changes (`lift_key` in `nx2/make_game.py`): the game's code, the
-  translator's sources (its Python by code alone: a comment or docstring edit keeps the translation), the HLE functions,
-  the hot list, the chunk boundaries, and of the environment only `A64_*`,
-  `SUYU_RECOMP_*` and `RX_TARGET`. Folder paths and compile-only switches (`RX_HOT_OPT`, `RX_PGO`, `RX_VK_PGO`) are not
-  in it. **Don't set `A64_*` by accident**: the build then can't reuse anyone's translation.
-- **A link** is skipped when nothing it reads or writes changed (`<output>.linkkey`; delete it to link again).
-- **Button prompts** are kept while their inputs match; `LONGSHOT_FORCE_PROMPTS=1` draws them again.
-- **The shader preparation** runs again when the shader translator's stamp changes: any code change (not comments
-  or whitespace) to `gpu/vk/eden`,
-  `gpu/vk/sirit`, `gpu/vk/compat`, `vk_shader.cpp`, `vk_bank.cpp` or `vk_state.h` makes every player translate every
-  program at their next start ([switches](reference/switches.md#adding-or-removing-a-switch)).
+Each stage is cached by exactly what makes it, and no key holds a path, the builder's version or a build-wide option
+([what builds again](reference/build.md#what-builds-again), [the caches](reference/builder.md#the-lifts-cache)):
+
+- **An object** is keyed by its compiler, flags, source and the headers it read, so a header edit compiles only the
+  files that include it. `host/version.c` and `gpu/vk/vk_version.cpp` carry the version and a fingerprint of `host/`,
+  `gpu/` and `builder/crates/`, so they compile again whenever any of those changes.
+- **The lift** keeps every unit whose functions' keys are unchanged. A hook site, a patch or an ExeFS patch lifts the
+  units of the functions it changes; a change to the lifter lifts every unit, and only the units whose text changed
+  are written, so only those compile.
+- **A link** is skipped when nothing it reads changed.
+- **The assets** are kept while their inputs match.
+- **The shader preparation** has real work again when the shader translator's stamp changes: any code change (not
+  comments or whitespace) to `gpu/vk/eden`, `gpu/vk/sirit`, `gpu/vk/compat`, `vk_shader.cpp`, `vk_bank.cpp` or
+  `vk_state.h` makes every player translate every program at their next start
+  ([switches](reference/switches.md#adding-or-removing-a-switch)).
 
 Build switches, the compile levels and the compiler memory gate: [the build](reference/build.md).
 
@@ -58,8 +60,8 @@ Build switches, the compile levels and the compiler memory gate: [the build](ref
 
 A full build of a new game folder takes a while, much of it the shader preparation
 ([build times](reference/build.md#build-times)). A **base** is the game built once; a **pack** is a change built as only
-what differs from it; a **runtime** is a game folder to run, a copy of the base with packs over it. `make_game.py` and
-`build.py` run as they are, so what players build is unchanged. `dev.py` keeps one shared base per commit of `main`,
+what differs from it; a **runtime** is a game folder to run, a copy of the base with packs over it. `longshot-builder`
+runs as it is, so what players build is unchanged. `dev.py` keeps one shared base per commit of `main`,
 builds this checkout as a pack over the nearest one, and puts each step through the [job
 queue](#share-a-pc-the-job-queue):
 
@@ -73,35 +75,45 @@ python -I scripts/dev.py bases            # the bases, their packs, when each wa
 
 | `dev.py` | What it does |
 |---|---|
-| `base [REV] [--romfs-in-place]` | Build `REV`'s base (default: where this checkout left `main`) unless someone has: one per commit, in the development folder's `bases/`. `--romfs-in-place`: no `romfs` in its game folder (below) |
+| `base [REV]` | Build `REV`'s base (default: where this checkout left `main`) unless someone has: one per commit, in the development folder's `bases/` |
 | `pack` | Build this checkout as a pack over the nearest base in its history. Renderer-only changes build the renderer alone; docs, checks, CI files and developer tools nothing (`NOT_BUILT` in `scripts/devtools/packs.py`); anything else builds the game, without the renderer when only `host/` C files or the lift changed |
-| `rt [--empty]` | A game folder to run: the base's, `romfs` hard-linked, the rest copied (copy-on-write clones on btrfs or XFS), the pack over it. Run again, it refreshes the runtime in place: only files that differ are replaced, and its caches, logs, saves and settings stay |
+| `rt [--empty]` | A game folder to run: the base's files copied (copy-on-write clones on btrfs or XFS), its romfs index with them, so it reads the same .nup; the pack over it. Run again, it refreshes the runtime in place: only files that differ are replaced, and its caches, logs, saves and settings stay |
 | `bases` | The shared bases, their packs and when each was last used |
 | `game [--quick \| --timing] [--fsr]` | A whole game folder, `build-linux/game/` (`--quick`: `-O1` hot code; `--timing`: a measured build) |
-| `vk` | The renderer alone, its exports checked |
+| `vk` | The renderer alone (`longshot-builder compile --only renderer`), its exports checked |
 | `env` | The build environment as shell lines, for a build of your own |
+| `update ...` | A game folder of yours kept on main ([below](#keep-a-game-on-main)) |
 
 `dev.py packs` does the same on a base folder you name, without the queue: what `base`, `pack` and `rt` run inside their
 job, and what the Test Farm runs.
 
 ```sh
-python -I scripts/dev.py packs base ../base-main --romfs <romfs> --exefs <exefs> [--seed <older game folder>] [--romfs-in-place]
-python -I scripts/dev.py packs pack ../base-main my-fix --tree <the change's checkout>
+python -I scripts/dev.py packs base ../base-main --game <file.nup> [--tree <checkout>] [--seed <older game folder>] [--upscaler dlss,fsr4]
+python -I scripts/dev.py packs pack ../base-main my-fix [--tree <the change's checkout>]
 python -I scripts/dev.py packs rt   ../base-main ../rt-main                   # no pack: main, the other side of an A/B
 python -I scripts/dev.py packs rt   ../base-main ../rt-my-fix my-fix
 python -I scripts/dev.py packs warm ../base-main --run "<command that plays {runtime}>"
+python -I scripts/dev.py packs run [--tree <checkout>] -- <longshot-builder args>  # that checkout's longshot-builder, with the tree and the store
 ```
 
+- `dev.py packs --json <subcommand> ...` (or `LONGSHOT_BUILD_JSON=1`) runs longshot-builder with `--output json`: its
+  [events](reference/build-events.md) are stdout as it wrote them, error codes and all (what the Test Farm reads);
+  everything else goes to stderr. Without it, dev.py runs longshot-builder with `--output text`: never a window or a
+  message box ([output](reference/build.md#output)).
+- `--game` is a .nup, or a dump folder with `romfs/` and `exefs/`. A pack is built in one work folder the base keeps,
+  `<base>/pack-work`; its objects come from the store, so a pack compiles only what its change touched.
+
 - `--seed` copies an older game folder's shader caches into a new base first, so the preparation redoes only what changed.
-- `--romfs-in-place` leaves the romfs out of the base's game folder and its runtimes: the preparation and the game are
-  started with `--romfs <romfs>` (`rt` prints it; `dev.py ab` passes it). For a romfs the build may only read, such as a
-  Windows sandbox, where the hard link is refused and becomes a 26 GB copy.
-- A pack that builds the game reads the romfs where it is, so its game folder has none and nothing of it is compared
-  with the base. `LONGSHOT_PACK_ROMFS=copy` links it instead, for a change that writes into the romfs.
-- Upscalers come from the environment, the same for a base and its packs: `LONGSHOT_NGX_SDK` (NVIDIA DLSS, as
-  `make_game.py` reads it), `LONGSHOT_FSR=1` (AMD FSR 4: `--fsr`), and `LONGSHOT_FFX_SDK` or `LONGSHOT_XESS_SDK` (AMD's FSR
-  runtime or Intel's XeSS library, already fetched there by `scripts/fetch.py`, whose license was accepted then: copied into
-  the game folder, nothing downloaded). A base built without one makes packs without it too, so build a new base to change them.
+- A base built from a .nup has no `romfs` folder: it and its runtimes read the romfs from the .nup through
+  `longshot_romfs.idx`, so keep the .nup where it is while you use them (`nup_moved` otherwise). Nothing of the romfs
+  is copied or compared.
+- Upscalers: `--upscaler`, or with none, the ones the environment names (as the Test Farm sets them): `LONGSHOT_NGX_SDK`
+  (DLSS, from that SDK), `LONGSHOT_FSR=1` (FSR 4), `LONGSHOT_XESS_SDK` (XeSS). `LONGSHOT_FFX_SDK` beside `LONGSHOT_FSR=1`,
+  and `LONGSHOT_XESS_SDK`, say the vendor's license was accepted when `scripts/fetch.py` fetched it: the base passes
+  `--accept-licenses amd` or `intel`, and longshot-builder puts its own pinned copy of the runtime in the game folder;
+  `LONGSHOT_NGX_SDK` goes to it as `--ngx-sdk`. A base's packs build with the base's, so build a new base to change them.
+- A pack makes a runtime prepare its shaders again when its build's `translator_stamp` (in the game folder's
+  `longshot_version.txt`, written by longshot-builder) is not its base's.
 - `warm` plays a pack-less runtime and copies the caches it grew back into the base, so no runtime compiles pipelines
   for those scenes again.
 - One job at a time per base: `base`, `pack`, `rt` and `warm` hold `<dir>/dev_packs.busy` (`dev.py pack` and `rt` wait for the base instead).
@@ -127,11 +139,11 @@ python -I scripts/dev.py update --gui               # all of it in a window: mer
 - **What it builds:** main's newest commit, from a worktree of its own (`update/tree` in your development folder): your
   checkouts and branches are not touched. The build runs with that commit's own `dev.py`, in the player's build
   environment, through the [job queue](#share-a-pc-the-job-queue), sharing the stores
-  ([what is kept between builds](#what-is-kept-between-builds)): when the translation didn't change, only what changed
-  compiles.
-- **The game files:** a folder that keeps them (`romfs/`, `.longshot_exefs/`, as a launcher or `make_game.py` build
-  does) is built again from them (`make_game.py --update`); a new folder takes the files `dev.py` finds (`"romfs"` and
-  `"exefs"` in `dev_build.json`).
+  ([what is kept between builds](#what-is-kept-between-builds)): only the units and files the new commits changed
+  compile.
+- **The game files:** a folder with a `longshot_build.json` is built again from the .nup it names
+  (`longshot-builder update`); any other folder is built from the game `dev.py` finds (`LONGSHOT_DEV_GAME`, else
+  `"game"` in `dev_build.json`, below).
 - **What it keeps:** saves, mods, `longshot_options.ini` and `longshot_env.txt`, as a launcher update does. Before each
   build it backs up the folder's build files into `update/backups/` (the last three); a failed or stopped build is put
   back. `--rollback` puts the last backup back.
@@ -167,7 +179,7 @@ screen, so a screenshot or a stream says which change it is (default: the job's 
 
 | Mode | For | Runs beside |
 |---|---|---|
-| `build` | `make_game.py`, `dev.py packs base` / `pack`, the test suites (`mise run test`, `tests/run_all.py`) and any compile-and-run check | 2 at once; never a timed run |
+| `build` | `longshot-builder`, `dev.py packs base` / `pack`, the test suites (`mise run test`, `tests/run_all.py`) and any compile-and-run check | 2 at once; never a timed run |
 | `light` | Small game-free work: a copy, one quick check, `dev.py vk` | 4 at once; never a timed run |
 | `shared` | A game run that is not a number: screenshots, logs, checks | 3 at once, each with its own game and data folder |
 | `gpu` | The game alone on the GPU, not a measurement | Builds |
@@ -186,9 +198,13 @@ screen, so a screenshot or a stream says which change it is (default: the job's 
   another tmpfs. The queue moves a job's `TMPDIR` off tmpfs, and `dev.py`'s builds refuse such a folder.
 - **One base per commit of main**, shared in your development folder's `bases/` ([where dev data
   lives](reference/build.md#where-dev-data-lives)). Agents sharing a PC agree before moving it.
-- `dev.py`'s builds name any `A64_`, `OOT_` or `RX_` variable you set, finds the game files in `~/Games` (and
-  `~\Games\Longshot` on Windows) or `LONGSHOT_DEV_ROMFS` / `LONGSHOT_DEV_EXEFS`, and reads its settings from
-  `config/dev_build.json` in the development folder (the queue: `config/job_queue.json`).
+- `dev.py`'s builds take the game from `LONGSHOT_DEV_GAME`, else `"game"` in `config/dev_build.json` in the
+  development folder, else the newest .nup up to two folders under `~/Games`; a dump folder with `romfs/` and
+  `exefs/` works too. They build with the checkout's own `longshot-builder` (compiled into the development folder's
+  `cargo/`; `LONGSHOT_CARGO` names the cargo, `LONGSHOT_BUILD` a ready-made `longshot-builder`), pass it `--root <tree>
+  --store <dev folder>/store` (`LONGSHOT_STORE` moves it), and take `tools.lock`'s build tools; a variable you set
+  yourself, such as `RX_CPM`, wins. DLSS goes in when an NGX SDK is found, FSR 4 with `--fsr`. The queue's settings
+  are `config/job_queue.json`.
 
 ## Run the checks
 
@@ -203,13 +219,13 @@ mise run test --container                       # Linux: the same in a container
 mise run ci                                     # what CI checks: the pinned test tools, every check and the website
 ```
 
-A check whose tool this PC lacks (clang, spirv-val, glslang, .NET, a sanitizer) fails in `mise run test`. Install the tool,
+A check whose tool this PC lacks (clang, spirv-val, glslang, a sanitizer) fails in `mise run test`. Install the tool,
 or use `--container`: `scripts/linux/checks.sh` builds an image with the tools and versions of CI's job (Ubuntu 24.04,
 ~3 GB, once) and runs the checks in it as your user, with no network and only the checkout to write.
 With `--container`, a `--junit` report must be inside the checkout; relative paths are resolved from the directory
 where you invoked the command. Other destinations are rejected before the image is built.
 
-`tests/run_all.py` runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under
+`tests/run_all.py` runs every `tests/test_*.py` in its own process, the C++ unit tests under
 `gpu/vk/tests` and a byte-compile of every tracked Python file. It keeps going after a failure and ends with a table and
 every failure's output. `mise run test-changed` is `run_all.py --strict --changed`: a quick check while you work, never
 the whole suite's stand-in. Ruff (`ruff.toml`: pyflakes and a few error rules, 120 columns, no formatting) runs from
@@ -227,29 +243,36 @@ VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json VK_ICD_FILENAMES=/usr/share
   python3 -I -B tests/run_vulkan_fixtures.py --cxx g++ --headers /usr/include --device llvmpipe
 ```
 
-Slow checks that need your dump (`work/dump.txt` from `nx2/dump.py --set`):
+The lifter's semantics are checked without the game, every instruction form against Unicorn
+(`tests/test_lifter_semantics.py`, [the builder](reference/builder.md#building-and-checking-the-builder)). Checks that
+need your dump read your work folder, on your PC only:
 
 | Command | What it checks |
 |---|---|
-| `python -I nx2/test_insn.py [--per 6 --states 12]` | Every instruction form the game uses: Unicorn against the lifted C |
-| `python -I nx2/test_leaf.py [--count 3000 --states 4] [--calls]` | Random whole functions (or call trees): Unicorn against native code |
-| `python -I nx2/census.py --nx2` | The instruction census per module |
-| `python -I nx2/lower_test.py <folder>` | Shader programs that failed to translate (from `RX_VK_DUMP_FAILED`) |
+| `longshot-builder lift --work <dir>` | The whole lift: it stops on any hook site that does not resolve or edit it cannot write; an instruction the semantics do not cover becomes a trap where it is, and the log counts them ("instructions lowering does not do") |
+| `longshot-builder dev discover --image <dir>/image` | Discovery alone: the functions, tables and stubs it finds, and its time |
+| `longshot-builder dev sites --image <dir>/image --tables game` | The hook sites placed over the image's discovery, without a lift |
+| `python -I scripts/lower_test.py <folder>` | Shader programs that failed to translate (from `RX_VK_DUMP_FAILED`): a renderer tool, not the build's |
+
+The parity gates 3 to 5 (behaviour, saves, nothing started), which a refactor of how Longshot changes the game's code
+must pass, need two games: `python -I scripts/parity_gates.py ab --a main=<game> --b branch=<game>`
+([parity gates](reference/parity-gates.md)). Linux; every run through the job queue.
 
 ### Write a check
 
 A fix comes with a game-free test that fails on `main` for the bug's reason ([standards](standards.md#fixes-and-checks);
 the order of the work is the [fix-with-test skill](../../.claude/skills/fix-with-test/SKILL.md)).
 
-- Name it `tests/test_<topic>.py` (or `nx2/test_*.py`), standard library only where it can be (declare any package in
+- Name it `tests/test_<topic>.py` (a check of the builder's own code is a Rust test in its crate), standard library only where it can be (declare any package in
   `RUN_ALL_MODULES`), with a docstring that says what it
   checks and how to run it. `tests/run_all.py` picks it up.
 - Declare what it needs as plain literals at the top level, after the docstring and imports; the runner reads them
   without importing the test:
 
   ```python
-  RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # {cxx}, {vulkan_headers}, {spirv_headers},
-                                                                        # {spirv_val}, {glslang}, {dotnet}, {dav1d}
+  RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # {cc}, {cxx}, {clang}, {vulkan_headers},
+                                                                        # {spirv_headers}, {spirv_val}, {glslang},
+                                                                        # {dav1d}, {cargo}, {llvm_mc}
   RUN_ALL_MODULES = ["zstandard"]                                       # packages it imports
   RUN_ALL_SKIP = {"windows": "POSIX signals: the Linux guard"}          # OS -> why it can't run there
   ```
@@ -265,6 +288,9 @@ the order of the work is the [fix-with-test skill](../../.claude/skills/fix-with
   part = between(text, "// begin", "// end")                  # start up to, not including, end
   ```
 
+- **A hook site's callback** is run behind the hook as the lift lowers it: `tests/sitehooks.py`'s `line(x)` in the
+  fixture, its `objects()` linked, `RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]`; the site itself from
+  `tests/sitecheck.py` (`site()`, `callback()`, `slot()`). `tests/test_oot_shadow.py` is a short one to start from.
 - **Check the behaviour**, not the text of the new line: what the function returns, writes or calls. A fix behind a
   switch is tested both ways. Keep it to seconds, on Linux and Windows where it can run.
 
@@ -280,8 +306,10 @@ the queue (`--mode shared`, or `--mode timing` for numbers). Ways to drive a run
 - **`scripts/run-vk.ps1 -Window -Graceful`** (Windows, through PowerShell): a muted windowed run with a screenshot every 300 presents in
   `work/runs/<name>/shots`, closed gracefully at the end. Parameters: `-Seconds`, `-Name`, `-BuildName "what this tests"`,
   `-Sound`, `-ShotEvery`.
-- **Switches** in the environment, or in a test's own file named by `HOS_ENV_FILE` with its settings in
-  `HOS_OPTIONS_FILE`, so the player's files stay as they are. The switches for test runs (headless, window size, build
+- **Switches** in the environment, or in a test's own file named by `HOS_ENV_FILE`, with its settings in its own
+  profile's `settings.ini` (the control bridge makes one per run: `longshot_ctl.py launch --options FILE`), so the
+  player's files stay as they are. The game takes its settings, saves and start slot from a profile alone
+  ([profiles](reference/profiles.md#playing-a-profile-longshot_profile)): a run of your own plays one of its own. The switches for test runs (headless, window size, build
   name, fixed time, no sound) are in [switches](reference/switches.md#switches-for-test-runs).
 
 Screenshots and dumps reach gigabytes: look at them on your PC, then delete them.
@@ -327,11 +355,11 @@ What the renderer's frame and timing lines mean: [profiling](reference/profiling
 After a crash the game writes `bug-reports/pending/crash-<UTC time>.txt` beside the log: version, time, exception or
 signal, thread, module offsets (the same numbers as the log's `CRASH:` lines) and bounded host and guest backtraces. A
 run that ended without a record (killed, power cut, out of memory) leaves an `unclean-<UTC time>.txt` at the next
-start. The newest 15 are kept. A helper then shows the [crash window](reference/crash-window.md).
+start. The newest 15 are kept. The builder that started the game (`longshot-builder play`) reads them once the game has
+ended and shows the [crash window](reference/crash-window.md); a game started on its own writes them with no window.
 
 | Switch | What it does |
 |---|---|
-| `HOS_CRASH_WATCH=0` | No helper and no window after a crash |
 | `HOS_CRASH_TEST=start` or `<seconds>` | Crash on purpose at the start or after that many seconds (environment only) |
 | `HOS_CRASH_MINIDUMP=1` | Windows: also a minidump in `bug-reports/local-only/`. It holds game and private data: **never share it** |
 
@@ -416,8 +444,7 @@ reports and A/B runs of a memory change ([memory budget](reference/architecture.
 | The game's state while it runs | The control bridge's `status`, `watch` and `mem read` ([control bridge](reference/control-bridge.md#the-client)) |
 | Screenshots on a timer | `RX_VK_SHOTS=<dir>` every `RX_VK_SHOT_EVERY` presents (300) at `RX_VK_SHOT_W` x `RX_VK_SHOT_H` (1280x720) |
 
-`RX_VK_DUMP_FAILED=<dir>` writes the native code of every program that does not translate, for `nx2/lower_test.py`
-(game data: keep it local).
+`RX_VK_DUMP_FAILED=<dir>` writes the native code of every program that does not translate (game data: keep it local).
 
 ## Measure a change
 
@@ -451,7 +478,7 @@ A route that moves: `dev.py ab --route <route>` plays a route of `assets/routes/
 
 What it can't do, by hand: frame pacing on the screen (PresentMon during the same route), a profiled run first ([profile](#profile)), and an older base (build the merge base
 as a pack and compare the two packs). Run each side as `dev.py queue run NAME --mode timing -- <your run>`, with
-`HOS_OPTIONS_FILE` pinned and each log's `vk: switches set` line read back.
+the settings pinned (`--options`, the run's profile's `settings.ini`) and each log's `vk: switches set` line read back.
 
 ### An A/B within one run
 
@@ -482,18 +509,23 @@ without breaking what the other value built.
 A change to the lifter, the compile flags, the shader preparation or `tools.lock` measures the players' build time
 ([standards](standards.md#performance-and-build-changes)); so does each stable, on its nightly. From a clean build:
 
-1. Use fresh folders so nothing is reused: `XDG_DATA_HOME`, `XDG_CACHE_HOME` and an empty
-   `__GL_SHADER_DISK_CACHE_PATH`.
-2. Download the release's (or your build's) AppImage and `SHA256SUMS`, check them
-   (`python -I ../Tooling/scripts/release.py verify SHA256SUMS --files .`, Tooling's release tool, with `SHA256SUMS.sig` beside it), and extract it
-   (`--appimage-extract`).
-3. From `squashfs-root/usr/share/longshot`, run `../../../AppRun --cli --nup <your .nup> --out <new folder> --language
-   en-US --compile-shaders most`, timestamping its output.
-4. Read the times: tools from the start to `@@stage read`; read, lift, compile and finish from the `where the time went:`
-   table; shader preparation from `@@stage shaders` to `@@done`.
+1. Use fresh folders so nothing is reused: an empty `--cache` (the unpacked sources and tools, the work
+   folder, the stores), a new game folder, and an empty `__GL_SHADER_DISK_CACHE_PATH`.
+2. Download the release's (or your build's) `longshot-builder-<v>-<platform>` and `SHA256SUMS`, and check them
+   (`python -I ../Tooling/scripts/release.py verify SHA256SUMS --files .`, Tooling's release tool, with
+   `SHA256SUMS.sig` beside it). A build of your own: `longshot-builder dev release sources`, then `python -I
+   scripts/longshot_builder.py build`, then `longshot-builder dev release attach <program> <pack> --out <file>`
+   ([releases](reference/releases.md#tools)).
+3. Run `longshot-builder-<v>-<platform> build --game <your .nup> --out <new folder> --language en-US --compile-shaders
+   most --output json`, keeping the events. Its first step unpacks what it carries (about 2 s), in the `tools` stage's time.
+4. Read the times: each stage from its `stage` event to the next, the whole build and the compile from the `done`
+   event (`seconds`, `compile_seconds`), the shader preparation from the `shaders` stage to the end. The work
+   folder's `build_times.json` keeps each build's stages, and `build/compile_state.json` each unit's compile time.
+5. Then the incremental cases: `longshot-builder update <folder>` with nothing changed, and after a one-function change
+   (one hook site's table entry), each with its `compile_plan` event's `changed` count.
 
 For a change, do the same with `main` and the change on the same PC (`dev.py game --timing` through the queue's
-`timing-cpu` mode), and note the date, the commits and the PC with the numbers. The reference numbers are in
+`timing-cpu` mode), and note the date, the commits, `--jobs` and the PC with the numbers. The reference numbers are in
 [build times](reference/build.md#build-times).
 
 ## Profile
@@ -521,8 +553,7 @@ answers which question, the switches and the readers: [profiling](reference/prof
    ```
 
    or a whole game folder with `LONGSHOT_TRACY=1 python -I scripts/dev.py game`. A Tracy pack always builds the
-   game, where Tracy's client is, also from an unchanged tree. The lifted game code is not recompiled, except the
-   chunks with listed `calls` functions.
+   game, where Tracy's client is, also from an unchanged tree. The lifted game code is not recompiled.
 2. Get the Tracy 0.15.0 tools; the protocol is locked to the version. On Linux, `mise run tracy-tools` builds
    `tracy-capture` and `tracy-csvexport` into your development folder's `tools/tracy-0.15.0/bin` (needs cmake, ninja, a
    C++ compiler; `python -I scripts/dev.py paths tools` prints the folder). Build or install the viewer yourself, at
@@ -538,7 +569,7 @@ answers which question, the switches and the readers: [profiling](reference/prof
    count and times; `-u`, every zone on its own line with its thread and text. `TRACY_PORT=<n>` in the game's
    environment and `-p <n>` give a second game its own port (8086 by default).
 
-The zones, the game's own functions and how to add a zone: [profiling](reference/profiling.md#tracy).
+The zones and how to add one: [profiling](reference/profiling.md#tracy).
 
 ## Record the renderer's play profile
 
@@ -602,6 +633,7 @@ The same steps for people and agents. Forge commands are Tooling's `forge.py`
 
 | Tool | What it does |
 |---|---|
+| `longshot-builder`, `longshot-builder dev` | The builder, and the lifter's own parts ([the build](reference/build.md)) |
 | `scripts/dev.py base`, `pack`, `rt`, `bases`, `game`, `vk`, `env` | Shared bases, packs, runtimes and builds through the queue; `env` prints a player's build environment |
 | `scripts/dev.py ab` | A switch or this checkout's change against main in the game, written up ([measure a change](#measure-a-change)) |
 | `scripts/dev.py queue` | The PC's job queue: `run`, `status`, `history`, `cancel` |
@@ -614,7 +646,7 @@ The same steps for people and agents. Forge commands are Tooling's `forge.py`
 | `scripts/run-vk.ps1` | A Windows test run with screenshots |
 | `scripts/memtour.py` | Memory tour |
 | `scripts/flash.py framelog\|probe` | Find a flash in a frame log; name the pass from a texel probe |
-| `scripts/perf.py report\|threads\|renderer\|stacks\|chain\|hotlist\|cpu\|ab` | Read profiles, samples, recordings and A/B traces ([profiling](reference/profiling.md#tools)) |
+| `scripts/perf.py report\|threads\|renderer\|stacks\|chain\|cpu\|ab` | Read profiles, samples, recordings and A/B traces ([profiling](reference/profiling.md#tools)) |
 | `scripts/collect_bench.py [--cc clang] [--reps N]` | The write marks' walk (`collect_in`, `host/rx_backend.c`) timed game-free, as the word walk and as the vector walk (`HOS_COLLECT_VECTOR`), on mark arrays shaped like the game's: an indication only, warm caches on one thread |
 | `scripts/pipeline_tour.py` | The pipeline tour and the play profile's merge, its parts in `scripts/tours/` ([pipeline states](reference/pipeline-states.md)) |
 | `scripts/shaders.py crt\|fsr3\|host\|all [--check]` | Regenerate (or check) the checked-in SPIR-V headers; `spirv-operands` regenerates `gpu/vk/spirv_operands.h` |

@@ -1,4 +1,4 @@
-"""The pipeline state lists, as nx2/pipeline_states.py reads them (whatever their format): counted, merged, compared, and
+"""The pipeline state lists, as scripts/pipeline_states.py reads them (whatever their format): counted, merged, compared, and
 each step of a run valued by what it alone added (pipeline_tour.py merge, compare, value)."""
 import importlib.util
 import json
@@ -10,14 +10,14 @@ import sys
 from tours import ROOT
 
 def state_tool():
-    spec = importlib.util.spec_from_file_location("pipeline_states", os.path.join(ROOT, "nx2", "pipeline_states.py"))
+    spec = importlib.util.spec_from_file_location("pipeline_states", os.path.join(ROOT, "scripts", "pipeline_states.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
 def list_counts(tool, path):
-    """(pipelines, programs, records) of a list, as nx2/pipeline_states.py reads and counts them (whatever its format)"""
+    """(pipelines, programs, records) of a list, as scripts/pipeline_states.py reads and counts them (whatever its format)"""
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return 0, 0, set()
     try:
@@ -29,14 +29,14 @@ def list_counts(tool, path):
 
 
 def merge(args):
-    """The lists merged by nx2/pipeline_states.py (its format, whatever it is), and how much each added"""
+    """The lists merged by scripts/pipeline_states.py (its format, whatever it is), and how much each added"""
     tool = state_tool()
     seen = set()
     for path in args.lists:
         n, progs, recs = list_counts(tool, path)
         print("%s: %d pipelines, %d programs, %d not in the lists before it" % (path, n, progs, len(recs - seen)))
         seen |= recs
-    ran = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "nx2", "pipeline_states.py"), "--out", args.out] + args.lists)
+    ran = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "scripts", "pipeline_states.py"), "--out", args.out] + args.lists)
     return ran.returncode
 
 

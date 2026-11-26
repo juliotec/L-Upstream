@@ -14,7 +14,7 @@
 //    vectors from the depth reprojected through the two cameras. The game has no motion vectors of its own (no velocity
 //    target: the scene pass draws into one B10G11R11 target, and its upscale network samples the colour alone),
 //    so that is the camera's motion, and what moves by itself would ghost. The scene camera's sub-pixel jitter
-//    (nx2/oot_jitter.py, while an engine draws) is read back from its projection, given to the engine and taken off the motion.
+//    (the hook sites jitter.view*, while an engine draws) is read back from its projection, given to the engine and taken off the motion.
 //  - actor motion (actor_motion, shaders/dlss_actor.vert): the skinned draws into the scene (vk_draw.cpp's skin_check:
 //    Link, the other characters, the animals, what the game animates with bones) are drawn again over that motion, each
 //    vertex skinned with this frame's bones and the frame before's, so their pixels get their own motion. Their poses are
@@ -184,7 +184,7 @@ void stage_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAcces
 struct Camera {
     float current[16]{};      // (its view-projection)
     float projection[16]{};   // (its projection, jittered: FSR 3.1's depth constants, and DLSS Frame Generation's camera, vk_dlss.cpp dlss_fg_inputs)
-    float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: nx2/oot_jitter.py)
+    float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: the hook sites jitter.view*)
     float near_z = 0, far_z = 0, fov_y = 0;   // (its projection's, 0 when it is not a plain perspective one)
     uint32_t width = 0, height = 0;
     Texture* depth = nullptr;
@@ -1084,8 +1084,10 @@ void temporal_reset_failure() {
 
 void temporal_idle() {
     State& s = st();
-    if (!s.holding.load(std::memory_order_relaxed)) return;
+    if (!s.holding.load(std::memory_order_relaxed) && !dlss_nr_pending()) return;
     std::lock_guard lk(s.mu);
+    dlss_nr_idle();
+    if (!s.holding.load(std::memory_order_relaxed)) return;
     const uint64_t now = texture_frame_no();
     if (now - s.asked <= 120) return;   // (in use, or off for under 120 frames (2 s): kept, a row stepped through comes back at once)
     // (longshot, a stutter: kept too while DLSS or FSR 4 is still the Upscaler's choice. Each area change's loading screen has no
@@ -1762,9 +1764,14 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
         engine.failed = true;
         return false;   // (the network writes its output over whatever the evaluation did)
     }
+    // (longshot) DLSS 5 over the upscaler's picture, before the HUD (vk_dlss.cpp dlss_nr_chain, its own barriers): its picture
+    // shown instead
+    f.nr_scale = dlss_nr_scale();
+    TemporalImage final_picture = f.output, nr_picture;
+    if (dlss_nr_chain(cmd, f, hdr, nr_picture)) final_picture = nr_picture;
     {
         const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
-        const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
+        const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, final_picture.view, VK_IMAGE_LAYOUT_GENERAL},
                                                {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

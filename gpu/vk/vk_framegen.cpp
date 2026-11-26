@@ -1082,7 +1082,7 @@ void framegen_idle(bool recorded) {
     drop_size();
 }
 
-// Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told
+// Ultrawide's menus (the Insert menu's Ultrawide menus): which of game/oot_wide_sites.c's kept screens keep the whole picture, told
 // to the game's side each present, and, while a menu shows, the sides of the middle 16:9 to show out of focus (1)
 // or black (2), as fractions of the width. A menu's layout is set up once, when it is first opened: what tells one is
 // that the frame draws no world (vk_draw.cpp world_drawn_at), as a pause, the map, a loading screen or a movie
@@ -1093,10 +1093,12 @@ std::atomic<bool> wide_possible{false};   // (a margin and the setting on: vk_re
 WideSides wide_sides() {
     WideSides w;
     if (!host || !host->wide_menus) return w;
-    // (KEEP_VTABLES 1 and 3: the pause / system menus and the loading fade, whose layout host/hos_wide_ui.c then places as the
+    // (KEEP_VTABLES 1 and 3: the pause / system menus and the loading fade, whose layout game/hos_wide_ui.c then places as the
     // HUD's. 0, the item wheel's background, and 2, the event fade, keep covering the whole picture)
     constexpr uint32_t kMenus = 0xa;
-    const float margin = host->wide_menus(opts.wide_menus ? 0x1fu & ~kMenus : 0x1fu);
+    const int* wide_menus_row = menu_game_value(HOS_OPT_WIDE_MENUS);   // (the game's Ultrawide menus row, game/menu/rows.c)
+    const int wide_menus = wide_menus_row ? *wide_menus_row : 1;
+    const float margin = host->wide_menus(wide_menus ? 0x1fu & ~kMenus : 0x1fu);
     extern std::atomic<int64_t> world_drawn_at;
     extern int64_t presents_now;
     extern std::atomic<int64_t> wheel_drawn_at;
@@ -1104,10 +1106,10 @@ WideSides wide_sides() {
     // console: its sides are left as the game draws them)
     const bool no_world = presents_now - world_drawn_at.load(std::memory_order_relaxed) > 3 &&
                           presents_now - wheel_drawn_at.load(std::memory_order_relaxed) > 3;
-    // (3, Extended: the menus at their own size with their side panes at the screen's edges, host/hos_wide_ui.c: no sides of their own)
-    const bool centred = opts.wide_menus == 1 || opts.wide_menus == 2;
+    // (3, Extended: the menus at their own size with their side panes at the screen's edges, game/hos_wide_ui.c: no sides of their own)
+    const bool centred = wide_menus == 1 || wide_menus == 2;
     wide_possible.store(centred && margin > 0.0f, std::memory_order_relaxed);
-    if (centred && margin > 0.0f && no_world) w.x0 = margin, w.side = opts.wide_menus;
+    if (centred && margin > 0.0f && no_world) w.x0 = margin, w.side = wide_menus;
     static int told = 0;
     if (w.side != told) {   // (each change logged: a report of blurred sides in play says when they came and went)
         logf("vk: ultrawide menu sides %s at present %lld (the world last drawn at present %lld)", w.side ? "on" : "off",

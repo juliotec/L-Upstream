@@ -19,11 +19,12 @@ MODE (MODES below):
 
 Order: high before normal before low priority (a ticket moves up a level per 30 min of waiting; tickets of other versions
 of the queue may carry one), first come first served within a level, and no job starts ahead of a waiting one it would
-hold up. Timed runs of one group (the name's first word) go one at a time. Inside a job (LONGSHOT_JOB set) `run` runs CMD
-directly.
+hold up. Timed runs of one group (the name's first word) go one at a time. Inside a job (LONGSHOT_JOB or another queue's
+marker set, or a running job's process above it, whatever environment reached it) `run` runs CMD directly, with the job's
+markers: a job never queues again.
 
-A job gets LONGSHOT_JOB, LONGSHOT_JOB_NAME and LONGSHOT_JOB_MODE, never an OOT_, RX_ or A64_ variable (make_game.py's
-lift key hashes those: a variable naming the job would give every build its own translation); TMPDIR moved off a RAM file
+A job gets LONGSHOT_JOB, LONGSHOT_JOB_NAME and LONGSHOT_JOB_MODE, never an OOT_, RX_ or A64_ variable (those are the
+build's and the game's switches: a variable naming the job would change what every job builds or runs); TMPDIR moved off a RAM file
 system; for the GPU modes its own NVIDIA shader cache folder (LONGSHOT_QUEUE_NV_CACHE); on Linux its own systemd scope (the
 OOM killer stops that job, not your terminal) and CPU affinity while a timed run measures. Every job also waits for memory
 (LONGSHOT_QUEUE_MIN_FREE_GB, _MAX_PRESSURE, _MAX_SWAP_GB), and a timed run for builds outside the queue. While a timed run
@@ -72,8 +73,8 @@ MEASURING = ("timing", "timing-cpu", "profile")
 # the PC's; the other CPUs' mean use (%). The swap rate is kept but judges nothing: a game holding 18 GB it can't swap
 # (MemorySwapMax=0) pushes the rest of a 32 GB PC into swap at 100 MB/s while its own stalls stay at 0.05 %)
 NOISY = {"cpu_pressure_max": 20.0, "memory_stall_max": 1.0, "io_stall_max": 10.0, "other_cpus_busy": 50.0}
-# (what an LONGSHOT_JOB variable must never be: the lift key hashes these, make_game.py lift_key)
-LIFT_KEY_PREFIXES = ("A64_", "OOT_", "RX_")
+# (what a job's own variables must never start with: the build's and the game's switches)
+BUILD_SWITCH_PREFIXES = ("A64_", "OOT_", "RX_")
 DEFAULTS = {
     "LONGSHOT_QUEUE_GPU_SHARED": "3",
     "LONGSHOT_QUEUE_BUILD_SLOTS": "2",
@@ -90,7 +91,8 @@ DEFAULTS = {
     "LONGSHOT_QUEUE_SCOPE": "1",
     "LONGSHOT_QUEUE_NO_SWAP": "1",
     "LONGSHOT_QUEUE_GAMES": "longshot,longshot.exe,hookshot,lichii",
-    "LONGSHOT_QUEUE_HEAVY": "make_game.py,nx2/build.py",
+    # (program names, * a wildcard: a release's longshot-builder-<version>-<platform> too)
+    "LONGSHOT_QUEUE_HEAVY": "longshot-builder,longshot-builder.exe,longshot-builder-*",
     "LONGSHOT_QUEUE_TIMING_CPUS": "",
     "LONGSHOT_QUEUE_OTHER_CPUS": "",
     "LONGSHOT_QUEUE_DIR": "",
@@ -237,19 +239,24 @@ def user_playing(s):
 
 
 def heavy_procs(s, skip=()):
-    """Builds running outside the queue: a python running one of LONGSHOT_QUEUE_HEAVY's scripts, not in a job's tree"""
-    pats = [p.strip() for p in s["LONGSHOT_QUEUE_HEAVY"].split(",") if p.strip()]
+    """Builds running outside the queue, not a job's: a program LONGSHOT_QUEUE_HEAVY names (longshot-builder, a release's
+    longshot-builder-<version>-<platform>), or the cargo `dev.py packs run` builds longshot-builder with (LONGSHOT_HEAVY in
+    its environment)"""
+    import fnmatch
+    pats = [p.strip().lower() for p in s["LONGSHOT_QUEUE_HEAVY"].split(",") if p.strip()]
     skip = set(skip)
     out = []
     for pid, exe in sorted(procs.exes().items()):
-        if pid in skip or common.WINDOWS and "python" not in exe.lower():   # (Windows: the program's name first, as game_procs)
+        if pid in skip:
             continue
-        argv = procs.argv_of(pid)
-        if argv and "python" in os.path.basename(argv[0].replace("\\", "/")).lower() and \
-                any(a.replace("\\", "/").endswith(p) for a in argv[1:4] for p in pats):
-            env = procs.env_of(pid) or {}
-            if not env.get("LONGSHOT_JOB"):
-                out.append(pid)
+        name = os.path.basename(exe.replace("\\", "/")).lower()
+        named = any(fnmatch.fnmatchcase(name, p) for p in pats)
+        if not named and name not in ("cargo", "cargo.exe"):
+            continue
+        env = procs.env_of(pid) or {}
+        if env.get("LONGSHOT_JOB") or (not named and not env.get("LONGSHOT_HEAVY")):
+            continue
+        out.append(pid)
     return out
 
 
@@ -689,11 +696,75 @@ def say(text):
     common.say("queue", text, err=True)
 
 
+def writable(environ=None):
+    """Whether this process can write the queue's tickets (queue_dir): not in a sandbox that hides them (the Test Farm's)"""
+    try:
+        qdir = queue_dir(settings(dict(os.environ if environ is None else environ)))
+        os.makedirs(qdir, exist_ok=True)
+        probe = os.path.join(qdir, ".probe.%d" % os.getpid())
+        open(probe, "w").close()
+        os.remove(probe)
+        return True
+    except (OSError, KeyError, ValueError):
+        return False
+
+
+# (every variable a version of the PC's queue has marked its job's processes with: LONGSHOT_JOB, _NAME and _MODE (every
+# dev.py's, main's as well as later ones, and scripts/job_queue.py's before it), OOT_STATUS_LOCK (the GPU lock that queue
+# still counted). Any one of them left set is a job)
+JOB_MARKERS = ("LONGSHOT_JOB", "LONGSHOT_JOB_NAME", "LONGSHOT_JOB_MODE", "OOT_STATUS_LOCK")
+# (job_above's answer when this process's parents can't be read while a job runs: inside one, for all it can tell)
+UNSURE = {"name": "a job (this process's parents can't be read)"}
+
+
 def inside_job(environ):
-    """The job a process runs under, or None"""
-    if environ.get("LONGSHOT_JOB"):
-        return environ.get("LONGSHOT_JOB_NAME") or environ.get("LONGSHOT_JOB")
+    """The job a process runs under by its environment (any of JOB_MARKERS), or None"""
+    marks = [k for k in JOB_MARKERS if (environ.get(k) or "").strip()]
+    if marks:
+        return environ.get("LONGSHOT_JOB_NAME") or environ.get(marks[0])
     return None
+
+
+def job_above(qdir, chain=None):
+    """The running job (an active ticket of any version of the queue) whose runner or command is this process or one
+    above it (chain: procs.ancestors()), whatever environment reached here: a caller that dropped the job's variables (the
+    build's environment does), `env -i`, a shell that keeps none. UNSURE when a job runs and this process's parents can't
+    be read; None: inside no job. A ticket of another pid namespace (a sandboxed runner) can't be matched and is skipped"""
+    active = [t for t in read_tickets(qdir, clean=False) if t.get("state") == "active"]
+    if not active:
+        return None
+    chain = procs.ancestors() if chain is None else chain
+    if not chain:
+        return UNSURE
+    mine, ns = dict(chain), procs.pidns()
+    for t in active:
+        if t.get("ns") and ns and t["ns"] != ns:
+            continue
+        for pid, start in ((t.get("pid"), t.get("start")), (t.get("child"), t.get("child_start"))):
+            if pid in mine and (start is None or mine[pid] is None or start == mine[pid]):
+                return t
+    return None
+
+
+def job_here(environ=None, s=None):
+    """(name, variables) of the job this process runs inside, or None: a job's marker in this process's environment or in
+    environ (the one it would give what it runs), else a running job above it (job_above). variables are the job's
+    markers, for what it runs directly: every process under a job finds them, whatever environment its caller made. A
+    process inside a job never queues: its ticket would wait for jobs that wait for the job around it (a build ticket
+    behind a timed run, which waits for that job to end), a deadlock. Unsure, it is inside one"""
+    environ = os.environ if environ is None else environ
+    marks = {k: v for e in (os.environ, environ) for k, v in e.items() if k in JOB_MARKERS and (v or "").strip()}
+    if marks:
+        return inside_job(marks), marks
+    try:
+        t = job_above(queue_dir(settings(dict(environ)) if s is None else s))
+    except (OSError, KeyError, ValueError):
+        return UNSURE["name"], {}
+    if t is None:
+        return None
+    if t is UNSURE:
+        return t["name"], {}
+    return t["name"], {"LONGSHOT_JOB": str(t["pid"]), "LONGSHOT_JOB_NAME": t["name"], "LONGSHOT_JOB_MODE": t.get("mode", "")}
 
 
 def without_queue_vars(environ):
@@ -703,13 +774,16 @@ def without_queue_vars(environ):
 
 
 def run(name, mode, cmd, environ=None, s=None, cwd=None, desc=None, noise_file=None):
-    """Queue, wait, run cmd (in cwd, with environ); returns its exit status. Inside a job already (this process's environment
-    or environ says so) it runs cmd directly: that job holds what this one needs"""
+    """Queue, wait, run cmd (in cwd, with environ); returns its exit status. Inside a job already (job_here: this process's
+    environment or environ says so, or a running job's process is above this one) it runs cmd directly, with that job's
+    markers: that job holds what this one needs, and a ticket of its own could wait for a job that waits for it"""
     environ = dict(os.environ if environ is None else environ)
     s = settings(environ) if s is None else s
     cwd = cwd or os.getcwd()
-    inside = inside_job(os.environ) or inside_job(environ)
-    if inside:
+    found = job_here(environ, s)
+    if found:
+        inside, marks = found
+        environ.update(marks)
         say("inside job %s: running %s directly" % (inside, name))
         if desc and MODES[mode][0]:
             environ["LONGSHOT_BUILD_NAME"] = desc

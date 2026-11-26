@@ -1,23 +1,30 @@
 """The eight-note Scarecrow melody keeps its recorded rhythm across frame-rate caps.
 
-Exercise the real whole-frame patch on small authored C functions with the two
-conversion shapes, then compile them with the real fraction helper. Record note
+Exercise the real whole-frame hook sites (frame.wholeScarecrowPlay, frame.wholeScarecrowRecord and
+frame.wholeScarecrowLast, replace sites on the cuts, as the lift lowers them (tests/sitehooks.py) with game/oot_sites.c's
+callbacks) on small authored C functions with the two conversion shapes, then compile them with the
+real fraction helper; and the same with the text patch's lines they replaced, side by side. Record note
 holds/gaps at 60, 120 and 240 updates per second and play every recording at each
 rate. The recording counter resets between events; its fraction belongs to the
 counter, not one update or function. The separate x12 recording cut stays unchanged.
 No game data, save, audio or GPU is needed.
 
-python -I -B tests/test_scarecrow_timing.py [--cc gcc] [--source nx2/oot_patches.py]
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_scarecrow_timing.py [--cc clang] [--cargo cargo]
 """
 import argparse
-import importlib.util
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from whole_sites import hook_whole, old_whole  # noqa: E402
+import sitehooks  # noqa: E402
 
 CUT = "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);\n"
 ADD = "    { uint64_t _a=c->x[%d],_b=((uint64_t)(uint32_t)(((uint32_t)(c->x[8])) << 0)),_r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }\n"
@@ -141,28 +148,26 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
-    parser.add_argument("--source", type=Path, default=ROOT / "nx2" / "oot_patches.py")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    sys.path.insert(0, str(ROOT / "nx2"))
-    spec = importlib.util.spec_from_file_location("scarecrow_patches", args.source)
-    patches = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(patches)
-    source, changed = patches.patch_whole_frames(LIFTED)
+    sitehooks.use(args.cc, args.cargo)
+    source, changed = hook_whole(LIFTED)
+    old, _ = old_whole(LIFTED)
     with tempfile.TemporaryDirectory(prefix="longshot-scarecrow-") as folder:
         tmp = Path(folder)
         (tmp / "a64.h").write_text(HEADER, encoding="utf-8")
-        fixture = tmp / "fixture.c"
-        fixture.write_text(source + FIXTURE, encoding="utf-8")
-        binary = tmp / "fixture.exe"
-        command = [args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1",
-                   "-I", str(ROOT / "host"), str(fixture), "-o", str(binary)]
-        print("compiler:", " ".join(command), flush=True)
-        subprocess.run(command, check=True)
-        subprocess.run([str(binary)], check=True, timeout=30)
-    assert changed == 3, "all three eight-note conversions must each be patched once"
-    assert patches.patch_whole_frames(source) == (source, 0), "the patch must be idempotent"
-    assert (CUT + ADD % 12) in source, "the other recording cut must be preserved"
+        for what, text in (("the hooks", source), ("the text patch", old)):
+            fixture = tmp / "fixture.c"
+            fixture.write_text(text + FIXTURE, encoding="utf-8")
+            binary = tmp / "fixture.exe"
+            command = [args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-O1",
+                       "-I", str(ROOT / "host"), "-I", str(ROOT / "game"), str(fixture), *sitehooks.objects(tmp, text), "-o", str(binary)]
+            print("compiler (%s):" % what, " ".join(command), flush=True)
+            subprocess.run(command, check=True)
+            subprocess.run([str(binary)], check=True, timeout=30)
+    assert changed == 3, "all three eight-note conversions must each be hooked once"
+    assert source.count(CUT + ADD % 12) == 1, "the other recording cut must be preserved"
 
 
 if __name__ == "__main__":

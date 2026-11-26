@@ -1,0 +1,18 @@
+[package]
+name = "build-compile"
+description = "The builder's compile stage: the game's and the renderer's sources, their flags, the object store, the scheduler under the memory gate, the links"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+build-core.workspace = true
+lzma-rs.workspace = true
+miniz_oxide.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1_smol.workspace = true
+
+[lints]
+workspace = true

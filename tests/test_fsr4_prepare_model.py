@@ -2,7 +2,7 @@
 it, and warms the contexts of the model the player picked (fsr4_model: the menu's Model row, or RX_VK_FSR4_MODEL), as the
 per-frame path asks for (prepare). No game or GPU required.
 
-The function is only compiled in a build with LONGSHOT_FSR (make_game.py --fsr, CI's FSR jobs), so a change to make_context
+The function is only compiled in a build with LONGSHOT_FSR (longshot-builder --upscaler fsr4, CI's FSR build checks), so a change to make_context
 that leaves its call here behind breaks those builds and no other (#2122: #1989 gave make_context the model as a fourth
 argument after #1886's warm call, which passed three). This check cuts the function out of the file and builds it against
 stand-ins, with a make_context declared with the parameters of the file's own definition, which records each call:

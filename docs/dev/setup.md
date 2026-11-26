@@ -5,9 +5,10 @@ OS, and a first build from your own dump. The daily loop after that is in [devel
 
 **No game files are in this repository, and nothing built from your dump leaves your PC**: not a game folder, a base,
 a pack, a cache or a profile ([the rule with no exceptions](../../CONTRIBUTING.md#the-rule-with-no-exceptions)).
-Everything a build makes from the dump goes to its `--out` folder and its work folder: with `mise run build`, `work/` in
-your development folder (`~/.local/share/longshot-dev`, `%LOCALAPPDATA%\longshot-dev` on Windows; [where dev data
-lives](reference/build.md#where-dev-data-lives)), or the checkout's git-ignored `work/` with `--work work`.
+Everything a build makes from the dump goes to its `--out` folder, its work folder and the stores: with `mise run
+build`, `work/` in your development folder (`~/.local/share/longshot-dev`, `%LOCALAPPDATA%\longshot-dev` on Windows;
+[where dev data lives](reference/build.md#where-dev-data-lives)); with `longshot-builder` alone, the per-user cache
+(`~/.cache/longshot-builder`, `%LOCALAPPDATA%\Longshot\Builder`), or `--work`.
 
 ## 1. Get the code and set it up
 
@@ -19,17 +20,20 @@ lives](reference/build.md#where-dev-data-lives)), or the checkout's git-ignored 
    ```
 
    `git fetch --unshallow --tags` once gives you the history (`git log`, `git blame`, version names, and Tooling's `scripts/release.py`).
-3. In the checkout, run `mise install`, then `mise run setup`. It does what it can without an account, ends with a list
-   of what it did and what is left for you, and is safe to run again:
+3. In the checkout, run `mise install`, then `mise run tools` and `mise run setup`. `mise run tools` puts the build
+   tools `tools.lock` pins (the compiler, the sysroot, FFmpeg, SDL and the headers, made by CI from their pins) in the
+   checkout's `tools/`, as a release's `longshot-builder` carries them ([section 3](#3-set-up-the-compiler)): with
+   mise.toml's tools, that is everything a build needs. `mise run setup` does what it can without an account,
+   ends with a list of what it did and what is left for you, and is safe to run again:
 
    | Step | What it does |
    |---|---|
    | Tooling | Clones [MagicBeanDev/Tooling](https://git.magicbean.dev/MagicBeanDev/Tooling) beside the checkout as `../Tooling`, or updates it with `git pull --ff-only`. A jj repository or a detached HEAD there is left alone |
    | Hooks | Installs the pre-commit and commit-msg hooks |
-   | Python | Installs `requirements.txt` into mise's Python |
-   | Checks' tools | On Linux, fetches the pinned Vulkan and SPIR-V headers and glslang that the game-free checks use |
+   | Checks' tools | On Linux, fetches the pinned Vulkan and SPIR-V headers and glslang that the game-free checks use, and installs their pinned Python packages into mise's Python (the same pins as `requirements.txt`) |
    | Claude Code | If `claude` is installed and the `magicbean` plugin isn't, prints the two commands to install it |
-   | Compiler | Checks what a build needs on this OS (Linux: the build's own prerequisite check; Windows: llvm-mingw and the headers) and says how to get what is missing ([section 3](#3-set-up-the-compiler)) |
+   | Rust | Checks that `cargo` is mise.toml's pinned Rust, which compiles longshot-builder and, in a developer's game build, the game's Rust (`longshot-rs`, for Linux or `x86_64-pc-windows-gnullvm`; a player's build links the release's prebuilt library) |
+   | Build tools | Says whether `tools.lock`'s build tools are in the checkout's `tools/`, and `mise run tools` when they aren't |
 
 4. **Sign in** once, from this checkout: `python -I ../Tooling/scripts/forge.py login`. Click **Sign in with Discord**
    and approve. The one sign-in covers git on every repository (the remote `forge` points at Longshot), the team chat
@@ -37,8 +41,10 @@ lives](reference/build.md#where-dev-data-lives)), or the checkout's git-ignored 
 5. **Set up pushing:** `python -I ../Tooling/scripts/forge.py fork` makes your fork and the remote `forge-fork`
    (`pr create` does it too if you haven't).
 
-`mise tasks` lists the tasks: `setup`, `build`, `build-dev`, `dev`, `test`, `lint`, `tracy-tools` (and `ci:smoke`, CI's). Run any Python script from the checkout root with `python -I` (or
-`mise exec -- python -I ...` for the pinned interpreter).
+`mise tasks` lists the tasks: `setup`, `build` (`longshot-builder` with your arguments), `build-dev` (its `compile`
+alone), `tools` (tools.lock's build tools into the checkout), `rust` (`builder/`'s checks: rustfmt, clippy, `cargo test`),
+`dev`, `test`, `test-changed`, `lint`, `ci` (what CI checks on every change) and `tracy-tools`. Run any Python script from the checkout root with `python -I` (or `mise exec -- python -I ...` for the pinned
+interpreter). Python is for the development tools and the checks only: the builder is Rust, and no player needs Python.
 
 ## 2. Get the team's tooling
 
@@ -84,54 +90,77 @@ themselves in this checkout.
 ## 3. Set up the compiler
 
 The build makes two modules: the game (`longshot.exe`, `longshot` on Linux) and the Vulkan renderer (`longshot_vk.dll`,
-`longshot_vk.so`). Every build compiles the renderer, so its headers and clang++ are always needed.
+`longshot_vk.so`). Every build compiles the renderer, so its headers and clang++ are always needed. The builder itself,
+`longshot-builder`, is Rust 1.99.1, which `mise install` puts in (pinned in `mise.toml`, with rustfmt, clippy and the Windows
+target, `x86_64-pc-windows-gnullvm`, for `cargo clippy --target`). `dev.py`'s builds and `mise run build` compile it
+for you into your development folder's `cargo/`, from the
+checkout they build (`LONGSHOT_CARGO` names another cargo; `LONGSHOT_BUILD`, a ready-made `longshot-builder`); by hand,
+`cargo build --release -p longshot-builder`. CI and the release use rustup's 1.99.1 or `scripts/longshot_builder.py build` (the parts
+`scripts/renhdrum.py` pins).
 
-**The quickest way to get exactly a player's tools** is `python -I scripts/dev.py env`: it installs
-`tools.lock`'s build tools once in your development folder's `builder/` and prints the environment that uses them, for
-your shell to apply. On Linux it needs a Python with the build's packages: run `scripts/linux/deps.sh` once first (or
-set `LONGSHOT_DEV_PYTHON`). `dev.py`'s builds (`base`, `pack`, `rt`, `game`, `vk`) set the environment up
-for you ([developing](developing.md#test-a-change-against-a-base)).
+### The compile cache
+
+Recommended for anyone who builds in more than one checkout or jj workspace: [sccache](https://github.com/mozilla/sccache)
+as cargo's wrapper, one compile cache for every tree on the PC. A new workspace then takes its crates.io dependencies,
+most of a cold build, from the cache; the repository's own crates compile per workspace, since their paths differ.
+Install it once for your user and turn it on in your shell's profile (it is not in `mise.toml`, so CI and checkouts
+without it are unchanged):
+
+```sh
+mise use -g aqua:mozilla/sccache@0.19.0     # or your package manager's sccache
+export RUSTC_WRAPPER=sccache                # in ~/.bashrc, ~/.config/fish/config.fish (set -gx ...), or Windows' user env
+export SCCACHE_CACHE_SIZE=40G               # its default is 10 GB
+```
+
+`sccache --show-stats` shows the hits; `RUSTC_WRAPPER=` (empty) turns it off for one shell. Agents sharing a PC set the
+same in their jobs, so they share one cache.
+
+- Give each checkout or workspace **its own target dir**. Never point two at one `CARGO_TARGET_DIR`: cargo names a
+  path crate relative to its workspace, so one tree's build would pass for another's, and a check could pass on code it
+  never read.
+- Incremental builds (the `dev` profile) are compiled as usual: sccache leaves them alone and caches the rest.
+- The game's C and C++ are not cargo's: the builder's content-addressed compile cache keeps them.
+
+**The quickest way to get exactly a player's tools** is to install `tools.lock`'s build tools into the checkout:
+`mise run tools` (`cargo run --release -p longshot-builder -- dev tools install . --system linux-x64`, or `windows-x64`) unpacks each at `tools/<name>`
+(git-ignored), where a release's `longshot-builder` unpacks its own, and `longshot-builder --root .` then compiles with them as a player's
+build does ([the build tools](reference/build.md#the-build-tools)). Or `python -I scripts/dev.py env`: it installs
+them once in your development folder's `tools-store/`, shared by every checkout, and prints the environment that names
+them (`LONGSHOT_OWN_TOOLS=1` with each tool's variable), for your shell to apply. `dev.py`'s builds (`base`, `pack`, `rt`,
+`game`, `vk`) set that environment up for you ([developing](developing.md#test-a-change-against-a-base)); a variable you
+set yourself (such as `RX_CPM`) wins over it.
 
 ### Windows
 
 1. Install Python 3 from [python.org](https://www.python.org/downloads/), not the Microsoft Store build (`python -I`
-   doesn't see packages installed there), then `python -m pip install -r requirements.txt`.
-2. Get [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build) and set `LONGSHOT_MINGW` to its
-   folder. Without it the build takes an `llvm-mingw\` folder at the checkout's root, else falls back to emsdk's clang
-   at `C:\emsdk` (or `EMSDK`) with Visual Studio's C++ tools and the Windows SDK; `LONGSHOT_MSVC=1` forces that route.
-3. Copy what a clone doesn't carry from the Builder's `tools` folder. Run the newest
-   [release's](https://git.magicbean.dev/MagicBeanDev/Longshot/releases) Windows Builder once; the folder is
-   `%LOCALAPPDATA%\LongshotBuilder\versions\<version>\LongshotBuilder\tools`.
-
-   | From `tools` | To | Why |
-   |---|---|---|
-   | `cpm` | anywhere; `RX_CPM` points at it | Vulkan, SPIR-V and VMA headers and FFmpeg. Without it the build stops, unless `LONGSHOT_*_HEADERS` are set |
-   | `third_party` | `third_party\` | `sdl2\SDL2.dll` and `SDL3.dll` (the controllers), which nothing here builds; `renhdrum\renhdrum.dll` (RenHDrum, some controllers' vibration; `python -I scripts/renhdrum.py build` also makes it from `third_party/renhdrum`, with a pinned Rust it downloads); `a64emit`, `zbic` and `lld-link` are built from source when missing |
-   | `work\hot_order.txt`, `work\longshot_pieces.prof` | `work\` | the hot code's link order and its profile (without them the game builds but runs slower) |
-
-   Don't copy the rest of its `work`: the hot list and the renderer's profile are committed in `assets/profiles/`, and a
-   copied `work\hot_funcs.txt` or `work\longshot_vk.profdata` overrides the committed one, however stale.
+   doesn't see packages installed there), then `python -m pip install -r requirements.txt`: for the development tools
+   and the checks, not the build.
+2. The build tools: `mise run tools` (`cargo run --release -p longshot-builder -- dev tools install . --system windows-x64`) puts `tools.lock`'s trimmed llvm-mingw
+   (clang, lld and the x86-64 MinGW-w64 headers and libraries), its `cpm` (the Vulkan, SPIR-V and VMA headers, FFmpeg,
+   dav1d) and `sdl` (`SDL2.dll`, `SDL3.dll`) in the checkout's `tools\`, where `longshot-builder --root .` takes them. Your
+   own llvm-mingw instead: `LONGSHOT_OWN_TOOLS=1` with `LONGSHOT_MINGW`, `RX_CPM` and `LONGSHOT_SDL_DIR`; without
+   `LONGSHOT_MINGW` the build takes clang from the PATH or emsdk (`C:\emsdk`, or `EMSDK`), with Visual Studio's C++
+   tools and the Windows SDK (the MSVC target).
+3. RenHDrum (some controllers' vibration): `python -I scripts/renhdrum.py build` makes `renhdrum.dll` from
+   `third_party/renhdrum`, with a pinned Rust it downloads. The renderer's play profile is committed in
+   `assets/profiles/`: nothing else to copy.
 
 ### Linux
 
-The build needs clang, clang++ and lld, the Vulkan, SPIR-V and VMA headers (from `RX_CPM`, else
-`LONGSHOT_VULKAN_HEADERS` / `LONGSHOT_SPIRV_HEADERS` / `LONGSHOT_VMA_HEADERS`, else `/usr/local` and `/usr`) and FFmpeg
-(`LONGSHOT_FFMPEG` with `lib/libavcodec.a`, else `pkg-config`). `make_game.py` checks every prerequisite before it reads
-the dump and lists everything missing in one error. To get the environment the AppImage is built in:
+The build needs clang and lld, the Vulkan, SPIR-V and VMA headers and FFmpeg: `mise run tools` (`cargo run --release -p longshot-builder -- dev tools install . --system
+linux-x64`) puts `tools.lock`'s (the trimmed LLVM 23.1.5, the glibc 2.35 sysroot, FFmpeg with dav1d, SDL2, the
+headers) in the checkout's `tools/`, as longshot-builder carries them. Without them, the PC's: clang from `LONGSHOT_LLVM`,
+`EMSDK` or the PATH, the headers from `RX_CPM`, else `LONGSHOT_VULKAN_HEADERS` / `LONGSHOT_SPIRV_HEADERS` /
+`LONGSHOT_VMA_HEADERS`, else `/usr/local` and `/usr`, and FFmpeg from `LONGSHOT_FFMPEG` with `lib/libavcodec.a`, else
+`pkg-config`. A missing one stops the build with its code
+(`compiler_missing`, `vulkan_headers_missing`, `ffmpeg_missing`; [when a build stops](reference/build.md#when-a-build-stops)).
+The release's Linux `longshot-builder` is linked against glibc 2.35 (tools.lock's sysroot; its windows load X11 or
+Wayland at run time) and carries the same tools, so it and a game built with it run on glibc 2.35 and newer with a Vulkan 1.3 driver (mesh shaders recommended). Nobody makes the tools themselves to
+build: CI makes each archive from its pins and uploads it, and `tools.lock` names it. Only someone bumping a pin makes one
+(`builder/tools/make.sh`, or the Make tools workflow: [bumping a tool](reference/releases.md#bumping-a-tool)).
 
-```sh
-scripts/linux/deps.sh          # the AppImage's Python (with the build's packages), appimagetool and runtime
-scripts/linux/deps.sh tools    # also LLVM, FFmpeg with dav1d, SDL2 and the headers, packed for tools.lock
-scripts/linux/appimage.sh      # the AppImage, in build-linux/
-scripts/linux/docker.sh        # both, in scripts/linux/Dockerfile's Ubuntu 22.04 (DOCKER=podman for Podman)
-scripts/linux/docker.sh shell  # a shell in that environment, with the checkout at /src
-```
-
-The AppImage carries Ubuntu 22.04's C library, so it runs on glibc 2.35 and newer with a Vulkan 1.3 driver (mesh
-shaders recommended). On another distribution, build in the container. Where SELinux is enforcing, `docker.sh` runs the
-container with `--security-opt label=disable`.
-
-`RX_TARGET=windows` builds the Windows game on Linux, with llvm-mingw's Linux build in `LONGSHOT_MINGW`.
+`RX_TARGET=windows` builds the Windows game on Linux, with llvm-mingw's Linux build in `LONGSHOT_MINGW` (the checkout's
+Windows `cpm` and `sdl` from `cargo run --release -p longshot-builder -- dev tools install . --system windows-x64`: its llvm-mingw, a Windows program, is not taken).
 
 ### Upscaler SDKs (optional)
 
@@ -141,10 +170,12 @@ checks every file's SHA-256, and asks you to accept the vendor's license first (
 | Command | Gives you |
 |---|---|
 | `python -I scripts/fetch.py dlss [--platform linux\|windows]` | NVIDIA's DLSS SDK, in your development folder's `sdk/ngx-<platform>`, where `dev.py`'s builds take it; for other builds, `LONGSHOT_NGX_SDK=<sdk folder>` |
-| `python -I scripts/fetch.py fsr [--game <game folder>]` | AMD's FSR 4 runtime (Windows); build with `--fsr` |
+| `python -I scripts/fetch.py fsr [--game <game folder>]` | AMD's FSR 4 runtime (Windows); build with `--upscaler fsr4` |
 | `python -I scripts/fetch.py xess [--game <game folder>]` | Intel's `libxess.dll` (Windows) |
 
-Each takes another folder as its last argument.
+Each takes another folder as its last argument. A player's build needs none of this: `longshot-builder --upscaler ...
+--accept-licenses ...` downloads the same pinned files itself ([the upscalers' runtimes](reference/build.md#the-upscalers-runtimes)).
+`dev.py`'s builds take DLSS when they find an NGX SDK, and FSR 4 with `--fsr`.
 
 Never share a game folder built with the DLSS SDK. On Windows, never put NGX's core (`_nvngx.dll`) beside the game.
 A change to the pinned DLSS release updates `scripts/fetch.py` (`DLSS_COMMIT` and its table), `tests/test_ngx_sdk.py`
@@ -154,52 +185,50 @@ MagicBeanDev/LongshotLauncher).
 ## 4. Build a game folder from your dump
 
 You need your own dump of the supported version: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other
-versions don't work, and the build reads the dump where it lies without changing it. A build needs about 60 GB free;
-build on an SSD if you can (a hard drive works, much slower, and `make_game.py` warns). For memory at run time, see the
-[requirements](../user/requirements.md).
-
-`mise run build` installs `requirements.txt` into mise's Python, then runs `nx2/make_game.py` with your arguments:
+versions don't work, and the build reads the dump where it lies without changing it. A first build needs about 5 GB
+free ([the build's disk space](reference/build.md#disk-space)); build on an SSD if you can (a hard drive works, much slower, and the
+build warns). The game folder reads its romfs from the .nup: keep the .nup where it is. For memory at run time, see
+the [requirements](../user/requirements.md).
 
 ```sh
-mise run build --nup "path/game.nup" --out build --language en-US      # from a .nup
-mise run build --romfs <romfs> --exefs <exefs> --out <game folder>     # from extracted folders
-mise run build --check --nup "path/game.nup"                           # check the game and version only
+longshot-builder build --game "path/game.nup" --out <game folder> --language en-US    # from a .nup
+longshot-builder build --game <folder with romfs/ and exefs/> --out <game folder>     # from an unpacked dump
+longshot-builder check --game "path/game.nup"                                         # check the game and version only
+longshot-builder update <game folder>                                                 # build the folder again
 ```
 
-Useful options (`--help` lists all): `--work <folder>` (the work folder, one per dump; `--work work` keeps the lifted
-C and objects in the checkout), `--jobs N`, `--compile-shaders most|all`, `--no-prepare-shaders`,
-`--update <game folder>`, `--fsr`, and `--romfs-from <folder>` (hard-link the game files of another folder unpacked
-from the same `.nup`). How long a first build takes: [build times](reference/build.md#build-times). The built game's own
-arguments are in [advanced setup](../user/advanced.md#start-the-game-from-the-command-line).
+`mise run build -- <the same arguments>` compiles this checkout's `longshot-builder` and runs it with the tree, your
+development folder's store and its `work/` as the work folder (`dev.py packs run --`). Useful options: `--work
+<folder>`, `--jobs N`, `--compile-shaders most|all`, `--no-prepare-shaders`, `--upscaler dlss,fsr4,xess` with
+`--accept-licenses nvidia,amd,intel`; all of them, the switches and the errors are in [the build](reference/build.md). How long a first build
+takes: [build times](reference/build.md#build-times). The built game's own arguments are in [advanced
+setup](../user/advanced.md#start-the-game-from-the-command-line).
 
 Once you have one build, don't build whole game folders to try a change: build it
 [against a base](developing.md#test-a-change-against-a-base).
 
-## Portable Builder on Windows
+## A release's longshot-builder
 
-Players use the [Longshot Launcher](https://longshot.magicbean.dev/download); the Builder itself is command-line only.
-To keep a Builder on an external SSD, unpack the release zip into a writable folder there and pass `--portable` first:
-
-```powershell
-.\LongshotBuilder.exe --portable --cli --nup "E:\your-game.nup"
-```
-
-It creates a marked `LongshotBuilder-data` folder beside itself (the installed Builder, tools, build files). Keep it and
-its `.longshot-portable` marker. Later `--cli` runs find it without the flag, even after the drive letter changes.
-Child processes get `LONGSHOT_SETUP_BASE` and `LONGSHOT_BUILDER_PORTABLE=1`. A portable update needs room for both
-versions.
+Players build through the [Longshot Launcher](https://longshot.magicbean.dev/download) only. To try a release's builder
+yourself, take its file for your platform from [the releases](https://git.magicbean.dev/MagicBeanDev/Longshot/releases)
+(`longshot-builder-<v>-linux-x64`, `longshot-builder-<v>-windows-x64.exe`), check it against `SHA256SUMS`, and run it as
+above; it needs nothing else, and unpacks what it carries into its cache at the first use (about 2 s).
+`--cache` (or `LONGSHOT_CACHE`) on an external SSD keeps that, the work folders and the stores there.
 
 ## Repository layout
 
 | Path | What |
 |---|---|
-| `nx2/` | The lift pipeline and `make_game.py`, which the launcher and the builders run ([build](reference/build.md)) |
+| `builder/` | The builder: `longshot-builder`, which the launcher runs, and its lifter's commands for developers, `longshot-builder dev` ([the builder](reference/builder.md), [the build](reference/build.md)); `builder/rt/`, the runtime the lifted code and the host share |
+| `longshot-rs/` | The one Rust staticlib the game links (`liblongshot_rs.a`), over the game's crates as they come; built with the workspace's `game` profile (the root `Cargo.toml`) |
 | `host/` | The Horizon OS runtime and the native NVN2 layer (`nvn_native.c`); `host/posix/` has the Win32 calls on Linux |
+| `game/` | The game services, frame phases and hook sites: `game_call` (`game.h`), the one way host code calls the game's functions, taking a virtual core back for a thread that gave its own up; the game's flags (`flags.h`), the one reader of GameDataMgr; the frame phases (`phases.h`), host callbacks run in order on the main thread at the window acquire, once a frame in every state; and the hook sites' flags and callbacks (`sites.h`, `sites.def`, [hooks.md](reference/hooks.md)) |
+| `game/sites/sites.toml` | The hook sites' definitions: what each is and its callback's contract, the same in every game build ([hooks.md](reference/hooks.md)) |
+| `game/sites/` | One folder per supported game build, `<build id>/locations.toml`: where each hook site is in that build, which the lift finds and hooks ([hooks.md](reference/hooks.md)). Function names, offsets and a few masked instruction words; no other game data. In `host/` because every `longshot-builder` carries it: a pull request built with a nightly's tools gets its own tables |
 | `gpu/vk/` | The Vulkan renderer, with Eden's shader recompiler and sirit ([architecture](reference/architecture.md)) |
 | `gpu/render/`, `gpu/third_party/` | The op stream the host records and the renderer replays; suyu's headers, kept whole (none of its sources is compiled) |
-| `builder/` | The command-line Builder: the Windows `--cli` program and its setup, the Linux AppImage's `AppRun` |
-| `scripts/` | Development builds, test runs, profile readers, release tooling; `scripts/linux/` (dependencies, AppImage) |
+| `scripts/` | Development builds, test runs, profile readers, release tooling (`longshot_builder.py`: the release's `longshot-builder` built with the pinned Rust; its pack and deltas are `longshot-builder dev release`); `scripts/linux/` (the Linux build tools) |
 | `tests/` | The game-free checks ([developing](developing.md#run-the-checks)) |
 | `third_party/` | Unmodified upstream code, each part with its `PROVENANCE.md` |
-| `assets/` | Shipped data: the hot list and renderer profile (`profiles/`), pipeline state lists (`pipeline_states/`), scrubbed saves (`saves/`) |
+| `assets/` | Shipped data: the guest profile and the renderer's profile (`profiles/`), pipeline state lists (`pipeline_states/`), scrubbed saves (`saves/`) |
 | `docs/dev/` | These pages; `docs/user/` is the player docs the website publishes |

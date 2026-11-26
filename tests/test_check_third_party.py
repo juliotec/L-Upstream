@@ -1,8 +1,8 @@
 """scripts/check_third_party.py, the third_party rule, over fake parts in a temporary folder (no game, no network): a clean
-tree passes; a changed file fails and is named; a part with no PROVENANCE.md, or a note with no tree-sha256 line, fails; a
-pull request that changes a part without its note fails against the base; --update makes a tree pass again; --upstream
-compares a part with its archive (a local file:// one here) and skips a part that names none. Also: the repository's own
-third_party passes."""
+tree passes; a changed file fails and is named; a part with no PROVENANCE.md, or a note with no tree-sha256 line, fails;
+a folder left with only files the repository ignores is no part; a pull request that changes a part without its note
+fails against the base; --update makes a tree pass again; --upstream compares a part with its archive (a local file://
+one here) and skips a part that names none. Also: the repository's own third_party passes."""
 import contextlib
 import hashlib
 import importlib.util
@@ -90,6 +90,21 @@ class ThirdParty(unittest.TestCase):
         code, out = run("--root", self.dir)
         self.assertEqual(code, 1)
         self.assertIn("no tree-sha256 line", out)
+
+    def test_a_folder_left_with_only_ignored_files_is_no_part(self):
+        # (a part deleted from the tree whose build output stays in a checkout: no note needed, nothing checked)
+        gone = self.dir / "third_party/libgone"
+        (gone / "lift" / "__pycache__").mkdir(parents=True)
+        (gone / "lift" / "emit.dll").write_bytes(b"MZ")
+        (gone / "lift" / "__pycache__" / "emit.cpython-312.pyc").write_bytes(b"pyc")
+        self.git("init", "-q")
+        code, out = run("--root", self.dir)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("libgone", out)
+        (gone / "lift" / "emit.c").write_text("x\n")   # (a file of its own: a part again, which needs its note)
+        code, out = run("--root", self.dir)
+        self.assertEqual(code, 1)
+        self.assertIn("third_party/libgone has no PROVENANCE.md", out)
 
     def test_a_change_without_its_note_fails_against_the_base(self):
         self.git("init", "-q", "-b", "main")

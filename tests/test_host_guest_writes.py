@@ -1,4 +1,4 @@
-"""No host code writes guest memory in bulk without marking it written, unless listed here with the reason (host/*.c).
+"""No host code writes guest memory in bulk without marking it written, unless listed here with the reason (host/*.c, game/*.c).
 
 The renderer learns that the CPU wrote a page of guest memory from the page's mark alone: the lifted code sets it
 after each store (A64_MARK), host code with HOS_WRITTEN. A host write with no mark is invisible to it: its mirror, its
@@ -48,7 +48,7 @@ OUT = "a small out-parameter of fixed size, in an object or on the stack of the 
 NVN_OBJECT = "an NVN object's or builder's own state, in the game's object: CPU-only, the renderer is told through the layer's calls"
 AUDIO = "audio data and names for the audio renderer: nothing the GPU reads"
 ALLOWED = {
-    "host/hos_main.c": [
+    "game/oot_tools.c": [
         (["A64_PTR(event", "A64_PTR(frame + 0x10)"], STACK),
         (["memcpy(to, name, length + 1)", "memcpy(to, event, strlen(event) + 1)"],
          "an event's name, into the argument object the game made for it"),
@@ -100,9 +100,9 @@ ALLOWED = {
         (["memcpy(gw(at, sizeof mark), mark, sizeof mark)"],
          "16 bytes in a command buffer's control memory, which NVN keeps for the CPU: the GPU reads command memory, not control memory"),
     ],
-    "host/oot_high_fps.c": [(["memcpy(GP(controller + 0x3c), target, sizeof target)"],
+    "game/oot_high_fps.c": [(["memcpy(GP(controller + 0x3c), target, sizeof target)"],
                             "Link's driven body's target, three floats of the game's controller object")],
-    "host/oot_menu.c": [(["memcpy(to, key, n + 1)"], "an item's key, into the menu screen's own string buffer")],
+    "game/oot_menu.c": [(["memcpy(to, key, n + 1)"], "an item's key, into the menu screen's own string buffer")],
     "host/prompts.c": [
         (["memcpy(q, b + 8, (size_t)n - 8)"],
          "the font file's bytes, which the game's own (lifted, marked) code rasterizes: the GPU reads the glyphs it draws, not the font"),
@@ -177,8 +177,8 @@ def main():
 
     failures = []
     used = set()
-    for path in sorted((ROOT / "host").glob("*.c")):
-        rel = "host/" + path.name
+    for path in sorted((ROOT / "host").glob("*.c")) + sorted((ROOT / "game").glob("*.c")):
+        rel = path.relative_to(ROOT).as_posix()
         allowed = ALLOWED.get(rel, [])
         for number, line, marked in scan(path.read_text(encoding="utf-8")):
             if marked:
@@ -201,7 +201,7 @@ def main():
                                     "remove it" % (text, rel))
     if failures:
         raise SystemExit("FAIL:\n" + "\n".join(failures))
-    print("PASS: every bulk write of guest memory in host/*.c is marked written or listed with its reason (%d listed)" % len(used))
+    print("PASS: every bulk write of guest memory in host/*.c and game/*.c is marked written or listed with its reason (%d listed)" % len(used))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
-"""Compile nx2/oot_wide.py's save-picture patch (issue 952) around authored registers.
+"""Compile the save picture's hook site (wide.savePicture, game/oot_wide_sites.c; issue 952) around authored registers.
 
 The pause menu draws the whole picture into the save's 543 x 306 JPEG through the game's viewport helper. Past 16:9 the
 patch widens that one SetViewport, centred, so the middle 16:9 of the picture fills the texture; narrower than 16:9 (4:3,
 16:10) it makes it taller, centred, so the picture's middle band fills the texture at its own shape; every other
-viewport, and a 16:9 window, stay as the game set them. No game or image is used: the site's C is taken from the module as the
-lifter would place it.
+viewport, and a 16:9 window, stay as the game set them. No game or image is used: the site's hook is as the lift lowers
+it (tests/sitehooks.py), its callback cut from game/oot_wide_sites.c. The site is after main+0x284824 (ldr x8, [x8], before blr x8).
 """
 import argparse
 import os
@@ -13,11 +13,12 @@ import subprocess
 import sys
 import tempfile
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_wide  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
+from widesites import hook, site  # noqa: E402
+import sitehooks  # noqa: E402
 
 FIXTURE = r"""
 #include <stdint.h>
@@ -26,6 +27,8 @@ FIXTURE = r"""
 #include <string.h>
 typedef struct { uint64_t x[32]; } Ctx;
 volatile float hos_wide_ratio;
+#define A64_NOESC
+DEFS_C
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 static void site(Ctx *c) {
 SITE_C
@@ -92,7 +95,7 @@ int main(void) {
     same(0, 0, 542, 306);
     same(1, 0, 543, 306);
     same(0, 1, 543, 306);
-    puts("PASS: oot_wide's save-picture viewport: the middle 16:9 past 16:9, the middle band below it, the game's own otherwise");
+    puts("PASS: the save picture's site (wide.savePicture): the middle 16:9 past 16:9, the middle band below it, the game's own otherwise");
     return 0;
 }
 """
@@ -100,17 +103,24 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    sites = [s for s in oot_wide.SITES if s[2] is oot_wide.THUMB]
-    assert sites == [(0x284824, 0xf9400108, oot_wide.THUMB)], sites
+    sitehooks.use(args.cc, args.cargo)
+    x = site("wide.savePicture")
+    assert int(x.function[2:], 16) + x.offset == 0x80020000 + 0x284824, "wide.savePicture is not after main+0x284824"
+    at = (x.offset - x.signature_offset) // 4
+    assert x.signature[at] == (0xf9400108, 0xffffffff), "wide.savePicture's signature does not hold ldr x8, [x8]"
+    defs, line = hook("wide.savePicture")
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     with tempfile.TemporaryDirectory(prefix="oot-wide-save-picture-") as temporary:
         folder = Path(temporary)
         source = folder / "fixture.c"
-        source.write_text(FIXTURE.replace("SITE_C", oot_wide.THUMB), encoding="utf-8")
+        text = FIXTURE.replace("DEFS_C", defs).replace("SITE_C", line)
+        source.write_text(text, encoding="utf-8")
         executable = folder / "fixture.exe"
-        for command in ([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable)],
+        for command in ([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source),
+                         *sitehooks.objects(temporary, text), "-o", str(executable)],
                         [str(executable)]):
             result = subprocess.run(command, creationflags=flags, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=30)

@@ -655,7 +655,7 @@ unsigned half_cpus();   // vk_progcache.cpp
 /// (longshot) The workers of the preparation's first part (prepare_run): half_cpus, or with the segment heap every usable CPU as far
 /// as the free memory allows (gpu/vk/prepare_workers.h, where the measurements are)
 unsigned prepare_cpus();   // vk_progcache.cpp
-bool segment_heap();       // vk_progcache.cpp (the process heap is the segment heap: nx2/win_manifest.py)
+bool segment_heap();       // vk_progcache.cpp (the process heap is the segment heap: builder/crates/build-compile/src/generated/res.rs)
 /// (longshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction
 void driver_cache_log(const char* when);   // vk_draw.cpp
 void driver_env_note();   // vk_draw.cpp: (Linux) the environment the pipelines were built in, for later starts

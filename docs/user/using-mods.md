@@ -16,7 +16,7 @@ checking that they loaded.
 
 1. **Open the game folder.** In the launcher, select the version and choose **Open folder**. Each version has its
    own game folder, so each has its own mods.
-2. **Make a `mods` folder** there, beside `bin`, if there isn't one yet.
+2. **Make a `mods` folder** there, beside `image.bin`, if there isn't one yet.
 3. **Put each mod in a folder of its own** inside `mods`, with the mod's `romfs` folder in it (and its `exefs` and
    `cheats` folders, when it has them):
 
@@ -49,6 +49,10 @@ back. Delete the folder to remove the mod for good.
 
 The tab's switches and order are kept in `mods.json`, beside your settings file (`longshot_options.ini`),
 so an update of the game keeps them.
+
+`longshot_mods.txt`, where much older builds kept the list, is no longer read. If your game folder still has one and
+no `mods.json` was ever made from it (no `longshot_mods.txt.imported` beside it), its order and switches are not
+carried over: every mod starts on, in the order of the mods' paths. Set them again on the Mods tab once.
 
 ## When two mods change the same file
 
@@ -92,19 +96,22 @@ No `mods:` lines at all means there is no `mods` folder in this version's game f
 ## Mods that change the game's code
 
 Some mods have an `exefs` folder with patch files (`.ips`, `.pchtxt`): a new menu page, a gameplay change, a frame
-rate patch. Longshot builds the game's code ahead of time, so such a patch is not read at a start. It goes in when
-the game is built:
+rate patch. Longshot builds the game's code ahead of time, so such a patch is not read at a start: it goes in when the
+game is built, and only from a Longshot mod (a folder with `mod.json` in your profile's `mods` folder). A mod made for
+emulators is imported once, which makes it a Longshot mod:
 
-1. Put the mod in `mods` as any other.
-2. **Build the game again** into the same folder with Longshot Builder. The build reads your mods and their order,
-   and builds the patches of the mods that are on into the game.
-3. Start the game. The Mods tab says for each mod whether its patches are built into the game or still wait for a
-   build.
+```text
+Longshot.exe mod import <the mod's folder>
+```
 
-Until that build, the mod's files load and its code does not, so the mod can look half there (a menu page that does
-nothing). The same is true the other way round: switch such a mod off and its files stop loading at the next start,
-while its code stays in the game until the next build. Build again after adding, removing or switching a mod with
-patches. Mods without an `exefs` folder never need a build.
+1. **Import the mod.** A mod left in an emulator's layout in your profile's `mods` folder (`romfs`, `exefs` or
+   `cheats` folders and no `mod.json`) is left out: Longshot says so at each start, naming it, until it is imported.
+2. **Start Longshot.** It builds the patches of the mods that are on into the game. Only the game code the patches
+   change is rebuilt, so this takes seconds to a minute or two.
+3. The Mods tab says for each mod whether its patches are built into the game.
+
+A mod's patches in a game folder's `mods` folder are never built in: their files and cheats load, their code does
+not, so such a mod can look half there (a menu page that does nothing). Import it.
 
 A patch made for another version of the game is left out, and the tab says so.
 

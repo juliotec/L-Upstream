@@ -1,9 +1,9 @@
 """The pipeline state list's compute records: the compute programs play dispatched, named by their compute stage's code key in a
 version 2 record of kind kCompute (vk_draw.cpp StateRec2), in the same lists, with the same tools, as the pipelines.
 
-- nx2/pipeline_states.py: the record's layout, what describe and the merge make of it (each program once, with version 1 lists
+- scripts/pipeline_states.py: the record's layout, what describe and the merge make of it (each program once, with version 1 lists
   too), the checks (a compute record that holds more than its key, a kind no build knows, more compute programs than the release's check
-  allows: it stops and says so, nothing is dropped), the tour's and a contributed source, and nx2/make_game.py shipping them beside the game;
+  allows: it stops and says so, nothing is dropped), the tour's and a contributed source (the builder ships them beside the game: builder/crates/build-assets);
 - a list someone sent (add, --check): taken only when it is exactly a list. Refused, and nothing written: one cut short, one with
   a kind no build knows or a compute record that holds more than its key, one that names more compute programs than the
   game has, one larger than a list is (as a file, or once unpacked), an xz file cut short or with more after it, a list of
@@ -36,7 +36,7 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "nx2" / "pipeline_states.py"
+TOOL = ROOT / "scripts" / "pipeline_states.py"
 K1, K2, K3 = 0x1111222233334444, 0xAAAABBBBCCCCDDDD, 0x0123456789ABCDEF
 
 
@@ -140,18 +140,9 @@ def check_tool(tool, draw):
             raise SystemExit("the sources' merge: %d records, expected the tour's two and the contributed list's new program" % len(recs))
         if tool.read(os.path.join(src, tool.CONTRIB, "someone-played" + tool.EXT)) != [tool.compute_record(K2), c]:
             raise SystemExit("a contributed list keeps its own records, the tour's too (the tour's list is replaced whole)")
-        # make_game ships them beside the game, unpacked, as the game reads them
-        make_game = load("make_game_under_test", ROOT / "nx2" / "make_game.py")
-        game = os.path.join(d, "game")
-        os.makedirs(game)
-        make_game.ROOT = d
+        # (the sources where the repository keeps them: builder/crates/build-assets/src/pipelines.rs ships them beside the game)
         os.makedirs(os.path.join(d, tool.SOURCES[0]))
         os.replace(src, os.path.join(d, *tool.SOURCES))
-        with contextlib.redirect_stdout(io.StringIO()):
-            make_game.ship_state_list(game)
-        shipped = os.path.join(game, "longshot_pipeline_states_shipped.bin")
-        if tool.compute_keys(tool.read(shipped, strict=True)) != [K1, K2] or open(shipped, "rb").read(8) != tool.MAGIC2:
-            raise SystemExit("make_game did not ship the sources' compute programs beside the game")
         # more compute programs than play dispatches: the release's check stops (the game keeps a pipeline ready for each)
         # (several lists that each name fewer, or a source put there by hand: add itself refuses such a list, check_sent)
         src = os.path.join(d, *tool.SOURCES)
@@ -417,7 +408,7 @@ int main(int argc, char** argv) {
         int version = 0;
         CHECK(state_list_read(state_list_path(own), &version).empty() && version == 2);   // (no pipelines in it)
     }
-    {   // (the list the test's Python reads back with nx2/pipeline_states.py)
+    {   // (the list the test's Python reads back with scripts/pipeline_states.py)
         FILE* in = std::fopen(state_list_path(own).c_str(), "rb");
         FILE* out = std::fopen(state_list_path("game_wrote.bin").c_str(), "wb");
         CHECK(in && out);

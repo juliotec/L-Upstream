@@ -40,7 +40,7 @@
 #include "vk_fps.h"    // (the FPS counter's levels and numbers)
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "vk_texture.h"   // (the FPS counter's Dev level: texture_count, texture_bytes, texture_stats)
-#include "oot_cheat_items.h"
+#include "../../game/game.h"   // (the game's: the Debug tab's inventory items, OOT_CHEAT_ITEMS; its menu rows, GameMenuRow)
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_imgui.h"   // (the renderer's side of the overlay: begin, fonts, logo, record)
 #include "vk_ui.h"
@@ -71,6 +71,7 @@
 #include "menu/sprint.h"   // (the Sprint module's, still used here: the Controls page's Reset lays Sprint out again)
 #include "menu/sim_turf.h"   // (the Simulated turf page's area observation, persistence and live resource edits)
 #include "menu/pipeline_list.h"   // (Save my pipeline list's, still used here: its worker finished, its line measured)
+#include "menu/dlss5.h"   // (the DLSS 5 module's: the renderer told what its rows hold, at the start)
 #include "menu/nfc.h"   // (the NFC module's, still used here: its tags listed when the menu opens, a scan followed)
 #include "menu/framegen.h"   // (the frame generation module's, still used here: the pipeline share's line, set_row, row_fixed)
 #include "menu/reshade.h"
@@ -96,7 +97,7 @@
 extern char** environ;
 #endif
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
-const char* mkwvk_version();   // (vk_version.cpp: the one renderer file nx2/build.py gives the version to)
+const char* mkwvk_version();   // (vk_version.cpp: the one renderer file builder/crates/build-compile gives the version to)
 #ifndef LONGSHOT_VERSION   // (a test or a screenshot fixture that compiles this file may give its own)
 #define LONGSHOT_VERSION mkwvk_version()
 #endif
@@ -125,7 +126,8 @@ enum MenuTab {
     TAB_FPS_DEV = TAB_SPEAKER + 1,   // (longshot: not a tab either, the FPS counter's Dev lines page, from the Gameplay tab)
     TAB_RECORDINGS = TAB_FPS_DEV + 1,   // (longshot: nor this, the input recordings to play, from the Debug tab: menu/input_recording.cpp)
     TAB_SIM_TURF = TAB_RECORDINGS + 1,   // (the Simulated turf page, opened by the Graphics tab's row)
-    TAB_PAGE = TAB_SIM_TURF + 1   // (longshot: the Controls page's rows, above its grid; no tab shows them)
+    TAB_DLSS5 = TAB_SIM_TURF + 1,   // (longshot: the DLSS 5 settings page, opened by the Graphics tab's row: menu/dlss5.cpp)
+    TAB_PAGE = TAB_DLSS5 + 1   // (longshot: the Controls page's rows, above its grid; no tab shows them)
 };
 
 struct Row {
@@ -196,6 +198,8 @@ unsigned upscalers_available() {
 }
 /// (FSR 3.1 has inputs of its own; DLSS, FSR 4 and XeSS run on the frame chain they share, temporal_mode; Off is neither)
 int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_off() ? (int)ur::OFF : temporal_mode(); }
+bool dlss5_offered() { return dlss_nr_offered(); }   // (vk_dlss.cpp: its DLL looked for once a run)
+bool dlss5_model_offered() { return dlss_nr_model_offered(); }   // (vk_dlss.cpp: an RTX 50 with both of DLSS 5's files)
 namespace {   // (#1633: the anonymous namespace again, after what the modules ask)
 /// Why DLSS and DLAA do not run here (vk_dlss.h DlssWhy), for the Upscaler row and Frame generation by; nullptr for DLSS_OK
 const char* dlss_why_text(int why) {
@@ -228,7 +232,7 @@ bool row_fixed(const int* value) {
         value == &opts.hdr || value == &opts.reflex || value == &opts.dlss || preview_locked(value))) return true;
     return module_locked(value) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.framegen_by && framegen_by_fixed()) ||   // (its line says why)
-           (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI"));   // (host/hos_wide_ui.c's, first)
+           (value == &opts.hud_layout && getenv("HOS_WIDE_UI") && *getenv("HOS_WIDE_UI"));   // (game/hos_wide_ui.c's, first)
 }
 // (longshot) Walk mode: how the Walk key (the Controls page) makes Link walk with the movement keys (host/nn_hid.c walk_held)
 // (longshot) Menu size: how large the overlays are drawn (vk_ui.h unit), Medium unless the player chooses Small or Large. It
@@ -410,10 +414,10 @@ const char* (ini_key)(const Row& r);   // (spelled apart from its definition: th
 /// The model's page for each MenuTab: the strip's tabs, then the pages a row opens
 const char* const kTabIds[TAB_PAGE + 1] = {"graphics", "audio",  "gameplay",    "controls",     "nfc",
                                            "mods",     "debug",  "motion",      "controller_speaker", "fps_details",
-                                           "recordings", "sim_turf_settings", "controls_page"};
+                                           "recordings", "sim_turf_settings", "dlss5_settings", "controls_page"};
 const char* const kTabLabels[TAB_PAGE + 1] = {"Graphics", "Audio", "Gameplay", "Controls",            "NFC",
                                               "Mods",     "Debug", "Motion",   "Controller speaker",  "FPS counter details",
-                                              "Play recording", "Simulated turf", "Controls"};
+                                              "Play recording", "Simulated turf", "DLSS 5 settings", "Controls"};
 int page_tab(const char* id);   // (a page's MenuTab by its id: below)
 // (rows modules describe, headings included; past it a row is left out, and logged. Every row is a module's: 110 of them
 // when the last moved, so room to grow; tests/test_menu_module_slots.py keeps the menu within it)
@@ -703,7 +707,7 @@ int teleport_step_rows(int i, int rows) {
     }
     return i;
 }
-// the Inventory page (gpu/vk/oot_cheat_items.h): items and their section headings, counts from the game side
+// the Inventory page (game/oot_cheat_items.h): items and their section headings, counts from the game side
 #define OOT_MENU_ITEM_LABEL(label, name, kind) label,
 #define OOT_MENU_ITEM_KIND(label, name, kind) kind,
 #define OOT_MENU_NO_SECTION(name)
@@ -797,7 +801,7 @@ void outputs_sync() {
 }
 
 int cur_tab = TAB_GRAPHICS;
-int tab_selected[TAB_SIM_TURF + 1] = {};   // (and the pages a row opens: Motion, Controller speaker, FPS details, recordings and Simulated turf)
+int tab_selected[TAB_DLSS5 + 1] = {};   // (and the pages a row opens: Motion, Controller speaker, FPS details, recordings, Simulated turf and DLSS 5)
 bool is_motion_row(const Row& r) {
     return row_opens(r) == TAB_MOTION || (r.tab == TAB_CONTROLS && !r.value && !r.setting && !strcmp(r.name, "Motion"));
 }
@@ -807,14 +811,16 @@ bool is_fps_dev_row(const Row& r) {
 }
 bool is_recordings_row(const Row& r) { return row_opens(r) == TAB_RECORDINGS; }
 bool is_sim_turf_row(const Row& r) { return row_opens(r) == TAB_SIM_TURF; }
-/// (the page a page of the menu goes back to: Motion to Controls, FPS details to Gameplay, recordings to Debug and simulated
-/// turf settings to Graphics; -1 a tab of the strip)
+bool is_dlss5_row(const Row& r) { return row_opens(r) == TAB_DLSS5; }
+/// (the page a page of the menu goes back to: Motion to Controls, FPS details to Gameplay, recordings to Debug, simulated
+/// turf settings and DLSS 5's to Graphics; -1 a tab of the strip)
 int page_parent(int tab) {
     return tab == TAB_MOTION       ? TAB_CONTROLS
          : tab == TAB_SPEAKER      ? TAB_AUDIO
          : tab == TAB_FPS_DEV      ? TAB_GAMEPLAY
          : tab == TAB_RECORDINGS   ? TAB_DEBUG
          : tab == TAB_SIM_TURF     ? TAB_GRAPHICS
+         : tab == TAB_DLSS5        ? TAB_GRAPHICS
                                    : -1;
 }
 
@@ -1227,7 +1233,7 @@ void prompts_at_once(const Row& r) {
 
 // ---- (longshot) Save my pipeline list (the Debug tab, under Developer): longshot_pipeline_states.bin and the "Submit your pipelines" issue's
 // template, filled in from this run, zipped into the Downloads folder (pipeline_share.h; the builders do the same with
-// nx2/pipeline_share.py). Then the report on the clipboard, the folder shown and the issue opened in the browser, where the platform
+// longshot-builder share). Then the report on the clipboard, the folder shown and the issue opened in the browser, where the platform
 // has them; never with HOS_HEADLESS (no screen to show them on). Nothing is uploaded: the player attaches the zip ----
 // (longshot) Set up for a weak laptop (the Debug tab, integrated graphics: row_shown): Minimum's rows and mip trimming, then
 // lighter still. An i3-1115G4's UHD Graphics (2 cores, 4 threads, 16 GB shared) ran Kokiri Forest and the Deku Tree at 3-6 fps
@@ -1602,7 +1608,7 @@ bool toggle_default(int button) { return button == HOS_KEY_SPRINT; }
 void toggle_set(int button, bool on) {
     if (button == HOS_KEY_SPRINT) {
         opts.sprint_toggle = on;
-        if (host && host->version >= 40 && host->bind) host->bind(HOS_BIND_SPRINT_TOGGLE, 0, 0, on);
+        if (host && host->bind) host->bind(HOS_BIND_SPRINT_TOGGLE, 0, 0, on);
     }
     else opts.hold_toggle = on ? opts.hold_toggle | (1 << button) : opts.hold_toggle & ~(1 << button);
 }
@@ -1708,7 +1714,7 @@ bool control_column_enabled(int row, int col) {
     using enum menu_hit::CtlColumn;
     if (col == kCtlReset) {
         const int button = controls[row].button;
-        return host && host->version >= 44 && host->reset_binding && host->binding_is_default &&
+        return host && host->reset_binding && host->binding_is_default &&
                ((has_toggle(button) && toggle_on(button) != toggle_default(button)) || !host->binding_is_default(button));
     }
     if (col == kCtlToggle) return has_toggle(controls[row].button);
@@ -1762,6 +1768,7 @@ double fps_ms_now = 0;   // (the frame time, for its colour)
 double fps_rate_now = 0;   // (the number's rate, the game's own with frame generation: its colour)
 char fps_part_text[fps_stats::kParts][24];
 char fps_gpu_text[24] = "";
+char fps_nr_time_text[24] = "-", fps_nr_vram_text[24] = "";   // (DLSS 5's GPU time and its own images, at the Dev level)
 char fps_rt_text[fps_stats::kRtParts][24];   // (the render thread's parts, fps_texts)
 char fps_gpu_busy_text[24] = "";              // (the GPU's share of the frame)
 bool fps_rt_on = false;                       // (a render thread was measured)
@@ -1782,12 +1789,12 @@ double fps_target_ms() {
     return fps_stats::target_ms_for(cap, fifo, fifo ? (display_refresh_mhz() + 500) / 1000 : 0);
 }
 menu_hit::Map hits;      // (the menu's controls as last drawn: the mouse's, menu_tick)
-float scroll_at[TAB_SIM_TURF + 2];   // (the first row shown, eased toward the selection: the tabs and subpages, then
+float scroll_at[TAB_DLSS5 + 2];   // (the first row shown, eased toward the selection: the tabs and subpages, then
                                    // the Controls page: kControlsSlot)
-constexpr int kControlsSlot = TAB_SIM_TURF + 1;
-int wheel_rows[TAB_SIM_TURF + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
-int scrolled_to[TAB_SIM_TURF + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // (selection last brought into view)
-float scroll_want[TAB_SIM_TURF + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
+constexpr int kControlsSlot = TAB_DLSS5 + 1;
+int wheel_rows[TAB_DLSS5 + 2];   // (the mouse wheel's notches since the last drawing, a slot each: scroll_rows scrolls by them)
+int scrolled_to[TAB_DLSS5 + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // (selection last brought into view)
+float scroll_want[TAB_DLSS5 + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
@@ -2373,8 +2380,11 @@ std::string changed_rows_text(std::string& pc_options) {
     pc_options.clear();
     for (const Row& r : rows) {
         const char* at = (const char*)r.value;
-        if (!r.value || !r.text || r.heading || at < (const char*)&opts || at >= (const char*)(&opts + 1)) continue;
-        const int was = report_default(r, *(const int*)((const char*)&defaults + (at - (const char*)&opts)));
+        if (!r.value || !r.text || r.heading) continue;
+        const ::GameMenuRow* game = menu_game_row(r.value);   // (a row of the game's, game/menu/: its default is its own)
+        if (!game && (at < (const char*)&opts || at >= (const char*)(&opts + 1))) continue;
+        const int was = report_default(r, game ? game->default_value
+                                               : *(const int*)((const char*)&defaults + (at - (const char*)&opts)));
         const bool depends = report_default_depends_on_pc(r);
         if (!depends && *r.value == was) continue;
         std::string& to = depends ? pc_options : out;
@@ -2467,12 +2477,12 @@ void row_value_cell(ui::Ctx& c, const Row& r, ImVec2 va, ImVec2 vb, bool selecte
     }
 }
 
-// ---- the Mods tab: the mods of the mods folder (host/mods.c), in their order, each on or off, and the cheats of those
-// that were on at the start (host/cheats.c). Shown only when there are mods. Left and Right (or a click on a half) switch the
+// ---- the Mods tab: the mods of the mods folder (game/mods.c), in their order, each on or off, and the cheats of those
+// that were on at the start (game/cheats.c). Shown only when there are mods. Left and Right (or a click on a half) switch the
 // selected one; Enter picks a mod up, Up and Down move it, Enter or Esc puts it down. The order and the mods' switches apply at the
 // next start (the restart question names them); a cheat's switch at once.
 bool can_mods() {
-    return host && host->version >= 35 && host->mod_info && host->mod_edit && host->mods_changed && host->cheat_info && host->cheat_set;
+    return host && host->mod_info && host->mod_edit && host->mods_changed && host->cheat_info && host->cheat_set;
 }
 bool mods_present() {
     const char *n, *d, *o;
@@ -2816,6 +2826,7 @@ void draw_tune_bar(ui::Ctx& c) {
     if (cur_tab == TAB_RECORDINGS) cur_name = "Play recording";
     if (cur_tab == TAB_SPEAKER) cur_name = "Controller speaker";
     if (cur_tab == TAB_SIM_TURF) cur_name = "Simulated turf";
+    if (cur_tab == TAB_DLSS5) cur_name = "DLSS 5 settings";
     const float header_y = by0 + 13 * s;
     ui::text_mid(c, c.f.heading, 14 * s, bx0 + 16 * s, header_y, ui::kGoldHi, cur_name);
 
@@ -3370,7 +3381,7 @@ void draw_control_confirmation(ui::Ctx& c) {
 }
 
 void rebind_control(int row, int set, int slot, int code, uint64_t approved = 0) {
-    if (host->version < 43 || !host->rebind_control) return;
+    if (!host->rebind_control) return;
     uint64_t conflicts = 0;
     if (host->rebind_control(set, controls[row].button, slot, code, approved, &conflicts)) {
         if (set == HOS_BIND_PAD) opts.pad_layout = detect_pad_layout();
@@ -3625,10 +3636,13 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     int corner = std::clamp(opts.fps_corner, 0, 3);
     if (under_banner && !tune_mode && !beside) corner = 0, level = std::min(level, (int)fs::kFrameTime);
     const bool left = corner & 1, bottom = corner >= 2;
+    const bool nr_dev = level >= fs::kDev && dlss_nr_metrics().active;   // (DLSS 5 evaluating: its lines at the Dev level)
     // (the column's height, to anchor it at the bottom)
     const float row = 17 * s, gh = 50 * s, lh = 16 * s;
     float h = 32 * s + (fps_sub[0] ? row : 0);
     if (level >= fs::kFrameTime && fps_ms_text[0]) h += row;
+    if (nr_dev) h += lh;   // (NR time, under GPU time)
+    if (nr_dev && opts.fps_dev_show[fs::kVram]) h += lh;   // (NR VRAM, under the VRAM line)
     if (level >= fs::kGraph) h += 8 * s + gh + 4 * s;
     const bool rt_lane = fps_render_thread_on();   // (no render thread, threaded rendering off: no lane, no legend section)
     if (level >= fs::kBreakdown) h += (rt_lane ? 36 * s + 6 * lh : 0) + 10 * s + 11 * lh + 12 * s;   // (the render lane, the legend's rows)
@@ -3980,6 +3994,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
         snprintf(busy, sizeof busy, "%s  %s", fps_gpu_text, fps_gpu_busy_text);
         cell(-1, 0, false, "GPU time", busy, ink);
         by += lh;
+        if (nr_dev) { cell(-1, 0, false, "NR time", fps_nr_time_text, ink); by += lh; }
     }
     c.d->AddLine(ImVec2(x0, std::floor(by + 3 * s) + 0.5f), ImVec2(x1, std::floor(by + 3 * s) + 0.5f), ui::rgba(255, 255, 255, 40), std::max(1.0f, s));
     by += 6 * s;
@@ -4000,6 +4015,10 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
         dev_cell(d.b == -1 ? -1 : 0, d.a);
         if (d.b >= 0) dev_cell(1, d.b);
         by += lh;
+        if (nr_dev && d.a == fs::kVram) {
+            cell(-1, 0, false, "NR VRAM", fps_nr_vram_text, ink);
+            by += lh;
+        }
     }
 }
 
@@ -4100,7 +4119,7 @@ void menu_quit_game() {
 bool menu_on_tab(const char* tab) { return open_now.load() && page == 0 && !strcmp(kTabIds[cur_tab], tab); }
 const char* motion_gyro_text(int v) { return tx_gyro(v); }
 void menu_rumble_test() {
-    if (host && host->version >= 32 && host->rumble_test) host->rumble_test();
+    if (host && host->rumble_test) host->rumble_test();
 }
 // (longshot, issue 1113) the input recordings' rows (menu/input_recording.cpp): the host's input_record, input_play and
 // input_status (host/input_movie.c)
@@ -4115,7 +4134,7 @@ MenuInputStatus menu_input_status() {
     input_status_stale = false, at = now;
     MenuInputStatus s;
     static char why[128];
-    if (host && host->version >= 42 && host->input_status) {
+    if (host && host->input_status) {
         MkwVkInputStatus h{};
         host->input_status(&h);
         s.mode = h.mode, s.started = h.started, s.held = h.held, s.diverged = h.diverged;
@@ -4128,7 +4147,7 @@ MenuInputStatus menu_input_status() {
     return s;
 }
 void menu_input_record(int start) {
-    if (!host || host->version < 42 || !host->input_record) return;
+    if (!host || !host->input_record) return;
     input_refused = nullptr, input_status_stale = true;
     if (!host->input_record(start) && start) input_refused = "A recording or a playback is running: stop it first.";
 }
@@ -4141,14 +4160,14 @@ const char* menu_input_recording(int index) {
     if (!have || now - at > std::chrono::seconds(1)) {
         files.clear();
         char path[1024];
-        for (int i = 0; i < 32 && host && host->version >= 42 && host->input_recording && host->input_recording(i, path, sizeof path); i++)
+        for (int i = 0; i < 32 && host && host->input_recording && host->input_recording(i, path, sizeof path); i++)
             files.emplace_back(path);
         have = true, at = now;
     }
     return index >= 0 && index < (int)files.size() ? files[index].c_str() : nullptr;
 }
 static void input_play(int start, int index) {
-    if (!host || host->version < 42 || !host->input_play) return;
+    if (!host || !host->input_play) return;
     static const int syncs[] = {0, 1, 60, 300};   // (Drift correction: Off, every update, every second, every 5 s)
     const char* path = index >= 0 ? menu_input_recording(index) : nullptr;
     if (start && index >= 0 && !path) return;
@@ -4242,7 +4261,7 @@ void menu_init() {
             char* eq = strchr(line, '=');
             if (!eq) continue;
             *eq = 0;
-            // (a file with only the builders' Compile shaders in it, compile_shaders=, which make_game.py writes into a new
+            // (a file with only the builder's Compile shaders in it, compile_shaders=, which longshot-builder writes into a new
             // folder before the game ever started: still a first start, so Auto (this PC) chooses as it would with no file)
             has_options |= strcmp(line, "compile_shaders") != 0;
             for (Row& r : rows) {
@@ -4363,7 +4382,8 @@ void menu_init() {
             if (r.value == &opts.upscale) env_override(r.value, std::min(std::max(atoi(e), r.lo), r.hi));
     if (const char* e = getenv("HOS_REALTIME_STEP")) env_override(&opts.realtime, !env_value_off(e));
     if (const char* e = getenv("HOS_DYNRES")) env_override(&opts.resolution, env_value_off(e) ? 1 : 0);
-    if (const char* e = getenv("HOS_SKIP_OPENING")) env_override(&opts.skip_opening, !env_value_off(e));
+    if (const char* e = getenv("HOS_SKIP_OPENING"); e && menu_game_value(HOS_OPT_SKIP_OPENING))   // (the game's row)
+        env_override(menu_game_value(HOS_OPT_SKIP_OPENING), !env_value_off(e));
     // (vk_texture.cpp reads RX_VK_ASTC_RGBA8 over the row: the row shows it, fixed (row_fixed), and the ini keeps the player's)
     if (const char* e = getenv("RX_VK_ASTC_RGBA8")) env_override(&opts.astc_rgba8, !env_value_off(e));
     // (vk_main.cpp create_device reads RX_VK_PRESENT_QUEUE over the Present queue row, an empty value not: the same here)
@@ -4377,6 +4397,11 @@ void menu_init() {
     // (the FSR 4 model for this run: RX_VK_FSR4_MODEL over the saved row; the engine's live value follows the row)
     const int fsr4_env = fsr4_model_env();
     if (fsr4_env >= 0) env_override(&opts.fsr4_model, fsr4_env);
+    // (DLSS 5 for this run: RX_VK_DLSS_NR over the saved row; the renderer told what the DLSS 5 rows hold, menu/dlss5.cpp)
+    if (const char* e = getenv("RX_VK_DLSS_NR"); e && *e) env_override(&opts.dlss5, !env_value_off(e));
+    // (DLSS 5's file for this run: RX_VK_DLSS_NR_MODEL over the saved DLSS 5 model row, menu/dlss5.cpp)
+    if (const int m = dlss5_model_env(); m >= 0) env_override(&opts.dlss5_model, m);
+    dlss5_publish();
     fsr4_set_model(opts.fsr4_model ? FSR4_MODEL_LITE : FSR4_MODEL_AUTO);
     outputs_sync();   // (the Aspect ratio follows the size read)
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
@@ -4575,6 +4600,18 @@ void fps_texts(int64_t now) {
     if (level < fs::kBreakdown) return;
     for (int p = 0; p < fs::kParts; p++) fs::frame_time_text(fps_part_text[p], sizeof fps_part_text[p], half.part[p]);
     fs::frame_time_text(fps_gpu_text, sizeof fps_gpu_text, half.gpu_ms);
+    {   // (DLSS 5: the mean GPU time of the evaluations since the last texts, and the images it owns)
+        static uint64_t last_ns = 0, last_samples = 0;
+        static bool was_active = false;
+        const auto nr = dlss_nr_metrics();
+        const bool measured = nr.timing_valid && nr.active && was_active && nr.samples > last_samples && nr.gpu_ns >= last_ns;
+        if (measured) fs::frame_time_text(fps_nr_time_text, sizeof fps_nr_time_text,
+            double(nr.gpu_ns-last_ns)/double(nr.samples-last_samples)/1e6);
+        else snprintf(fps_nr_time_text, sizeof fps_nr_time_text, "-");
+        snprintf(fps_nr_vram_text, sizeof fps_nr_vram_text, "%.2f GB", double(nr.owned_bytes)/(1024.0*1024.0*1024.0));
+        if (nr.timing_valid) last_ns = nr.gpu_ns, last_samples = nr.samples;
+        was_active = nr.active;
+    }
     for (int k = 0; k < fs::kRtParts; k++) fs::frame_time_text(fps_rt_text[k], sizeof fps_rt_text[k], half.rt[k]);
     fps_rt_on = half.rt[fs::kRtWork] + half.rt[fs::kRtGpu] + half.rt[fs::kRtIdle] > 0;
     snprintf(fps_gpu_busy_text, sizeof fps_gpu_busy_text, "%.0f%%", half.avg_ms > 0 ? std::min(100.0, 100.0 * half.gpu_ms / half.avg_ms) : 0.0);
@@ -4696,7 +4733,7 @@ void menu_option_set(int id, int value) {
 bool bridge_row(int i) { return rows[i].value && !rows[i].heading && rows[i].cheat < 0 && (row_shown(i) || rows[i].value == &opts.resolution); }
 void bridge_fill(int i, MkwVkSetting* out) {
     static const char* const tabs[] = {"graphics", "audio", "gameplay", "controls", "nfc", "mods", "debug", "motion",
-                                       "audio", "gameplay", "debug", "graphics", "controls"};
+                                       "audio", "gameplay", "debug", "graphics", "graphics", "controls"};
     static_assert(sizeof tabs / sizeof tabs[0] == TAB_PAGE + 1, "a name for each MenuTab");
     const Row& r = rows[i];
     row_sync(r);
@@ -5639,6 +5676,7 @@ void menu_tick() {
         if (press[5] && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG, press[5] = false, changed = true;   // (back)
         if (press[5] && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO, press[5] = false, changed = true;   // (back)
         if (press[5] && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS, press[5] = false, changed = true;   // (back)
+        if (press[5] && cur_tab == TAB_DLSS5) cur_tab = TAB_GRAPHICS, press[5] = false, changed = true;   // (back)
         if (press[5] && cur_tab == TAB_MODS && mods_grab >= 0) mods_grab = -1, press[5] = false, changed = true;   // (puts the mod down)
         if (press[5] && pending) pending = nullptr, changed = true;   // (a Restart or Quit waiting for its second press: cancelled)
         else if (press[5] && cur_tab == TAB_MOTION) cur_tab = TAB_CONTROLS, press[5] = false, changed = true;   // (back)
@@ -5646,6 +5684,7 @@ void menu_tick() {
         else if (press[5] && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG, press[5] = false, changed = true;   // (back)
         else if (press[5] && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO, press[5] = false, changed = true;   // (back)
         else if (press[5] && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS, press[5] = false, changed = true;   // (back)
+        else if (press[5] && cur_tab == TAB_DLSS5) cur_tab = TAB_GRAPHICS, press[5] = false, changed = true;   // (back)
         else if (press[5] && restart_ask()) page = 5, ask_sel = 0, changed = true;   // (the restart question first)
         else if (press[5]) open_now = false, tune_mode = false, quick_debug = false;
         // (the tabs: LB and RB, Q and E, or Tab; from the Motion page, as from Controls)
@@ -5654,6 +5693,7 @@ void menu_tick() {
         if ((tab_left || tab_right) && cur_tab == TAB_RECORDINGS) cur_tab = TAB_DEBUG;
         if ((tab_left || tab_right) && cur_tab == TAB_SPEAKER) cur_tab = TAB_AUDIO;
         if ((tab_left || tab_right) && cur_tab == TAB_SIM_TURF) cur_tab = TAB_GRAPHICS;
+        if ((tab_left || tab_right) && cur_tab == TAB_DLSS5) cur_tab = TAB_GRAPHICS;
         if (tab_left || tab_right) {   // (the tabs shown: the Mods tab only with mods)
             if (drag_state.active()) {
                 if (!drag_state.deferred) save();
@@ -5714,6 +5754,7 @@ void menu_tick() {
                 cur_tab = TAB_RECORDINGS, tab_selected[TAB_RECORDINGS] = 0, press[7] = false, changed = true;
             else if (press[7] && is_speaker_row(r)) cur_tab = TAB_SPEAKER, tab_selected[TAB_SPEAKER] = 0, press[7] = false, changed = true;
             else if (press[7] && is_sim_turf_row(r)) cur_tab = TAB_SIM_TURF, tab_selected[TAB_SIM_TURF] = 0, press[7] = false, changed = true;
+            else if (press[7] && is_dlss5_row(r)) cur_tab = TAB_DLSS5, tab_selected[TAB_DLSS5] = 0, press[7] = false, changed = true;
             else if (press[7] && r.setting && r.setting->on_activate &&   // (#1633: a module's button, unless locked)
                      !(r.setting->locked && r.setting->locked()))
                 r.setting->on_activate(), press[7] = false, changed = true;
@@ -5783,7 +5824,7 @@ void menu_tick() {
 /// a short buzz, which also shows that the controller vibrates. Whatever changed it: the keys, the mouse
 void menu_rumble_tick() {
     static int was = -1;
-    if (was >= 0 && opts.rumble != was && menu_is_open() && host && host->version >= 32 && host->rumble_test) host->rumble_test();
+    if (was >= 0 && opts.rumble != was && menu_is_open() && host && host->rumble_test) host->rumble_test();
     was = opts.rumble;
 }
 void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h, int colour_vision) {

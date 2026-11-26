@@ -1,7 +1,7 @@
 """The Windows game builds the Vulkan back end only, as the Linux one does: no WebGPU renderer, no wgpu-native.
 
 Every Windows build used to compile TOTKPort's WebGPU renderer (gpu/render/*.cpp) and suyu's shader recompiler with its WGSL
-back end into the exe (nx2/build.py gpu_sources, ~160 C++ files at -O2) when tools.lock's wgpu-native was there, and the
+back end into the exe (the old builder's gpu_sources, ~160 C++ files at -O2) when tools.lock's wgpu-native was there, and the
 builder downloaded it for every player, while the game drew with it only when RX_BACKEND named another renderer than Vulkan
 or Vulkan did not start. The renderer and RX_BACKEND are gone: the exe is linked with the stand-ins host/rx_nowgpu.c (Linux:
 host/posix/linux_stubs.c), which draw nothing.
@@ -12,8 +12,6 @@ platforms (the link). No game, no compiler.
 
 python -I -B tests/test_no_webgpu.py
 """
-import ast
-import importlib.util
 import re
 from pathlib import Path
 
@@ -35,22 +33,18 @@ def defined(source):
 
 
 def main():
-    build = read("nx2", "build.py")
-    tree = ast.parse(build)
-    functions = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    check("nx2/build.py still has gpu_sources (the WebGPU renderer's sources)", "gpu_sources" not in functions)
-    check("nx2/build.py still reads WGPU_NATIVE or wgpu-native", "WGPU" not in names and "WGPU_NATIVE" not in build
-          and "webgpu.h" not in build and "wgpu_native" not in build and "rx_wgpu_names" not in build)
-    # (gpu/render is a dependency of the Vulkan back end's objects, for its headers: nothing of it is compiled. It is one of the
-    # folders whose headers the objects are named by, vdeps_roots: the blob of all of them, vdeps, and the depfiles' headers
-    # under them, renderer_deps)
-    render = [line for line in build.splitlines() if 'os.path.join(GPU, "render")' in line]
-    check("nx2/build.py uses gpu/render for more than the Vulkan back end's header dependencies: %r" % render,
-          len(render) == 1 and render[0].strip().startswith("vdeps_roots = (") and "vdeps = tree_headers(*vdeps_roots)" in build
-          and "renderer_deps(vdeps, vdeps_roots, obj)" in build)
-    check("nx2/build.py leaves host/rx_nowgpu.c out of the Windows build", "have_wgpu" not in build and re.search(
-        r'not \(LINUX and f in \("display\.c", "mf_av1\.c", "rx_nowgpu\.c"\)\)\s*\n\s*and \(f != "dav1d_av1\.c"', build))
+    # (the builder: builder/crates/build-compile and build-driver name no wgpu-native and compile nothing of gpu/render;
+    # the Linux host leaves rx_nowgpu.c out for linux_stubs.c, the Windows one compiles it)
+    rust = ROOT / "builder" / "crates"
+    build = "\n".join(p.read_text(encoding="utf-8") for crate in ("build-compile", "build-driver")
+                      for p in sorted((rust / crate / "src").rglob("*.rs")))
+    check("the builder still names WGPU_NATIVE, wgpu-native or WebGPU",
+          not re.search(r"wgpu[_-]native|webgpu", build, re.I))   # (rx_nowgpu.c is the stand-ins)
+    check("the builder compiles gpu/render", "gpu/render" not in build and 'join("render")' not in build)
+    plan = read("builder", "crates", "build-compile", "src", "plan.rs")
+    check("the builder leaves host/rx_nowgpu.c out of the Windows build, or compiles it on Linux",
+          '&& !(linux && matches!(f, "display.c" | "mf_av1.c" | "rx_nowgpu.c"))' in plan
+          and '"linux_stubs.c"' in plan)
     sources = sorted(p.name for p in (ROOT / "gpu" / "render").iterdir() if p.suffix in (".c", ".cpp"))
     check("gpu/render still has sources: %s" % sources, not sources)
     for header in ("rx.h", "rx_nvn.h", "nvn_api.h"):   # (host/display.c, host/nvn_native.c, gpu/vk/vk_api.h)
@@ -58,13 +52,7 @@ def main():
 
     lock = read("tools.lock")
     check("tools.lock still has wgpu-native", not re.search(r"^tool wgpu-native ", lock, re.M))
-    spec = importlib.util.spec_from_file_location("tools_under_test", ROOT / "scripts" / "tools.py")
-    tools = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tools)
-    check("scripts/tools.py still requires wgpu-native", all("wgpu-native" not in need for need in tools.REQUIRED.values()))
-    check("the builder still points WGPU_NATIVE at a tools folder", "WGPU_NATIVE" not in read("builder", "LongshotBuilder", "Runner.cs"))
-    beside = next(line for line in read("nx2", "make_game.py").splitlines() if line.startswith("BESIDE = "))
-    check("make_game.py still copies wgpu_native.dll into the game folder", "wgpu_native" not in beside)
+    # (no builder requires it: build-driver's tools/lock.rs, which names none, is in the builder's sources checked above)
 
     backend = read("host", "rx_backend.c")
     start = backend[backend.index("int rx_start(void *hwnd) {"):]

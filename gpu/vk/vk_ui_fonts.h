@@ -1,5 +1,5 @@
-// (longshot) The overlays' three fonts (vk_imgui.cpp loads them for the renderer's menu, vk_crash_window.cpp for the crash
-// window), apart from the renderer's headers: vk_ui.h's drawing needs only these, so a window with no Vulkan draws with it too.
+// (longshot) The overlays' three fonts (vk_imgui.cpp loads them for the renderer's menu), apart from the renderer's headers:
+// vk_ui.h's drawing needs only these.
 #pragma once
 
 struct ImFont;

@@ -1,0 +1,412 @@
+// The builder's windows (builder/crates/ui): a build's progress, a page (an error, the crash window and its pages),
+// and the first run's picker of the game's .nup. Plain and small, in the Longshot Launcher's brand look (LongshotLauncher's
+// App/App.axaml: its dark palette and MagicBean's brand colours, Inter, Noto Sans Black headings, cards with 14 px
+// corners, 40 px buttons with 8 px corners, Go-green for the button that starts the build, the four brand stripes across
+// the window's top, the build page's bar), with a few shared parts every window uses: Card, PrimaryButton, GoButton,
+// SecondaryButton, ProgressBar, Title, Stripes.
+import "../fonts/Inter-Regular.ttf";
+import "../fonts/Inter-SemiBold.ttf";
+import "../fonts/NotoSans-Black.ttf";
+
+global Theme {
+    out property <color> page: #14161A;
+    out property <color> ink: #EDEFF2;
+    out property <color> ink-soft: #A2A9B3;
+    out property <color> ink-faint: #8A919B;
+    out property <color> glass: #FFFFFF0D;
+    out property <color> glass-hover: #FFFFFF17;
+    out property <color> glass-line: #FFFFFF17;
+    out property <color> glass-line-strong: #FFFFFF2A;
+    out property <color> quiet-fill: #FFFFFF08;
+    out property <color> quiet-line: #FFFFFF1F;
+    out property <color> quiet-pressed: #FFFFFF05;
+    out property <color> brand: #3D63E6;
+    out property <color> brand-hover: #4B70F0;
+    out property <color> brand-pressed: #3357D0;
+    out property <color> primary-line: #FFFFFF33;
+    out property <color> bar-track: #FFFFFF12;
+    out property <color> well: #00000033;
+    out property <color> bad: #E2776B;
+    // the brand's Go (the launcher's Play and Build): green, its ink dark, its shadow a hard 3 px step below
+    out property <color> go: #7CC242;
+    out property <color> go-hover: #8DD253;
+    out property <color> go-pressed: #6AAE36;
+    out property <color> go-ink: #13210D;
+    out property <color> go-line: #FFFFFF40;
+    out property <color> go-glow: #00000066;
+    // the keyboard focus ring: the brand's gold
+    out property <color> focus-ring: #F3C24F;
+    // warn and bad boxes: a tint (#33), a line (#55), a chip's line (#38 on gold; #40 on red)
+    out property <color> warn: #F3C24F;
+    out property <color> warn-fill: #F3C24F33;
+    out property <color> warn-line: #F3C24F55;
+    out property <color> bad-fill: #EC7A5F33;
+    out property <color> bad-line: #EC7A5F55;
+    // MagicBean's brand (MagicBeanDev/Brand), by its names there
+    out property <color> night: #21140D;
+    out property <color> night2: #2E1D13;
+    out property <color> rust: #A8472B;
+    out property <color> rust-dark: #7C3220;
+    out property <color> cream: #FBF1DC;
+    out property <color> cream-card: #FFF8E8;
+    out property <color> cream-line: #E6D3AE;
+    out property <color> cream-ink: #2A1A10;
+    out property <color> cream-muted: #6E5643;
+    out property <color> lime: #C2ED83;
+    out property <color> leaf: #7CC242;
+    out property <color> deep: #3C651E;
+    out property <color> gold: #F3C24F;
+    out property <color> tan: #EFD3A6;
+    out property <color> orange: #D9783A;
+}
+
+// The brand's four stripes across a window's top edge: rust, orange, gold, leaf, 3 px, each a quarter of the width.
+component Stripes inherits Rectangle {
+    x: 0;
+    y: 0;
+    height: 3px;
+    HorizontalLayout {
+        Rectangle { background: Theme.rust; }
+        Rectangle { background: Theme.orange; }
+        Rectangle { background: Theme.gold; }
+        Rectangle { background: Theme.leaf; }
+    }
+}
+
+// A heading (the launcher's .heading: Noto Sans Black, 28, letters 0.9 closer) and its line below (.sub).
+component Title inherits VerticalLayout {
+    in property <string> text;
+    in property <string> sub;
+    spacing: 6px;
+    Text {
+        text: root.text;
+        color: Theme.ink;
+        font-family: "Noto Sans";
+        font-size: 28px;
+        font-weight: 900;
+        letter-spacing: -0.9px;
+        wrap: word-wrap;
+    }
+    if root.sub != "": Text {
+        text: root.sub;
+        color: Theme.ink-soft;
+        font-size: 14px;
+        wrap: word-wrap;
+    }
+}
+
+// The launcher's .card: a glass panel, 14 px corners.
+component Card inherits Rectangle {
+    background: Theme.glass;
+    border-color: Theme.glass-line;
+    border-width: 1px;
+    border-radius: 14px;
+}
+
+component ButtonBase inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    callback clicked();
+    min-width: max(88px, label.preferred-width + 36px);
+    height: 40px;
+    border-radius: 8px;
+    border-width: 1px;
+    background: root.primary
+        ? (touch.pressed ? Theme.brand-pressed : touch.has-hover ? Theme.brand-hover : Theme.brand)
+        : (touch.pressed ? Theme.quiet-pressed : touch.has-hover ? Theme.glass-hover : Theme.quiet-fill);
+    border-color: root.primary ? Theme.primary-line : touch.has-hover ? Theme.glass-line-strong : Theme.quiet-line;
+    label := Text {
+        text: root.text;
+        color: Theme.ink;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// The launcher's Button.primary: the brand's blue.
+component PrimaryButton inherits ButtonBase {
+    primary: true;
+}
+
+// The launcher's Button.go (Play, Build): 50 px tall, 10 px corners, 16 bold, green with dark ink, and its GoGlow shadow
+// (0 3 0 0 #66000000: a hard step 3 px below), drawn as a rounded dark rectangle behind the button, as the software
+// renderer has no shadows. Bold is drawn as Inter SemiBold (the one heavier face the builder embeds).
+component GoButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    min-width: max(120px, label.preferred-width + 68px);
+    height: 53px;
+    Rectangle {
+        y: 3px;
+        height: 50px;
+        border-radius: 10px;
+        background: Theme.go-glow;
+    }
+    Rectangle {
+        y: 0;
+        height: 50px;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.go-line;
+        background: touch.pressed ? Theme.go-pressed : touch.has-hover ? Theme.go-hover : Theme.go;
+        label := Text {
+            text: root.text;
+            color: Theme.go-ink;
+            font-size: 16px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        touch := TouchArea {
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+// The launcher's plain Button: a quiet glass fill.
+component SecondaryButton inherits ButtonBase {
+    primary: false;
+}
+
+// The build page's bar: a 10 px track, its ends round, and the fill as round at both ends (its width at least the
+// bar's height, so 2 % is a dot, not a square), the brand's blue: the launcher's BuildStepView bar, its gradient
+// (#3D63E6 to #4B70F0) left out, as Slint's software renderer draws a gradient with square corners.
+component ProgressBar inherits Rectangle {
+    in property <float> value;
+    height: 10px;
+    border-radius: self.height / 2;
+    background: Theme.bar-track;
+    clip: true;
+    Rectangle {
+        x: 0;
+        y: 0;
+        height: parent.height;
+        width: max(parent.height, parent.width * clamp(root.value, 0, 1));
+        border-radius: self.height / 2;
+        background: Theme.brand;
+        visible: root.value > 0;
+    }
+}
+
+// A build's progress: its step, how far, a bar, Cancel. Shown only once a build has gone on for a moment.
+export component ProgressWindow inherits Window {
+    in property <string> step;
+    in property <float> fraction;
+    callback cancel();
+    title: "Longshot";
+    width: 560px;
+    height: layout.preferred-height;
+    background: Theme.page;
+    default-font-family: "Inter";
+    layout := VerticalLayout {
+        padding: 28px;
+        spacing: 16px;
+        HorizontalLayout {
+            spacing: 24px;
+            Title {
+                text: "Getting the game ready";
+                sub: "Longshot starts the game by itself when it's done.";
+            }
+            Text {
+                text: floor(root.fraction * 100) + " %";
+                color: Theme.ink;
+                font-size: 40px;
+                font-weight: 600;
+                horizontal-alignment: right;
+                vertical-alignment: bottom;
+            }
+        }
+        ProgressBar { value: root.fraction; }
+        HorizontalLayout {
+            spacing: 16px;
+            Text {
+                text: root.step;
+                color: Theme.ink-soft;
+                font-size: 13px;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            SecondaryButton {
+                text: "Cancel";
+                clicked => { root.cancel(); }
+            }
+        }
+    }
+    Stripes { width: root.width; }
+}
+
+// A page: what happened, a block shown as it is (a report), and its buttons, the first (primary) Enter's and the
+// last Escape's. What a button does is the caller's: pressed(index); key(0 Enter, 1 Escape, repeat).
+export component PageWindow inherits Window {
+    in property <string> window-title: "Longshot";
+    in property <string> heading;
+    in property <string> text;
+    in property <string> block;
+    in property <[string]> buttons;
+    callback pressed(int);
+    callback key(int, bool);
+    title: root.window-title;
+    width: max(760px, row.preferred-width + 56px);
+    height: page.preferred-height;
+    background: Theme.page;
+    default-font-family: "Inter";
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == "\u{d}" || event.text == Key.Space) {
+                root.key(0, event.repeat);
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                root.key(1, event.repeat);
+                return accept;
+            }
+            return reject;
+        }
+        page := VerticalLayout {
+            padding: 28px;
+            spacing: 18px;
+            Card {
+                VerticalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-top: 22px;
+                    padding-bottom: 22px;
+                    spacing: 12px;
+                    Title { text: root.heading; }
+                    Text {
+                        text: root.text;
+                        color: Theme.ink-soft;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                    }
+                    if root.block != "": Rectangle {
+                        min-height: 160px;
+                        preferred-height: 280px;
+                        background: Theme.well;
+                        border-width: 1px;
+                        border-color: Theme.glass-line;
+                        border-radius: 10px;
+                        Flickable {
+                            x: 12px;
+                            y: 10px;
+                            width: parent.width - 24px;
+                            height: parent.height - 20px;
+                            content-height: shown.preferred-height;
+                            shown := Text {
+                                width: parent.width;
+                                text: root.block;
+                                color: Theme.ink;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+            row := HorizontalLayout {
+                alignment: end;
+                spacing: 10px;
+                for label[i] in root.buttons: HorizontalLayout {
+                    if i == 0: PrimaryButton {
+                        text: label;
+                        clicked => { root.pressed(i); }
+                    }
+                    if i != 0: SecondaryButton {
+                        text: label;
+                        clicked => { root.pressed(i); }
+                    }
+                }
+            }
+        }
+    }
+    Stripes { width: root.width; }
+}
+
+// The first run: the player's .nup, by its path or the system's file chooser (Browse).
+export component PickWindow inherits Window {
+    in-out property <string> path;
+    in property <string> note;
+    callback browse();
+    callback done(bool);
+    title: "Longshot";
+    width: 640px;
+    height: layout.preferred-height;
+    background: Theme.page;
+    default-font-family: "Inter";
+    layout := VerticalLayout {
+        padding: 28px;
+        spacing: 18px;
+        Card {
+            VerticalLayout {
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 22px;
+                padding-bottom: 22px;
+                spacing: 14px;
+                Title {
+                    text: "Pick your Ocarina of Time .nup";
+                    sub: "Longshot builds the game from your own copy of Ocarina of Time (Nintendo Switch 2): its .nup file. Nothing of it leaves this PC.";
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        height: 40px;
+                        background: Theme.well;
+                        border-width: 1px;
+                        border-color: input.has-focus ? Theme.focus-ring : Theme.glass-line-strong;
+                        border-radius: 8px;
+                        input := TextInput {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            text <=> root.path;
+                            color: Theme.ink;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                            single-line: true;
+                            accepted => { root.done(true); }
+                        }
+                        if root.path == "": Text {
+                            x: 12px;
+                            text: "The path of your .nup";
+                            color: Theme.ink-faint;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    SecondaryButton {
+                        text: "Browse";
+                        clicked => { root.browse(); }
+                    }
+                }
+                if root.note != "": Text {
+                    text: root.note;
+                    color: Theme.bad;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 10px;
+            VerticalLayout {
+                alignment: center;
+                SecondaryButton {
+                    text: "Cancel";
+                    clicked => { root.done(false); }
+                }
+            }
+            GoButton {
+                text: "Continue";
+                clicked => { root.done(true); }
+            }
+        }
+    }
+    Stripes { width: root.width; }
+}

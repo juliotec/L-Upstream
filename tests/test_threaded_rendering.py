@@ -830,7 +830,7 @@ def main():
     if bad:
         raise SystemExit("FAIL: " + "\nFAIL: ".join(bad))
     for path in sorted(list(VK.glob("*.cpp")) + list(VK.glob("*.h")) + list((VK / "menu").glob("*.cpp")) +
-                       list((ROOT / "host").glob("*.c"))):
+                       list((ROOT / "host").glob("*.c")) + list((ROOT / "game").glob("*.c"))):
         text = path.read_text(encoding="utf-8", errors="replace")
         reads = len(re.findall(r'getenv\("RX_VK_ASYNC"\)', text))
         # (the menu's one is threaded_env, the row's line that says the switch is set: it decides nothing. Its module's,

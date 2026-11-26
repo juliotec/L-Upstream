@@ -34,7 +34,7 @@ RULES = [
     (GAME_MODULES, r"^code_", None, "game/lifted"),
     (GAME_MODULES, None, r"^f_[0-9a-fA-F]{8,16}$", "game/lifted"),
 
-    # ---- the runtime that lifted code needs (third_party/a64-kit) ----
+    # ---- the runtime that lifted code needs (builder/rt/, gen/rt/ of a build) ----
     (GAME_MODULES, r"^a64_hooks", None, "runtime/hooks"),
     (GAME_MODULES, r"^a64_", r"lookup|site_call|dispatch|resolve", "runtime/indirect-calls"),
     (GAME_MODULES, r"^a64_", r"fpx|fpe|fma|recp|rsqrt|fp_", "runtime/float"),

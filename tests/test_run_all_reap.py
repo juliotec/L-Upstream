@@ -71,7 +71,6 @@ class Reaped(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="run-all-reap-"))
         (self.tmp / "tests").mkdir()
-        (self.tmp / "nx2").mkdir()
         shutil.copy(ROOT / "tests" / "run_all.py", self.tmp / "tests" / "run_all.py")
         shutil.copy(ROOT / "tests" / "compiler_command.py", self.tmp / "tests" / "compiler_command.py")   # (run_all.py's)
         self.spinner = self.tmp / "tests" / "spinner.txt"

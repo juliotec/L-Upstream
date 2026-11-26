@@ -170,8 +170,9 @@ def report():
 
 def sources():
     main = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
-    need(main.count("    load_longshot_env();\n    hos_profiling_env();") == 2, "HOS_PROFILE=1 is not read after longshot_env.txt "
-         "in both mains")
+    # (right after the file, or after the profile's start slot, which follows the file too: host/hos_main.c profile_start_slot)
+    need(len(re.findall(r"\n    load_longshot_env\(\);\n(?:    profile_start_slot\(\);[^\n]*\n)?    hos_profiling_env\(\);", main))
+         == 2, "HOS_PROFILE=1 is not read after longshot_env.txt in both mains")
     # (a switch done with is a GONE row of the switches' table, #1309: what a run that still sets it is told)
     gone = (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8")
     need(re.search(r'^GONE\(HOS_RECORD_STUTTERS, "[^"]*", "[^"]*HOS_PROFILE=1', gone, re.M),

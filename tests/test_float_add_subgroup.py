@@ -12,7 +12,6 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}"]
@@ -20,8 +19,6 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{spirv_headers}"]
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
 SPIRV = VK / "eden" / "shader_recompiler" / "backend" / "spirv"
-sys.path.insert(0, str(ROOT / "third_party" / "a64-kit" / "tools"))
-import toolchain
 
 
 def block(text, marker, start=0):
@@ -267,10 +264,13 @@ def main():
         cpp.write_text(fixture, encoding="utf-8")
         flags = []
         if os.name == "nt" and "clang" in Path(args.cxx).name.lower():
-            flags = toolchain.native_target(host=True)
-            if toolchain.mingw(host=True):
-                flags += toolchain.native_link(host=True)
+            # (the targets the builder gives clang, builder/crates/build-compile/src/toolchain.rs: llvm-mingw's when
+            # LONGSHOT_MINGW names it, else the MSVC target)
+            if os.environ.get("LONGSHOT_MINGW"):
+                flags = ["--target=x86_64-w64-mingw32", "-fms-extensions", "-D_CRT_SECURE_NO_WARNINGS", "-fuse-ld=lld",
+                         "-static"]
             else:
+                flags = ["--target=x86_64-pc-windows-msvc", "-fms-extensions", "-D_CRT_SECURE_NO_WARNINGS"]
                 here = str(Path(args.cxx).resolve().parent)
                 link = shutil.which("lld-link", path=here) or shutil.which("lld-link")
                 if not link:

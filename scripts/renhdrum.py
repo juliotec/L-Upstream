@@ -13,13 +13,13 @@ third_party/renhdrum leaves out), with the same C compiler that links it:
 - windows (the default on Windows): x86_64-pc-windows-gnullvm, linked by llvm-mingw, the one the game is built with
   (--llvm-mingw, else LONGSHOT_MINGW), its unwinder linked in and the C runtime Windows' own UCRT, as the game's;
 - linux (the default elsewhere): x86_64-unknown-linux-gnu, linked by --linker (default cc) on the system it is for (the
-  AppImage's: Ubuntu 22.04's C library).
+  release's: Ubuntu 22.04's C library).
 No time stamp and no path of this machine go in: the same source gives the same bytes. Its output (--out, default
 third_party/renhdrum/renhdrum.dll or .so, which .gitignore leaves out) is checked as `check` checks it.
 
-The Builder's release makes the DLL in CI (.forgejo/workflows/build-windows.yml, scripts/builder_package.py --renhdrum)
-and the AppImage the .so (.forgejo/workflows/build-linux.yml, scripts/linux/appimage.sh), so a player's build places it
-beside the game (nx2/build.py, nx2/make_game.py) with no Rust on their PC. A build without it plays every controller's
+The release makes the DLL and the .so in CI (.forgejo/workflows/build-windows.yml, build-linux.yml) and longshot-builder
+carries them (longshot-builder dev release sources --add third_party/renhdrum/...), so a player's build places it
+beside the game (longshot-builder: build-compile and build-driver's finished_files) with no Rust on their PC. A build without it plays every controller's
 motors or its own HD rumble.
 
 `check` reads the file's headers only (nothing in it is loaded or run): x86-64, the exports host/rumble_renhdrum.c binds,
@@ -62,6 +62,9 @@ RUST_STD = {
                 "8ddc26705e13c46530c898524b0d2657b7d416a25e8d9ffe369a97b23a619bf6"),
     "linux": ("rust-std-%s-x86_64-unknown-linux-gnu" % RUST_VERSION,
               "109b074225bf5b9ea3820890876bfdf4ed161adbfaf94b2b4b5984c85ee5d958"),
+    # (longshot-builder's Linux binary, static: scripts/longshot_builder.py)
+    "linux-musl": ("rust-std-%s-x86_64-unknown-linux-musl" % RUST_VERSION,
+                   "1dd241eaeb19ff3b5180461c77bdee93d6cafc669eda9de834e7c06b0ec3ca95"),
 }
 # (host/rumble_renhdrum.c's RH_FUNCS, each with the renhdrum_ prefix)
 EXPORTS = tuple("renhdrum_" + n for n in (
@@ -72,9 +75,9 @@ EXPORTS = tuple("renhdrum_" + n for n in (
     "valve_grip_build_report", "valve_grip_mode_tick", "valve_grip_mode_off", "xbox_rumble_create",
     "xbox_rumble_destroy",
     "xbox_rumble_push_half_sample", "xbox_rumble_tick", "engine_create", "engine_destroy", "engine_push_half_sample",
-    "engine_tick"))
+    "settings_resolve_pure", "engine_apply_settings", "engine_tick"))
 # (Windows' own: present on every Windows 10 and 11, as they are for longshot.exe, which llvm-mingw links to the UCRT too)
-SYSTEM_IMPORT = re.compile(r"^(kernel32|ntdll|advapi32|bcrypt|bcryptprimitives|userenv|ws2_32|ucrtbase|"
+SYSTEM_IMPORT = re.compile(r"^(kernel32|ntdll|advapi32|user32|bcrypt|bcryptprimitives|userenv|ws2_32|ucrtbase|"
                            r"api-ms-win-[a-z0-9-]+)\.dll$")
 # (every Linux system's own: the C library's parts, and GCC's unwinder, which every desktop system carries)
 SYSTEM_NEEDED = re.compile(r"^(libc|libm|libdl|libpthread|librt|libgcc_s|ld-linux-x86-64)\.so\.\d+$")
@@ -263,18 +266,27 @@ def unpack_component(archive, name, prefix):
 
 
 def toolchain(cache, target):
-    """The pinned Rust for target, unpacked once under cache (a folder named by the parts' hashes): its bin/ folder"""
+    """The pinned Rust for target (a RUST_STD key), unpacked once under cache (a folder named by the parts' hashes): its
+    bin/ folder. Its .complete note names every part's SHA-256 and is written last, so a folder another pin or a stopped
+    unpack left is made again. An unpacked folder is trusted as this machine made it: CI keeps only the downloads, which
+    fetch() checks by their SHA-256 each time, never an unpacked Rust (a restored one would run unchecked)"""
     parts = RUST[host()] + [RUST_STD[target]] + ([RUST_STD[host()]] if host() != target else [])
     key = hashlib.sha256("".join(h for _, h in parts).encode()).hexdigest()[:16]
     prefix = os.path.join(cache, "rust-%s-%s" % (RUST_VERSION, key))
     done = os.path.join(prefix, ".complete")
-    if not os.path.isfile(done):
+    note = "".join("%s %s\n" % (n, h) for n, h in parts)
+    try:
+        with open(done, encoding="utf-8") as f:
+            complete = f.read() == note
+    except OSError:
+        complete = False
+    if not complete:
         shutil.rmtree(prefix, ignore_errors=True)
         os.makedirs(prefix)
         for name, want in parts:
             unpack_component(fetch(name, want, cache), name, prefix)
-        with open(done, "w") as f:
-            f.write("\n".join(n for n, _ in parts) + "\n")
+        with open(done, "w", encoding="utf-8") as f:
+            f.write(note)
     return os.path.join(prefix, "bin")
 
 
@@ -292,16 +304,17 @@ def locked_crates(lock):
     return out
 
 
-def vendor_crates(cache, into):
-    """Cargo.lock's crates, each downloaded once into cache and checked by its SHA-256, unpacked into into/ as a cargo
-    directory source (the .cargo-checksum.json cargo asks for, with the package's checksum, which --locked compares)"""
-    with open(os.path.join(SRC, "Cargo.lock"), encoding="utf-8") as f:
+def vendor_crates(cache, into, lock=None):
+    """Cargo.lock's crates (third_party/renhdrum's, or lock), each downloaded once into cache and checked by its SHA-256,
+    unpacked into into/ as a cargo directory source (the .cargo-checksum.json cargo asks for, with the package's checksum,
+    which --locked compares)"""
+    with open(lock or os.path.join(SRC, "Cargo.lock"), encoding="utf-8") as f:
         crates = locked_crates(f.read())
     os.makedirs(into)
     for name, version, want in crates:
         archive = os.path.join(cache, "crates", "%s-%s.crate" % (name, version))
         if not (os.path.isfile(archive) and helpers.sha256_file(archive) == want):
-            print("renhdrum: downloading the %s %s crate" % (name, version), flush=True)
+            print("downloading the %s %s crate" % (name, version), flush=True)
             os.makedirs(os.path.dirname(archive), exist_ok=True)
             try:
                 helpers.download("%s%s/%s-%s.crate" % (CRATES, name, name, version), archive, want, timeout=300)
@@ -342,8 +355,9 @@ def cmd_build(a):
     bin_dir = toolchain(cache, target)
     out = os.path.abspath(a.out or os.path.join(SRC, NAMES[target]))
     # (the tracked source only, copied out of the tree: target/ and the cargo home are not written into third_party/. One
-    # fixed folder, emptied first, so two builds of the same source are the same bytes)
-    work = os.path.join(cache, "work")
+    # fixed folder beside the cache (never in it: a cache holds downloads only), emptied first, so two builds of the same
+    # source are the same bytes)
+    work = cache + "-renhdrum-work"
     shutil.rmtree(work, ignore_errors=True)
     try:
         crate = os.path.join(work, "renhdrum")

@@ -3,6 +3,11 @@
 Find what you see below and follow its steps: each one names the exact message, file or setting to look for. Nothing
 fits, or the fix didn't work? [Still stuck?](#still-stuck) says where the log is and how to ask.
 
+Not sure where to start? Run Longshot's own check in a terminal, in its folder: `./Longshot.x86_64 doctor` on Linux,
+`Longshot.exe doctor` on Windows (add `--profile <folder>` for a profile of your own). It looks at your graphics driver,
+free space, game files, folders, Windows' long paths and Defender, and whether Longshot is already running, and says a
+fix for anything in the way. It changes nothing.
+
 - [Installing and building](#installing-and-building)
 - [Starting the game](#starting-the-game)
 - [In game: graphics](#in-game-graphics)
@@ -24,17 +29,30 @@ Or: "Longshot supports build e0f3ccfa". Longshot builds from one version of the 
 
 [Search version reports](https://longshot.magicbean.dev/progress/#problem-search?q=version)
 
+### The game says it reads its files from your .nup, which is not there
+
+The game reads its files from the `.nup` you built it from, where it was then. Moved, renamed, deleted or replaced
+(another copy of the game), it can't start.
+
+1. **Put the `.nup` back** where it was, on the same drive (plug the drive in, if it is an external one).
+2. **Or build again** from the `.nup` where it is now: the launcher checks your `.nup` before **Play**, and when it is
+   gone it offers **Pick the .nup again**, then builds the same game folder from the one you pick. Little is rebuilt:
+   mostly the index of your game files is written again.
+
+[Search .nup reports](https://longshot.magicbean.dev/progress/#problem-search?q=nup)
+
 ### "Your antivirus removed part of the build tools"
 
 A false alarm on unsigned programs: Longshot isn't code-signed yet.
 
 1. **Get the files back.** Restore them from Windows Security's **Protection history**, and add the launcher's folders
-   to its exclusions: `%LOCALAPPDATA%\LongshotLauncher` (its data: each version's builder and build tools, in
-   `toolchains`, and the build files) and `%LOCALAPPDATA%\Programs\LongshotLauncher` (the launcher itself). The portable
+   to its exclusions: `%LOCALAPPDATA%\LongshotLauncher` (its data: each version's builder, in
+   `toolchains`, and the build files, where the builder unpacks its build tools) and `%LOCALAPPDATA%\Programs\LongshotLauncher` (the launcher itself). The portable
    launcher keeps its data in `LongshotLauncher-data` beside `LongshotLauncher.exe` instead.
 2. **Build again.** If a file is still missing, delete that version's folder in
    `%LOCALAPPDATA%\LongshotLauncher\toolchains` (it is named after the version, such as `v3.0.0`): the next build
-   downloads it again and checks it.
+   downloads it again and checks it. If the build then says a build tool is missing, remove the build files (the launcher's
+   **Storage** page): the builder unpacks its tools again, checking every file.
 
 The [antivirus guide](https://longshot.magicbean.dev/help/antivirus/) shows each step, and how to check first that the
 download is genuine.
@@ -43,10 +61,15 @@ download is genuine.
 
 ### The build is very slow, or runs out of space
 
-1. **Expect about 15 minutes on a 12-core desktop, and longer on a slower PC.** Most of the time is compiling and
-   preparing shaders, which use every CPU thread, so a 6-core PC can take twice as long or more (an estimate, not a
-   measurement). A hard drive works, but builds are much slower than on an SSD.
-2. **Free about 60 GB** before building. The build's own files (about 4 GB) are deleted once the game is ready.
+1. **Expect about 3 minutes on a 12-core desktop for the first build, then a few minutes preparing shaders, and
+   longer on a slower PC.** Most of the time is compiling, which uses every CPU thread but one, so a 6-core PC can take
+   twice as long or more (an estimate, not a measurement). An update that changes little takes seconds. A hard drive
+   works, but builds are much slower than on an SSD.
+2. **Free about 5 GB** before the first build ([requirements](requirements.md)). The builder keeps its work (about
+   2 GB: the compiled files) in the launcher's build files, so the next update only rebuilds what changed; the
+   launcher's **Storage** page shows them and removes them. Removing them is safe; the next build then takes as long as
+   the first. (`longshot-builder` run by hand keeps them in `~/.cache/longshot-builder` on Linux and
+   `%LOCALAPPDATA%\Longshot\Builder` on Windows.)
 
 [Search build reports](https://longshot.magicbean.dev/progress/#problem-search?q=build)
 
@@ -153,8 +176,8 @@ Without mesh shaders, Longshot draws through its compute fallback, which leaves 
 
 1. **Look for `longshot_damaged_files.txt`** in the game folder. The build writes it when your dump of the game is
    incomplete (about 23.3 GB instead of 23.8 GB), listing each damaged file and what was put in its place.
-2. **Look in `longshot_log.txt` for `is damaged in this copy of the game`.** Game files that Longshot Builder didn't
-   unpack (copied from another tool, or by hand) get no `longshot_damaged_files.txt`. The game then reads a similar
+2. **Look in `longshot_log.txt` for `is damaged in this copy of the game`.** A game built from `romfs` and `exefs`
+   folders (unpacked by another tool, or by hand) rather than from the `.nup` gets no `longshot_damaged_files.txt`. The game then reads a similar
    texture in place of each damaged one as it plays, writes nothing to your game files, and logs one line per file.
    Without it, the Great Fairy Fountain's damaged floor cost about a third of the frame rate in the starting forest
    and the castle town's market.

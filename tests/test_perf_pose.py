@@ -1,4 +1,4 @@
-"""Link's pose for the performance summary's one-second samples (host/hos_main.c), run without a game.
+"""Link's pose for the performance summary's one-second samples (game/oot_tools.c), run without a game.
 
 The opt-in performance statistics take Link's place and the gameplay camera's yaw and pitch once a second. The host reads
 them from Link's update (oot_perf_pose) and the renderer asks for them with the map (hos_perf_info). The first version read
@@ -7,11 +7,11 @@ range for the relay (which refuses a whole summary for one sample out of range),
 gave a title-screen second a place. This test runs the real code:
 
   - oot_perf_pose, hos_perf_info, oot_event_playing, oot_gameplay_view and oot_inventory_refresh (the map line, and the
-    title) are cut out of host/hos_main.c by their text, and compiled with tests/perf_pose_test.c, which makes the rest of
+    title) are cut out of game/oot_tools.c by their text, and compiled with tests/perf_pose_test.c, which makes the rest of
     the guest up: the camera manager's chain to the gameplay view, its eye and target, the event manager, Link's place,
     the clock, the locks and what the save says (nothing is taken from a dump);
   - yaw and pitch (radians) follow the camera as the control bridge's camera does (tests also run that arithmetic, and this
-    test checks it is the one host/oot_state_tap.c has), over a whole turn at three heights, within the relay's range
+    test checks it is the one game/oot_state_tap.c has), over a whole turn at three heights, within the relay's range
     for every direction (|yaw| <= pi, |pitch| <= pi/2, straight behind included); straight up has none;
   - an event playing, another kind of camera object, a stray place, an unticked game: no pose; a pose not set for a
     second: none; the map line changing: none until the next update; no map (the title): none, even just after a
@@ -61,13 +61,14 @@ def main():
     p.add_argument("--cc", default="gcc")
     p.add_argument("--source-root", type=Path, default=ROOT)
     a = p.parse_args()
-    source = (a.source_root / "host" / "hos_main.c").read_text(encoding="utf-8")
-    tap = (a.source_root / "host" / "oot_state_tap.c").read_text(encoding="utf-8")
+    source = (a.source_root / "game" / "oot_tools.c").read_text(encoding="utf-8")
+    tap = (a.source_root / "game" / "oot_state_tap.c").read_text(encoding="utf-8")
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "perf_pose_cut.h").write_text(cut(source, tap), encoding="utf-8")
         exe = Path(tmp, "perf_pose_test")
         built = subprocess.run([a.cc, "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra", "-Wno-unused-function", "-Wno-unused-const-variable",
-                                "-I", tmp, "-I", str(a.source_root / "gpu" / "vk"), str(ROOT / "tests" / "perf_pose_test.c"), "-lm", "-o", str(exe)],
+                                "-I", tmp, "-I", str(a.source_root / "gpu" / "vk"), "-I", str(a.source_root / "game"),
+                                str(ROOT / "tests" / "perf_pose_test.c"), "-lm", "-o", str(exe)],
                                capture_output=True, text=True)
         if built.returncode:
             print(built.stdout + built.stderr)

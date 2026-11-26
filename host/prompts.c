@@ -1,13 +1,13 @@
 /* (longshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf, every
    icon in a text: dialogue, the control hints, menus) made from prompts/External.bfotf in the game folder, which
-   nx2/prompt_assets.py draws with every controller face's icons at build time, and served from the game folder's cache/prompts/
-   (made again whenever the face or the controls change, so a cache: host/game_layout.c), with each Switch button's icon pointed
+   builder/crates/build-assets/src/prompts draws with every controller face's icons at build time, and served from the game folder's cache/prompts/
+   (made again whenever the face or the controls change, so a cache: game/game_layout.c), with each Switch button's icon pointed
    at the face's icon of the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So the
    icons say which button to press on this pad, custom controls too.
 
    The face: longshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's type and name
    (SDL; with none, and none through XInput, the keyboard's), else 1 Switch, 2 Xbox, 3 PlayStation 4, 4 PlayStation 5, 5 Steam
-   Deck, 6 Keyboard. The keyboard face (nx2/prompt_keys.py) points each Switch button at the icon of the first key bound to it,
+   Deck, 6 Keyboard. The keyboard face (builder/crates/build-assets/src/prompts/keys.rs) points each Switch button at the icon of the first key bound to it,
    the sticks at the keys that move (the Controls page's: stick_shows) and the mouse that turns the camera, and keeps the
    Switch's textures and the Talk ring's places. The game reads the font once, at its start; a new face or new controls are
    written where it keeps it, and its texts drawn again (the live part, below).
@@ -25,9 +25,11 @@
    or be another dump than the one the build read, and the game served a table that is not its own drops files it needs at
    the start (#1109: a crash reading guest 0x1030, the game's system object never made). Without a table of the name the game
    opens, or without a font entry in it, the game's table is its own and the font the game's. The game files the prompts
-   change (the textures, the layouts) are left the game's too when the build's copy is not the size of the RomFS's
-   (same_as_game). */
+   change (the textures, the layouts) are read from the RomFS as they stream (prompts_base.h); the build keeps only what
+   is needed of them besides (prompts/Common.bntx.base, Common.blarc.base: the game's bytes under every run), and they
+   are left the game's when those were made from another game version (game_base). */
 #include "hos.h"
+#include "romfs.h"
 #include "hos_paths.h"
 #include "options_path.h"
 #include <ctype.h>
@@ -37,18 +39,19 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "../gpu/vk/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
-#include "zstd.h"   /* (third_party/zstd: a mod's size table) */
 #include "hd_rumble.h"   /* (hd_rumble_kind: SDL's types of the Switch's controllers) */
 #include "restbl.h"   /* (the game's size table, its font entry raised: own_sizes) */
+#include "prompts_base.h"   /* (the textures' and the layouts' game bytes: the .base files, the patch as it streams) */
+#include "../game/game.h"   /* (the game's hooks this file calls) */
 
-uint8_t *hos_zs_read(const char *path, size_t *n, size_t limit);   /* zs.c */
-uint64_t hos_zs_content_size(const char *path);
+uint8_t *hos_zs_read_romfs(const char *rel, size_t *n, size_t limit);   /* zs.c */
+uint8_t *hos_zs_decode(const uint8_t *z, size_t zn, size_t *n, size_t limit);
+uint64_t hos_zs_romfs_content_size(const char *rel);
+int hos_zs_romfs_stream(const char *rel, int (*fn)(void *arg, const uint8_t *piece, size_t n), void *arg);
 int hos_zs_write(const char *path, const uint8_t *data, size_t n);
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4], int *deck_builtin_input);   /* pad_sdl.c */
 void hos_sdl_pad_first(char *out, size_t cap, int *type, int *sdl);
-int hos_mods_file(const char *rel, char *out, size_t cap);   /* mods.c */
-extern const char *hos_romfs_dir;   /* nn_fs.c: the game's RomFS folder */
 int hos_xinput_pads(void);   /* nn_hid.c */
 int rx_option(int id, int otherwise);   /* rx_backend.c: the Insert menu's rows */
 
@@ -62,9 +65,9 @@ int rx_option(int id, int otherwise);   /* rx_backend.c: the Insert menu's rows 
 #define LAYOUTS_ROMFS "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.blarc.zs"
 #define MAGIC 0x18029a7fu
 #define PAD_BASE 0xF700
-#define FACE_CODES 32   /* (each face's code points: its pad icons, then at STATIC_AT its d-pad icons; nx2/prompt_assets.py) */
+#define FACE_CODES 32   /* (each face's code points: its pad icons, then at STATIC_AT its d-pad icons; builder/crates/build-assets/src/prompts) */
 #define STATIC_AT 24
-/* the keyboard face (nx2/prompt_keys.py): each key's icon at KEY_BASE + its key code; a text's code for a Switch button on a key,
+/* the keyboard face (builder/crates/build-assets/src/prompts/keys.rs): each key's icon at KEY_BASE + its key code; a text's code for a Switch button on a key,
    given out as they come (key_slot); the sticks' icons in a text, the keyboard's and the game's own (stick_code's order) */
 #define KEY_BASE (PAD_BASE + FACE_CODES * HOS_PROMPT_N)
 #define SLOT_BASE 0xEEC0
@@ -76,22 +79,22 @@ int rx_option(int id, int otherwise);   /* rx_backend.c: the Insert menu's rows 
 #define BUTTON_BINDS (2 * HOS_SW_N)
 #define BINDS (BUTTON_BINDS + 4)
 static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", "steamdeck", "keyboard"};
-/* the Switch buttons' code points in the font, in HOS_SW_* order (nx2/prompt_assets.py SWITCH) */
+/* the Switch buttons' code points in the font, in HOS_SW_* order (builder/crates/build-assets/src/prompts SWITCH) */
 static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045,
                                                0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
-/* the pad input whose icon an unbound Switch button shows (nx2/prompt_assets.py DEFAULT: host/nn_hid.c's default controls) */
+/* the pad input whose icon an unbound Switch button shows (builder/crates/build-assets/src/prompts DEFAULT: host/nn_hid.c's default controls) */
 static const unsigned char switch_pad[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
     HOS_PAD_RIGHT, HOS_PAD_DOWN};
-/* the d-pad icons that follow the face, not the controls (nx2/prompt_assets.py STATIC) */
+/* the d-pad icons that follow the face, not the controls (builder/crates/build-assets/src/prompts STATIC) */
 static const uint16_t static_code[3] = {0xE049, 0xE064, 0xE065};
-/* the sticks' icons the keyboard face shows as keys (nx2/prompt_keys.py STICKS): L down, up, left-right, right, left, up-down,
+/* the sticks' icons the keyboard face shows as keys (builder/crates/build-assets/src/prompts/keys.rs STICKS): L down, up, left-right, right, left, up-down,
    any way; R the same; R's four ways */
 static const uint16_t stick_code[15] = {0xE050, 0xE052, 0xE054, 0xE058, 0xE05A, 0xE05C, 0xE05E, 0xE051, 0xE053, 0xE055,
                                         0xE059, 0xE05B, 0xE05D, 0xE05F, 0xE068};
 /* the ways each of L's icons means (a bit each, in HOS_KEY_MOVE_*'s order: up, down, left, right), and the keys the build drew
-   on the icons of more than one way (nx2/prompt_keys.py MOVE: host/nn_hid.c's default movement keys) */
+   on the icons of more than one way (builder/crates/build-assets/src/prompts/keys.rs MOVE: host/nn_hid.c's default movement keys) */
 static const unsigned char stick_ways[7] = {2, 1, 12, 8, 4, 3, 15};
 static const unsigned char move_default[4] = {0x57, 0x53, 0x41, 0x44};
 
@@ -111,7 +114,7 @@ static int made_dir(char *out, size_t cap) {
     char game[MAX_PATH];
     if (!game_dir(game, sizeof game)) return 0;
     if (snprintf(out, cap, "%scache", game) >= (int)cap) return 0;
-    CreateDirectoryA(out, NULL);   /* (made at the start, host/game_layout.c; again here if it was deleted since) */
+    CreateDirectoryA(out, NULL);   /* (made at the start, game/game_layout.c; again here if it was deleted since) */
     if (snprintf(out, cap, "%scache/prompts", game) >= (int)cap) return 0;
     CreateDirectoryA(out, NULL);
     const DWORD a = GetFileAttributesA(out);
@@ -322,39 +325,6 @@ static int bind_font(uint8_t *otf, size_t n, int face) {
     return 0;
 }
 
-/* a zstd frame's header for raw blocks of 128 KB: the 4-byte content size, and a window of 128 KB (raw blocks never look back:
-   a single-segment frame's window, the whole content, is more than decoders take: zstd's own refuses 244 MB) */
-static void zstd_head(uint8_t head[10], size_t n) {
-    wr32le(head, 0xFD2FB528u);
-    head[4] = 0x80;   /* (FCS 4 bytes, not single segment, no checksum, no dictionary) */
-    head[5] = 7 << 3;   /* (window 2^(10+7)) */
-    wr32le(head + 6, (uint32_t)n);
-}
-
-/* one raw block of a frame (zstd_head): k bytes (at most 128 KB), last for the frame's last */
-static int zstd_block(FILE *o, const uint8_t *data, size_t k, int last) {
-    const uint32_t bh = (uint32_t)(k << 3) | (last ? 1u : 0u);
-    const uint8_t b3[3] = {(uint8_t)bh, (uint8_t)(bh >> 8), (uint8_t)(bh >> 16)};
-    return fwrite(b3, 1, 3, o) == 3 && fwrite(data, 1, k, o) == k;
-}
-
-/* data as a zstd frame of raw blocks (zstd_head) */
-static int write_zstd_raw(const char *path, const uint8_t *data, size_t n) {
-    FILE *f = fopen(path, "wb");
-    if (!f) return 0;
-    uint8_t head[10];
-    zstd_head(head, n);
-    int ok = fwrite(head, 1, 10, f) == 10;
-    size_t at = 0;
-    do {
-        const size_t k = n - at < 131072 ? n - at : 131072;
-        ok &= zstd_block(f, data + at, k, at + k == n);
-        at += k;
-    } while (at < n);
-    ok &= fclose(f) == 0;
-    return ok;
-}
-
 static uint8_t *read_all(const char *path, const char *magic, long *n) {   /* (the whole file, if it starts with magic: NULL any) */
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
@@ -371,21 +341,7 @@ static uint8_t *read_all(const char *path, const char *magic, long *n) {   /* (t
     return t;
 }
 
-/* a zstd frame's content, when its header gives its size (at most 64 MB): the bytes (malloc, *out_n), NULL otherwise */
-static uint8_t *unzstd(const uint8_t *in, size_t n, size_t *out_n) {
-    const unsigned long long size = ZSTD_getFrameContentSize(in, n);
-    if (size == ZSTD_CONTENTSIZE_ERROR || size == ZSTD_CONTENTSIZE_UNKNOWN || size > (64u << 20)) return NULL;
-    uint8_t *out = (uint8_t *)malloc(size ? (size_t)size : 1);
-    const size_t got = out ? ZSTD_decompress(out, (size_t)size, in, n) : 0;
-    if (!out || ZSTD_isError(got) || got != size) {
-        free(out);
-        return NULL;
-    }
-    *out_n = (size_t)size;
-    return out;
-}
-
-/* the resource size table, decompressed (nx2/prompt_assets.py size_table): "RESTBL", u32 version, u32 name field's size, u32
+/* the resource size table, decompressed (builder/crates/build-assets/src/prompts size_table): "RESTBL", u32 version, u32 name field's size, u32
    hashed entries, u32 named entries; each hashed one u32 CRC-32 of a file's path and u32 size, by CRC; each named one (a path
    whose CRC-32 another path has too) the path in the name field and u32 size, by name. 1 when t (n bytes) is one */
 static int restbl_head(const uint8_t *t, size_t n, uint32_t *name, uint32_t *hashed, uint32_t *named) {
@@ -441,34 +397,31 @@ static uint8_t *merge_restbl(const uint8_t *a, size_t an, const uint8_t *b, size
 
 /* the RomFS's size table (System/Resource/ResourceSizeTable.*.rsizetable.zs) whose path in lower case is key; with key NULL,
    the one whose name sorts first (the game has opened none yet: the font asked first). Its RomFS path into out; 0 none */
+typedef struct { const char *key; char name[HOS_ROMFS_PATH]; } TableHunt;
+static void table_of(void *arg, const char *name, int is_dir, uint64_t size) {
+    (void)size;
+    TableHunt *h = (TableHunt *)arg;
+    const size_t n = strlen(name);
+    char low[HOS_ROMFS_PATH];
+    if (is_dir || n < 32 || (size_t)snprintf(low, sizeof low, "system/resource/%s", name) >= sizeof low) return;
+    for (char *p = low; *p; p++) *p = (char)hos_romfs_fold((unsigned char)*p);
+    if (strncmp(low + 16, "resourcesizetable.", 18) || strcmp(low + strlen(low) - 14, ".rsizetable.zs")) return;
+    if (h->key ? !strcmp(low, h->key) : !h->name[0] || strcmp(name, h->name) < 0) snprintf(h->name, sizeof h->name, "%s", name);
+}
 static int game_table(const char *key, char *out, size_t cap) {
-    char pattern[MAX_PATH], name[MAX_PATH] = "";
-    if (!hos_romfs_dir) return 0;
-    snprintf(pattern, sizeof pattern, "%s/System/Resource/ResourceSizeTable.*.rsizetable.zs", hos_romfs_dir);
-    WIN32_FIND_DATAA fd;
-    HANDLE f = FindFirstFileA(pattern, &fd);
-    if (f == INVALID_HANDLE_VALUE) return 0;
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        char low[MAX_PATH];
-        snprintf(low, sizeof low, "system/resource/%s", fd.cFileName);
-        for (char *p = low; *p; p++) *p = (char)tolower((unsigned char)*p);
-        if (key ? !strcmp(low, key) : !name[0] || strcmp(fd.cFileName, name) < 0) snprintf(name, sizeof name, "%s", fd.cFileName);
-        if (key && name[0]) break;
-    } while (FindNextFileA(f, &fd));
-    FindClose(f);
-    if (!name[0]) return 0;
-    snprintf(out, cap, "System/Resource/%s", name);
+    TableHunt h = {key, ""};
+    if (hos_romfs_list("System/Resource", table_of, &h) < 0 || !h.name[0]) return 0;
+    snprintf(out, cap, "System/Resource/%s", h.name);
     return 1;
 }
 
 /* mods.c, own_sizes: the entry the prompts' font (prompts/External.bfotf, every face's) needs in a size table whose entry for
    the game's font is `entry`: its size with the allowance the game's entry gives the RomFS's font (decompressed) over its
-   size (nx2/prompt_assets.py's font is the game's own redrawn, so it is read as the game reads its own). `entry` when that
+   size (builder/crates/build-assets/src/prompts's font is the game's own redrawn, so it is read as the game reads its own). `entry` when that
    fits; 0 when the game folder has no prompts' font or the RomFS no font of its own (then no font is served) */
 uint32_t hos_prompts_font_entry(uint32_t entry) {
     char dir[MAX_PATH], path[MAX_PATH];
-    if (!game_dir(dir, sizeof dir) || !hos_romfs_dir) return 0;
+    if (!game_dir(dir, sizeof dir) || !hos_romfs_ready()) return 0;
     snprintf(path, sizeof path, "%sprompts/External.bfotf", dir);
     FILE *f = fopen(path, "rb");
     long ours = -1;
@@ -476,8 +429,7 @@ uint32_t hos_prompts_font_entry(uint32_t entry) {
         if (!fseek(f, 0, SEEK_END)) ours = ftell(f);
         fclose(f);
     }
-    snprintf(path, sizeof path, "%s/%s", hos_romfs_dir, FONT_ROMFS);
-    const uint64_t game = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES ? hos_zs_content_size(path) : 0;
+    const uint64_t game = hos_zs_romfs_content_size(FONT_ROMFS);
     if (ours < 16 || !game) return 0;
     const uint64_t need = (uint64_t)ours + entry > game ? (uint64_t)ours + entry - game : 0;
     return need > entry ? (need > 0xFFFFFFF0u ? 0 : (uint32_t)need) : entry;
@@ -494,14 +446,13 @@ static int own_sizes(const char *key, char *out, size_t cap) {
     static char of[MAX_PATH], path[MAX_PATH];
     if (InterlockedCompareExchange(&state, 1, 0) == 0) {
         snprintf(of, sizeof of, "%s", key);
-        char rel[MAX_PATH], file[MAX_PATH], made[MAX_PATH], font_key[MAX_PATH];
+        char rel[MAX_PATH], made[MAX_PATH], font_key[MAX_PATH];
         const char *why = "the game's files have no table of that name";
         LONG r = 4;
         uint32_t entry = 0, need = 0;
         if (game_table(key, rel, sizeof rel)) {
-            snprintf(file, sizeof file, "%s/%s", hos_romfs_dir, rel);
             size_t n = 0;
-            uint8_t *raw = hos_zs_read(file, &n, 64u << 20);
+            uint8_t *raw = hos_zs_read_romfs(rel, &n, 64u << 20);
             Restbl *t = raw ? restbl_parse(raw, n) : NULL;
             free(raw);
             restbl_key(FONT_ROMFS, font_key, sizeof font_key);
@@ -561,12 +512,13 @@ static int sizes(const char *key, const char *mod, char *out, size_t cap) {
             for (char *p = file; *p; p++) if (*p == '\\') *p = '/';
 #endif
             uint8_t *ours = read_all(path, NULL, &on), *theirs = read_all(file, NULL, &mn);
-            uint8_t *b = ours ? unzstd(ours, (size_t)on, &bn) : NULL, *a = theirs ? unzstd(theirs, (size_t)mn, &an) : NULL;
+            uint8_t *b = ours ? hos_zs_decode(ours, (size_t)on, &bn, 64u << 20) : NULL,
+                    *a = theirs ? hos_zs_decode(theirs, (size_t)mn, &an, 64u << 20) : NULL;
             uint8_t *t = a && b ? merge_restbl(a, an, b, bn, &n, &raised) : NULL;
             char made[MAX_PATH];
             const int have = made_dir(made, sizeof made);
             snprintf(path, sizeof path, "%srsizetable.mod.zs", made);
-            r = t && have && write_zstd_raw(path, t, n) ? 2 : 4;
+            r = t && have && hos_zs_write(path, t, n) ? 2 : 4;
             if (r == 2)
                 hos_log("prompts: %s: the button prompts' sizes merged into the mod's resource size table (%d entries raised or added)",
                         mod, raised);
@@ -612,31 +564,37 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n) {
     return h;
 }
 
-typedef struct { uint32_t off, len, idx; const uint8_t *data; } Run;   /* (idx: its place in textures.bin) */
+typedef HosPatchRun Run;   /* (idx: its place in textures.bin) */
 static int run_cmp(const void *a, const void *b) {
     const Run *x = (const Run *)a, *y = (const Run *)b;
     return x->off != y->off ? (x->off < y->off ? -1 : 1) : (x->idx > y->idx) - (x->idx < y->idx);
 }
-static int run_order(const void *a, const void *b) {
-    const uint32_t x = (*(const Run *const *)a)->idx, y = (*(const Run *const *)b)->idx;
-    return (x > y) - (x < y);
-}
 
 static void add_run(Run **runs, size_t *nruns, size_t *cap, uint32_t off, uint32_t len, const uint8_t *data) {
-    if (*nruns == *cap) *runs = (Run *)realloc(*runs, (*cap *= 2) * sizeof **runs);
+    if (*nruns == *cap) {   /* (no memory for more: the run is left out, said once) */
+        const size_t more = *cap ? *cap * 2 : 64;
+        Run *grown = (Run *)realloc(*runs, more * sizeof **runs);
+        if (!grown) {
+            static int said;
+            if (!said++) hos_log("prompts: no memory for the textures' runs: some icons stay the game's");
+            return;
+        }
+        *runs = grown, *cap = more;
+    }
     (*runs)[*nruns] = (Run){off, len, (uint32_t)*nruns, data};
     (*nruns)++;
 }
 
-/* cache/prompts/Common.bntx.zs: the game's textures (prompts/Common.bntx) with the blocks of prompts/<face>/textures.bin that this
-   pad's controls choose (nx2/prompt_assets.py: "HPTX", u32 count; each: u8 Switch button (0xff: always), u8 pad input, u16,
-   u32 runs; each run: u32 offset, u32 length, the bytes; a later entry over an earlier). Written again only when the face, the
-   controls or the blocks changed (cache/prompts/Common.key) */
-/* out: the game's file (game) with the runs written over it (a later one over an earlier where they meet), as raw zstd blocks;
-   written again only when its key (keypath: the hash h of what chose the runs) changed. Written beside it first (out.tmp), and
-   moved over it with the key removed until then: a failed write leaves the last good file and its key, a stop between the
-   steps leaves no key (written again at the next start) */
-static int write_patched(const char *game, const char *out, const char *keypath, uint64_t h, Run *runs, size_t nruns) {
+/* cache/prompts/Common.bntx.zs: the game's textures (the RomFS's, as they stream) with the blocks of
+   prompts/<face>/textures.bin that this pad's controls choose (builder/crates/build-assets/src/prompts, build-assets: "HPTX", u32 count;
+   each: u8 Switch button (0xff: always), u8 pad input, u16, u32 runs; each run: u32 offset, u32 length, the bytes; a later
+   entry over an earlier). Written again only when the face, the controls or the blocks changed (cache/prompts/Common.key) */
+/* out: the game's file (rel in the RomFS; base: what the build kept of it) with the runs written over it (a later one over
+   an earlier where they meet), as raw zstd blocks; written again only when its key (keypath: the hash h of what chose the
+   runs) changed. Written beside it first (out.tmp), and moved over it with the key removed until then: a failed write
+   leaves the last good file and its key, a stop between the steps leaves no key (written again at the next start) */
+static int write_patched(const char *rel, const HosPromptsBase *base, const char *out, const char *keypath, uint64_t h,
+                         Run *runs, size_t nruns) {
     qsort(runs, nruns, sizeof *runs, run_cmp);
     char keyline[32] = "", want[32];
     FILE *f;
@@ -646,44 +604,15 @@ static int write_patched(const char *game, const char *out, const char *keypath,
     }
     snprintf(want, sizeof want, "%016llx", (unsigned long long)h);
     int ok = !strcmp(keyline, want) && GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
-    if (!ok) {   /* the game's file through, the chosen runs written over it, out as raw zstd blocks */
+    if (!ok) {   /* the game's file as it streams out of the RomFS, the chosen runs written over it, out as raw zstd blocks */
         char tmp[MAX_PATH + 8];
         snprintf(tmp, sizeof tmp, "%s.tmp", out);
-        FILE *in = fopen(game, "rb"), *o = fopen(tmp, "wb");
-        uint8_t *chunk = (uint8_t *)malloc(131072);
-        ok = in && o && chunk;
-        if (ok) {
-            fseek(in, 0, SEEK_END);
-            const uint64_t n = (uint64_t)ftell(in);
-            fseek(in, 0, SEEK_SET);
-            uint8_t head[10];
-            zstd_head(head, n);
-            ok = n < 0xFFFFFFFFull && fwrite(head, 1, 10, o) == 10;
-            size_t first = 0;   /* (the first run that may reach this chunk) */
-            const Run **here = (const Run **)malloc((nruns ? nruns : 1) * sizeof *here);
-            ok = ok && here;
-            for (uint64_t pos = 0; ok && pos < n;) {
-                const size_t k = n - pos < 131072 ? (size_t)(n - pos) : 131072;
-                ok = fread(chunk, 1, k, in) == k;
-                while (first < nruns && runs[first].off + runs[first].len <= pos) first++;
-                size_t nh = 0;   /* (the runs in this chunk, written in their order: a later one over an earlier) */
-                for (size_t r = first; r < nruns && runs[r].off < pos + k; r++)
-                    if (runs[r].off + runs[r].len > pos) here[nh++] = &runs[r];
-                qsort(here, nh, sizeof *here, run_order);
-                for (size_t i = 0; i < nh; i++) {
-                    const Run *r = here[i];
-                    const uint64_t a = r->off > pos ? r->off : pos;
-                    const uint64_t z = r->off + r->len < pos + k ? r->off + r->len : pos + k;
-                    memcpy(chunk + (a - pos), r->data + (a - r->off), (size_t)(z - a));
-                }
-                ok = ok && zstd_block(o, chunk, k, pos + k == n);
-                pos += k;
-            }
-            free(here);
-        }
-        if (in) fclose(in);
+        FILE *o = fopen(tmp, "wb");
+        HosPatch *patch = o ? hos_patch_begin(o, base, runs, nruns) : NULL;
+        ok = patch && hos_zs_romfs_stream(rel, hos_patch_feed, patch);
+        if (patch) ok &= hos_patch_end(patch);
         if (o) ok &= fclose(o) == 0;
-        free(chunk);
+        if (!ok) hos_log("prompts: %s did not stream as the build kept it: the game's own", rel);
         ok = ok && (GetFileAttributesA(keypath) == INVALID_FILE_ATTRIBUTES || DeleteFileA(keypath)) &&
              MoveFileExA(tmp, out, MOVEFILE_REPLACE_EXISTING);
         if (!ok) DeleteFileA(tmp);
@@ -726,31 +655,33 @@ static const int *texture_bind(int face, const int *bind, int *own) {
     return own;
 }
 
-static void live_textures_start(const char *bntx, const Run *runs, size_t nruns);
+static void live_textures_start(const HosPromptsBase *base, const Run *runs, size_t nruns);
 static void part_served(int p, int face, const int *bind);
 enum { PART_TEXTURES, PART_LAYOUTS, PART_FONT, PARTS };
 
-/* 1 when the build's copy of a game file (prompts/<copy>) is the size of the RomFS's (rel, decompressed), so made from these
-   game files; else the game's own file is served: the RomFS is another dump or game version than the one the build read */
-static int same_as_game(const char *dir, const char *copy, const char *rel) {
+/* what the build kept of a game file (prompts/<name>.base, prompts_base.h) into b, read once: 1 when it is there and made
+   from the RomFS's file (rel, its size unpacked the same; its bytes are checked as it streams); else the game's own file
+   is served: the RomFS is another dump or game version than the one the build read */
+static int game_base(const char *dir, const char *name, const char *rel, HosPromptsBase *b) {
+    if (b->bytes) return 1;
     char path[MAX_PATH];
-    snprintf(path, sizeof path, "%sprompts/%s", dir, copy);
-    FILE *f = fopen(path, "rb");
-    long n = -1;
-    if (f) {
-        if (!fseek(f, 0, SEEK_END)) n = ftell(f);
-        fclose(f);
+    snprintf(path, sizeof path, "%sprompts/%s.base", dir, name);
+    long n = 0;
+    uint8_t *bytes = read_all(path, "HPBS", &n);
+    if (!bytes) return 0;
+    if (!hos_prompts_base_parse(b, bytes, (size_t)n)) {
+        hos_log("prompts: %s is not a base this reads: the game's own %s", path, rel);
+        return 0;
     }
-    uint64_t game = 0;
-    if (hos_romfs_dir) {
-        snprintf(path, sizeof path, "%s/%s", hos_romfs_dir, rel);
-        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) game = hos_zs_content_size(path);
-    }
-    if (n > 0 && (uint64_t)n == game) return 1;
-    hos_log("prompts: prompts/%s (%ld bytes) is not made from this game's %s (%llu bytes): the game's own", copy, n, rel,
-            (unsigned long long)game);
+    const uint64_t game = hos_zs_romfs_content_size(rel);
+    if (b->size == game) return 1;
+    hos_log("prompts: prompts/%s.base (%llu bytes) is not made from this game's %s (%llu bytes): the game's own", name,
+            (unsigned long long)b->size, rel, (unsigned long long)game);
+    hos_prompts_base_free(b);
     return 0;
 }
+
+static HosPromptsBase tex_base, lay_base;   /* (read once; the live part reads them while the game runs) */
 
 static int build_textures(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
@@ -760,7 +691,7 @@ static int build_textures(char *out, size_t cap) {
     long tn;
     uint8_t *t = read_all(path, "HPTX", &tn);
     if (!t) return 0;   /* (built without the textures: the game's) */
-    if (!same_as_game(dir, "Common.bntx", TEXTURES_ROMFS)) {
+    if (!game_base(dir, "Common.bntx", TEXTURES_ROMFS, &tex_base)) {
         free(t);
         return 0;
     }
@@ -769,14 +700,12 @@ static int build_textures(char *out, size_t cap) {
     uint64_t h = fnv(fnv(fnv(0xcbf29ce484222325ull, &face, sizeof face), bind, BUTTON_BINDS * sizeof *bind), t, (size_t)tn);
     size_t nruns;
     Run *runs = texture_runs(t, tn, texture_bind(face, bind, own), &nruns);
-    snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
-    live_textures_start(path, runs, nruns);   /* (before write_patched sorts them: the ranges only) */
+    live_textures_start(&tex_base, runs, nruns);   /* (before write_patched sorts them: the ranges only) */
     char keypath[MAX_PATH], made[MAX_PATH];
     const int have = made_dir(made, sizeof made);
     snprintf(out, cap, "%sCommon.bntx.zs", made);
-    snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
     snprintf(keypath, sizeof keypath, "%sCommon.key", made);
-    const int ok = have && write_patched(path, out, keypath, h, runs, nruns);
+    const int ok = have && write_patched(TEXTURES_ROMFS, &tex_base, out, keypath, h, runs, nruns);
     hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
             ok ? "" : ": could not be written");
     if (ok) part_served(PART_TEXTURES, face, bind);
@@ -792,13 +721,13 @@ static int build_textures(char *out, size_t cap) {
      bytes no run writes). The renderer uploads what is written again (HOS_WRITTEN).
    - The layouts (Common.blarc): where the game keeps them, found by their first bytes near the start of an address region
      (find_layouts); written only where the game's bytes are still the file's.
-   - The font (External.bfotf, every face's icons): where FreeType reads it (hos_prompts_glyph, from nx2/oot_patches.py's
-     hook in its glyph render); only its cmap changes (for the texts set after), and the texts' button codes are rewritten
+   - The font (External.bfotf, every face's icons): where FreeType reads it (hos_prompts_glyph, from the hook site
+     font.glyphRender at its glyph render's entry); only its cmap changes (for the texts set after), and the texts' button codes are rewritten
      to the face's own (hos_prompts_text_layout).
    A change puts the game's own bytes back where the runs written before fall, then writes the runs the new face and controls
    choose (as the start: texture_runs, layout_runs). Only within what was found: the rest waits for the next start. */
 typedef struct {
-    char path[MAX_PATH];        /* the game's file the runs go over (prompts/Common.bntx, prompts/Common.blarc) */
+    const HosPromptsBase *src; /* the game's bytes under the runs (the textures', the layouts' .base) */
     volatile uint64_t base;     /* the guest address of the file's offset 0 once seen, 0 before */
     uint64_t lo, hi;            /* the guest range runs may be written in */
     uint32_t (*ranges)[2];      /* the runs written: (offset, length), the game's own bytes back first */
@@ -817,23 +746,16 @@ static void keep_ranges(Live *l, const Run *runs, size_t nruns) {
    written; how many were outside l's range, or (guarded) over bytes the game changed: not written. Guarded, every run is
    looked at before any is written (a later one over an earlier finds the file's bytes), and only those written are kept */
 static size_t put_runs(Live *l, const Run *runs, size_t nruns, size_t *written, size_t *put_back) {
-    FILE *f = fopen(l->path, "rb");
     uint8_t *chunk = (uint8_t *)malloc(131072);
     uint8_t *ok = (uint8_t *)calloc(nruns ? nruns : 1, 1);
     size_t outside = 0;
     *written = *put_back = 0;
     const uint64_t base = l->base;   /* (once: 0 when the game let the memory go, nothing written then) */
-    if (!base) nruns = 0;
-    for (size_t r = 0; base && f && chunk && r < l->nranges; r++) {
+    if (!base || !l->src) nruns = 0;
+    for (size_t r = 0; base && l->src && r < l->nranges; r++) {
         const uint64_t off = l->ranges[r][0], len = l->ranges[r][1], a = base + off;
         uint8_t *q = a >= l->lo && a + len <= l->hi ? (uint8_t *)hos_guest_range(a, len) : NULL;
-        if (!q) continue;
-        for (uint64_t k = 0; k < len;) {
-            const size_t n = len - k < 131072 ? (size_t)(len - k) : 131072;
-            if (fseek(f, (long)(off + k), SEEK_SET) || fread(chunk, 1, n, f) != n) break;
-            memcpy(q + k, chunk, n);
-            k += n;
-        }
+        if (!q || !hos_prompts_base_at(l->src, off, q, len)) continue;
         HOS_WRITTEN(q, (size_t)len);
         (*put_back)++;
     }
@@ -843,8 +765,7 @@ static size_t put_runs(Live *l, const Run *runs, size_t nruns, size_t *written, 
         ok[r] = q != NULL;
         for (uint64_t k = 0; ok[r] && l->guarded && k < len;) {
             const size_t n = len - k < 131072 ? (size_t)(len - k) : 131072;
-            ok[r] = f && chunk && !fseek(f, (long)(runs[r].off + k), SEEK_SET) && fread(chunk, 1, n, f) == n &&
-                    !memcmp(q + k, chunk, n);
+            ok[r] = chunk && hos_prompts_base_at(l->src, runs[r].off + k, chunk, n) && !memcmp(q + k, chunk, n);
             k += n;
         }
     }
@@ -863,7 +784,6 @@ static size_t put_runs(Live *l, const Run *runs, size_t nruns, size_t *written, 
         HOS_WRITTEN(q, runs[r].len);
         (*written)++;
     }
-    if (f) fclose(f);
     free(chunk);
     keep_ranges(l, runs, nruns);
     size_t kept = 0;   /* (the ones written: the next change puts the game's bytes back there) */
@@ -909,34 +829,30 @@ static void part_served(int p, int face, const int *bind) {   /* (its file writt
     live_start(face, bind);
 }
 
-/* (build_textures) the file's texture data, with bytes to know its pool by, and the ranges of the start's runs */
-static void live_textures_start(const char *bntx, const Run *runs, size_t nruns) {
-    FILE *f = fopen(bntx, "rb");
+/* (build_textures) the file's texture data, with bytes to know its pool by (the samples the build chose: no run of any
+   face writes them), and the ranges of the start's runs */
+static void live_textures_start(const HosPromptsBase *base, const Run *runs, size_t nruns) {
     uint8_t h[0x38], blk[16];
-    if (!f) return;
-    int ok = fread(h, 1, sizeof h, f) == sizeof h && !memcmp(h, "BNTX", 4);
+    int ok = hos_prompts_base_at(base, 0, h, sizeof h) && !memcmp(h, "BNTX", 4);
     uint64_t brtd = 0;
     if (ok) memcpy(&brtd, h + 0x30, 8);   /* (the NX block's pointer to the BRTD block, as the file has it: an offset) */
-    ok = ok && !fseek(f, (long)brtd, SEEK_SET) && fread(blk, 1, 16, f) == 16 && !memcmp(blk, "BRTD", 4);
+    ok = ok && hos_prompts_base_at(base, brtd, blk, 16) && !memcmp(blk, "BRTD", 4) && base->nsamples >= SAMPLES;
     if (ok) {
         uint64_t size;
         memcpy(&size, blk + 8, 8);
         tex.data_off = brtd + 16;
         tex.data_len = size > 16 ? size - 16 : 0;
-        for (int s = 0; s < SAMPLES && ok; s++) {   /* (a quarter, a half, three quarters in; past any run there) */
-            uint64_t at = tex.data_off + tex.data_len / 4 * (s + 1);
-            while (in_runs(at, SAMPLE_LEN, runs, nruns) && at + 2 * SAMPLE_LEN < tex.data_off + tex.data_len) at += 4096;
-            tex.sample[s] = at;
-            ok = !fseek(f, (long)at, SEEK_SET) && fread(tex.want[s], 1, SAMPLE_LEN, f) == SAMPLE_LEN;
+        for (int s = 0; s < SAMPLES && ok; s++) {
+            tex.sample[s] = hos_prompts_base_sample(base, (uint32_t)s);
+            ok = !in_runs(tex.sample[s], SAMPLE_LEN, runs, nruns) && hos_prompts_base_at(base, tex.sample[s], tex.want[s], SAMPLE_LEN);
         }
     }
-    fclose(f);
     if (!ok || !tex.data_len) {
         tex.data_len = 0;
-        hos_log("prompts: %s is not a texture file known: the textures change at the next start", bntx);
+        hos_log("prompts: the textures are not a texture file known: they change at the next start");
         return;
     }
-    snprintf(tex.l.path, sizeof tex.l.path, "%s", bntx);
+    tex.l.src = base;
     keep_ranges(&tex.l, runs, nruns);
     free(tex.served);
     tex.served = (uint32_t (*)[2])malloc((nruns ? nruns : 1) * sizeof *tex.served);
@@ -1138,8 +1054,8 @@ static uint8_t *font_bound(const char *dir, int face, long *n, uint32_t *key, in
 
 /* the texts' icons after a change while the game runs. The game keeps each code's glyph drawn (by the code, whatever the font
    says now), so a text's Switch button codes are rewritten to codes of their own for the face and the pad input
-   (nx2/prompt_assets.py BIND_BASE: never drawn before with another icon; in UTF-8 three bytes, as the game's), as the game
-   lays the box out or updates it to draw it (nx2/oot_patches.py; box: the text box pane, its text at +0xf0 in UTF-8, often
+   (builder/crates/build-assets/src/prompts BIND_BASE: never drawn before with another icon; in UTF-8 three bytes, as the game's), as the game
+   lays the box out or updates it to draw it (the hook sites text.boxLayout and text.boxDraw; box: the text box pane, its text at +0xf0 in UTF-8, often
    the layout's own, its length in bytes at +0x124), and the box laid out and drawn anew (its status, at +8: 0x20000 laid
    out, 0x100000 drawn, as the word after it allows). Until a change, the texts as the game has them: the font served for
    this start's face and controls */
@@ -1269,18 +1185,18 @@ static void mark_box(uint64_t box, uint32_t bits) {
     if (word) *word |= bits & word[1];
 }
 
-/* nx2/oot_patches.py, as the game lays a text box out (f_8152aec0, before it looks at the box's status: laid out now) */
+/* The site text.boxLayout, as the game lays a text box out (f_8152aec0, before it looks at the box's status: laid out now) */
 void hos_prompts_text_layout(uint64_t box) {
     if (text_rewrite(box)) mark_box(box, 0x20000);
 }
 
-/* nx2/oot_patches.py, as the game draws a text box (f_8152b670, each time it shows it): a box rewritten is laid out again at
+/* The site text.boxDraw, as the game draws a text box (f_8152b670, each time it shows it): a box rewritten is laid out again at
    the next update (its status) */
 void hos_prompts_text_draw(uint64_t box) {
     if (text_rewrite(box)) mark_box(box, 0x20000 | 0x100000);
 }
 
-/* nx2/oot_patches.py, as FreeType draws a glyph (ft_smooth_render, f_81680c60; slot: its FT_GlyphSlot): the font the glyph
+/* The site font.glyphRender, as FreeType draws a glyph (ft_smooth_render, f_81680c60; slot: its FT_GlyphSlot): the font the glyph
    is of (slot->face at +8, the face's stream at +192: its base and size), the one served? Then where the game keeps it,
    decrypted (FreeType and the text shaping read it there) */
 void hos_prompts_glyph(uint64_t slot) {
@@ -1417,7 +1333,7 @@ int hos_prompts_face(void) {
     return setup_state >= 2 && setup(dir, sizeof dir, &face) ? face : -1;
 }
 
-/* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: nx2/prompt_assets.py RING_PLACES): where its pad
+/* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: builder/crates/build-assets/src/prompts RING_PLACES): where its pad
    input is among the face buttons, else its own place on the Switch when free, else the first one free */
 static void ring_places(const int *bind, int place[4]) {
     static const int of_pad[4] = {1, 0, 3, 2};   /* (HOS_PAD_SOUTH, EAST, WEST, NORTH) */
@@ -1438,43 +1354,38 @@ static void ring_places(const int *bind, int place[4]) {
 }
 
 /* cache/prompts/Common.blarc.zs: the game's layouts (prompts/Common.blarc) with
-   - the Talk ring's A B X Y where their pad inputs are (prompts/ring.bin, nx2/prompt_assets.py: "HPRG", u32 count; each: u8
+   - the Talk ring's A B X Y where their pad inputs are (prompts/ring.bin, builder/crates/build-assets/src/prompts: "HPRG", u32 count; each: u8
      group, u8 Switch button placed, u8 place, u8, u32 runs, the runs);
-   - the ocarina hint's icons moved apart for the wide ones bound (prompts/<face>/hint.bin, nx2/prompt_assets.py HINTS: "HPHN",
+   - the ocarina hint's icons moved apart for the wide ones bound (prompts/<face>/hint.bin, builder/crates/build-assets/src/prompts HINTS: "HPHN",
      u32 count of pad inputs, each one's icon's extra width (f32), u32 panes; each: u32 offset, u8 slot, 3 bytes, f32 x): each
      icon the one before's extra further on, the last one where it is;
    the game's own bytes when both are as the game has them (served all the same: a change while it runs is written where
    the game keeps it, find_layouts) */
 static int build_layouts(char *out, size_t cap) {
-    char dir[MAX_PATH], path[MAX_PATH];
+    char dir[MAX_PATH];
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
     int bind[BINDS];
     current_binds(bind);
     Layout o;
     if (!layout_runs(dir, face, bind, &o)) return 0;
-    if (!same_as_game(dir, "Common.blarc", LAYOUTS_ROMFS)) {
+    if (!game_base(dir, "Common.blarc", LAYOUTS_ROMFS, &lay_base)) {
         layout_free(&o);
         return 0;
     }
     char keypath[MAX_PATH], made[MAX_PATH];
     const int have = made_dir(made, sizeof made);
     snprintf(out, cap, "%sCommon.blarc.zs", made);
-    snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
     snprintf(keypath, sizeof keypath, "%sCommon.blarc.key", made);
-    FILE *f = fopen(path, "rb");
-    long n = 0;
-    const int headed = f && fread(lay_head, 1, sizeof lay_head, f) == sizeof lay_head && !in_runs(0, sizeof lay_head, o.runs, o.n) &&
-                       !fseek(f, 0, SEEK_END) && (n = ftell(f)) > 0;
-    if (f) fclose(f);
-    const int ok = have && write_patched(path, out, keypath, o.h, o.runs, o.n);
+    const int headed = hos_prompts_base_at(&lay_base, 0, lay_head, sizeof lay_head) && !in_runs(0, sizeof lay_head, o.runs, o.n);
+    const int ok = have && write_patched(LAYOUTS_ROMFS, &lay_base, out, keypath, o.h, o.runs, o.n);
     hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s%s", o.place[0], o.place[1],
             o.place[2], o.place[3], o.spread ? "spread" : "as is", ok ? "" : ": could not be written");
     if (ok) part_served(PART_LAYOUTS, face, bind);
     if (ok && headed) {   /* (for find_layouts: the file, and the runs served) */
-        snprintf(lay.path, sizeof lay.path, "%s", path);
+        lay.src = &lay_base;
         lay.guarded = 1;
-        lay_n = (uint64_t)n;
+        lay_n = lay_base.size;
         lay_start = o;
     } else {
         layout_free(&o);
@@ -1486,7 +1397,7 @@ static int build_layouts(char *out, size_t cap) {
 static int layout_runs(const char *dir, int face, const int *bind, Layout *o) {
     char path[MAX_PATH];
     memset(o, 0, sizeof *o);
-    snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
+    snprintf(path, sizeof path, "%sprompts/Common.blarc.base", dir);
     if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) return 0;
     int pads[HOS_SW_N];   /* (the keyboard face: no pad input, the Switch's places) */
     for (int b = 0; b < HOS_SW_N; b++) pads[b] = face == HOS_PROMPT_KEYBOARD ? -1 : bind[b];
@@ -1563,7 +1474,7 @@ static int build(char *out, size_t cap) {
     if (opened_table[0]) {
         snprintf(table, sizeof table, "%s", opened_table);
     } else if (game_table(NULL, table, sizeof table)) {
-        for (char *p = table; *p; p++) *p = (char)tolower((unsigned char)*p);
+        for (char *p = table; *p; p++) *p = (char)hos_romfs_fold((unsigned char)*p);
     } else {
         hos_log("prompts: the game's files have no resource size table: the game's own icons in texts");
         return 0;
@@ -1582,7 +1493,7 @@ static int build(char *out, size_t cap) {
     char made[MAX_PATH];
     const int have = made_dir(made, sizeof made);
     snprintf(out, cap, "%sExternal.bfotf.zs", made);
-    const int ok = have && write_zstd_raw(out, b, (size_t)n);
+    const int ok = have && hos_zs_write(out, b, (size_t)n);
     if (ok) {
         int bind[BINDS];
         current_binds(bind);

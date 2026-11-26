@@ -1,4 +1,4 @@
-/* (local) The pages the GPU can read, a bit each, for the lifted code's page marks (build.py RX_MARK_BITMAP, nx2/rtgen.py
+/* (local) The pages the GPU can read, a bit each, for the lifted code's page marks (gen/rt/a64_config.h
    A64_MARK_BITMAP): a store marks its pages only if its first byte is on one (the page before each mapping counts as one). The renderer reads the marks of GPU pages
    only, and OoT's GPU pools lie in the heap among its CPU data; a no-marks timing build ran the game's threads 2.2-2.7 ms a
    frame faster when moving (the chain run: that time is on the frame's critical path). A page's bit is set when a GPU mapping

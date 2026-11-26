@@ -8,7 +8,7 @@ now take only spans that lie in the window:
   long as the voice played, so the host's memory went into the sound. Checked here by running wb_in_guest itself;
 - nn::os::GenerateRandomBytes, nn::hid's GetNpadStates (at most 16 states) and GetSixAxisSensorStates, the socket Poll
   stand-in, OutputDebugString and nn::diag's log lines (into the log), and the event-name and item-key copies in
-  host/hos_main.c and host/oot_menu.c: their text checked to use hos_guest_range on the whole span.
+  game/oot_tools.c and game/oot_menu.c: their text checked to use hos_guest_range on the whole span.
 - the NVN proc names the game asks for (nvnDeviceGetProcAddress, nvnBootstrapLoader): read by guest_name only inside
   guest memory and up to 255 characters, run here.
 
@@ -33,23 +33,23 @@ def block(text, marker):
     return text[start:end]
 
 
-def host(name):
-    return (ROOT / "host" / name).read_text(encoding="utf-8")
+def source(rel):
+    return (ROOT / rel).read_text(encoding="utf-8")
 
 
 # (file, the function's first line, text it must hold, text it must not)
 SOURCES = [
-    ("nn_os_sync.c", "HLE(_ZN2nn2os19GenerateRandomBytesEPvm)", "hos_guest_range(ARG(0), ARG(1))", "GP(ARG(0))"),
-    ("nn_hid.c", "static void npad_states(Ctx *c)", "hos_guest_range(out, (uint64_t)count * STATE_SIZE)", "int count = (int)ARG(1);"),
-    ("nn_hid.c", "HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE)",
+    ("host/nn_os_sync.c", "HLE(_ZN2nn2os19GenerateRandomBytesEPvm)", "hos_guest_range(ARG(0), ARG(1))", "GP(ARG(0))"),
+    ("host/nn_hid.c", "static void npad_states(Ctx *c)", "hos_guest_range(out, (uint64_t)count * STATE_SIZE)", "int count = (int)ARG(1);"),
+    ("host/nn_hid.c", "HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE)",
      "hos_guest_range(out, (uint64_t)count * 0x60)", None),
-    ("nn_applet.c", "static void socket_poll(Ctx *c)", "hos_guest_range(fds, 8 * m)", None),
-    ("hos_main.c", "static int oot_event_arg(", "hos_guest_range(name_buf, length + 1)", "A64_PTR(name_buf)"),
-    ("oot_menu.c", "static int set_item_key(", "hos_guest_range(buf, n + 1)", "buf + n + 1 > HOS_GUEST_SPACE"),
-    ("nn_diag.c", "HLE(_ZN2nn4diag6detail7PutImplERKNS0_11LogMetaDataEPKcm)", "hos_guest_range(ARG(1), n)", "GP(ARG(1))"),
-    ("nn_audio.c", "HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE)", "wb_in_guest(&checked)", None),
-    ("nvn_native.c", "NV(nvnDeviceGetProcAddress)", "guest_name(U64(1), name, sizeof name)", "GP(U64(1))"),
-    ("nvn_native.c", "HLE(nvnBootstrapLoader)", "guest_name(ARG(0), name, sizeof name)", "GP(ARG(0))"),
+    ("host/nn_applet.c", "static void socket_poll(Ctx *c)", "hos_guest_range(fds, 8 * m)", None),
+    ("game/oot_tools.c", "static int oot_event_arg(", "hos_guest_range(name_buf, length + 1)", "A64_PTR(name_buf)"),
+    ("game/oot_menu.c", "static int set_item_key(", "hos_guest_range(buf, n + 1)", "buf + n + 1 > HOS_GUEST_SPACE"),
+    ("host/nn_diag.c", "HLE(_ZN2nn4diag6detail7PutImplERKNS0_11LogMetaDataEPKcm)", "hos_guest_range(ARG(1), n)", "GP(ARG(1))"),
+    ("host/nn_audio.c", "HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE)", "wb_in_guest(&checked)", None),
+    ("host/nvn_native.c", "NV(nvnDeviceGetProcAddress)", "guest_name(U64(1), name, sizeof name)", "GP(U64(1))"),
+    ("host/nvn_native.c", "HLE(nvnBootstrapLoader)", "guest_name(ARG(0), name, sizeof name)", "GP(ARG(0))"),
 ]
 
 NAME_FIXTURE = r'''#include <stdint.h>
@@ -100,7 +100,7 @@ def main():
     a = p.parse_args()
     bad = []
     for name, marker, must, must_not in SOURCES:
-        text = host(name)
+        text = source(name)
         if marker not in text:
             bad.append("%s: %s is gone (update this check)" % (name, marker))
             continue
@@ -109,12 +109,12 @@ def main():
             bad.append("%s %s: no %s" % (name, marker.split("(")[0], must))
         if must_not and must_not in fn:
             bad.append("%s %s: still %s" % (name, marker.split("(")[0], must_not))
-    svc = host("hos_svc.c")
+    svc = source("host/hos_svc.c")
     debug = svc[svc.index("case 0x27: { /* OutputDebugString(str, size) */"):]
     debug = debug[:debug.index("return;")]
     if "hos_guest_range(c->x[0], n)" not in debug:
         bad.append("hos_svc.c OutputDebugString: no hos_guest_range(c->x[0], n)")
-    audio = host("nn_audio.c")
+    audio = source("host/nn_audio.c")
     acquire = audio[audio.index("v->param = ARG(6);"):]
     if "hos_guest_range(v->param, 32)" not in acquire[:acquire.index("\n", acquire.index("v->coefs"))]:
         bad.append("nn_audio.c AcquireVoiceSlot: the coefficients are copied from an unchecked pointer")
@@ -128,7 +128,7 @@ def main():
         (tmp / "f.c").write_text(FIXTURE % block(audio, "static int wb_in_guest(const WB *w) {"), encoding="utf-8")
         subprocess.run([a.cc, "-std=c11", "-Wall", "-Werror", str(tmp / "f.c"), "-o", str(tmp / "f")], check=True)
         subprocess.run([str(tmp / "f")], check=True)
-        nvn = host("nvn_native.c")
+        nvn = source("host/nvn_native.c")
         (tmp / "n.c").write_text(NAME_FIXTURE % block(nvn, "static const char *guest_name("), encoding="utf-8")
         subprocess.run([a.cc, "-std=c11", "-Wall", "-Werror", str(tmp / "n.c"), "-o", str(tmp / "n")], check=True)
         subprocess.run([str(tmp / "n")], check=True)

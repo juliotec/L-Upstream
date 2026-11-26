@@ -13,7 +13,7 @@ from tours import ROOT
 from tours.drive import Failed
 
 # ---- the renderer's play profile (--vk-profile) ----
-# An RX_VK_PGO=gen renderer (nx2/build.py) counts its branches, and its copy of host/pgo_rt.c, reading RX_VK_PGO_FILE=<file>,
+# An RX_VK_PGO=gen renderer (longshot-builder's compile) counts its branches, and its copy of host/pgo_rt.c, reading RX_VK_PGO_FILE=<file>,
 # looks every 500 ms for <file>.reset (the counters cleared) and <file>.dump (the counters written to <file>), deleting each once
 # done. A run with --vk-profile clears them once the new game has given control of Link (the loading, the prepare and the
 # title left out) and writes them at its end, failed or not, as <dir>/<run name>.profraw with <run name>.json (where it was
@@ -24,7 +24,7 @@ PGO_RAW_MAGIC = struct.pack("<Q", 0xff6c70726f667281)   # (LLVM's raw profile, h
 PGO_WAIT_S = 10           # (the writer looks every 500 ms; a written file comes within a second)
 RENDERERS = ("longshot_vk.so", "longshot_vk.dll")   # (beside the game's executable: host/rx_backend.c load_vulkan)
 VK_PROFILE = os.path.join("assets", "profiles", "longshot_vk.profdata.xz")
-VK_PROFILE_WORK = os.path.join("work", "longshot_vk.profdata")   # (what nx2/make_game.py builds with, before the committed one)
+VK_PROFILE_WORK = os.path.join("work", "longshot_vk.profdata")   # (a profile for RX_VK_PGO=<file>, before it is committed)
 
 
 def drop(path):
@@ -131,10 +131,19 @@ def raw_problem(path):
 
 
 def profdata_tool():
-    """The toolchain's llvm-profdata (the compiler that builds the renderer: third_party/a64-kit/tools/toolchain.py)"""
-    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
-    import toolchain
-    return toolchain.need(toolchain.find("llvm-profdata"))
+    """The llvm-profdata of the compiler that builds the renderer: tools.lock's (dev.py's build tools: emsdk's on Linux,
+    llvm-mingw's on Windows), else the PATH's"""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    from devtools import build
+    exe = ".exe" if os.name == "nt" else ""
+    dirs = build.tool_dirs()
+    for d in (os.path.join(dirs.get("emsdk", ""), "upstream", "bin"), os.path.join(dirs.get("llvm-mingw", ""), "bin")):
+        if os.path.isfile(os.path.join(d, "llvm-profdata" + exe)):
+            return os.path.join(d, "llvm-profdata" + exe)
+    found = shutil.which("llvm-profdata")
+    if not found:
+        raise SystemExit("no llvm-profdata: python -I scripts/dev.py env installs the build tools, or put LLVM's on PATH")
+    return found
 
 
 def profile_note(d, raws, tool, run=subprocess.run, today=None):
@@ -178,7 +187,7 @@ def profile_note(d, raws, tool, run=subprocess.run, today=None):
 
 def merge_profile(args, root=ROOT, run=subprocess.run):
     """The --vk-profile folder's counters merged by llvm-profdata into the renderer's play profile (work/longshot_vk.profdata,
-    which nx2/make_game.py builds with); --publish also writes the committed one, assets/profiles/longshot_vk.profdata.xz (xz
+    which a build takes with RX_VK_PGO=<file>); --publish also writes the committed one, assets/profiles/longshot_vk.profdata.xz (xz
     -9e), and the note for assets/profiles/README.md. Refused when there is nothing counted to merge"""
     d = os.path.abspath(args.dir)
     raws = sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith(".profraw")) if os.path.isdir(d) else []

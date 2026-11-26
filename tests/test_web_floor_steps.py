@@ -1,12 +1,17 @@
 """The floor web keeps its 60-Hz simulation above a 60 frame-rate cap (#2667, #2271).
 
-Compile the production patch applied to an authored update with its 0..3 clamp.
+Compile the production hook site frame.wholeFloorWeb (a replace site on the cut, as the lift lowers it (tests/sitehooks.py)
+with game/oot_sites.c's callback) in an authored update with its 0..3 clamp, and the text patch's line it
+replaced, side by side.
 Without this site the same executable checks fail: quarter-frame updates never
 run a step. Each floor needs its own carry, and the clamp and non-carry path stay
 unchanged. A long pause cannot leave whole steps queued behind the clamp.
 No game files or lifted function body are used.
 
-python -I -B tests/test_web_floor_steps.py [--cc gcc]
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_web_floor_steps.py [--cc clang] [--cargo cargo]
 """
 import argparse
 import subprocess
@@ -14,11 +19,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from whole_sites import hook_whole, old_whole  # noqa: E402
+import sitehooks  # noqa: E402
 
 CUT = "    c->x[22]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
 LIFTED = ('#include "a64.h"\n'
@@ -121,30 +127,36 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    patched, count = oot_patches.patch_whole_frames(LIFTED)
+    sitehooks.use(args.cc, args.cargo)
+    patched, count = hook_whole(LIFTED)
+    old, _ = old_whole(LIFTED)
     with tempfile.TemporaryDirectory(prefix="web-floor-steps-") as directory:
         directory = Path(directory)
         (directory / "a64.h").write_text(CONTEXT, encoding="utf-8")
         source, binary = directory / "fixture.c", directory / "fixture.exe"
-        command = [args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"),
-                   str(source), "-o", str(binary)]
-        source.write_text(FIXTURE.replace("@UPDATE@", patched), encoding="utf-8")
-        subprocess.run(command, check=True)
-        subprocess.run([str(binary)], check=True, timeout=30)
+        def command(text):
+            return [args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
+                    str(source), *sitehooks.objects(directory, text), "-o", str(binary)]
+        for update in (patched, old):   # (the hook, and the text patch it replaced)
+            text = FIXTURE.replace("@UPDATE@", update)
+            source.write_text(text, encoding="utf-8")
+            subprocess.run(command(text), check=True)
+            subprocess.run([str(binary)], check=True, timeout=30)
         # The negative control must compile, then fail the same behavioral checks.
-        source.write_text(FIXTURE.replace("@UPDATE@", LIFTED), encoding="utf-8")
-        subprocess.run(command, check=True)
+        text = FIXTURE.replace("@UPDATE@", LIFTED)
+        source.write_text(text, encoding="utf-8")
+        subprocess.run(command(text), check=True)
         native = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
         if native.returncode == 0 or "240-Hz first floor" not in native.stdout:
             raise SystemExit("FAIL: the native truncation did not fail the 240-Hz check")
         print("PASS: native truncation rejected by the same 240-Hz checks")
-    assert count == 1 and patched.count("hos_frame_whole(c->x[19] + 2296,") == 1
-    assert patched.count(CUT) == 1  # the authored unrelated function is left alone
-    assert oot_patches.patch_whole_frames(patched) == (patched, 0)
+    assert count == 1 and patched.count("(site frame.wholeFloorWeb)") == 1
+    assert patched.count(CUT) == 2  # the cut kept for the hook off, and the authored unrelated function's
     other = LIFTED.replace("c->x[22]=recomp_fp_to_int", "c->x[23]=recomp_fp_to_int")
-    assert oot_patches.patch_whole_frames(other) == (other, 0)
+    assert hook_whole(other) == (other, 0)
 
 
 if __name__ == "__main__":

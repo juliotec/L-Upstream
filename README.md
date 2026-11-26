@@ -25,8 +25,8 @@
 
 <p align="center">This website is our Git hosting, similar to GitHub.</p>
 
-Longshot is a static recompilation tool. It translates a supported console game's code to C and compiles it into a
-native Windows or Linux program, with the graphics rebuilt on Vulkan and the console's system software reimplemented.
+Longshot is a static recompilation tool. It translates a supported console game's code to LLVM IR and compiles it into
+a native Windows or Linux program, with the graphics rebuilt on Vulkan and the console's system software reimplemented.
 All of this happens **on your PC, from your own copy of the game**.
 
 Longshot is a continuation of [Hookshot](https://github.com/NotRexed/Hookshot). The top maintainers have moved to this
@@ -54,7 +54,8 @@ keeps it up to date. Download the launcher, not the builder: the files on
 
 **You need** your own copy of the game (program `0400486024DEC000`, update v131072, build `e0f3ccfa`), 64-bit Windows
 10/11 or Linux, a Vulkan 1.3 graphics card with 4 GB of video memory (mesh shaders and 12 GB recommended), 16 GB of RAM
-and about 60 GB free while building. The [system requirements](docs/user/requirements.md) have the details.
+and about 5 GB free for the build ([requirements](docs/user/requirements.md)). The game reads its files from your copy of the game where it is, so keep it there.
+The [system requirements](docs/user/requirements.md) have the details.
 
 The player guide, also at [longshot.magicbean.dev](https://longshot.magicbean.dev/):
 
@@ -115,8 +116,9 @@ are Longshot's.
     Longshot: Copyright (C) 2026 the Longshot contributors
 
 It includes code from Eden and suyu, which are under the GPL too. Third-party parts under other licenses that
-work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus fonts, zbic and the
-a64-kit tools) keep their own notices in their folders.
+work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus fonts and zbic) keep
+their own notices in their folders; TOTKPort's notice for the parts after a64-kit (host/, builder/rt) is
+host/NOTICE.TOTKPort.md.
 
 Longshot is an unofficial fan project, not affiliated with or endorsed by Nintendo. The Legend of Zelda and Ocarina of
 Time are trademarks of Nintendo.
@@ -127,7 +129,7 @@ Longshot is a fork of NotRexed's [Hookshot](https://github.com/NotRexed/Hookshot
 people:
 
 - **NotRexed**: [Hookshot](https://github.com/NotRexed/Hookshot), which Longshot is a fork of, BlueShell (Mario Kart World),
-  Skybound (Tears of the Kingdom) and the a64-kit tools.
+  Skybound (Tears of the Kingdom) and the a64-kit tools (host/ and the lifter's runtime are after them).
 - **[Eden](https://git.eden-emu.dev/eden-emu/eden)** and **Eglantine**: the shader recompiler and Switch 2 shader work.
 - **suyu**: the graphics decoders and the AArch64 translator.
 - **[seedds/nxnative](https://github.com/seedds/nxnative)**: reference for how task and mesh shaders work.

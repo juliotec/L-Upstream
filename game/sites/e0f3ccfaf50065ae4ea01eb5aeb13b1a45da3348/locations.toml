@@ -1,0 +1,1262 @@
+# Where each hook site is in build e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348 (Ocarina of Time, update v131072: the
+# supported dump). What each site is, its form and its callback's arguments, is its definition in game/sites/sites.toml;
+# this file says only where it is. Read by the lifter (builder/crates/sites) when the game is lifted (docs/dev/reference/hooks.md).
+#
+# What this file holds of the game: function names, offsets and a few masked instruction words per site, as few as find
+# the site exactly once. No other byte of the game (docs/dev/reference/hooks.md, "What a table may hold").
+format = 2
+build = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
+
+# The Insert menu's Text speed and Text size (game/oot_text_step.c hos_text_letter_step). f_80b1e140 steps a text pane's
+# letter animation (a LetterAnimControl, x19); after it loads the pane's letter count (ldrh w9, [x19, #0x6e]) it goes on to
+# the letters' block only when there are letters, with the step's time in s0.
+[[site]]
+name = "text.letterStep"
+function = "f_80b1e140"
+offset = 0x74                      # (ldrh w9, [x19, #0x6e]; then cbz w9 to the return)
+signature_offset = 0x74
+signature = "7940de69 34000009/ff00001f 37200008/fff8001f"   # (ldrh w9, [x19, #0x6e]; cbz w9, *; tbnz w8, #4, *)
+
+# Skip opening (host/hos_main.c hos_oot_opening, through game/oot_sites.c): the request of a sequence's one-shot event, the
+# start of an event's timeline and the skip query of the latest event.
+[[site]]
+name = "opening.request"
+function = "f_80d9a820"
+signature_offset = 0x1c
+signature = "910043fd b9596028"
+
+[[site]]
+name = "opening.timeline"
+function = "f_83b5bfb0"
+signature_offset = 0x28
+signature = "f9400028 d100a3a1"
+
+[[site]]
+name = "opening.skipQuery"
+function = "f_80de6cb0"
+signature_offset = 0x14
+signature = "9108d908 910023e1"
+
+# Skip title screen (game/oot_autoload.c, through game/oot_sites.c hos_site_menu_button_wait): the sequence nodes that wait for
+# a press of a screen's button begin. f_832e8ad0 is SeqExecuteWaitScreenButtonInput's enter (its vtable's slot 23, after the
+# name at slot 13): it reads the node's ScreenName input ([[x0 + 0xe8] & ~3], a const char *), finds that screen and hooks
+# the node's listener (x0 + 0x20) to the screen's button decision, or ends the node failed when there is no such screen.
+# f_832e8d70 is the same for SeqExecuteWaitScreenButtonInputIgnoreDecideAnim (it also sets +0xe0). Each runs once a wait.
+# The title's Title_00 waits on the first, the file list's SystemLoadList_00 and the check's SystemSaveLoad_00 on the second
+# (Sequence/NormalTitle, LoadList and LoadCheck.module.ainb). The guard is the name's loads, which the callback repeats.
+[[site]]
+name = "menu.buttonWait"
+function = "f_832e8ad0"
+signature_offset = 0x58
+signature = "f868d928 b4000008/ff00001f 91008261 a9414ff4 9102e100"   # (ldr x8, [x9, w8, sxtw #3]; cbz x8, *; add x1, x19, #0x20; ldp x20, x19, [sp, #0x10]; add x0, x8, #0xb8)
+guards = [
+    { offset = 0x24, signature = "f9407408 927ef508 f9400100" },   # (ldr x8, [x0, #0xe8]; and x8, x8, #~3; ldr x0, [x8])
+]
+
+[[site]]
+name = "menu.buttonWaitNoDecideAnim"
+function = "f_832e8d70"
+signature_offset = 0x58
+signature = "f868d928 b4000008/ff00001f 52800029 91008261 9102e100 39038269"   # (ldr x8, [x9, w8, sxtw #3]; cbz x8, *; mov w9, #1; add x1, x19, #0x20; add x0, x8, #0xb8; strb w9, [x19, #0xe0])
+guards = [
+    { offset = 0x24, signature = "f9407408 927ef508 f9400100" },   # (ldr x8, [x0, #0xe8]; and x8, x8, #~3; ldr x0, [x8])
+]
+
+# The save requests' trace and the Insert menu's Transition autosave (host/hos_main.c hos_oot_trace_save): the save
+# manager's request, before it queues it (x1 the reason, x2 the mode, x30 the caller).
+[[site]]
+name = "save.request"
+function = "f_80bc72d0"
+signature_offset = 0x4
+signature = "37100008/fff8001f b9415808"
+
+# Camera speed (the Insert menu's Camera speed, host/nn_vi.c hos_camera_scale, through game/oot_sites.c): the player
+# camera's update (f_80644c80) turns the camera by the speeds these return in s0. Each site is the function's return.
+[[site]]
+name = "camera.yawSpeed"
+function = "f_80643f10"
+signature_offset = 0x30
+signature = "f9400108 39495115"
+
+[[site]]
+name = "camera.pitchSpeed"
+function = "f_80643b60"
+signature_offset = 0x1c
+signature = "aa0003f4 f9440d08"
+
+[[site]]
+name = "camera.yawSpeedLevel2"
+function = "f_82ea21f0"
+signature_offset = 0x8
+signature = "910003fd 94000000/fc000000 94000000/fc000000 52800041"
+
+[[site]]
+name = "camera.pitchSpeedLevel2"
+function = "f_82ea2220"
+signature_offset = 0x20
+signature = "52800041 94000000/fc000000 bd400008"
+
+# Native mouse look (host/mouse_native.c hos_mouse_camera, through game/oot_sites.c): the player camera's update, f_80644c80
+# (a virtual method, the camera in x0), hands its camera to the host before anything else, once a frame; with the menu's
+# Mouse camera on, the mouse's motion turns the camera's yaw (+0x1a4) and pitch (+0x18c) there, before it reads its input.
+[[site]]
+name = "camera.update"
+function = "f_80644c80"
+signature_offset = 0x30
+signature = "9102c3fd f9400408 aa0103f4 aa0003f3 f9400508"   # (add x29, sp, #0xb0; ldr x8, [x0, #8]; mov x20, x1; mov x19, x0; ...)
+
+# The game's menus' mouse (game/oot_menu.c hos_oot_menu_focus and hos_oot_menu_tick, through game/oot_sites.c): a menu
+# screen's handler of a pane getting the focus (f_802ed660, the pause menu's vtable's), and every menu screen's update
+# (f_802f1380, each frame before its UI controller at +56 runs the buttons' requests).
+[[site]]
+name = "menu.focus"
+function = "f_802ed660"
+signature_offset = 0xb8
+signature = "39012fff aa1503ea"   # (strb wzr, [sp, #0x4b]; mov x10, x21)
+
+[[site]]
+name = "menu.update"
+function = "f_802f1380"
+signature_offset = 0x24
+signature = "a9074ff4 d121c3ff"   # (stp x20, x19, [sp, #0x70]; sub sp, sp, #0x870)
+
+# The button prompts changed while the game runs (host/prompts.c, through game/oot_sites.c): a text box's draw (f_8152b670,
+# each time the game shows it) and its layout (f_8152aec0: laid out again when its status at +8 has bit 0x20000) have the
+# box's codes for the prompts rewritten and the box marked to be laid out again; FreeType's ft_smooth_render (f_81680c60, x1
+# the glyph slot) tells where the game keeps the prompts' font.
+[[site]]
+name = "text.boxDraw"
+function = "f_8152b670"
+signature_offset = 0x18
+signature = "aa0103f5 f9400841"   # (mov x21, x1; ldr x1, [x2, #0x10])
+
+[[site]]
+name = "text.boxLayout"
+function = "f_8152aec0"
+signature_offset = 0x4
+signature = "d10543ff 6d0f33ed"   # (sub sp, sp, #0x150; stp d13, d12, [sp, #0xf0])
+
+[[site]]
+name = "font.glyphRender"
+function = "f_81680c60"
+signature_offset = 0x34
+signature = "aa0103f4 b9001fbf"   # (mov x20, x1; str wzr, [x29, #0x1c])
+
+# The game's zstd decodes on the host's libzstd (host/hos_zstd.c, HOS_NATIVE_ZSTD and HOS_NATIVE_ZSTD_FRAMES, through
+# game/oot_sites.c): the stream decode of one chunk (f_80115c80, the game's wrapper of zstd's buffer-less streaming API: x0 the
+# stream object, x1 and x2 the chunk, x3 the DDict or 0) and the resource loaders' whole-buffer decode (f_8010b380, zstd's
+# decompressMultiFrame inlined: x0 the context, x1 and x2 the output and its room, x3 and x4 the frames, x5 and x6 a raw
+# dictionary, x7 the DDict or 0). A callback that did the call answers 1, x0 the result, and the function returns.
+[[site]]
+name = "zstd.stream"
+function = "f_80115c80"
+signature_offset = 0x24
+signature = "39400008 2a0203f7"   # (ldrb w8, [x0]; mov w23, w2)
+
+[[site]]
+name = "zstd.frames"
+function = "f_8010b380"
+signature_offset = 0x20
+signature = "d11a43ff f9005be2"   # (sub sp, sp, #0x690; str x2, [sp, #0xb0])
+
+# Above 60 fps with HOS_FPS_CLOTH_60=1, Havok cloth solved at most 60 times a second (game/oot_high_fps.c
+# hos_oot_cloth_solve, through game/oot_sites.c): the cloth's solve job, f_81b47080 (run by the job runner f_8016b620 once a
+# frame for each cloth near the camera). A held frame returns at once with the job's own result, 0, before it saves anything.
+[[site]]
+name = "cloth.solve"
+function = "f_81b47080"
+signature_offset = 0x28
+signature = "d107c3ff aa0103fb"   # (sub sp, sp, #0x1f0; mov x27, x1)
+
+# A movie's frame count above a 60 cap (issue 1742; host/nn_vi.c hos_movie_frames, through game/oot_sites.c). The game's movie
+# player counts its updates while a movie plays (f_83b7c710: one more at +760 of the player, x20, each update), and a
+# cutscene that shows a movie places its narration, its rumble and its end by that count. The count grows by the frames'
+# time instead (1 an update as shipped while the host gives no frame time). The same three instructions are in the player's
+# other branch, at +0x1f8, which the text patch did not change either.
+[[site]]
+name = "movie.frameCount"
+function = "f_83b7c710"
+offset = 0xb8
+signature_offset = 0xb4
+signature = "b942fa88 11000508 b902fa88 14000000/fc000000"   # (ldr w8, [x20, #0x2f8]; add w8, w8, #1; str w8, [x20, #0x2f8]; b *)
+
+# Scene format (host/nn_vi.c hos_scene_rgba16f, the Insert menu's HDR set to Native with the PsychoV35 tone mapper, through
+# game/oot_sites.c). f_80672260 picks the format of the scene buffer the game tone maps into (main+0x652340: RGBA16F, 44,
+# under two of its flags, else R11G11B10F, 26: csel w9, w10, w9, ne) and makes the buffer again when the one it has differs
+# (+440). R11G11B10F has no sign and 6 bits of mantissa, so the native HDR banded; with the switch on both choices are
+# RGBA16F (RenoDX's zelda-oot-oz patch of main+0x65234C, github.com/clshortfuse/renodx, MIT).
+[[site]]
+name = "render.sceneFormat"
+function = "f_80672260"
+offset = 0xec
+signature_offset = 0xe0
+signature = "5280058a 2a490ee9 7100013f 52800349 1a891149"   # (mov w10, #0x2c; orr w9, w23, w9, lsr #3; cmp w9, #0; mov w9, #0x1a; csel w9, w10, w9, ne)
+
+# The Debug tab's Damage taken and heart protection (game/oot_damage.c hos_oot_damage, through game/oot_sites.c): an
+# actor's life (x19 the actor) is written by one of two compare-and-swaps of f_804bd8c0 (cas w11, w12, [x13]: the life
+# loaded, w11, and the new life, w12). Before each, a write that lowers the player's own life (x13 its life field, the
+# pointer at +0x1c10 plus 8) takes the host's new life instead. The first is the damage, x9 still the whole hit before the
+# game clamped the life at 0; the second takes the difference as the hit.
+[[site]]
+name = "player.lifeHit"
+function = "f_804bd8c0"
+offset = 0x438
+signature_offset = 0x42c
+signature = "7201019f 1a8b13ec 2a0a03eb 88ab7dac 6b0a017f"   # (tst w12, #0x80000000; csel w12, wzr, w11, ne; mov w11, w10; cas w11, w12, [x13]; cmp w11, w10)
+
+[[site]]
+name = "player.lifeWrite"
+function = "f_804bd8c0"
+offset = 0x610
+signature_offset = 0x608
+signature = "0b0a016c 2a0a03eb 88ab7dac 6b0a017f"   # (add w12, w11, w10; mov w11, w10; cas w11, w12, [x13]; cmp w11, w10)
+
+# Link's update and the Debug tab's flight (host/hos_main.c hos_oot_lift_player, hos_oot_flight_pose and
+# hos_oot_flight_rotation, through game/oot_sites.c). f_82c415e0, an actor's movement update (x19 the actor), tests its flag
+# byte at +0x6a5 (tbnz w8, #1) before it moves the body: hos_oot_lift_player sees Link there (the state tap, the player
+# service, the flight's lift); its pose matrix (x25) is written at +0x198, where its two paths meet, and the flight's
+# rotation goes over it. f_806d2530 hands a controller's transform (x0, the matrix x1) to its virtual method at +0x94.
+[[site]]
+name = "player.update"
+function = "f_82c415e0"
+offset = 0x14c
+signature_offset = 0x13c
+signature = "395a9668 910ca277 5280189c f9000bea 37080008/fff8001f"   # (ldrb w8, [x19, #0x6a5]; add x23, x19, #0x328; mov w28, #0xc4; str x10, [sp, #0x10]; tbnz w8, #1, *)
+
+[[site]]
+name = "player.pose"
+function = "f_82c415e0"
+offset = 0x198
+signature_offset = 0x194
+signature = "3d800b22 f9413a68 0a1c02d8"   # (str q2, [x25, #0x20]; ldr x8, [x19, #0x270]; and w24, w22, w28)
+
+[[site]]
+name = "player.flightRotation"
+function = "f_806d2530"
+offset = 0x94
+signature_offset = 0x88
+signature = "f9412908 bd002fe1 bd003fe0 d63f0100"   # (ldr x8, [x8, #0x250]; str s1, [sp, #0x2c]; str s0, [sp, #0x3c]; blr x8)
+
+# The Debug tab's free camera (host/hos_main.c hos_oot_free_view, through game/oot_sites.c): the head of f_804e48c0's loop
+# over a camera's views (x20 the view), each time round.
+[[site]]
+name = "camera.view"
+function = "f_804e48c0"
+offset = 0x7a8
+signature_offset = 0x7a4
+signature = "2d060283 f9401268 b4000008/ff00001f"   # (stp s3, s0, [x20, #0x30]; ldr x8, [x19, #0x20]; cbz x8, *)
+
+# The Debug tab's Movement speed (host/hos_main.c hos_oot_cct_speed, through game/oot_sites.c): a character controller's
+# forward speed (s0), on its way to *(controller+40)+472, which the physics step moves the body by with its collisions; the host
+# scales Link's while the row is above 1x. Four places set it, each after the controller is in x0: f_809552f0, the move Link's
+# own walk, run and swim go through (the speed in metres a frame), at its two inlined calls of the setter; the setter itself,
+# f_80559df0 (the controller's vtable +0x70, metres a second); and f_80964bf0, which takes the CCT component and inlines that
+# setter. The setter's code is in the game twice; its signature runs to the padding after it, which only this copy has.
+[[site]]
+name = "player.speedMove"
+function = "f_809552f0"
+offset = 0x134
+signature_offset = 0x134
+signature = "f9400500 52a84e09 1e270121 90000009/9f00001f"   # (ldr x0, [x8, #8]; mov w9, #0x42700000; fmov s1, w9; adrp x9, *)
+
+[[site]]
+name = "player.speedMoveOther"
+function = "f_809552f0"
+offset = 0x1ec
+signature_offset = 0x1ec
+signature = "f9400500 52a84e09 1e270121 f9400008"   # (ldr x0, [x8, #8]; mov w9, #0x42700000; fmov s1, w9; ldr x8, [x0])
+
+[[site]]
+name = "player.speedSet"
+function = "f_80559df0"
+signature_offset = 0x18
+signature = "b9402109 321f0129 b9002109 bd01d900 d65f03c0 00000000"   # (ldr w9, [x8, #0x20]; orr w9, w9, #2; str w9, [x8, #0x20]; str s0, [x8, #0x1d8]; ret; the padding)
+
+[[site]]
+name = "player.speedSetComponent"
+function = "f_80964bf0"
+offset = 0x0
+signature = "f9400400 f9400008 f9403901 90000008/9f00001f"   # (ldr x0, [x0, #8]; ldr x8, [x0]; ldr x1, [x8, #0x70]; adrp x8, *)
+
+# A horse's jump blend above 60 fps (game/oot_high_fps.c hos_oot_horse_whole_step, through game/oot_sites.c). A horse's jump
+# state machine, f_82c59eb0 (s10 its step): while the horse gets ready to jump it sets the blend frames into its JumpReady
+# animation each frame, and with a step under 1 (slow motion at 60 fps) it takes them from last frame's plus the step. Above
+# 60 fps every step is under 1, and Epona galloped through fences while her body went over them. The branch past the
+# slow-motion branch (fcmp s10, 1.0; b.pl) is taken too when the step is the whole frame's (the time object's step).
+[[site]]
+name = "horse.jumpStep"
+function = "f_82c59eb0"
+offset = 0xf70
+signature_offset = 0xf64
+signature = "f85d83a8 1e2e1009 1e292140 54000005/ff00001f"   # (ldur x8, [x29, #-0x28]; fmov s9, #1.0; fcmp s10, s9; b.pl *)
+
+# The texture data heap's compaction asked for once in a while (game/oot_tex_compact.h, HOS_TEX_COMPACT_MS, through
+# game/oot_sites.c). The texture data manager's per-frame step, f_80797240: with no round asked for (+776) and its flag bit 1
+# set (+960, set once at its setup) it asks the Compaction thread for one (+776 = 1). The test of bit 1 (tbz w8, #1 past the
+# ask) also asks the host whether it may ask now.
+[[site]]
+name = "texture.compactAsk"
+function = "f_80797240"
+offset = 0x38
+signature_offset = 0x34
+signature = "394f0268 36080008/fff8001f 910c2268"   # (ldrb w8, [x19, #0x3c0]; tbz w8, #1, *; add x8, x19, #0x308)
+
+# The physics solver's step count above 60 fps (issue 1798; game/oot_high_fps.c hos_oot_solver_steps, through
+# game/oot_sites.c): f_838ceb80 and f_838cfc10 (the same code in both) cut frame step * steps a frame + 0.001 (s0; s1 the steps
+# a frame) to the solver's step count (fcvtzs w1, s0) and store it at +712 of the solver (x0). With the frames' own time the
+# host rounds it up instead, at least 1, so Link stays on moving platforms.
+[[site]]
+name = "physics.solverSteps"
+function = "f_838ceb80"
+offset = 0x74
+signature_offset = 0x60
+signature = "bd403b20 bd440d02 f9400008 5e21d821 1f010800 1e380001 b902c801"   # (ldr s0, [x25, #0x38]; ...; fmadd s0, s0, s1, s2; fcvtzs w1, s0; str w1, [x0, #0x2c8])
+
+[[site]]
+name = "physics.solverStepsOther"
+function = "f_838cfc10"
+offset = 0x110
+signature_offset = 0xfc
+signature = "bd403a60 bd440d02 f9400008 5e21d821 1f010800 1e380001 b902c801"   # (ldr s0, [x19, #0x38]; ...; fcvtzs w1, s0; str w1, [x0, #0x2c8])
+
+# Above a Frame rate cap of 60, the sound job at 60 Hz and the music manager's time and flags (game/oot_high_fps.h has why
+# and the logic, game/oot_high_fps.c the host's side, through game/oot_sites.c; at a cap of 60 the host hands back what the
+# game computed). After zortos293/Lichii PR #1289 (auz466), which does the same as a code patch for the emulator.
+# - The sound manager's job, f_80435300 (its phase in w2; phase 0 loads the game step, [[slot]]+0x10, the slot the pointer to
+#   the time object at 0x84c9e890, and hands it to the sound engine): its entry asks the gate whether to run now (60 Hz above
+#   60 fps, the other phases following phase 0), and the step it loads becomes a whole one while the gate holds the job.
+# - The music manager's update, f_83373400 (game::Bgm, run by that job, so at 60 Hz too): its own loads of the time object's
+#   step (+16, s8) and seconds (+24, s9) are the host's, so it counts a whole step and its seconds, not the frame's part (its
+#   clock ran at 60 / fps of the real one). Its entry takes the change flags the gate held back, and its four reads of the
+#   battle manager's change flags ([x26]+2200) get them with the byte: flags set for one frame the gate held are not lost
+#   (the battle music after a fight).
+[[site]]
+name = "sound.job"
+function = "f_80435300"
+signature_offset = 0x20
+signature = "35000002/ff00001f 90000008/9f00001f aa0003f3 f9444908 f9400108 bd401100"   # (cbnz w2, *; adrp x8, *; mov x19, x0; ldr x8, [x8, #0x890]; ldr x8, [x8]; ldr s0, [x8, #0x10])
+
+[[site]]
+name = "sound.jobStep"
+function = "f_80435300"
+offset = 0x34
+signature_offset = 0x20
+signature = "35000002/ff00001f 90000008/9f00001f aa0003f3 f9444908 f9400108 bd401100"
+
+[[site]]
+name = "music.update"
+function = "f_83373400"
+signature_offset = 0x3c
+signature = "f9444908 f9400108 bd401108 bd401909 f9435ef7"   # (ldr x8, [x8, #0x890]; ldr x8, [x8]; ldr s8, [x8, #0x10]; ldr s9, [x8, #0x18]; ldr x23, [x23, #0x6b8])
+
+[[site]]
+name = "music.time"
+function = "f_83373400"
+offset = 0x48
+signature_offset = 0x3c
+signature = "f9444908 f9400108 bd401108 bd401909 f9435ef7"
+
+[[site]]
+name = "music.changeFlags"
+function = "f_83373400"
+offset = 0x280
+signature_offset = 0x280
+signature = "39626348 36280008/fff8001f"   # (ldrb w8, [x26, #0x898]; tbz w8, #5, *)
+
+[[site]]
+name = "music.changeFlags1"
+function = "f_83373400"
+offset = 0x3c0
+signature_offset = 0x3c0
+signature = "39626348 36080008/fff8001f"   # (ldrb w8, [x26, #0x898]; tbz w8, #1, *)
+
+[[site]]
+name = "music.changeFlags2"
+function = "f_83373400"
+offset = 0x550
+signature_offset = 0x550
+signature = "39626348 36100008/fff8001f"   # (ldrb w8, [x26, #0x898]; tbz w8, #2, *)
+
+[[site]]
+name = "music.changeFlags6"
+function = "f_83373400"
+offset = 0x64c
+signature_offset = 0x64c
+signature = "39626348 36300008/fff8001f"   # (ldrb w8, [x26, #0x898]; tbz w8, #6, *)
+
+# Link's driven body's target above 60 fps (issue 1494; game/oot_high_fps.c hos_oot_drive_target, through game/oot_sites.c).
+# A rigid body's update before the physics step, f_804f5030, on its path for a body driven to a target (x20 the controller): the
+# game sets the target (+0x3c) to the body's position plus this frame's move and asks for (target - position) / dt. Above
+# 60 fps Havok's solve delivers only part of it, the next target starts from where the body ended up, and Link's pull-up onto a
+# ledge fell short. After the body's load, before the target is read, the host adds last update's shortfall to Link's. The
+# path is in the function twice, the body loaded into x23 or x24.
+[[site]]
+name = "physics.driveTarget"
+function = "f_804f5030"
+offset = 0x1b4
+signature_offset = 0x1b4
+signature = "f9407a97 2d478682 bd404680"   # (ldr x23, [x20, #0xf0]; ldp s2, s1, [x20, #0x3c]; ldr s0, [x20, #0x44])
+
+[[site]]
+name = "physics.driveTargetOther"
+function = "f_804f5030"
+offset = 0xe6c
+signature_offset = 0xe6c
+signature = "f9407a98 2d478682 bd404680"   # (ldr x24, [x20, #0xf0]; ldp s2, s1, [x20, #0x3c]; ldr s0, [x20, #0x44])
+
+# Below 60 fps, Havok cloth (Link's cap, romfs Phive/Cloth; game/oot_high_fps.c hos_oot_cloth_seconds, through
+# game/oot_sites.c): the simulate operator's per-frame setup, f_81b3aa48, loads its step context's time (x22 + 8, ldr d0) and
+# stores it with a substep's (+44, +48 of its frame data). The time is a 60th whatever the frame, so the cloth ran slow (0.3 of
+# the clock at 18 fps). The host multiplies it by the game's frame step while that is over 1 (the float f_83b6ea90 writes at
+# 0x84d61fc8).
+[[site]]
+name = "cloth.time"
+function = "f_81b3aa48"
+offset = 0x220
+signature_offset = 0x220
+signature = "fd4006c0 bd417ea1 1e211800"   # (ldr d0, [x22, #8]; ldr s1, [x21, #0x17c]; fdiv s0, s0, s1)
+
+# Counters that add the frame step, or the step times a whole number, cut to whole frames (host/frame_whole.h, host/nn_vi.c
+# hos_frame_whole, through game/oot_sites.c). At 60 fps the step is 1; under a Frame rate cap above 60 it is the frame's own
+# time, under 1 (0.42 at 144 fps), and the cut is 0 every frame. Each site replaces its cut (fcvtzs or fcvtzu) with the host's
+# whole frames, the fractions carried per counter while the frames' own time is the step; otherwise cut as the game does:
+# - f_80a87e50, the pick-up indicator above Link's head (a rupee, a Deku Stick): the count it shows (+864) moves toward the
+#   wallet's (+860) by (int)(step * max(distance / 50, 1)) and the indicator fades when they meet (issue 1832).
+# - f_800672e0, the water renderer: its ripple simulation runs (int)step times the water's substeps (+76 of the pass) each frame.
+#   Found by atk3001 for Lichii (zortos293/Lichii#1152), as ported to Fritchii (Frizti/Fritchii d389685a4, 063dbb741): its
+#   remainder is kept per water object (x21). The substeps are carried, not the frames (issue 1199): w9 the whole substeps,
+#   w8 then 1, 2 or 3 every frame at 108 fps.
+# - f_803edf70, the time of day: each frame it adds (int)(2 * step) game seconds (+60) to the seconds of the day. (Its other
+#   cut, into w8 at +0x1f0 in the branch that sets the time from another source, stays the game's.)
+# - f_832b32b0, Scarecrow's Song playback, f_832b6840, the eight-note recording (mode 10; its mode-13 cut stays the game's) and
+#   f_832b2690, the recording's completion: the elapsed frames (+0x265fc, or the counter at x9) (issue 2668).
+# - f_80652cb0, the floor web (the Great Deku Tree's): (int)step simulation steps a frame, clamped to 0..3; its remainder is
+#   kept per web (+2296), before the clamp (https://github.com/NotRexed/Hookshot/issues/2667).
+[[site]]
+name = "frame.wholePickup"
+function = "f_80a87e50"
+offset = 0x4b0
+signature_offset = 0x4a8
+signature = "1e230181 1e210800 1e38000c 6b09011f"   # (ucvtf s1, w12; fmul s0, s0, s1; fcvtzs w12, s0; cmp w8, w9)
+
+[[site]]
+name = "frame.wholeWater"
+function = "f_800672e0"
+offset = 0x318
+signature_offset = 0x314
+signature = "b9404e68 1e380009 9000001b/9f00001f"   # (ldr w8, [x19, #0x4c]; fcvtzs w9, s0; adrp x27, *)
+
+[[site]]
+name = "frame.wholeTimeOfDay"
+function = "f_803edf70"
+offset = 0x50
+signature_offset = 0x4c
+signature = "1e202800 1e380008 b9003e68"   # (fadd s0, s0, s0; fcvtzs w8, s0; str w8, [x19, #0x3c])
+
+[[site]]
+name = "frame.wholeScarecrowPlay"
+function = "f_832b32b0"
+offset = 0x160
+signature_offset = 0x15c
+signature = "bd401100 1e390008 0b080128 b8346a68"   # (ldr s0, [x8, #0x10]; fcvtzu w8, s0; add w8, w9, w8; str w8, [x19, x20])
+
+[[site]]
+name = "frame.wholeScarecrowRecord"
+function = "f_832b6840"
+offset = 0x2c8
+signature_offset = 0x2c4
+signature = "bd401100 1e390008 0b080148 14000000/fc000000"   # (ldr s0, [x8, #0x10]; fcvtzu w8, s0; add w8, w10, w8; b *)
+
+[[site]]
+name = "frame.wholeScarecrowLast"
+function = "f_832b2690"
+offset = 0x38
+signature_offset = 0x34
+signature = "bd401100 1e390008 0b080128 b905fe88"   # (ldr s0, [x8, #0x10]; fcvtzu w8, s0; add w8, w9, w8; str w8, [x20, #0x5fc])
+
+[[site]]
+name = "frame.wholeFloorWeb"
+function = "f_80652cb0"
+offset = 0x50
+signature_offset = 0x4c
+signature = "1e201900 1e380016 bd4b8a60"   # (fdiv s0, s8, s0; fcvtzs w22, s0; ldr s0, [x19, #0xb88])
+
+# The Controls row Disable camera centering (host/mouse_native.c hos_disable_camera_centering, through game/oot_sites.c). The
+# player camera's update, f_80644c80, in its state 3: after the authored heading override (b.ne at +0x258c), the block at
+# +0x2590 derives a heading from Link's movement and eases the yaw (+0x1a4) toward it. With the row on, only that movement path
+# is skipped: x25 restored to its parameter base (x26) as that path does, and the other yaw paths joined at +0xe58. State 4's
+# stick, state 2's explicit recenter and the authored overrides stay; pitch and collision follow.
+[[site]]
+name = "camera.followYaw"
+function = "f_80644c80"
+offset = 0x2590
+to = 0xe58
+signature_offset = 0x258c
+signature = "54000001/ff00001f aa1703e0 94000000/fc000000 39400008 aa1a03f9"   # (b.ne *; mov x0, x23; bl *; ldrb w8, [x0]; mov x25, x26)
+
+# A moving floor's carry above 60 fps (issue 439; game/oot_high_fps.c hos_oot_floor_carry_slow, through game/oot_sites.c).
+# Three characters' update modules (f_80159dc0, f_8015d490, f_838baa40) carry a character that stands on a moving floor by the
+# floor's velocity, but first test the physics time object's 1/dt (its +40, s0) against 100 and, above it (a frame under 10 ms:
+# at 60 fps, time slowed below 0.6), carry it by a tenth of it (b.gt to that branch). Above 100 fps every frame is under 10 ms,
+# so Link and the enemies slid to the back of the Shadow Temple's barge. Each b.gt is taken only when the host agrees too:
+# above a 60 fps cap, on a frame under a 60 fps one, 1/dt times the frame's step over 100, the game's test as at 60 fps.
+[[site]]
+name = "physics.floorCarry"
+function = "f_80159dc0"
+offset = 0x2b0
+signature_offset = 0x298
+signature = "f9400328 f9406108 bd402900 52a85908 1e270101 1e212000 5400000c/ff00001f"   # (ldr x8, [x25]; ldr x8, [x8, #0xc0]; ldr s0, [x8, #0x28]; mov w8, #0x42c80000; fmov s1, w8; fcmp s0, s1; b.gt *)
+
+[[site]]
+name = "physics.floorCarryOther"
+function = "f_8015d490"
+offset = 0x280
+signature_offset = 0x270
+signature = "bd402900 52a85908 1e270101 1e212000 5400000c/ff00001f 39424b28 37080008/fff8001f f94006a0"   # (ldr s0, [x8, #0x28]; ...; b.gt *; ldrb w8, [x25, #0x92]; tbnz w8, #1, *; ldr x0, [x21, #8])
+
+[[site]]
+name = "physics.floorCarryThird"
+function = "f_838baa40"
+offset = 0x1ec
+signature_offset = 0x1dc
+signature = "bd402900 52a85908 1e270101 1e212000 5400000c/ff00001f 39424b28 37080008/fff8001f f9400680"   # (ldr s0, [x8, #0x28]; ...; b.gt *; ldrb w8, [x25, #0x92]; tbnz w8, #1, *; ldr x0, [x20, #8])
+
+# The Voice Language option kept after a restart (issue 430; game/oot_voice.c hos_oot_voice_option, through game/oot_sites.c).
+# The voice resource's update (f_80a9ca30) asks GameDataMgr whether the option was written (bl f_80a9d1c0: x0 the manager, x1
+# the option's hash; bit 0 of x0 the answer) and applies it only then; option.sav's value replaces the option without a write,
+# so a saved choice was never applied. The call is the host's wrapper's, which calls the game's and also says yes when the
+# option's value is not the one of the update before.
+[[site]]
+name = "options.voiceWritten"
+function = "f_80a9ca30"
+offset = 0x68
+signature_offset = 0x60
+signature = "72b45b96 f9400280 94000000/fc000000 37000000/fff8001f"   # (movk w22, #0xa2dc, lsl #16; ldr x0, [x20]; bl *; tbnz w0, #0, *)
+
+# The OptimizeChangeBank thread's allocations tried again when their heap is full (issue 1697; game/oot_heap_retry.c, through
+# game/oot_sites.c; from TomShafford/Hookshot 55d68e8cd6 and 65c1998222). f_804566e0 makes a model's material block: two calls of
+# f_80522050, its GPU memory (x1 the request), and two tryAllocs (blr x8: x0 the heap, x1 the size, x2 the alignment) of CPU
+# buffers at its MatBlock's +200 and +168. A full heap's null went on and the game crashed writing through it. Each call is the
+# host's: the GPU memory through hos_oot_gpu_alloc (the game's call, then the heap's parents), a CPU buffer the game's tryAlloc
+# and, for a null, the heap's parents (hos_oot_heap_retry). f_80522050's other callers stay as they are.
+[[site]]
+name = "heap.gpuAlloc"
+function = "f_804566e0"
+offset = 0x838
+signature_offset = 0x82c
+signature = "91000108/ffc003ff f90033e8 a9044ff7 94000000/fc000000"   # (add x8, x8, *; str x8, [sp, #0x60]; stp x23, x19, [sp, #0x40]; bl *)
+
+[[site]]
+name = "heap.gpuAllocOther"
+function = "f_804566e0"
+offset = 0x9b4
+signature_offset = 0x9a8
+signature = "91000108/ffc003ff f90033e8 a9044fe9 94000000/fc000000"   # (add x8, x8, *; str x8, [sp, #0x60]; stp x9, x19, [sp, #0x40]; bl *)
+
+[[site]]
+name = "heap.cpuAlloc"
+function = "f_804566e0"
+offset = 0x22c
+signature_offset = 0x220
+signature = "52800102 aa1503e1 f9401908 d63f0100 a90d577f f9006760"   # (mov w2, #8; mov x1, x21; ldr x8, [x8, #0x30]; blr x8; stp xzr, x21, [x27, #0xd0]; str x0, [x27, #0xc8])
+
+[[site]]
+name = "heap.cpuAllocOther"
+function = "f_804566e0"
+offset = 0x6c0
+signature_offset = 0x6b4
+signature = "52800114 aa1603e1 f9401908 d63f0100"   # (mov w20, #8; mov x1, x22; ldr x8, [x8, #0x30]; blr x8)
+
+# What that build takes further down from the same heap, each a tryAlloc (blr x8: x0 the heap, x1 the size, x2 the
+# alignment) whose null the game wrote through (issue 2437 and the v3.0.0 crash reports): f_8044f420's 0x238-byte object,
+# f_8044ed60's two buffers for it and f_80443000's buffer and 0x310-byte object. A null one is tried in the heap's parents
+# and the parent that had room is written to the heaps' holder, which each callback reads where its function keeps it
+# (x21; x22; [sp]): the signatures cover the load of the heap from it, where there is one.
+[[site]]
+name = "heap.objectAlloc"
+function = "f_8044f420"
+offset = 0x24c
+signature_offset = 0x240
+signature = "52804701 52800102 f9401908 d63f0100 aa0003f7 91004000"   # (mov w1, #0x238; mov w2, #8; ldr x8, [x8, #0x30]; blr x8; mov x23, x0; add x0, x0, #0x10)
+
+[[site]]
+name = "heap.objectBuffer"
+function = "f_8044ed60"
+offset = 0x264
+signature_offset = 0x24c
+signature = "f94006c0 b4000000/ff00001f f9400008 52800102 aa1803e1 f9401908 d63f0100"   # (ldr x0, [x22, #8]; cbz x0, *; ldr x8, [x0]; mov w2, #8; mov x1, x24; ldr x8, [x8, #0x30]; blr x8)
+
+[[site]]
+name = "heap.objectBufferOther"
+function = "f_8044ed60"
+offset = 0x310
+signature_offset = 0x2f8
+signature = "f94006c0 b4000000/ff00001f f9400008 52800102 aa1703e1 f9401908 d63f0100"   # (ldr x0, [x22, #8]; cbz x0, *; ldr x8, [x0]; mov w2, #8; mov x1, x23; ldr x8, [x8, #0x30]; blr x8)
+
+[[site]]
+name = "heap.blockBuffer"
+function = "f_80443000"
+offset = 0x1fc
+signature_offset = 0x1e0
+signature = "f94003e8 f9400500 b4000000/ff00001f f9400008 52800102 aa1603e1 f9401908 d63f0100"   # (ldr x8, [sp]; ldr x0, [x8, #8]; cbz x0, *; ldr x8, [x0]; mov w2, #8; mov x1, x22; ldr x8, [x8, #0x30]; blr x8)
+
+[[site]]
+name = "heap.blockObject"
+function = "f_80443000"
+offset = 0xe2c
+signature_offset = 0xe10
+signature = "f94003e8 f9400500 b4000000/ff00001f f9400008 52806201 52800102 f9401908 d63f0100"   # (ldr x8, [sp]; ldr x0, [x8, #8]; cbz x0, *; ldr x8, [x0]; mov w1, #0x310; mov w2, #8; ldr x8, [x8, #0x30]; blr x8)
+
+# f_804566e0's two getFreeSize calls of its heap (x0 the heap and x8 the method, loaded through the holder at sp+56), for the
+# MatBlock's count of the memory the build took: a build handed to a parent reads its own heap both times, and the second
+# puts it back in the holder (before sites on each blr x8).
+[[site]]
+name = "heap.restOwn"
+function = "f_804566e0"
+offset = 0x248
+signature_offset = 0x238
+signature = "f9401fe8 f9400500 f9400008 f9404108 d63f0100 f9400b68"   # (ldr x8, [sp, #0x38]; ldr x0, [x8, #8]; ldr x8, [x0]; ldr x8, [x8, #0x80]; blr x8; ldr x8, [x27, #0x10])
+
+[[site]]
+name = "heap.restEnd"
+function = "f_804566e0"
+offset = 0xaa8
+signature_offset = 0xa98
+signature = "f9401fe8 f9400500 f9400008 f9404108 d63f0100 f9400fe8"   # (ldr x8, [sp, #0x38]; ldr x0, [x8, #8]; ldr x8, [x0]; ldr x8, [x8, #0x80]; blr x8; ldr x8, [sp, #0x18])
+
+# A song's playback after the ocarina above 60 fps (game/oot_high_fps.c hos_oot_song_cue, through game/oot_sites.c). The
+# ocarina's state machine f_8019bad0 runs f_832b2af0 in state 5 (the song just played) and f_832b2dc0 in state 6 (its other
+# melody playback): each update while the melody plays it calls f_832b7b50, whether the note flag the sound engine sets for one
+# of its runs at each of the melody's notes is set (x0 bit 0), and goes on to the next note when it is. Above 60 fps the sound
+# job runs at 60 Hz and the playback went on two or three notes at each. After each call its answer goes through the host: a
+# before site on the instruction after the call, which nothing else jumps to (no label in the lifted C).
+[[site]]
+name = "song.noteCue"
+function = "f_832b2af0"
+offset = 0x194
+signature_offset = 0x188
+signature = "91008100 aa0803f6 94000000/fc000000 b94286c3 36000000/fff8001f"   # (add x0, x8, #0x20; mov x22, x8; bl *; ldr w3, [x22, #0x284]; tbz w0, #0, *)
+
+[[site]]
+name = "song.noteCueOther"
+function = "f_832b2dc0"
+offset = 0x114
+signature_offset = 0x10c
+signature = "91008100 94000000/fc000000 36000000/fff8001f b94286d4"   # (add x0, x8, #0x20; bl *; tbz w0, #0, *; ldr w20, [x22, #0x284])
+
+# The ocarina's note controls (host/nn_hid.c: the five notes swapped for the host's own controls while the game waits for notes;
+# through game/oot_sites.c). The note-wait action (ExecuteWaitOcarinaInputCommon: its start f_828a9190, its tick f_828a9280)
+# tells the host: the start decides from the input kind (1 and 3 the field ocarina, 2 a song lesson, 7 the Lost Woods skull
+# kids' songs, 10 the scarecrow's recording, 11 its recall: the note buttons; 13 a dialogue's, which stays the game's), every
+# running tick re-arms it (the input resets between note windows end one wait without ending the action) and stamps the beat;
+# the not-running branch, the tick's three gates when they refuse (the mode check, the input context, the wait's owner: say a
+# dialogue took the buttons), the done store and the input reset clear it.
+[[site]]
+name = "ocarina.waitStart"
+function = "f_828a9190"
+offset = 0x48
+signature_offset = 0x48
+signature = "b9402261 aa0003f4 94000000/fc000000 f9401a68"   # (ldr w1, [x19, #0x20]; mov x20, x0; bl *; ldr x8, [x19, #0x30])
+
+[[site]]
+name = "ocarina.waitTick"
+function = "f_828a9280"
+offset = 0x1c
+signature_offset = 0x18
+signature = "39406008 36080008/fff8001f f9400008 aa0103f5"   # (ldrb w8, [x0, #0x18]; tbz w8, #1, *; ldr x8, [x0]; mov x21, x1)
+
+[[site]]
+name = "ocarina.waitMode"
+function = "f_828a9280"
+offset = 0x4c
+signature_offset = 0x48
+signature = "721e051f 54000001/ff00001f 90000008/9f00001f 91192108"   # (tst w8, #0xc; b.ne *; adrp x8, *; add x8, x8, #0x648)
+
+[[site]]
+name = "ocarina.waitContext"
+function = "f_828a9280"
+offset = 0x60
+signature_offset = 0x58
+signature = "f9400100 94000000/fc000000 b5000000/ff00001f a9434ff4"   # (ldr x0, [x8]; bl *; cbnz x0, *; ldp x20, x19, [sp, #0x30])
+
+[[site]]
+name = "ocarina.waitOwner"
+function = "f_828a9280"
+offset = 0x98
+signature_offset = 0x90
+signature = "aa0803e0 94000000/fc000000 b4000000/ff00001f b9402269"   # (mov x0, x8; bl *; cbz x0, *; ldr w9, [x19, #0x20])
+
+[[site]]
+name = "ocarina.waitDone"
+function = "f_828a9280"
+offset = 0x108
+signature_offset = 0x100
+signature = "52b00009 33007509 b9001a69 14000000/fc000000 721f093f"   # (mov w9, #-0x80000000; bfxil w9, w8, #0, #0x1e; str w9, [x19, #0x18]; b *; tst w9, #0xe)
+
+[[site]]
+name = "ocarina.waitReset"
+function = "f_828a9280"
+offset = 0x164
+signature_offset = 0x15c
+signature = "52800061 94000000/fc000000 90000008/9f00001f 91208908"   # (mov w1, #3; bl *; adrp x8, *; add x8, x8, #0x822)
+
+# A looping animation one frame long (the frozen Zoras under the ice in adult Zora's Domain: start 0, end 1) is one pose (issue
+# 988; host/loop_step.h through host/nn_vi.c's hos_loop_step and hos_loop_pose and game/oot_sites.c). Under a Frame rate cap
+# above 60 the step is the frame's own time, the phase moved by it each frame, and each frame drew another phase. The time a
+# skeleton is drawn at comes from two places:
+# - f_802cfca0 advances the clock of each animation entry ([x20]: flags +0, time +4, speed +12, start +16, end +20). Its two
+#   advances multiply the step (s8) by the definition's speed: a loop of one frame or less takes the step as whole frames,
+#   carried per entry;
+# - f_80944aa0 writes the time the skeletons are drawn at (x22: the value +0, its range +4, +8): a range of one frame or less is
+#   drawn at its start.
+# Each instruction is replaced: the callback does its work with the host's operand (the multiply through the runtime's exact
+# float helper, the value and FPSR the lift's own give; the store through recomp_store32, which marks its page), and s8 / s0
+# keep the game's value. A cap of 60 (hos_frame_seconds_bits 0) leaves both values as the game has them.
+[[site]]
+name = "anim.loopStep"
+function = "f_802cfca0"
+offset = 0x164
+signature_offset = 0x15c
+signature = "b9000288 37180009/fff8001f 1e210902 bd400e81"   # (str w8, [x20]; tbnz w9, #3, *; fmul s2, s8, s1; ldr s1, [x20, #0xc])
+
+[[site]]
+name = "anim.loopStepOther"
+function = "f_802cfca0"
+offset = 0x530
+signature_offset = 0x528
+signature = "b9000288 37180009/fff8001f 1e200901 bd400e80"   # (str w8, [x20]; tbnz w9, #3, *; fmul s1, s8, s0; ldr s0, [x20, #0xc])
+
+[[site]]
+name = "anim.loopPose"
+function = "f_80944aa0"
+offset = 0x3b0
+signature_offset = 0x3a4
+signature = "2d408ac1 a94102c8 d63f0100 bd0002c0"   # (ldp s1, s2, [x22, #4]; ldp x8, x0, [x22, #0x10]; blr x8; str s0, [x22])
+
+# The saved steering rate above 60 fps (issue 312; game/oot_sites.c). f_8263e8e0, the steering update: after applying a turn
+# it clamps the saved rate (+36) to the turn's magnitude times the step (s8). The turn was already scaled by the step, so a
+# rate-limited update keeps rate * step squared: above 60 fps Gohma can keep circling the ceiling without reaching her next
+# point. For 0 < step < 1 both bounds are divided by the step instead (the turn back to a rate); at a step of 1 or more, and
+# for a step that is not a number, the game's multiply. Each bound's fmul is replaced, its work done through the runtime's
+# exact float helpers (recomp_fpe_*: the value and the FPSR bits the lift's own fast helpers give).
+[[site]]
+name = "steer.rateLower"
+function = "f_8263e8e0"
+offset = 0x238
+signature_offset = 0x230
+signature = "1e2abc00 6d432beb 1e210801 1e280800 6d4423e9"   # (fcsel s0, s0, s10, lt; ldp d11, d10, [sp, #0x30]; fmul s1, s0, s1; fmul s0, s0, s8; ldp d9, d8, [sp, #0x40])
+
+[[site]]
+name = "steer.rateUpper"
+function = "f_8263e8e0"
+offset = 0x23c
+signature_offset = 0x230
+signature = "1e2abc00 6d432beb 1e210801 1e280800 6d4423e9"
+
+# The game's job barriers waiting for their work (game/oot_barrier.h has the protocol and why; game/oot_barrier.c, through
+# game/oot_sites.c; HOS_OOT_BARRIER_WAIT, on by default). Three parallel-for jobs (f_800998a0, f_800738e0, f_8007e200) are run
+# by several threads over one job block P: every pass over the job's items takes an item by an atomic OR (ldset) into a claim
+# mask in P and, the item done, ORs it into a done mask; a thread with nothing to take sleeps (bl to SleepThread's stub, which
+# the lift calls as f_85106220, of the tick frequency / 50000: 20 us) and goes back to its loop until the masks it polls are
+# full. Each sleep is a replace site: hos_oot_barrier_wait(P, the polled words' offsets, the values the loop's pass saw, the
+# full mask), and the game's sleep when the switch is off or the wait says so. Each OR into a polled word is followed by an
+# after site, hos_oot_barrier_wake(P), P the register the OR's address was made from. What the waits are told (read from the
+# supported build's code with every path followed back from each sleep):
+#   f_800998a0 (P in x24 at each sleep; the full mask stored at x29-100 once): sleep at +0xbd4 polls the claim masks P+0x1f4
+#     and P+0x1fc against w22, read at the call; +0x1990 polls P+0x200 through its value at that loop's head (w25) against
+#     w22; +0x174c polls P+0x208 through its value at that loop's head (w19) against the full mask read again from x29-100.
+#     The ORs into P+0x1f4, P+0x1fc, P+0x200 and P+0x208 are the only writes of those words in the function.
+#   f_800738e0 (P in x19, the entry's x0): sleep at +0xec8 polls P+0x210 and P+0x218 through their values at that loop's head
+#     (w25, w28) against the full mask at sp+16; the ORs into them are in the two passes before the loop.
+#   f_8007e200 (P in x26): sleep at +0x708 polls P+0x220 through its value at that loop's head (w21) against ~w28; the OR into
+#     it is in the pass before the loop.
+# Every site resolves exactly once or the build stops: a sleep never waits for a wake that is not there.
+[[site]]
+name = "barrier.sleepClaim"
+function = "f_800998a0"
+offset = 0xbd4
+signature_offset = 0xbd4
+signature = "94000000/fc000000 14000000/fc000000 90000008/9f00001f f9446908"   # (bl *; b *; adrp x8, *; ldr x8, [x8, #0x8d0])
+# (the guards: the code the wait's words and registers come from, elsewhere in the function)
+guards = [
+    { offset = 0x144, signature = "b819c3a8" },   # (stur w8, [x29, #-0x64]: the full mask's slot)
+    { offset = 0xb84, signature = "b941f708 ???????? b859c3b6" },   # (ldr w8, [x24, #0x1f4]; *; ldur w22, [x29, #-0x64])
+    { offset = 0xe50, signature = "b941ff08" },   # (ldr w8, [x24, #0x1fc])
+]
+
+[[site]]
+name = "barrier.sleepGather"
+function = "f_800998a0"
+offset = 0x1990
+signature_offset = 0x198c
+signature = "94000000/fc000000 94000000/fc000000 5280002b"   # (bl *; bl *; mov w11, #1)
+# (the guards: the code the wait's words and registers come from, elsewhere in the function)
+guards = [
+    { offset = 0x144, signature = "b819c3a8" },   # (stur w8, [x29, #-0x64])
+    { offset = 0xec8, signature = "b9420319" },   # (ldr w25, [x24, #0x200]: the loop head's load)
+    { offset = 0xf4c, signature = "b9006bf9" },   # (str w25, [sp, #0x68])
+    { offset = 0x1118, signature = "b859c3b6 b9406bf9" },   # (ldur w22, [x29, #-0x64]; ldr w25, [sp, #0x68])
+]
+
+[[site]]
+name = "barrier.sleepDone"
+function = "f_800998a0"
+offset = 0x174c
+signature_offset = 0x174c
+signature = "94000000/fc000000 14000000/fc000000 d5033bbf 14000000/fc000000"   # (bl *; b *; dmb ish; b *)
+# (the guards: the code the wait's words and registers come from, elsewhere in the function)
+guards = [
+    { offset = 0x144, signature = "b819c3a8" },   # (stur w8, [x29, #-0x64])
+    { offset = 0x117c, signature = "b9420b13" },   # (ldr w19, [x24, #0x208]: the loop head's load)
+    { offset = 0x1194, signature = "b9004bf3" },   # (str w19, [sp, #0x48])
+    { offset = 0x16d4, signature = "b9404bf3" },   # (ldr w19, [sp, #0x48])
+]
+
+[[site]]
+name = "barrier.sleepOther"
+function = "f_800738e0"
+offset = 0xec8
+signature_offset = 0xec4
+signature = "94000000/fc000000 94000000/fc000000 14000000/fc000000 a9474ff4"   # (bl *; bl *; b *; ldp x20, x19, [sp, #0x70])
+# (the guards: the code the wait's words and registers come from, elsewhere in the function)
+guards = [
+    { offset = 0x544, signature = "b90013e8" },   # (str w8, [sp, #0x10]: the full mask's slot)
+    { offset = 0x558, signature = "b9421279 ???????? b9421a7c" },   # (ldr w25, [x19, #0x210]; *; ldr w28, [x19, #0x218]: the loop head's loads)
+    { offset = 0xe74, signature = "b94013e9" },   # (ldr w9, [sp, #0x10])
+]
+
+[[site]]
+name = "barrier.sleepThird"
+function = "f_8007e200"
+offset = 0x708
+signature_offset = 0x708
+signature = "94000000/fc000000 14000000/fc000000 5285e01b"   # (bl *; b *; mov w27, #0x2f00)
+# (the guards: the code the wait's words and registers come from, elsewhere in the function)
+guards = [
+    { offset = 0x3c, signature = "b90047e9" },   # (str w9, [sp, #0x44]: the inverted full mask's slot)
+    { offset = 0x4c0, signature = "b9422355" },   # (ldr w21, [x26, #0x220]: the loop head's load)
+    { offset = 0x4cc, signature = "b94047fc" },   # (ldr w28, [sp, #0x44])
+    { offset = 0x6c0, signature = "4a1c02a8" },   # (eor w8, w21, w28)
+]
+
+[[site]]
+name = "barrier.orClaim"
+function = "f_800998a0"
+offset = 0xe10
+signature_offset = 0xe0c
+signature = "9107d308 b8373108"   # (add x8, x24, #0x1f4; ldset w23, w8, [x8])
+
+[[site]]
+name = "barrier.orClaimOther"
+function = "f_800998a0"
+offset = 0xe24
+signature_offset = 0xe20
+signature = "9107f308 b8373108"   # (add x8, x24, #0x1fc; ldset w23, w8, [x8])
+
+[[site]]
+name = "barrier.orGather"
+function = "f_800998a0"
+offset = 0xe48
+signature_offset = 0xe44
+signature = "91080308 b8373108"   # (add x8, x24, #0x200; ldset w23, w8, [x8])
+
+[[site]]
+name = "barrier.orDone"
+function = "f_800998a0"
+offset = 0x114c
+signature_offset = 0x1140
+signature = "91082308 5280002b b94073e9 b8293108"   # (add x8, x24, #0x208; mov w11, #1; ldr w9, [sp, #0x70]; ldset w9, w8, [x8])
+
+[[site]]
+name = "barrier.orOther"
+function = "f_800738e0"
+offset = 0x7c
+signature_offset = 0x70
+signature = "9108427b 94000000/fc000000 d5033bbf b83a3368"   # (add x27, x19, #0x210; bl *; dmb ish; ldset w26, w8, [x27])
+
+[[site]]
+name = "barrier.orOtherSecond"
+function = "f_800738e0"
+offset = 0x52c
+signature_offset = 0x520
+signature = "91086268 1ad52069 d5033bbf b8293108"   # (add x8, x19, #0x218; lsl w9, w3, w21; dmb ish; ldset w9, w8, [x8])
+
+[[site]]
+name = "barrier.orThird"
+function = "f_8007e200"
+offset = 0x30c
+signature_offset = 0x300
+signature = "91088348 1ad522e9 d5033bbf b8293108"   # (add x8, x26, #0x220; lsl w9, w23, w21; dmb ish; ldset w9, w8, [x8])
+
+# Dynamic resolution (Lichii's "Max Resolution" patch, main+0x805BD0; host/nn_vi.c hos_fixed_resolution, hos_dynres_runs and
+# hos_fixed_scale_bits, through game/oot_sites.c). f_80825aa0 tests the engine's config flag at +0x94 (tbz w8, #0): clear,
+# the fixed path; set, the path that follows the GPU-time controller, which made a new set of render targets at each size.
+[[site]]
+name = "dynres.fixedPath"
+function = "f_80825aa0"
+offset = 0x130
+signature_offset = 0x12c
+signature = "b9409508 36000008/fff8001f"   # (ldr w8, [x8, #0x94]; tbz w8, #0, *)
+
+[[site]]
+name = "dynres.dynamicFrame"
+function = "f_80825aa0"
+offset = 0x134
+signature_offset = 0x12c
+signature = "b9409508 36000008/fff8001f"
+
+[[site]]
+name = "dynres.fixedScale"
+function = "f_80825aa0"
+offset = 0x980
+signature_offset = 0x978
+signature = "d2c00028 9a888128 52a7f009"   # (mov x8, #0x100000000; csel x8, x9, x8, hi; mov w9, #0x3f800000)
+
+# The fixed path's scale (hos_fixed_scale_bits: the Insert menu's Resolution) reaching the 3D, in the caller f_831f3200 (x20 its
+# object; game/oot_sites.c over host/nn_vi.c). It recomputes the 3D's scale (+0xe5c = scale * +0xe58 / +0xe50) only while +0xe2c
+# bit 3 is set (w8 ORed into it at +0xd00). The dynamic path sets it on a level change; the fixed path's flag 1 calls
+# f_831f41d0, whose bit 3 the apply block clears in the same frame, before any recompute. So the fixed path kept the dynamic
+# path's last scale (0.75 docked: 1536x864 at every setting). On the fixed path the recompute is also asked for while the 3D's
+# scale is not the chosen one, and the flags +0xe20 bits 3/4 (a hardcoded 0.75 / 0.5 in place of the scale) are not looked at.
+[[site]]
+name = "render.fixedScaleApply"
+function = "f_831f3200"
+offset = 0xcfc
+signature_offset = 0xcf8
+signature = "52800108 b94e2e89 2a080128 b90e2e88 f9471288 f27d051f"   # (mov w8, #8; ldr w9, [x20, #0xe2c]; orr w8, w9, w8; str w8, [x20, #0xe2c]; ldr x8, [x20, #0xe20]; tst x8, #0x18)
+
+[[site]]
+name = "render.fixedScaleFlags"
+function = "f_831f3200"
+offset = 0xd08
+signature_offset = 0xcf8
+signature = "52800108 b94e2e89 2a080128 b90e2e88 f9471288 f27d051f"
+
+# The frame's real time in place of the nominal rate, for a Frame rate cap above 60 (host/nn_vi.c realtime_step writes
+# hos_frame_seconds_bits, 0 at a cap of 60). The engine's two step divides, base / nominal rate: f_80706be0's, the frame's
+# step added to the game clock (x19 its object), and f_83b6ea90's, the global step the rest of the engine reads. Data
+# rules, inlined: base * the frame's seconds when the host gives them, the game's own quotient otherwise.
+[[site]]
+name = "frame.stepDivide"
+function = "f_80706be0"
+offset = 0xe4
+signature_offset = 0xe0
+signature = "1e220c21 1e201828"   # (fcsel s1, s1, s2, eq; fdiv s8, s1, s0)
+
+[[site]]
+name = "frame.stepProbe"
+function = "f_80706be0"
+offset = 0xe4
+signature_offset = 0xe0
+signature = "1e220c21 1e201828"
+
+[[site]]
+name = "frame.globalStepDivide"
+function = "f_83b6ea90"
+offset = 0x68
+signature_offset = 0x64
+signature = "5e21d800 1e201820 bd000100"   # (scvtf s0, s0; fdiv s0, s1, s0; str s0, [x8])
+
+# The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers
+# (game/oot_ocb_hold.h has why; game/oot_ocb_hold.c the rule and HOS_OCB_HOLD_MS). f_832b9880 is the preload manager's
+# update: at +0x548 the unit it chose is in w21 (bit 31: none) and the manager in x19; from there it asks for that unit and
+# lets the others go. The site runs on every way into that instruction (after its label, as the text patch it replaced
+# did), and its callback puts the host's choice in x21 before the game tests it.
+[[site]]
+name = "preload.choice"
+function = "f_832b9880"
+offset = 0x548
+signature_offset = 0x548
+signature = "37f80015/fff8001f 52802508 710042bf aa1303e0"   # (tbnz w21, #31, *; mov w8, #0x128; cmp w21, #0x10; mov x0, x19)
+
+# Sprint (game/oot_sprint.c): two places load Link's input flags, whose bit 4 is the dash input, the game's own run after a
+# roll. Link's movement update (f_804caa80) loads them into x10 for the sprint's start and keep tests; his stance and camera
+# update (f_80c225d0) loads their low byte into x8. Link is in x19 at both. The callbacks OR the bit in while Sprint runs,
+# after each load, where the text patch they replaced put its call.
+[[site]]
+name = "sprint.link"
+function = "f_804caa80"
+offset = 0x3d18
+signature_offset = 0x3d10
+signature = "f9402a6a b9402e69 f940014a 37a00009/fff8001f"   # (ldr x10, [x19, #0x50]; ldr w9, [x19, #0x2c]; ldr x10, [x10]; tbnz w9, #20, *)
+
+[[site]]
+name = "sprint.stance"
+function = "f_80c225d0"
+offset = 0x596c
+signature_offset = 0x5968
+signature = "f9402a68 39400108 37200008/fff8001f"   # (ldr x8, [x19, #0x50]; ldrb w8, [x8]; tbnz w8, #4, *)
+
+# A jump's takeoff above 60 fps (HOS_FPS_TAKEOFF, game/oot_high_fps.h oot_takeoff_rest_speed). f_80b97d10 writes a jump's
+# takeoff speed (sqrt(2 g h) - g dt / 2 along the character's up) to the vector in x19; after its last store the host keeps
+# it (hos_oot_jump_speed). f_804f5030 hands Havok a body's velocity with the world's set-velocity call (its vtable +0x190:
+# x2 the linear velocity, x19 the body's object); before that call the host gives a body handed the takeoff's speed the rest
+# of a 60 fps takeoff step's rise on its next update (hos_oot_takeoff_velocity). The same call is written twice in
+# f_804f5030 (a copy at +0x920); the site is the one the text patch it replaced had, the one after the driven body's other
+# copy (physics.driveTargetOther), found by what it is rather than by words of its own.
+[[site]]
+name = "jump.takeoffSpeed"
+function = "f_80b97d10"
+offset = 0x94
+signature_offset = 0x8c
+signature = "fd4013e8 2d000660 bd000a62"   # (ldr d8, [sp, #0x20]; stp s0, s1, [x19]; str s2, [x19, #8])
+
+[[site]]
+name = "jump.takeoffVelocity"
+function = "f_804f5030"
+in = "physics.driveTargetOther"   # (its function, f_804f5030)
+# (the set-velocity call through the world's vtable slot 0x190 (ldr x8, [x8, #0x190]; blr x8, at +0x1664): of the two after
+# the driven body's other copy, the second; the first hands Havok a zero velocity)
+point = { from = "physics.driveTargetOther", vcall = 0x190, ordinal = 1, of = 2 }
+
+# The gameplay field of view (game/crates/oot/src/fov.rs): the camera update loads its vertical angle (+0x13c) and then writes the angle
+# and its half-angle's sine, cosine and tangent into sead's perspective projection. After that load the host scales the
+# angle, so the game builds both its rendering and its CPU culling from the chosen one.
+[[site]]
+name = "camera.lens"
+function = "f_804e48c0"
+offset = 0xa38
+signature_offset = 0xa38
+signature = "bd413e60 1e210808 bd00a280"   # (ldr s0, [x19, #0x13c]; fmul s8, s0, s1; str s0, [x20, #0xa0])
+
+# The sun's shadow map size (game/oot_shadow.c): each frame the cascade function picks a size from the shadow object's table
+# by quality level, rounds it up to a multiple of 8 (w23) and stores it as the cascades' width and height (+0xe0). After the
+# rounding, before the size is packed and stored, the host raises it to the Shadow resolution row's.
+[[site]]
+name = "shadow.cascadeSize"
+function = "f_80492370"
+offset = 0x680
+signature_offset = 0x680
+signature = "121d7117 d343fee8 aa1703e9 b35d7109 f9007269"   # (and w23, w8, #~7; lsr x8, x23, #3; mov x9, x23; bfi x9, x8, #35, #29; str x9, [x19, #0xe0])
+
+# Steady sun shadows near Link (game/oot_shadow_fit.c): the game refits its sun cascades each frame (f_80733120, once per
+# cascade): it builds a light basis that follows the camera (the call at +0x68), then the tightest box around the cascade's
+# slice in it (f_80733be0). After the basis is built (x19 the cascade) the host gives cascade 0 a world-fixed basis; in the box
+# fit, where its two modes meet (the other mode, w24 == 2, branches to +0x121c, loads w9 and comes back to the ldp), once the
+# slice's bounds are found (s5/s4 min/max x, s2/s3 min/max y; x20 the cascade) it makes them a square of steady size on whole
+# texels. The basis's point is after the call to its builder; the box's guards keep the checks the text after the
+# instructions had: the two modes' branches.
+[[site]]
+name = "shadow.fitBasis"
+function = "f_80733120"
+signature_offset = 0x68
+signature = "94000000/fc000000 1e204120 1e204101 91020260"   # (bl *; fmov s0, s9; fmov s1, s8; add x0, x19, #0x80)
+point = { call = "f_80733620", shift = 1 }   # (+0x6c: the instruction after the call to the basis builder, at +0x68)
+
+[[site]]
+name = "shadow.fitBox"
+function = "f_80733be0"
+offset = 0x31c
+signature_offset = 0x310
+signature = "71000b1f 54000000/ff00001f 2a1f03e9 2d401aa7 1e253892 1e223871 1e203830"   # (cmp w24, #2; b.eq *; mov w9, wzr; ldp s7, s6, [x21]; fsub s18, s4, s5; fsub s17, s3, s2; fsub s16, s1, s0)
+guards = [
+    { offset = 0x314, signature = "54007840" },            # (b.eq +0x121c: the other mode)
+    { offset = 0x121c, signature = "39585289 17fffc3f" },  # (ldrb w9, [x20, #0x614]; b +0x31c: back to the ldp)
+]
+
+# The temporal upscalers' camera jitter (host/rx_backend.c hos_dlss_jitter_clip; DLSS, FSR 4 and FSR 3.1). The game fills each
+# view's uniform buffers in f_806dc520: for each view (x28) it loads the view's projection rows (at +0x1a8, 16 bytes apart) and
+# writes them, and what it makes from them, into the buffers the draws read. After those loads the host adds the jitter to the
+# third lane of the first two rows (P[0][2], P[1][2]) in the registers only: the game's own views keep their projection, so
+# the shadow cascades' fit and culling never see it.
+[[site]]
+name = "jitter.viewRows"
+function = "f_806dc520"
+offset = 0x1e8
+signature_offset = 0x1e8
+signature = "ad415915 1e214044"   # (ldp q21, q22, [x8, #0x20]; fneg s4, s2)
+
+[[site]]
+name = "jitter.viewRowX"
+function = "f_806dc520"
+offset = 0xa6c
+signature_offset = 0xa6c
+signature = "3dc0013a 9106e389"   # (ldr q26, [x9]; add x9, x28, #0x1b8)
+
+[[site]]
+name = "jitter.viewRowY"
+function = "f_806dc520"
+offset = 0xa7c
+signature_offset = 0xa7c
+signature = "3dc00126 91072389"   # (ldr q6, [x9]; add x9, x28, #0x1c8)
+
+# Widescreen and ultrawide (game/oot_wide_sites.c): C after a few of the game's instructions, each reading host values that
+# stay 0 for a 16:9 window. The sites and what each does come from NX2navi's recomp/patches-v111.txt, credited to Ivan0xFF
+# (MIT); the HUD's layout sites from NotRexed/Hookshot#2843; the save picture's is Longshot's own. Each is an after site at
+# the instruction the C used to be spliced after (Lifter.after), its word part of the signature.
+[[site]]
+name = "wide.outSize"
+function = "f_81222ce0"
+offset = 0x204
+signature_offset = 0x204
+signature = "f2c0b408 f80142a8"   # (movk x8, #0x5a0, lsl #32; stur x8, [x21, #0x14])
+
+[[site]]
+name = "wide.outSizeOther"
+function = "f_83213890"
+offset = 0x168
+signature_offset = 0x168
+signature = "f2c0b408 f905b668"   # (movk x8, #0x5a0, lsl #32; str x8, [x19, #0xb68])
+
+[[site]]
+name = "wide.sceneSize"
+function = "f_83213890"
+offset = 0x174
+signature_offset = 0x174
+signature = "f2c08708 f905ba68"   # (movk x8, #0x438, lsl #32; str x8, [x19, #0xb70])
+
+[[site]]
+name = "wide.cameraRatio"
+function = "f_804e48c0"
+offset = 0xa74
+signature_offset = 0xa74
+signature = "bd414260 39002295"   # (ldr s0, [x19, #0x140]; strb w21, [x20, #8])
+
+[[site]]
+name = "wide.projectionRatio"
+function = "f_834a5cc0"
+offset = 0x0
+signature_offset = 0x0
+signature = "2d558400 1e2e1002"   # (ldp s0, s1, [x0, #0xac]; fmov s2, #1.00000000)
+
+[[site]]
+name = "wide.projectionRatioCopy"
+function = "f_8006ec60"
+offset = 0x588
+signature_offset = 0x588
+signature = "2d558ea0 1e2e1004"   # (ldp s0, s3, [x21, #0xac]; fmov s4, #1.00000000)
+
+[[site]]
+name = "wide.projectionRatioCopy2"
+function = "f_8025b910"
+offset = 0x98
+signature_offset = 0x98
+signature = "2d558c00 1e2e1004"   # (ldp s0, s3, [x0, #0xac]; fmov s4, #1.00000000)
+
+[[site]]
+name = "wide.projectionRatioCopy3"
+function = "f_8035a8c0"
+offset = 0xf6c
+signature_offset = 0xf6c
+signature = "2d558440 1e2e1002"   # (ldp s0, s1, [x2, #0xac]; fmov s2, #1.00000000)
+
+[[site]]
+name = "wide.clearance"
+function = "f_8073a4a0"
+offset = 0x3a4
+signature_offset = 0x3a4
+signature = "bd451e6a 1e2c1000"   # (ldr s10, [x19, #0x51c]; fmov s0, #0.50000000)
+
+[[site]]
+name = "wide.clearanceFollow"
+function = "f_8073a4a0"
+offset = 0x1184
+signature_offset = 0x1184
+signature = "bd451e6e f90073ff"   # (ldr s14, [x19, #0x51c]; str xzr, [sp, #0xe0])
+
+[[site]]
+name = "wide.hud"
+function = "f_80794330"
+offset = 0x38
+signature_offset = 0x38
+signature = "ad401041 4f819070"   # (ldp q1, q4, [x2]; fmul v16.4s, v3.4s, v1.s[0])
+
+[[site]]
+name = "wide.bubble"
+function = "f_8022b900"
+offset = 0x9c8
+signature_offset = 0x9c8
+signature = "1e210841 2d040500"   # (fmul s1, s2, s1; stp s0, s1, [x8, #0x20])
+
+[[site]]
+name = "wide.movie"
+function = "f_83b7c710"
+offset = 0x48
+signature_offset = 0x48
+signature = "a941a269 f9402e61 d100a3a2"   # (ldp x9, x8, [x19, #0x18]; ldr x1, [x19, #0x58]; sub x2, x29, #0x28)
+
+[[site]]
+name = "wide.savePicture"
+function = "f_802a46e0"
+offset = 0x144
+signature_offset = 0x144
+signature = "f9400108 d63f0100 90000008/9f00001f 2d438660"   # (ldr x8, [x8]; blr x8; adrp x8, *; ldp s0, s1, [x19, #0x1c])
+
+[[site]]
+name = "ui.calcDirty"
+function = "f_8154a730"
+offset = 0x0
+signature_offset = 0x0
+signature = "b9400008 34000008/ff00001f d503237f d100c3ff a9017bfd a9024ff4 910043fd b940a809"   # (ldr w8, [x0]; cbz w8, *; pacibsp ; sub sp, sp, #0x30; stp x29, x30, [sp, #0x10]; stp x20, x19, [sp, #0x20]; add x29, sp, #0x10; ldr w9, [x0, #0xa8])
+
+[[site]]
+name = "ui.paneDirty"
+function = "f_8154caa0"
+offset = 0x0
+signature_offset = 0x0
+signature = "b9400008 12197909"   # (ldr w8, [x0]; and w9, w8, #0xffffffbf)
+
+[[site]]
+name = "ui.paneNoParent"
+function = "f_8154caa0"
+offset = 0x2f8
+signature_offset = 0x2f8
+signature = "ad4207e0 ad430fe2"   # (ldp q0, q1, [sp, #0x40]; ldp q2, q3, [sp, #0x60])
+
+[[site]]
+name = "ui.paneParent"
+function = "f_8154caa0"
+offset = 0x334
+signature_offset = 0x334
+signature = "b9403008 fd401403"   # (ldr w8, [x0, #0x30]; ldr d3, [x0, #0x28])
+
+[[site]]
+name = "ui.panePlaced"
+function = "f_8154caa0"
+offset = 0x3c4
+signature_offset = 0x3c4
+signature = "fc04c263 a94347f0"   # (stur d3, [x19, #0x4c]; ldp x16, x17, [sp, #0x30])
+
+[[site]]
+name = "ui.paneSize"
+function = "f_8154ac30"
+offset = 0x10
+signature_offset = 0xc
+signature = "910003fd 2d4b0400"   # (mov x29, sp; ldp s0, s1, [x0, #0x58])
+
+[[site]]
+name = "ui.titlePrepare"
+function = "f_815505b0"
+in = "ui.pictureConstants"   # (its function; the bl at +0x140 is the second in that site's signature)
+offset = 0x140
+
+[[site]]
+name = "ui.titleDraw"
+function = "f_81550720"
+in = "ui.pictureDraw"   # (its function, at its entry)
+
+[[site]]
+name = "ui.titleReset"
+function = "f_8156abc0"
+signature = "9100a008 c89ffd1f d65f03c0"   # (add x8, x0, #0x28; stlr x8, [x8]; ret)
+
+[[site]]
+name = "ui.pictureConstants"
+function = "f_815505b0"
+offset = 0x144
+signature_offset = 0x12c
+signature = "910153e1 94000000/fc000000 a9418ae1 910023e8 910153e0 94000000/fc000000 a940a7e8"   # (add x1, sp, #0x54; bl *; ldp x1, x2, [x23, #0x18]; add x8, sp, #8; add x0, sp, #0x54; bl *; ldp x8, x9, [sp, #8])
+
+[[site]]
+name = "ui.pictureDraw"
+function = "f_81550720"
+offset = 0x20
+signature_offset = 0x8
+signature = "a90167fa a9025ff8 a90357f6 a9044ff4 910003fd f9400039 aa0003f6"   # (stp x26, x25, [sp, #0x10]; stp x24, x23, [sp, #0x20]; stp x22, x21, [sp, #0x30]; stp x20, x19, [sp, #0x40]; mov x29, sp; ldr x25, [x1]; mov x22, x0)
+
+[[site]]
+name = "ui.layoutBuilt"
+function = "f_81545b60"
+offset = 0x140
+signature_offset = 0x13c
+signature = "94000000/fc000000 91004260 910003e1"   # (bl *; add x0, x19, #0x10; mov x1, sp)

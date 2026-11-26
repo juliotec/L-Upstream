@@ -1,4 +1,4 @@
-"""Sprint (host/nn_hid.c, the Controls page's line, the Controls tab's Sprint row, gpu/vk/menu/sprint.cpp, host/oot_sprint.c): a
+"""Sprint (host/nn_hid.c, the Controls page's line, the Controls tab's Sprint row, gpu/vk/menu/sprint.cpp, game/oot_sprint.c): a
 control past the Switch's buttons with keys and gamepad inputs that sets the game's dash input in Link's flags, the game's own
 run after a roll, while held or from a press to the next with its Toggle. Off by default.
 
@@ -7,21 +7,21 @@ Sprint module's apply_sprint_layout cut out of gpu/vk/menu/sprint.cpp (C++), aga
 install's defaults are the ones from before Sprint (Shift B, the left stick's press LS) and give Sprint nothing; the row
 turned on gives it Shift and the press (B to V, LS keeping its other input) and turned off puts them back; a player who
 rebound B, Shift or the press, or whose V is taken, or who bound Sprint, keeps theirs. The sources are checked for the
-rest: read_input reads Sprint's key and gamepad input (and a test run's SPRINT, which never reaches the game), npad_states hands host/oot_sprint.c its input only with the row on, the
+rest: read_input reads Sprint's key and gamepad input (and a test run's SPRINT, which never reaches the game), npad_states hands game/oot_sprint.c its input only with the row on, the
 module's row is on the Controls tab and lays the controls out as it changes, the Controls page has Sprint's line, writes
 its pad_ line and lays them out again as it resets.
-host/oot_sprint.c is compiled alone against a fake game (Link's state chain, the actor and event managers): the dash input
+game/oot_sprint.c is compiled alone against a fake game (Link's state chain, the actor and event managers): the dash input
 while held or toggled, ended by Link's state, ZL, standing still (by the frames' time) or the host's reset, kept through
-a roll; A never added; in a conversation the left stick's press handed to the game as LS. nx2/oot_patches.py's two calls
-after the loads of Link's input flags run on text written as the lift writes it.
+a roll; A never added; in a conversation the left stick's press handed to the game as LS. The fake game reaches it through
+the hook sites sprint.link and sprint.stance (after the loads of Link's input flags) as the lift lowers them (tests/sitehooks.py).
 
 Physical review: compare ae8e78b0910d with the updated head using an Xbox controller and keyboard on Windows and a
 controller on Linux or Steam Deck. With Sprint Off and On, release Sprint while steering, press A during Sprint and press the left stick in a conversation;
 capture menu screenshots before and after. Report the Linux build, applicable Tier 1 coverage, lint and CI, and name
 any suite failures also present on the baseline. This fixture does not exercise physical L3 or either platform's input.
-python -I -B tests/test_sprint.py   (needs a C and a C++ compiler)
+python -I -B tests/test_sprint.py [--cc clang] [--cargo cargo]   (needs a C and a C++ compiler; the fake game, clang and cargo)
 """
-import os
+import argparse
 import re
 import subprocess
 import sys
@@ -33,6 +33,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 from compiler_command import compiler_command, windows_arguments  # noqa: E402
 import test_bound_keys  # noqa: E402  (its PRELUDE and the helpers that cut code out of a source)
+import sitehooks  # noqa: E402
+
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+CC = "clang"   # (the fake game's compiler: --cc)
 
 
 
@@ -216,7 +220,7 @@ class SprintTests(unittest.TestCase):
         self.assertLess(read.index("binds_load();"), read.index("AcquireSRWLockShared(&input_bind_lock);"))
         self.assertLess(read.index("AcquireSRWLockShared(&input_bind_lock);"), read.index(enabled))
         self.assertLess(read.index(enabled), read.index("bound_down(HOS_KEY_SPRINT, captured)"))
-        self.assertLess(read.index("ReleaseSRWLockShared(&input_bind_lock);"), read.index("hos_oot_autoload_input();"))
+        self.assertLess(read.index("ReleaseSRWLockShared(&input_bind_lock);"), read.index("game_autoload_input();"))
         self.assertLess(read.index("input_pads[i][k] = pad_bind[i][k]"), read.index("ReleaseSRWLockShared(&input_bind_lock);"))
         self.assertLess(npad.index("read_input(&buttons, &taps, stick);"), npad.index("const int sprint_enabled = sprint_frame;"))
         self.assertIn("const int sprint_down = (sprint_enabled ? sprint_now : 0) | (sprint_enabled && synthetic_sprint ? SPRINT_KEY : 0);",
@@ -308,7 +312,7 @@ class SprintTests(unittest.TestCase):
                         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
 
-# host/oot_sprint.c against a fake game: Link's pointer chain and the actor and event managers in a small memory map. Each
+# game/oot_sprint.c against a fake game: Link's pointer chain and the actor and event managers in a small memory map. Each
 # frame reads the controller (hos_sprint_input, as npad_states hands it Sprint's input) and then runs Link's movement
 # update (hos_sprint_link, at 0x804ce798) and his stance update (hos_sprint_stance, at 0x80c27f3c), which must find the
 # dash input (bit 4) in his flags exactly while the sprint is on.
@@ -387,7 +391,7 @@ static void walk_on(void) {
 }
 
 /* What npad_states hands over this frame (the Sprint row, its Toggle, the left stick's press as Sprint's input) */
-/* (blocked: host/oot_sprint.c's SPRINT_BLOCKED and SPRINT_AWAY; Insert open is both, the focus lost AWAY) */
+/* (blocked: game/oot_sprint.c's SPRINT_BLOCKED and SPRINT_AWAY; Insert open is both, the focus lost AWAY) */
 enum { BLOCKED = 1, AWAY = 2, PAUSE = 4 };   /* (and PAUSE: Plus or Minus pressed) */
 static int on = 1, toggle, l3 = 1, blocked, reset;
 /* one frame: the controller read with Sprint held or not and these buttons (what reaches the game in *game_saw), then
@@ -399,10 +403,10 @@ static int frame(int sprint, uint64_t buttons, uint64_t *game_saw) {
     Ctx c;
     memset(&c, 0, sizeof c);
     c.x[19] = LINK, c.x[10] = 0x1, c.x[8] = 0x1;   /* (other flags stay) */
-    hos_sprint_link(&c);
+    link_update(&c);   /* (the sites' hooks, as the lift emits them after each load: SITES below) */
     const int link = (c.x[10] & 0x10) != 0;
     assert(c.x[10] & 0x1);
-    hos_sprint_stance(&c);
+    stance_update(&c);
     const int stance = (c.x[8] & 0x10) != 0;
     assert(link == stance);
     return link;
@@ -670,27 +674,40 @@ int main(void) {
 """
 
 
+def sprint_sites():
+    """the supported build's two Sprint sites, each after its load of Link's input flags (sitecheck: placed, with its slot)"""
+    from sitecheck import site
+    return (site("sprint.link", "f_804caa80", "after", 0x3d18), site("sprint.stance", "f_80c225d0", "after", 0x596c))
+
+
 def engine_source():
-    text = (ROOT / "host" / "oot_sprint.c").read_text(encoding="utf-8")
+    from sitecheck import callback, slot
+    text = (ROOT / "game" / "oot_sprint.c").read_text(encoding="utf-8")
     text = re.sub(r"^#include.*$", "", text, flags=re.M)
     text = text.replace("extern volatile uint32_t hos_frame_seconds_bits;", "")
     text = text.replace("int hos_mem_region(uint64_t addr, uint64_t size);", "")
-    return ENGINE_PRELUDE + text + ENGINE_GAME
+    # (the sites' callbacks from game/oot_sites.c, their slots, and each site's hook as the lift lowers it (tests/sitehooks.py): Link's two
+    # updates are the hooks after the loads, so the fake game reaches game/oot_sprint.c the way the lifted game does)
+    link, stance = sprint_sites()
+    sites = ("#define A64_NOESC\n" + callback("int hos_site_sprint_link(") + "\n" + callback("int hos_site_sprint_stance(") + "\n"
+             + slot(link) + slot(stance)
+             + "static void link_update(Ctx *c) {\n" + sitehooks.line(link) + "\n}\n"
+             + "static void stance_update(Ctx *c) {\n" + sitehooks.line(stance) + "\n}\n")
+    return ENGINE_PRELUDE + text + sites + ENGINE_GAME
 
 
 class SprintEngineTests(unittest.TestCase):
-    """host/oot_sprint.c: the game's dash input while Sprint runs, held or toggled, against a fake game"""
+    """game/oot_sprint.c: the game's dash input while Sprint runs, held or toggled, against a fake game"""
 
     def test_engine(self):
-        compiler = compiler_command("CC", "gcc", "clang")
-        if not compiler or not compiler[0]:
-            self.skipTest("no C compiler")
         with tempfile.TemporaryDirectory(prefix="longshot-sprint-engine-") as tmp:
             tmp = Path(tmp)
-            (tmp / "t.c").write_text(engine_source(), encoding="utf-8")
+            source = engine_source()
+            (tmp / "t.c").write_text(source, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
-            build = subprocess.run([*compiler, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
-                                    str(tmp / "t.c"), "-o", str(binary)], text=True, capture_output=True)
+            build = subprocess.run([CC, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+                                    str(tmp / "t.c"), *sitehooks.objects(tmp, source), "-o", str(binary)],
+                                   text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
@@ -700,7 +717,7 @@ class SprintEngineTests(unittest.TestCase):
         npad = test_bound_keys.block(hid, "static void npad_states(")
         self.assertIn("const int sprint_toggle = sprint_enabled && sprint_toggle_frame;", npad)
         self.assertIn("buttons = hos_sprint_input(buttons, sprint_enabled, sprint_down & (SPRINT_KEY | SPRINT_PAD),", npad,
-                      "npad_states does not hand Sprint's input to host/oot_sprint.c")
+                      "npad_states does not hand Sprint's input to game/oot_sprint.c")
         self.assertLess(npad.index("buttons = hold_toggle_apply("), npad.index("buttons = hos_sprint_input("),
                         "Sprint must see the buttons as the game will get them")
         self.assertIn("SPRINT_L3", test_bound_keys.block(hid, "static int pad_sprint_down("),
@@ -720,69 +737,28 @@ class SprintEngineTests(unittest.TestCase):
         self.assertIn("host->binding(HOS_BIND_SPRINT_TOGGLE, 0, 0)", replay, "the host cannot see Sprint's Toggle")
 
 
-# Independent synthetic functions and anchors for the patch machinery.
-LINK_FN = ('#include "a64.h"\n' + "void f_80001234(Ctx *c) {\n"
-           "    prepare();\n    sample_value();\n    finish();\n}\n")
-STANCE_FN = ("void f_80005678(Ctx *c) {\n"
-             "    begin();\n    sample_byte();\n    check_value();\n}\n")
+class SprintSiteTests(unittest.TestCase):
+    """the hook sites sprint.link and sprint.stance (game/sites/sites.toml) in place of the text patch"""
 
-
-class SprintPatchTests(unittest.TestCase):
-    """nx2/oot_patches.py: matching and insertion on independently authored synthetic text"""
-
-    def setUp(self):
-        sys.path.insert(0, str(ROOT / "nx2"))
-        import oot_patches
-        self.p = oot_patches
-        # Exercise both public patch paths and touches with invented sites.
-        for name, value in {
-            "SPRINT_LINK_HEAD": "void f_80001234(Ctx *c) {\n",
-            "SPRINT_LINK_AT": r"prepare\(\);\s*(?P<site>sample_value\(\);\s*)finish\(\);",
-            "SPRINT_STANCE_HEAD": "void f_80005678(Ctx *c) {\n",
-            "SPRINT_STANCE_AT": r"begin\(\);\s*(?P<site>sample_byte\(\);\s*)check_value\(\);",
-        }.items():
-            old = getattr(oot_patches, name)
-            self.addCleanup(setattr, oot_patches, name, old)
-            setattr(oot_patches, name, value)
-
-    def test_patch(self):
-        p = self.p
-        out, n = p.patch_sprint_link(LINK_FN)
-        self.assertEqual(n, 1)
-        self.assertIn(p.SPRINT_LINK_CALL + "finish();", out)
-        self.assertEqual(out.count(p.SPRINT_DECL), 1)
-        self.assertEqual(p.patch_sprint_link(out), (out, 1), "a second run changes the code")
-        out, n = p.patch_sprint_stance(out + STANCE_FN)
-        self.assertEqual(n, 1)
-        self.assertIn(p.SPRINT_STANCE_CALL + "check_value();", out)
-        self.assertEqual(out.count(p.SPRINT_STANCE_CALL), 1)
-        self.assertEqual(out.count(p.SPRINT_DECL), 1, "declared once for both")
-        whole, _, _ = p.patch_file(LINK_FN + STANCE_FN, "t.c", True)
-        self.assertEqual((whole.count(p.SPRINT_LINK_CALL), whole.count(p.SPRINT_STANCE_CALL)), (1, 1),
-                         "patch_file does not run the two")
-
-    def test_drifted(self):
-        """another build's code: left as it was, and the count says so (report() warns)"""
-        p = self.p
-        plain = "void f_80000000(Ctx *c) {\n}\n"
-        self.assertEqual(p.patch_sprint_link(plain), (plain, 0))
-        other = LINK_FN.replace("sample_value()", "other_value()")
-        self.assertEqual(p.patch_sprint_link(other), (other, 0))
-        other = STANCE_FN.replace("check_value()", "other_check()")
-        self.assertEqual(p.patch_sprint_stance(other), (other, 0))
-        duplicate = LINK_FN.replace("    finish();", "    finish();\n    prepare(); sample_value(); finish();")
-        self.assertEqual(p.patch_sprint_link(duplicate), (duplicate, 0))
-        report = (ROOT / "nx2" / "oot_patches.py").read_text(encoding="utf-8")
-        self.assertIn('(total["sprint link"], total["sprint stance"]) != (1, 1)', report,
-                      "report() does not warn when a site is missing")
-        self.assertNotIn("hos_sprint_press_mask", report, "the old press mask is still patched in")
-
-    def test_kept_from_locals(self):
-        """nx2/guest_locals.py keeps the context in a function the patches change: both are found by touches()"""
-        p = self.p
-        self.assertTrue(p.touches(LINK_FN.replace('#include "a64.h"\n', "")))
-        self.assertTrue(p.touches(STANCE_FN))
+    def test_sites(self):
+        link, stance = sprint_sites()
+        # (each signature covers the load the callback changes and the loads of Link before it, x19 at both)
+        self.assertEqual(link.signature_offset + 8, link.offset)
+        self.assertEqual([w for w, _ in link.signature[:3]], [0xf9402a6a, 0xb9402e69, 0xf940014a],
+                         "sprint.link is not after ldr x10, [x10] (after ldr x10, [x19, #0x50]; ldr w9, [x19, #0x2c])")
+        self.assertEqual(stance.signature_offset + 4, stance.offset)
+        self.assertEqual([w for w, _ in stance.signature[:2]], [0xf9402a68, 0x39400108],
+                         "sprint.stance is not after ldrb w8, [x8] (after ldr x8, [x19, #0x50])")
+        from sitecheck import callback
+        self.assertIn("hos_sprint_link(c);\n    return 0;", callback("int hos_site_sprint_link("))
+        self.assertIn("hos_sprint_stance(c);\n    return 0;", callback("int hos_site_sprint_stance("))
 
 
 if __name__ == "__main__":
-    raise SystemExit(unittest.main(verbosity=1))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cc", default="clang")
+    ap.add_argument("--cargo")
+    args, rest = ap.parse_known_args()
+    CC = args.cc
+    sitehooks.use(args.cc, args.cargo)
+    raise SystemExit(unittest.main(argv=[sys.argv[0]] + rest, verbosity=1))

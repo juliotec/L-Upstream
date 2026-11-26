@@ -16,6 +16,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+# (a headers folder the compiler searches anyway, /usr/include: no -isystem for it, which would put it before the C++
+# library's own and break <cstdlib>'s #include_next <stdlib.h>)
+SYSTEM_INCLUDES = (Path("/usr/include"), Path("/usr/local/include"))
 VK = ROOT / "gpu" / "vk"
 
 
@@ -93,7 +96,7 @@ def main():
             raise SystemExit("FAIL: ub_snapshot_wanted no longer returns device_policy.h's ub_snapshot (a second rule?)")
         cpp.write_text(FIXTURE.replace("@@DECISION@@", decision), encoding="utf-8")
         # (-isystem: the renderer's headers are not this check's to warn about)
-        headers = ["-isystem", str(VK)] + (["-isystem", str(args.headers)] if args.headers else [])
+        headers = ["-isystem", str(VK)] + (["-isystem", str(args.headers)] if args.headers and args.headers.resolve() not in SYSTEM_INCLUDES else [])
         r = subprocess.run([args.cxx, "-std=c++20", "-include", str(VK / "compat" / "longshot_env.h"), "-Wall",
                             "-Wextra", "-Werror", *headers, str(cpp), "-o", str(exe)], capture_output=True, text=True, timeout=120)
         if r.returncode:

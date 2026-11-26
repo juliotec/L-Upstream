@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import struct
 import subprocess
-import sys
 import tempfile
 import zlib
 
@@ -13,8 +12,6 @@ import zlib
 def main():
     probe_source = Path(__file__).resolve().parent
     root = probe_source.parents[1]
-    sys.path.insert(0, str(root / "nx2"))
-    from reshade_fx import write_preprocessor
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reshade-source", default=root / "third_party" / "reshade_fx", type=Path,
@@ -22,6 +19,7 @@ def main():
     parser.add_argument("--shader-dir", type=Path, help="optionally test the Shaders directory of reshade-shaders")
     parser.add_argument("--spirv-headers", required=True, type=Path, help="include directory containing spirv.hpp")
     parser.add_argument("--cxx", default="clang++", help="C++ compiler (LLVM-MinGW on Windows)")
+    parser.add_argument("--cargo", default="cargo", help="cargo, which writes the preprocessor as the build adapts it")
     args = parser.parse_args()
 
     bridge = root / "gpu" / "vk" / "reshade"
@@ -34,7 +32,11 @@ def main():
     windows = os.name == "nt"
     with tempfile.TemporaryDirectory(prefix="longshot-fx-") as temp:
         tmp = Path(temp)
-        sources.append(write_preprocessor(upstream, tmp / "effect_preprocessor.cpp"))
+        # (the preprocessor as the build adapts it: builder/crates/build-compile's reshade_preprocessor)
+        adapted = tmp / "effect_preprocessor.cpp"
+        subprocess.run([args.cargo, "run", "-q", "--release", "-p", "build-compile", "--example", "reshade_preprocessor",
+                        "--", str(upstream), str(adapted)], cwd=root / "builder", check=True)
+        sources.append(adapted)
         exe = tmp / ("fx_probe.exe" if windows else "fx_probe")
         # Upstream FX uses filesystem::u8string as a std::string (/Zc:char8_t- with MSVC).
         command = [args.cxx, "-std=c++20", "-O0", "-fno-char8_t"]

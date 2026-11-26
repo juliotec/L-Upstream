@@ -13,15 +13,15 @@ Longshot's shader hashes; their notes say how. They hold the same records as any
   - the draw state it was built with
 
   There are no shaders in it, only their hashes. A player's build turns those hashes back into shaders from the
-  player's own `longshot_shaders.bin`. `nx2/pipeline_states.py` documents the record layout.
+  player's own `longshot_shaders.bin`. `scripts/pipeline_states.py` documents the record layout.
 - **Compute programs:** a record can also name a compute program the game ran (culling, terrain, post-processing). It
   holds the hash of that one shader and nothing else, because a compute pipeline has no formats or draw state. It is
   the same on every GPU and with any settings. The tools count these as `compute` beside `graphics` and `mesh`.
-- **What it is for:** `nx2/make_game.py` merges every list here into the game folder's
+- **What it is for:** longshot-builder (build-assets' `pipelines.rs`) merges every list here into the game folder's
   `longshot_pipeline_states_shipped.bin`. The first start's shader preparation then builds these pipelines before the
   title screen, so the first field load doesn't wash out white while they compile. Every start also keeps the listed
   compute programs' pipelines ready, together with the ones the player's own play has run, so a program is not set up
-  the first time the game runs it. `nx2/pipeline_states.py check` stops when the merged list names more than 3584
+  the first time the game runs it. `scripts/pipeline_states.py check` stops when the merged list names more than 3584
   compute programs (`COMPUTE_MOST`): the game keeps memory for each one listed and never drops one itself, so raise
   the number with a measurement or prune the list.
 
@@ -33,9 +33,9 @@ Longshot's shader hashes; their notes say how. They hold the same records as any
 | `contrib/<name>.bin.xz`, `contrib/<name>.md` | one contributor each | added; only its owner adds to it |
 
 Each list has a note beside it (`<name>.md`) that says where it comes from: who, GPU and driver, build, settings and
-route, and how many pipelines it holds. `nx2/pipeline_states.py check` stops on a list without one.
+route, and how many pipelines it holds. `scripts/pipeline_states.py check` stops on a list without one.
 
-**The merge** (`nx2/pipeline_states.py merge`, and `nx2/make_game.py` at every build) takes the tour's list first, then
+**The merge** (`scripts/pipeline_states.py merge`, and longshot-builder at every build) takes the tour's list first, then
 the contributed ones in the order of their names, and keeps each pipeline once. Its output depends only on these files:
 the same files always give the same bytes. The lists are written xz-compressed with fixed settings, and the merged list
 beside the game is not compressed.
@@ -52,13 +52,13 @@ issue: **Save my pipeline list** (the game's menu, Debug tab, or the builders' l
 pipeline list*) zips the game folder's `longshot_pipeline_states.bin` with a filled-in report
 (`longshot_pipeline_report.txt`: the version, OS, GPU and driver, settings and mods), and nothing else. A maintainer then
 adds it as below, with the report's lines as `--gpu`, `--build`, `--settings` and `--route`. The zip is made by
-`gpu/vk/pipeline_share.h` in the game and `nx2/pipeline_share.py` in the builders, after the same checks as
-`nx2/pipeline_states.py --check`. The list goes into the zip as the game wrote it, so the compute programs the player's
+`gpu/vk/pipeline_share.h` in the game and `longshot-builder share` (build-assets' `share.rs`) in the builder, after the same checks as
+`scripts/pipeline_states.py --check`. The list goes into the zip as the game wrote it, so the compute programs the player's
 game ran are in it, and the report's `Pipelines` line counts them. Lists from builds before the compute records hold
 none and are taken as before.
 
 **A sent list is someone else's file.** Never run or unpack anything else from a zip: take the one list out and give
-it to `nx2/pipeline_states.py --check`, then `add`. Both read it the same way and refuse it, writing nothing, unless
+it to `scripts/pipeline_states.py --check`, then `add`. Both read it the same way and refuse it, writing nothing, unless
 it is exactly a list: at most 256 MB (as a file and unpacked), the magic and record size of a version this build
 reads, whole records with nothing after them, only record kinds this build knows, a compute record that holds its hash
 and nothing else, and no more than 8192 compute programs (more than the game has). A record's bytes are only compared and counted.
@@ -75,10 +75,10 @@ With a clone:
 3. Add it, from the repository's root:
 
    ```sh
-   python -I nx2/pipeline_states.py add <github user>-<what you played> <game folder>/longshot_pipeline_states.bin \
+   python -I scripts/pipeline_states.py add <github user>-<what you played> <game folder>/longshot_pipeline_states.bin \
        --who "<github user>" --gpu "<GPU>, driver <version>, <OS>" --build "main at <commit>" \
        --settings "<resolution, upscaler, frame generation, mods>" --route "<what you played>"
-   python -I nx2/pipeline_states.py check
+   python -I scripts/pipeline_states.py check
    ```
 
    `add` writes `contrib/<name>.bin.xz` with only the pipelines that are new, and its note `contrib/<name>.md`. Running
@@ -91,7 +91,7 @@ note, and record at settings that many players use. Builds from now on write ver
 the game's own NVN formats and mesh draws, which each GPU maps to its own formats and to its mesh shaders or the mesh
 fallback, so a list recorded on one GPU and at one upscaler, HDR mode or output size prepares the pipelines of the
 others. The lists here are still version 1; the merge converts them as soon as one source is version 2
-(`nx2/pipeline_states.py --v2` converts a list on its own). When the record format changes, each list here is
+(`scripts/pipeline_states.py --v2` converts a list on its own). When the record format changes, each list here is
 converted to the new format (or recorded again) in place, and the layout stays the same.
 
 ## The tour's list
@@ -107,7 +107,7 @@ python -I scripts/pipeline_tour.py tour --game <game folder> --out <tour dir> --
 which runs, for the parts' lists:
 
 ```sh
-python -I nx2/pipeline_states.py tour <tour lists>... --gpu "..." --build "main at <commit>" --settings "..." --route "..."
+python -I scripts/pipeline_states.py tour <tour lists>... --gpu "..." --build "main at <commit>" --settings "..." --route "..."
 ```
 
 Nothing else writes `tour.bin.xz`, so it is a function of the build and the tour's route. Contributed lists are never

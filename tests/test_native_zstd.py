@@ -697,10 +697,24 @@ def build(cxx, tmp, broken=False, conc=False):
     return exe
 
 
+def site_checks():
+    """the two decodes reach the host at their entries, the hook sites zstd.stream and zstd.frames, which return with the
+    host's x0 when it answers 1 (the text patches they replaced put `if (hos_zstd_...(c)) return;` first)"""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+    from sitecheck import check, site, callback
+    for name, function, fn, call in (("zstd.stream", "f_80115c80", "hos_site_zstd_stream", "hos_zstd_stream(c)"),
+                                     ("zstd.frames", "f_8010b380", "hos_site_zstd_frames", "hos_zstd_frames(c)")):
+        x = site(name, function, can_return=True)
+        check(x.at == "entry" and x.can_return, "%s does not return when the host did the call" % name)
+        check(callback("int %s(" % fn).endswith("{ return %s; }" % call), "%s's callback is not %s's answer" % (name, call))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
+    site_checks()
     with tempfile.TemporaryDirectory(prefix="native-zstd-") as tmp:
         exe = build(a.cxx, tmp)
         failed = checks(exe, tmp)

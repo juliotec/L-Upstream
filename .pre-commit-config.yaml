@@ -13,7 +13,10 @@ repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.22.1
     hooks:
-      - id: gitleaks
+      # (the same scan, by mise.toml's prebuilt gitleaks on PATH: the golang hook built it with a Go toolchain it
+      # downloaded, 300 MB of the CI image)
+      - id: gitleaks-system
+        pass_filenames: false   # (as the golang hook: gitleaks reads the staged changes itself)
   - repo: https://github.com/compilerla/conventional-pre-commit
     # v4.5.0
     rev: 33b50eb042bee26eac0ee96ad84aa9c1b4dccdd8
@@ -38,16 +41,9 @@ repos:
       - id: ruff   # (the hook's entry passes --force-exclude itself; given again, ruff refuses to run)
   - repo: local
     hooks:
-      # manual until magicbeandev/ci@0.1.0 is published (hook needs the registry orb).
-      - id: circleci-config-validate
-        name: circleci config validate
-        stages: [manual]
-        entry: bash -c 'MB_ORB_DIR="${MB_ORB_DIR:?}"; bash "$MB_ORB_DIR/tools/validate.sh" "$(git rev-parse --show-toplevel)"'
-        language: system
-        pass_filenames: false
       - id: shellcheck-scripts
         name: ShellCheck (packaging scripts)
         entry: bash -c 'shellcheck -x -S error "$@"' --
         language: system
         types: [shell]
-        files: ^scripts/(linux|windows)/.*\.sh$
+        files: ^(scripts/linux|builder/tools)/.*\.sh$

@@ -40,7 +40,7 @@ def main():
         constants.extend(matches)
     types = source[source.index("enum { K_VOICE"):source.index("static CRITICAL_SECTION lock;")]
     queue = source[source.index("enum { OP_VOICE_RELEASE"):source.index("static int64_t last_update_ns;")]
-    runtime = (ROOT / "third_party/a64-kit/rt/a64_rt.c").read_text(encoding="utf-8")
+    runtime = (ROOT / "builder/rt/a64_rt.c").read_text(encoding="utf-8")
     actual = ["\n".join(constants), types, """
 static Voice voices[MAX_VOICES];
 static Mix mixes[MAX_MIXES];

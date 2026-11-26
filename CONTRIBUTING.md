@@ -1,6 +1,6 @@
 # Contributing to Longshot
 
-Longshot is a static recompilation of a supported console game: the game's AArch64 code is lifted to C, the Horizon OS
+Longshot is a static recompilation of a supported console game: the game's AArch64 code is lifted to LLVM IR and compiled, the Horizon OS
 and NVN2 are implemented natively, and the GPU work is replayed on Vulkan. No emulator is involved, and the game is
 built on your PC from your own copy.
 
@@ -14,12 +14,14 @@ This page has the rules that keep the project out of trouble and where to go nex
 will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
-- `work/` and everything in it (the extracted dump, `image.bin`, the lifted C, test builds), and the development folder
-  (`python -I scripts/dev.py paths`: bases, stores, runs and screenshots);
+- the builder's work folders and stores (`~/.cache/longshot-builder`, `%LOCALAPPDATA%\Longshot\Builder`, or the
+  folder `--cache` names: the game's code modules, `image.bin`, the lifted IR in `gen/`, the objects), `longshot_romfs.idx`,
+  `work/` and everything in it, and the development folder (`python -I scripts/dev.py paths`: bases, stores, runs and
+  screenshots);
 - `longshot.exe`, `longshot_vk.dll` and other build output, development bases, packs and runtimes, run profiles
   (perf or Tracy captures), frame dumps, and the game folder's `cache/` (`longshot_programs.bin` and its `.idx`,
-  `longshot_pipelines.bin`, `longshot_vk_pipelines.bin`). The play profiles in `assets/profiles/` (the hot list and the
-  renderer's profile) are not on this list: they hold no game code or data and are committed
+  `longshot_pipelines.bin`, `longshot_vk_pipelines.bin`). The play profiles in `assets/profiles/` (the guest profile and
+  the renderer's profile) are not on this list: they hold no game code or data and are committed
   ([their README](assets/profiles/README.md)). Nor are the routes in `assets/routes/`: input recordings made with
   `HOS_INPUT_ROUTE=1` that hold the input, Link's positions and the camera's angles as numbers, no guest words and no
   addresses, checked by `dev.py route check` ([their README](assets/routes/README.md)). Any other input recording
@@ -78,18 +80,9 @@ Then claim something in the team room before you start on it ([claiming](docs/de
 
 ## CI
 
-CI is moving from Forgejo Actions to CircleCI, and both run until the cutover: [CI](docs/dev/reference/ci.md) says what
-runs when, on which runners. Run `mise run lint` and `mise run test` before you push, and put the results in the pull
-request.
-
-- **CircleCI:** sign up at https://circleci.com/signup and ask in Discord to be added to the MagicBeanDev org, so you can see runs, read logs and rerun jobs.
-- **CircleCI CLI:** `mise install` installs the pinned version, or see the [official install docs](https://circleci.com/docs/guides/toolkit/circleci-cli/). Run `circleci auth login` once.
-- **CircleCI MCP server**, so an AI agent can read failures and logs and rerun jobs. Claude Code: `claude mcp add --transport http circleci-mcp-server https://mcp.circleci.com/v1/mcp`, then `/mcp` and Authenticate. Cursor: search "circleci" in the MCP marketplace.
-- **CircleCI docs MCP**, so an agent can look things up in CircleCI's docs (no account needed): `claude mcp add --transport http circleci-docs https://circleci.mcp.kapa.ai`.
-- **Chunk CLI** (optional) runs this repo's checks on a remote CircleCI sidecar, handy for an agent or a machine without the toolchain. Install with `brew install CircleCI-Public/circleci/chunk` (Windows: see its [README](https://github.com/CircleCI-Public/chunk-cli)), run `chunk auth login`, then `chunk sidecar create`, `chunk sidecar sync` and `chunk validate`. The commands it runs are in `.chunk/config.json`.
-
-The software-Vulkan fixtures run only by hand: on Forgejo, *Actions* > *Authored Vulkan fixtures* > *Run workflow*, or
-locally ([run the checks](docs/dev/developing.md#run-the-checks)).
+CI is Forgejo Actions: [CI](docs/dev/reference/ci.md) says what runs when, on which runners. Its runs and logs are in the
+repository's *Actions* tab, linked from each pull request's checks. Run `mise run lint` and `mise run test` before you push,
+and put the results in the pull request.
 
 ## Licensing
 
@@ -104,8 +97,9 @@ replacements for the console's functions are written from such facts; describe t
 public source when there is one.
 
 The third-party parts (Eden, suyu, Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus
-fonts, zbic, the a64-kit tools, AMD's FidelityFX headers and SDK, the CRT shaders, Kenney's input prompts and Tracy,
-among others) keep their own notices: preserve them, and don't relicense their code. NVIDIA's DLSS
+fonts, zbic, AMD's FidelityFX headers and SDK, the CRT shaders, Kenney's input prompts and Tracy, among
+others; and a64-kit, whose notice for host/ and builder/rt is host/NOTICE.TOTKPort.md) keep their own notices: preserve
+them, and don't relicense their code. NVIDIA's DLSS
 SDK is not one of them: it is never in the repository ([upscaler SDKs](docs/dev/setup.md#upscaler-sdks-optional)). Nor
 is Intel's `libxess.dll` (Intel's license): only XeSS's MIT API headers are (`third_party/xess`), and the player puts the
 DLL beside the game ([optional upscalers](docs/user/advanced.md#optional-upscalers)).

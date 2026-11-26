@@ -3,7 +3,7 @@
 A fork of the Horizon OS layer of NotRexed's a64-kit (`hos/`, TOTKPort commit `e88744a`, 2026-10-31), the runtime
 that runs Tears of the Kingdom natively. It replaces the Nintendo SDK at the `nn::` boundary: an
 `HLE(<mangled name>)` function here stands in for that SDK function wherever the game calls it
-(`nx2/standalone.py` picks them up at lift time). The rest of the SDK runs as lifted code.
+(the builder binds the game's calls of them to the host: builder/crates/build-driver/src/hle.rs). The rest of the SDK runs as lifted code.
 
 Taken unmodified except as noted:
 `hos.h`, `hos_main.c`, `hos_mem.c`, `hos_thread.c`, `hos_svc.c`, `hos_hostcall.c`, `nn_os_sync.c`, `nn_fs.c`,
@@ -14,7 +14,7 @@ mkw-recomp's changes:
   code was lifted for. The heap starts at 64 GB, and address regions grow down from 512 GB (`hos.h`). The runtime
   commits what it hands out (`hos_commit`), and `mkw_glue.c` commits anything else on first touch. TOTK's whole
   4 GB window was committed up front.
-- `hos_main.c`: the image base comes from `gen/hos_image.c`.
+- `hos_main.c`: the image base comes from `gen/image.c`.
 - `hos_mem.c`: the default memory size is a Switch 2 application's 9809 MB.
 - `hos_svc.c`: MKW's program id, and the code region at the image base.
 - **Graphics.** `nvn_native.c` is TOTKPort's native NVN layer for NVN2: the Switch 2 driver's device limits (read by
@@ -27,11 +27,12 @@ mkw-recomp's changes:
   loop header too (`mkw_glue.c` `a64_poll`), and equal-priority holders yield after a 2 ms slice.
 - **Left out:** files bound to TOTK or its Maxwell GPU: `gpu.c`, `nvn_trace.c`, `hos_prof.c`, `mods.c`, `movie*.c`,
   `nn_image_debug.c`, `totk_*.c`. `mkw_glue.c` stands in for the hooks the taken files call into them. `mods.c`
-  came back later as Hookshot's `host/mods.c`: the RomFS part of Skybound's loader (`NotRexed/SkyboundTotk`, MIT).
+  came back later as Hookshot's `game/mods.c`: the RomFS part of Skybound's loader (`NotRexed/SkyboundTotk`, MIT).
   Its list, order and switches, the resource size table's merge (`restbl.c`, `restbl.h`) and the cheat VM (`cheats.c`)
   are after valentderah/totk-pc-recomp's `runtime/mods.c`, `romfs.c`, `restbl.c` and `cheats.c` (MIT, Copyright (c) 2026
-  Valiantsin Dzerakh; its notice is in `restbl.h`), and `nx2/exefs_patches.py` after its `tools/exefs_patches.py`.
+  Valiantsin Dzerakh; its notice is in `restbl.h`), and the ExeFS patches' parse (builder/crates/game-files/src/patches.rs) after its `tools/exefs_patches.py`.
   `zs.c` reads the game's zstd files with third_party/zstd's decoder.
 
-Licensing follows a64-kit: GPL, through suyu's translator in the lifted code (see
-`third_party/a64-kit/NOTICE.TOTKPort.md`).
+TOTKPort's notice for the parts taken from it is `NOTICE.TOTKPort.md` here (it came with a64-kit, which the old
+builder vendored as third_party/a64-kit; its paths are TOTKPort's). The lifter's runtime (builder/rt) is after a64-kit's
+`rt/`. A game build is GPL through the renderer's suyu and Eden code (`gpu/PROVENANCE.md`).

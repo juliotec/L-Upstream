@@ -1,15 +1,17 @@
-"""A song's playback after the ocarina above 60 fps (nx2/oot_patches.py patch_song_cue, host/oot_high_fps.h oot_song_cue).
+"""A song's playback after the ocarina above 60 fps (the hook sites song.noteCue*, game/oot_high_fps.h oot_song_cue).
 
 After a song is played on the ocarina the game plays its melody and shows its notes one at a time with it. Each update while
 the melody plays, the playback (f_832b2af0; f_832b2dc0 is the ocarina's other melody playback, the same code) asks f_832b7b50
 whether the note flag is set: a word beside the melody's sound handle that the sound engine sets when the melody reaches a note
 and clears on its next run. When it is set, the playback goes on to the next note. The sound engine runs in the sound job,
 which runs at 60 Hz above 60 fps, so the flag stayed set for two or three game updates at 120 to 165 fps and each one went on a
-note: the notes came two or three at a time, ahead of the music. The patch passes the flag through the host after each of the
-two calls: read again before the sound job has run again, a set flag is the same note.
+note: the notes came two or three at a time, ahead of the music. The sites (before the instruction after each of the two calls,
+which nothing else jumps to; game/sites/sites.toml, game/oot_sites.c) pass the flag through the host: read again before the
+sound job has run again, a set flag is the same note.
 
 An authored update for each playback (the call's lift text, the game's branch on its result, a stand-in for going on a note)
-goes through patch_file and is compiled with host/oot_high_fps.c whole (guest memory, its lock and the switches as stand-ins)
+is built with the sites' hooks after the calls as the lift lowers them (tests/sitehooks.py) and, side by side, with the text patch's lines they
+replaced (OLD, as main had them), each compiled with game/oot_high_fps.c whole (guest memory, its lock and the switches as stand-ins)
 and a stand-in sound engine that sets the flag for one run at each note of a six-note melody (Zelda's Lullaby's spacing, as
 the game played it at 60 fps). Frames run as the game runs them: the sound job's phases through the host's gate, then both
 playbacks:
@@ -21,25 +23,29 @@ playbacks:
   60 fps (steps of 0.98 to 1.02) with the pair at four places in the melody: the flag set again by the next run is a new
   note, however close in time the two runs are;
 - at a cap of 60 the host hands back the game's own: a playback read twice a frame goes on two notes at each, as the game would;
-- the unpatched updates compiled the same way fail the 120 fps check (the bug, shown without the fix);
-- the patch is scoped to its two functions, a second run changes nothing, and a changed anchor is left alone with a warning.
+- the updates without the hooks (or with their flags off) compiled the same way fail the 120 fps check (the bug, shown
+  without the fix).
 No game files or lifted function body are used.
 
-python -I -B tests/test_song_note_cue.py [--cc gcc]
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_song_note_cue.py [--cc clang] [--cargo cargo]
 """
 import argparse
-import contextlib
-import io
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import site, callback, slot  # noqa: E402
+import sitehooks  # noqa: E402
+
+OLD = "    c->x[0] = hos_oot_song_cue(%d, c->x[0]);   /* (nx2/oot_patches.py: the note flag once a note above 60 fps) */\n"
 
 # (the two playbacks as the lift writes the call and the branch on its result; the game's going on a note as a stand-in)
 PLAYED_HEAD = "void f_832b2af0(Ctx *__restrict A64_NOESC c) {\n"
@@ -55,7 +61,17 @@ OTHER = (OTHER_HEAD + "    { uint64_t _a=c->x[8], _b=32ULL; uint64_t _r=_a+_b; c
          + "    next_note(1);\n"
          + "L_832b3044:;\n}\n")
 UNRELATED = PLAYED.replace("f_832b2af0", "f_932b2af0").replace("next_note(0)", "unrelated++")
-LIFTED = '#include "a64.h"\n' + PLAYED + OTHER + UNRELATED
+LIFTED = PLAYED + OTHER + UNRELATED
+
+
+def hooked(on=1):
+    """LIFTED with each site's hook after its call (before the next instruction), the callbacks and their slots before"""
+    sites = (site("song.noteCue", "f_832b2af0", "before", 0x194), site("song.noteCueOther", "f_832b2dc0", "before", 0x114))
+    text = LIFTED
+    for x, call in zip(sites, (PLAYED_CALL, OTHER_CALL)):
+        text = text.replace(call, call + sitehooks.line(x) + "\n", 1)
+    return (callback("int hos_site_song_cue_played(") + "\n" + callback("int hos_site_song_cue_other(") + "\n"
+            + "".join(slot(x, on) for x in sites) + text)
 
 # (stand-ins for the host file's and the lift's world: guest memory as one array with the time object's slot, a lock that is
 # none, the switches on, no log)
@@ -74,6 +90,9 @@ static uint8_t *guest(uint64_t a) {
 }
 #define GP(a) ((void *)guest(a))
 #define G64(a) (*(uint64_t *)GP(a))
+#define HOS_HEAP_BASE 0x1000000000ULL   /* (host/hos.h's, for hos_oot_note_link: no address here is one) */
+static void *hos_guest_range(uint64_t a, uint64_t n) { (void)n; return a < sizeof mem ? mem + a : NULL; }
+static int env_value_off(const char *v) { (void)v; return 0; }
 typedef int SRWLOCK;
 #define SRWLOCK_INIT 0
 static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; }
@@ -82,14 +101,10 @@ typedef long long LONG64;
 static LONG64 InterlockedIncrement64(volatile LONG64 *p) { return ++*p; }
 static void hos_log(const char *f, ...) { (void)f; }
 static int env_on(const char *name) { (void)name; return 1; }
-static int env_value_off(const char *v) { (void)v; return 0; }
-/* (host/hos.h's, for the file's other fixes, which the song's playback does not reach: the guest window is the array) */
-#define HOS_HEAP_BASE 0x1000000000ULL
-static void *hos_guest_range(uint64_t a, uint64_t n) { return a < sizeof mem && n <= sizeof mem - a ? GP(a) : NULL; }
 static void hos_guest_copy(uint64_t a, const void *src, uint64_t n) { memcpy(GP(a), src, (size_t)n); }
 static int64_t hos_now_ns(void) { return 0; }
 volatile uint32_t hos_frame_seconds_bits;
-volatile uint64_t hos_step_probe;   /* (host/nn_vi.c's, for the cloth's clock: none here) */
+volatile uint64_t hos_step_probe;   /* (host/nn_vi.c's, which game/oot_high_fps.c's cloth solve reads: no time object here) */
 static int unrelated;
 static void next_note(int playback);
 static uint32_t flag;   /* (the note flag: the sound engine's word) */
@@ -215,50 +230,40 @@ int main(void) {
 
 
 def host_file(source):
-    """host/oot_high_fps.c without its includes but the logic's header, for RUNTIME's stand-ins"""
+    """game/oot_high_fps.c without its includes but the logic's header, for RUNTIME's stand-ins"""
     keep = ('#include "oot_high_fps.h"',)
     return "\n".join(line for line in source.split("\n") if not line.startswith("#include") or line in keep)
 
 
 def build_and_run(cc, update, directory):
-    host = host_file((ROOT / "host" / "oot_high_fps.c").read_text(encoding="utf-8"))
+    host = host_file((ROOT / "game" / "oot_high_fps.c").read_text(encoding="utf-8"))
     source, binary = Path(directory) / "fixture.c", Path(directory) / "fixture.exe"
-    source.write_text(RUNTIME + host + "\n" + update.replace('#include "a64.h"\n', "") + FRAMES, encoding="utf-8")
-    subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "host"),
-                    str(source), "-o", str(binary), "-lm"], check=True)
+    text = RUNTIME + host + "\n" + update.replace('#include "a64.h"\n', "") + FRAMES
+    source.write_text(text, encoding="utf-8")
+    subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
+                    str(source), *sitehooks.objects(directory, text), "-o", str(binary), "-lm"], check=True)
     return subprocess.run([str(binary)], text=True, capture_output=True, timeout=60)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    patched, counts, _ = oot_patches.patch_file(LIFTED, "code_045.c")
-    hooked = "hos_oot_song_cue(" in patched
+    sitehooks.use(args.cc, args.cargo)
+    old = LIFTED.replace(PLAYED_CALL, PLAYED_CALL + OLD % 0, 1).replace(OTHER_CALL, OTHER_CALL + OLD % 1, 1)
     with tempfile.TemporaryDirectory(prefix="song-note-cue-") as directory:
-        result = build_and_run(args.cc, patched, directory)
-        print(result.stdout, end="")
-        if result.returncode != 0:
-            raise SystemExit("FAIL: a song's playback above 60 fps (the patch %s)" % ("is in" if hooked else "is missing"))
-        native = build_and_run(args.cc, LIFTED, directory)
-        if native.returncode == 0 or "FAIL: 120 fps:" not in native.stdout:
-            raise SystemExit("FAIL: the unpatched updates did not fail the 120 fps check")
-        print("PASS: the unpatched updates compile and fail the 120 fps check (two notes at each of the melody's)")
-    assert counts["song note flag"] == 2
-    assert UNRELATED in patched
-    again, repeated, _ = oot_patches.patch_file(patched, "code_045.c")
-    assert again == patched and repeated["song note flag"] == 2
-    for altered, found in ((LIFTED.replace(PLAYED_CALL, PLAYED_CALL.replace("0x832b2c84", "0x832b2c88"), 1), 1),
-                           (LIFTED.replace(OTHER_HEAD, OTHER_HEAD + OTHER_CALL, 1), 1),
-                           ('#include "a64.h"\n' + UNRELATED, 0)):
-        output, missing, _ = oot_patches.patch_file(altered, "code_045.c")
-        assert missing["song note flag"] == found, (missing["song note flag"], found)
-        assert found or output == altered
-        warning = io.StringIO()
-        with contextlib.redirect_stdout(warning):
-            oot_patches.report([Path("code_045.c")], [missing])
-        assert "WARNING: the song playbacks' note flag was found at %d of 2 places" % found in warning.getvalue()
-    print("PASS: scoped, idempotent, and a changed anchor is left alone with a warning")
+        for what, update in (("the hooks", hooked()), ("the text patch", old)):
+            result = build_and_run(args.cc, update, directory)
+            print(result.stdout, end="")
+            if result.returncode != 0:
+                raise SystemExit("FAIL: a song's playback above 60 fps (%s)" % what)
+        for what, update in (("the updates without the hooks", LIFTED), ("the hooks off", hooked(0))):
+            native = build_and_run(args.cc, update, directory)
+            if native.returncode == 0 or "FAIL: 120 fps:" not in native.stdout:
+                raise SystemExit("FAIL: %s did not fail the 120 fps check" % what)
+        print("PASS: the updates without the hooks, or with them off, compile and fail the 120 fps check (two notes at each of "
+              "the melody's)")
 
 
 if __name__ == "__main__":

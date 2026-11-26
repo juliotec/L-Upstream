@@ -30,15 +30,19 @@ everyone. This page is what an agent does on top.
   "<what it tests, in a few words>" -- <cmd>`: `--mode timing` for numbers, `--mode shared` for every other game run. The
   description shows under the version in the menu (F1) and on the start-up screen, so a screenshot says which change it is. Never on a RAM file system (`/tmp` is often
   one). Test a change against the shared base (`dev.py pack`, `dev.py rt`), not a new full build; agents
-  sharing a PC agree before moving the base ([share a PC](docs/dev/developing.md#share-a-pc-the-job-queue)).
+  sharing a PC agree before moving the base ([share a PC](docs/dev/developing.md#share-a-pc-the-job-queue)). The
+  builder is `longshot-builder` ([the build](docs/dev/reference/build.md)); keep the .nup a base was built from where it
+  is, since its game folders read the romfs from it.
 - **A change the game runs has run in the game before its pull request opens** (its area, your GPU, driver and OS):
   `forge.py pr create --tested-in-game "..."`; `--force` only when the person you work for asks. If you can't run the
   game for such a change, say so and ask; don't open the pull request untested.
 - **Settle every checklist box yourself** from the diff, the checks and the runs. Ask the person you work for at once
   about a box you can't settle: name it, what you found, what you need. Until then it stays unticked with the reason
   beside it, and the pull request stays WIP.
-- **A menu row goes in a module, with a key.** A feature's Insert menu rows go in a file of `gpu/vk/menu/` with their
-  code, hooks and place (`MENU_MODULE`, `after`/`before`), never into `vk_menu.cpp`'s table. A saved row's `.key` is its
+- **A menu row goes in a module, with a key.** A row that changes the game, not the picture, and is plain data goes in
+  `game/menu/` as a `GameMenuRow` (`game/game.h`): key, texts, kind, range, option id and place. Any other row goes in a
+  file of `gpu/vk/menu/` with its code, hooks and place (`MENU_MODULE`, `after`/`before`), never into `vk_menu.cpp`'s
+  table. A saved row's `.key` is its
   line in `longshot_options.ini`: a new key goes in `tests/test_menu_ini_keys.py`'s FROZEN, and a row renamed or moved
   keeps its key. Code that needs the renderer goes under `#ifndef MENU_LAYOUT_ONLY`, its hooks as `MENU_HOOK(...)`
   ([the Insert menu](docs/dev/reference/architecture.md#the-insert-menu)).
@@ -58,6 +62,7 @@ everyone. This page is what an agent does on top.
 | Measuring a change or a switch against `main` | the [measure skill](.claude/skills/measure/SKILL.md) |
 | Benchmarking a stable release against `main` | the [release-benchmark skill](.claude/skills/release-benchmark/SKILL.md) |
 | The same input on every run (a bug again, a fix checked along a route) | [replay a recording](docs/dev/developing.md#replay-a-recording): record once, replay through the queue, read the log's `input: playback over` line |
+| Changing the builder (the lift, hook sites, the compile, the caches) | [the builder](docs/dev/reference/builder.md), [the build](docs/dev/reference/build.md), [hook sites](docs/dev/reference/hooks.md) |
 | Changing the GPU replay | [architecture](docs/dev/reference/architecture.md) and its rules |
 | How a part works | the [reference pages](docs/dev/README.md#reference) |
 | Signing in, a fork, pull requests and reviews | [Tooling's docs/forge.md](https://git.magicbean.dev/MagicBeanDev/Tooling/src/branch/main/docs/forge.md) |

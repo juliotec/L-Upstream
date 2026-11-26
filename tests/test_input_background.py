@@ -73,12 +73,13 @@ def main():
         raise SystemExit("the Insert menu has no row for it")
 
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
+    options = (ROOT / "game/options.h").read_text(encoding="utf-8")   # (the game's option ids: the cheats')
     constants = block(hid, "enum { B_A") + ";\n" + block(api, "enum { HOS_SW_A") + ";\n"
     constants += block(hid, "enum { B_SPRINT") + ";\n"   # (a script's SPRINT: Sprint's key)
-    constants += block(hid, "enum { SPRINT_BLOCKED") + ";\n"   # (why Sprint takes no press: host/oot_sprint.c's)
+    constants += block(hid, "enum { SPRINT_BLOCKED") + ";\n"   # (why Sprint takes no press: game/oot_sprint.c's)
     constants += block(api, "enum { HOS_PAD_SOUTH") + ";\n"   # (Sprint's gamepad input)
     constants += block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"   # (the keys-only controls, and Sprint)
-    constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"
+    constants += block(options, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"
     constants += block(api, "enum { HOS_OPT_HOLD_TOGGLE") + ";\n"
     constants += block(api, "enum { HOS_OPT_SPRINT = ") + ";\n"   # (the Controls tab's Sprint row: the fixture's rx_option says on)
     constants += block(api, "enum { HOS_OPT_SPRINT_TOGGLE") + ";\n"   # (Sprint's Toggle: the fixture's rx_option says off)
@@ -97,7 +98,7 @@ def main():
     cheat_state += "static uint64_t hud_pad_mask(void);\n" + block(hid, "static int pad_sprint_down(")
     # (Sprint on for the input, as the row's layout publishes it: the fixture's rx_option says the row is on)
     cheat_state += "\nstatic volatile LONG sprint_on = 1, sprint_toggle_mode;\n"
-    # (npad_states hands Sprint's input to host/oot_sprint.c hos_sprint_input, which the game's buttons pass through:
+    # (npad_states hands Sprint's input to game/oot_sprint.c hos_sprint_input, which the game's buttons pass through:
     # tests/test_sprint.py runs it against a fake game; here a spy notes what it is handed)
     cheat_state += """
 static int spy_sprint_on, spy_sprint_down, spy_sprint_l3, spy_sprint_toggle, spy_sprint_reset, spy_sprint_blocked;
@@ -108,13 +109,13 @@ uint64_t hos_sprint_input(uint64_t buttons, int on, int down, int l3, int toggle
 }
 """
     cheat_spies = """
-volatile int hos_oot_live_action;
-int hos_oot_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
+volatile int game_live_action;
+int game_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
 void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpected cheat option change"); }
-void hos_oot_autoload_input(void) {}
+void game_autoload_input(void) {}
 void hos_gameplay_hud_toggle(void) { CHECK(!"unexpected HUD toggle with the shortcut unbound"); }
 """
-    # (the host's own stick, for the game's menus' mouse (host/oot_menu.c): none here; the player's input time it hides
+    # (the host's own stick, for the game's menus' mouse (game/oot_menu.c): none here; the player's input time it hides
     # the mouse by: not looked at. Its presses, hos_hid_tap and host_taps, are production's, below)
     host_spies = """
 static void host_stick_read(int32_t stick[4]) { (void)stick; }

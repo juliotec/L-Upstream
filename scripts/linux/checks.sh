@@ -1,11 +1,11 @@
 #!/bin/bash
-# tests/run_all.py in a container with CI's tools (scripts/linux/checks.Dockerfile: Ubuntu 24.04, as .forgejo/workflows/ci.yml),
+# tests/run_all.py in a container with CI's tools (scripts/linux/checks.Dockerfile: the CI image, Ubuntu 24.04),
 # on any Linux distribution. `tests/run_all.py --container` (`mise run test --container`) runs this with its other arguments:
 #
 #   scripts/linux/checks.sh --strict          every check
 #   scripts/linux/checks.sh --strict ub_      any other argument of run_all.py's
 #
-# The first run builds the image (a few minutes, ~3 GB; it needs the network). The checks run as your user, with no network:
+# The first run builds the image (a few minutes, ~5 GB; it needs the network). The checks run as your user, with no network:
 # the checkout is mounted at its own path, and, for a git worktree, the repository it belongs to, read-only. Podman, else
 # Docker; DOCKER=<program> names one. CC and CXX are passed through when set.
 set -euo pipefail
@@ -44,14 +44,19 @@ for engine in podman docker; do
 done
 [ -n "$DOCKER" ] || { echo "checks.sh: neither podman nor docker is installed (DOCKER=<program> names another)" >&2; exit 2; }
 
-"$DOCKER" build -t "$IMAGE" -f scripts/linux/checks.Dockerfile scripts >&2
+# (the context is the image's inputs alone: scripts/linux/ci_image.sh)
+context=$(mktemp -d)
+trap 'rm -rf "$context"' EXIT
+scripts/linux/ci_image.sh context "$context"
+"$DOCKER" build --target checks -t "$IMAGE" -f scripts/linux/checks.Dockerfile "$context" >&2
+rm -rf "$context"
 
 RUN=(run --rm --init --network none -v "$ROOT:$ROOT" -w "$ROOT")
 # (a git worktree's .git is a file that names the repository's, outside it: the checks that ask git need it)
 if git=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [[ $git/ != "$ROOT"/* ]]; then
     RUN+=(-v "$git:$git:ro")
 fi
-# (the user: as docker.sh, beside this, says)
+# (the user: as builder/tools/docker.sh says)
 if "$DOCKER" --version 2>/dev/null | grep -qi podman; then
     RUN+=(--userns=keep-id)
 elif "$DOCKER" info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then

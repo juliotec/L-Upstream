@@ -1,0 +1,41 @@
+[package]
+name = "longshot-builder"
+description = "The builder's command: a player's own dump to a game folder (docs/dev/reference/builder.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+a64.workspace = true
+build-assets.workspace = true
+build-compile.workspace = true
+build-core.workspace = true
+build-driver.workspace = true
+cfg.workspace = true
+crash.workspace = true
+crc32fast.workspace = true
+edits.workspace = true
+flate2.workspace = true
+game-files.workspace = true
+image.workspace = true
+lift.workspace = true
+llvm.workspace = true
+lzma-rs.workspace = true
+mir.workspace = true
+passes.workspace = true
+profile.workspace = true
+release.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sites.workspace = true
+steam.workspace = true
+ui.workspace = true
+
+[dev-dependencies]
+release = { workspace = true, features = ["testkit"] }
+ruzstd.workspace = true
+
+[lints]
+workspace = true

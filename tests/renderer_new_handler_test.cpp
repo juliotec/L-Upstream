@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
     using namespace mkwvk;
     scenario = argc > 1 ? argv[1] : "";
     host_v28.version = 28, host_v28.out_of_memory = fake_out_of_memory;
-    host_v27.version = 27, host_v27.out_of_memory = fake_out_of_memory;   // (an older host: the slot is not its)
+    host_v27.version = 28, host_v27.out_of_memory = nullptr;   // (a host with no out_of_memory)
     host = &host_v28;
     std::set_new_handler(new_refused);
     if (!std::strcmp(scenario, "limit")) {   // (operator new: 5 s of tries, then the host's out-of-memory stop)
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
     } else if (!std::strcmp(scenario, "nothrow-unscoped")) {   // (why the scope: without it a nothrow new waits and stops too)
         CHECK(::operator new(big, std::align_val_t(64), std::nothrow) == nullptr);
         CHECK(gave_up_after_5s());
-    } else if (!std::strcmp(scenario, "old-host")) {   // (a version-27 host has no out_of_memory: thrown, as before)
+    } else if (!std::strcmp(scenario, "old-host")) {   // (a host with no out_of_memory: thrown, as before)
         host = &host_v27;
         CHECK(ends([] { kept = ::operator new(big); }) == 2);
         CHECK(sleeps == 100 && oom_calls == 0);

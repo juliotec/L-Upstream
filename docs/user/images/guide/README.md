@@ -10,9 +10,9 @@ links to those public files.
 `manifest.json` records each image's dimensions, SHA-256, capture conditions, application release and reviewed UI
 source hashes. All six launcher images are UI-only captures built from Launcher nightly-52-b1d9f7a9 source
 `b1d9f7a9b19fa99b91ec3e8cd24455d4703d6d25`; they replace the earlier official-AppImage and rc.3 fixture captures.
-The current Graphics image was captured from main `f1f2dc5bd2821cef061798ba40a043d281ac1707` (nightly 680).
-
-Source review against `5b8879040de15dfb3255cf4b6023f2cb9b8096b2`: `gpu/vk/vk_texture.h` adds two texture diagnostic declarations. They do not change the pictured Graphics controls or the guide, so the existing image is retained. No new capture was made.
+The current Graphics image was captured from `e78aa33d63fc1598631b320ba8739594848e368e` (main 8aa5ab87, nightly 798,
+with the website's settings-page fix), when #2383's Dynamic resolution row replaced Render resolution's Auto in the
+pictured rows.
 The [fullscreen-monitor source review](source-review-fullscreen-monitor.md) records the nightly 680 comparison and
 historical rc.8 comparisons. Earlier images remain in repository history.
 
@@ -87,15 +87,15 @@ reviewing the fixture's effect. Do not copy fresh hashes into the manifest merel
 
 ### Automatic Longshot review signal
 
-`.forgejo/workflows/guide-screenshots.yml` defines an offline, read-only check on **every pull request** and each
+`.forgejo/workflows/ci.yml`'s `third-party` job ("Third-party parts and guide screenshots") is an offline, read-only check on **every pull request** and each
 push to `main`, plus manual dispatch. Checking every PR avoids path-filter gaps when a recorded dependency moves
 or a shared header changes. It runs source review and the checker's regression tests; it does not build the fixture
 or access game files. The ordinary game-free test runner also discovers `tests/test_guide_screenshots.py`.
 
-This PR adds the workflow definition. Whether its status runs on fork PRs and blocks merging depends on the
-repository's runner and branch-protection configuration; this PR does not change those settings. After merging,
-a maintainer should verify a test PR with a changed recorded UI source fails, then require **Guide images and
-local UI source review** in branch protection if the team wants an enforced merge gate. An unchecked status or
+Whether its status runs on fork PRs and blocks merging depends on the
+repository's runner and branch-protection configuration, which CI does not change.
+A maintainer should verify a test PR with a changed recorded UI source fails, then require **Third-party parts and
+guide screenshots** in branch protection if the team wants an enforced merge gate. An unchecked status or
 missing runner must not be described as an automatic freshness guarantee.
 
 ### Launcher counterpart: planned cross-repository integration

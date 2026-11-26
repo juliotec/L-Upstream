@@ -46,8 +46,20 @@ def git(root, *args):
 
 
 def parts(root):
+    """The folders of third_party/ that hold a file of their own: one left with only what the repository ignores (a part
+    deleted from the tree, its build output still in a checkout: a64emit.dll, __pycache__) is not a part"""
     tp = os.path.join(root, "third_party")
-    return sorted(n for n in os.listdir(tp) if os.path.isdir(os.path.join(tp, n)) and not n.startswith("."))
+    found = []
+    for n in sorted(os.listdir(tp)):
+        top = os.path.join(tp, n)
+        if n.startswith(".") or not os.path.isdir(top):
+            continue
+        held = ["third_party/%s/%s" % (n, os.path.relpath(os.path.join(d, f), top).replace(os.sep, "/"))
+                for d, dirs, names in os.walk(top) if "__pycache__" not in d.split(os.sep)
+                for f in names if not f.endswith(".pyc")]
+        if set(held) - ignored(root, held):
+            found.append(n)
+    return found
 
 
 def ignored(root, paths):

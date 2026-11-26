@@ -3,6 +3,8 @@
 work/
 gen/
 image/
+# (the lifter's crate that reads an image is source, not an image)
+!/builder/crates/image/
 exefs/
 romfs/
 *.bin
@@ -37,17 +39,28 @@ __pycache__/
 
 # ---- Linux builds ----
 build-linux/
+
+# ---- tools.lock's build tools in a checkout (mise run tools: longshot-builder --root . takes them) ----
+/tools/
+/.tools/
+/build-tools-cache/
 *.so
+
+# ---- the lifter's cargo builds (docs/dev/reference/builder.md) ----
+/target/
+# (the builder's crates' own target folder from before the root workspace: a stale one, or a test that still writes there)
+/builder/target/
+# (the release's prebuilt liblongshot_rs.a and its key: made by CI, carried by longshot-builder, never committed)
+/longshot-rs/prebuilt/
 
 # ---- a checkout's own development builds on Windows (scripts/dev.py) ----
 build-windows/
 
 # ---- NVIDIA's DLSS SDK (scripts/fetch.py dlss): NVIDIA's files, never committed ----
 ngx-sdk/
-test-results/
 _deps/
 
-# ---- a link to <build>/compile_commands.json (nx2/build.py write_compdb), for clangd and clang-tidy ----
+# ---- a link to <build>/compile_commands.json (build-compile's link.rs), for clangd and clang-tidy ----
 /compile_commands.json
 
 # ---- Visual Studio IDE files ----

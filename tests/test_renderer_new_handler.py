@@ -14,7 +14,7 @@ operator new, which calls the handler each time malloc refuses and tries again w
   wait of its own;
 - nothrow: in a NewNothrow scope (gpu/vk/vk_new.h) a nothrow new, aligned or not, and new (std::nothrow)[] get their null at
   once, with no wait and no stop; nothrow-unscoped: without the scope they wait and stop too, which is why the scope is there;
-- old-host, no-host: a version-27 host (no out_of_memory) or none: std::bad_alloc after the wait, as before;
+- old-host, no-host: a host with no out_of_memory, or none: std::bad_alloc after the wait, as before;
 - small: an allocation that is given never runs the handler.
 
 And by text: mkwvk_init installs the handler once it has the host; every std::nothrow new in the renderer is in a NewNothrow

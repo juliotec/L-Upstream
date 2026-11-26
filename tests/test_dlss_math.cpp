@@ -145,7 +145,7 @@ int main() {
     dm::jitter_to_pixels(clip, 1536, 864, px);
     CHECK("jitter in pixels", near(px[0], 1.0f) && near(px[1], -1.0f));
 
-    // which projections get the jitter (nx2/oot_jitter.py: the game's views' uniform buffers): the picture's perspective ones
+    // which projections get the jitter (the hook sites jitter.view*: the game's views' uniform buffers): the picture's perspective ones
     {
         const float f = 2.14451f, n = 0.1f;
         float scene[16] = {f / (16.0f / 9.0f), 0, 0, 0, 0, f, 0, 0, 0, 0, -1.00001f, -n, 0, 0, -1, 0};
@@ -165,7 +165,7 @@ int main() {
         CHECK("not another ratio's", !dlss_jitter_clip(square, 0.0f, 5, 8, 3840, 2160, out));
         float wide[16];
         std::memcpy(wide, scene, sizeof wide);
-        wide[0] = f / (21.0f / 9.0f);   // (an ultrawide window's: nx2/oot_wide.py gives the picture's cameras its ratio)
+        wide[0] = f / (21.0f / 9.0f);   // (an ultrawide window's: the hook sites wide.*Ratio give the picture's cameras its ratio)
         CHECK("not 21:9 on a 16:9 window", !dlss_jitter_clip(wide, 0.0f, 5, 8, 3840, 2160, out));
         CHECK("21:9 on a 21:9 window", dlss_jitter_clip(wide, 21.0f / 9.0f, 5, 8, 5040, 2160, out));
         CHECK("16:9 still, on a 21:9 window", dlss_jitter_clip(scene, 21.0f / 9.0f, 5, 8, 5040, 2160, out));

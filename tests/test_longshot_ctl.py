@@ -498,7 +498,7 @@ class Sessions(unittest.TestCase):
         romfs.mkdir()
         session = self.start(profile="test", save=str(source), slot="03", romfs=str(romfs), cwd=str(self.root))
         info = session.info()
-        copied = Path(info["user"]) / "save" / self.m.SAVE_USER
+        copied = Path(info["game_profile"]) / "saves" / "save" / self.m.SAVE_USER
         self.assertEqual((copied / "slot_03" / "progress.sav").read_bytes(), b"authored progress")
         self.assertEqual(info["save_source"], str(source))
         self.assertEqual(info["command"], [sys.executable, str(self.fake), "--romfs", str(romfs), "--user", info["user"]])
@@ -513,12 +513,44 @@ class Sessions(unittest.TestCase):
         explicit = self.start(user=str(self.root / "explicit-user"))
         self.assertEqual(explicit.info()["user"], str(self.root / "explicit-user"))
 
+    def test_a_run_plays_a_profile_of_its_own(self):
+        # (the game takes its settings, saves and start slot from a profile alone, host/longshot_profile.h: a run's copied
+        # save lands in its profile's saves/, its options in its settings.ini, never in the user folder)
+        repo = self.root / "checkout"
+        make_repo_save(repo, "kokiri-start")
+        options = self.root / "options.ini"
+        options.write_text("dlss=1\n", encoding="utf-8")
+        session = self.start(profile="test", repo_save="kokiri-start", repo=str(repo), options=str(options))
+        info = session.info()
+        own = Path(info["game_profile"])
+        self.assertEqual(own, session.folder / "profile")
+        self.assertEqual(info["environment"]["LONGSHOT_PROFILE"], str(own))
+        self.assertTrue((own / "saves" / "save" / self.m.SAVE_USER / "slot_00").is_dir(), "copied into the profile's saves")
+        self.assertFalse((Path(info["user"]) / "save" / self.m.SAVE_USER).exists(), "not into the user folder's")
+        self.assertEqual((own / "settings.ini").read_text(encoding="utf-8"), "dlss=1\n")
+        self.assertEqual(json.loads((own / "profile.json").read_text(encoding="utf-8")), {"v": 1, "name": session.folder.name})
+        # (a profile of the caller's: played as it is, a save copied in only when its saves are empty, its settings never
+        # written over)
+        theirs = self.root / "profiles" / "two"
+        session = self.start(profile="test", repo_save="kokiri-start", repo=str(repo), env={"LONGSHOT_PROFILE": str(theirs)})
+        info = session.info()
+        self.assertEqual(info["game_profile"], str(theirs))
+        self.assertTrue((theirs / "saves" / "save" / self.m.SAVE_USER / "slot_00").is_dir(), "copied into its saves")
+        with self.assertRaisesRegex(self.m.Failed, "LONGSHOT_PROFILE must be a whole path"):
+            self.start(profile="test", repo_save="kokiri-start", repo=str(repo), env={"LONGSHOT_PROFILE": "relative"})
+        with self.assertRaisesRegex(self.m.Failed, "already holds saves"):
+            self.start(profile="test", repo_save="kokiri-start", repo=str(repo), env={"LONGSHOT_PROFILE": str(theirs)})
+        (theirs / "settings.ini").write_text("mine=1\n", encoding="utf-8")
+        with self.assertRaisesRegex(self.m.Failed, "not written over"):
+            self.start(profile="test", options=str(options), env={"LONGSHOT_PROFILE": str(theirs)})
+        self.assertEqual((theirs / "settings.ini").read_text(encoding="utf-8"), "mine=1\n")
+
     def test_repo_save_launch(self):
         repo = self.root / "checkout"
         make_repo_save(repo, "kokiri-start")
         session = self.start(profile="test", repo_save="kokiri-start", repo=str(repo))
         info = session.info()
-        copied = Path(info["user"]) / "save" / self.m.SAVE_USER
+        copied = Path(info["game_profile"]) / "saves" / "save" / self.m.SAVE_USER
         self.assertEqual(sorted(p.name for p in copied.iterdir()), ["slot_00"])
         self.assertEqual((copied / "slot_00" / "progress.sav").read_bytes(), b"progress kokiri-start")
         self.assertEqual(info["repo_save"], "kokiri-start")
@@ -895,12 +927,12 @@ class Sessions(unittest.TestCase):
         into_source = self.root / "into-source"
         into_source.symlink_to(source, target_is_directory=True)
         with self.assertRaisesRegex(self.m.Failed, "source and destination"):
-            self.m.copy_save(str(source), user=str(into_source))
+            self.m.copy_save(str(source), str(into_source))
         root = self.root / "owned-root"
         root.mkdir()
         (root / "save").symlink_to(real, target_is_directory=True)
         with self.assertRaisesRegex(self.m.Failed, "link or not a plain folder"):
-            self.m.copy_save(str(source), user=str(root))
+            self.m.copy_save(str(source), str(root))
 
     def test_utf8_cursor_keeps_incomplete_characters(self):
         session = self.start()
@@ -972,15 +1004,15 @@ class RepoSaves(unittest.TestCase):
 
     def test_copy(self):
         before = self.tree(self.saves)
-        dest = self.m.copy_repo_save("kokiri-start", str(self.root / "data"), repo=str(self.repo))
-        self.assertEqual(dest, str(self.root / "data" / "longshot" / "save" / self.m.SAVE_USER))
+        dest = self.m.copy_repo_save("kokiri-start", str(self.root / "saves"), repo=str(self.repo))
+        self.assertEqual(dest, str(self.root / "saves" / "save" / self.m.SAVE_USER))
         self.assertEqual(self.tree(dest), [(os.path.join("slot_00", "caption.sav"), b"caption kokiri-start"),
                                            (os.path.join("slot_00", "progress.sav"), b"progress kokiri-start")])
         self.assertEqual(self.tree(self.saves), before)   # (only read)
         with self.assertRaisesRegex(self.m.Failed, "already holds saves"):
-            self.m.copy_repo_save("deku-tree", str(self.root / "data"), repo=str(self.repo))
-        dest = self.m.copy_repo_save("deku-tree", user=str(self.root / "user"), repo=str(self.repo))
-        self.assertEqual(dest, str(self.root / "user" / "save" / self.m.SAVE_USER))
+            self.m.copy_repo_save("deku-tree", str(self.root / "saves"), repo=str(self.repo))
+        dest = self.m.copy_repo_save("deku-tree", str(self.root / "other"), repo=str(self.repo))
+        self.assertEqual(dest, str(self.root / "other" / "save" / self.m.SAVE_USER))
 
     def test_names(self):
         for name, why in (("nothing-here", "no repo save 'nothing-here'.*it has: deku-tree, kokiri-start"),
@@ -1417,7 +1449,7 @@ class LongshotCtl(unittest.TestCase):
                 f.write(n)
         before = sorted((dp, fn, os.stat(os.path.join(dp, fn)).st_mtime_ns) for dp, _, fns in os.walk(src) for fn in fns)
         dest = m.copy_save(src, os.path.join(self.dir, "d-all"))
-        self.assertTrue(dest.endswith(os.path.join("longshot", "save", m.SAVE_USER)))
+        self.assertEqual(dest, os.path.join(self.dir, "d-all", "save", m.SAVE_USER))
         self.assertEqual(sorted(os.listdir(dest)), ["account.sav", "option.sav", "slot_00", "slot_03"])
         for slot in ("03", "slot_03", "3"):
             dest = m.copy_save(src, os.path.join(self.dir, "d-" + slot), slot)
@@ -1454,12 +1486,13 @@ class LongshotCtl(unittest.TestCase):
         with self.assertRaisesRegex(cli.Failed, "does not look like a save listing"):
             cli.write_thumbs(bad, os.path.join(self.dir, "thumbs-bad"))
         self.assertEqual(cli.plain_text("a\x1b[2Jb\tc"), "a?[2Jb?c")
-        if not WINDOWS:   # (launch --save: the copy in the run folder's own data folder, which the game is given)
+        if not WINDOWS:   # (launch --save: the copy in the run folder's own profile, which the game is given)
             run = os.path.join(self.dir, "run-save")
             r = ctl("--json", "launch", self.game, "--run", run, "--headless", "--save", src, "--slot", "03",
                     "--timeout", "20", check=0)
             info = json.loads(r.stdout)
-            got = os.path.join(run, "data", "longshot", "save", m.SAVE_USER)
+            got = os.path.join(run, "profile", "saves", "save", m.SAVE_USER)
+            self.assertEqual(info["environment"]["LONGSHOT_PROFILE"], os.path.join(run, "profile"))
             self.assertEqual(sorted(os.listdir(got)), ["account.sav", "option.sav", "slot_03"])
             with open(self.log) as f:
                 starts = [json.loads(line) for line in f if '"_start"' in line]
@@ -1468,7 +1501,7 @@ class LongshotCtl(unittest.TestCase):
             r = ctl("launch", self.game, "--slot", "03", check=2)
             self.assertIn("--slot goes with --save", r.stderr)
         else:
-            r = ctl("launch", self.dir, "--save", src, check=2)
+            r = ctl("launch", self.dir, "--slot", "03", check=2)
 
     def test_relaunch(self):
         """the stand-in started again as the game is (execv: on Linux the same pid, on Windows a new process): the client

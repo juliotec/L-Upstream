@@ -1,6 +1,7 @@
-"""Game-free Shadow resolution hook: the install's checks, the sun's object only, raise-only, live changes, menu wiring.
+"""Game-free Shadow resolution hook: the site, the sun's object only, raise-only, live changes, menu wiring.
 
-Compile the actual host helper (host/oot_shadow.c) with the lifter's injected call against an authored shadow object.
+Compile the actual host helper (game/oot_shadow.c) with the hook site shadow.cascadeSize's callback (game/oot_sites.c) and
+its hook as the lift lowers it (tests/sitehooks.py), against an authored shadow object.
 No dump, lifted code or game assets are needed.
 
     python -I -B tests/test_oot_shadow.py
@@ -12,50 +13,38 @@ import sys
 import tempfile
 import unittest
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_shadow
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from sitecheck import hooked, site  # noqa: E402
+import sitehooks  # noqa: E402
+
+# (the rounding to a multiple of 8, the size packed into the width and height pair, and its store at the object's +0xe0, as
+# main's nx2/oot_shadow.py checked them)
+WORDS = (0x121d7117, 0xd343fee8, 0xaa1703e9, 0xb35d7109, 0xf9007269)
+
+
+def cascade_size():
+    return site("shadow.cascadeSize", "f_80492370", "after", 0x680)
 
 
 class InstallTests(unittest.TestCase):
-    def install(self, words=None, build_id=oot_shadow.BUILD_ID, existing=None):
-        class Lifter:
-            after = {} if existing is None else dict(existing)
-
-        class Image:
-            def word(self, pc):
-                return (oot_shadow.WORDS if words is None else words)[(pc - oot_shadow.SITE) // 4]
-
-        lifter = Lifter()
-        result = oot_shadow.install(lifter, Image(), build_id)
-        return result, lifter.after
-
-    def test_supported_site_and_existing_hook(self):
-        count, after = self.install(existing={oot_shadow.SITE: "prior();"})
-        self.assertEqual(count, 1)
-        self.assertEqual(after[oot_shadow.SITE], "prior();\n" + oot_shadow.HOOK)
-        self.assertIn("hos_oot_shadow(c, c->x[19]);", after[oot_shadow.SITE])
-
-    def test_rejects_wrong_build_and_each_changed_instruction(self):
-        self.assertEqual(self.install(build_id="another build"), (0, {}))
-        for i in range(len(oot_shadow.WORDS)):
-            words = list(oot_shadow.WORDS)
-            words[i] ^= 1
-            self.assertEqual(self.install(words=words), (0, {}))
+    def test_site(self):
+        x = cascade_size()
+        self.assertEqual(x.signature_offset, x.offset, "shadow.cascadeSize's signature does not start at its instruction")
+        self.assertEqual([w for w, _ in x.signature], list(WORDS))
+        self.assertTrue(all(m == 0xffffffff for _, m in x.signature))
+        self.assertIn("hos_oot_shadow(c, c->x[19]);\n    return 0;", hooked(x, "int hos_site_shadow_cascade_size(")[0])
 
     def test_site_is_the_rounding_into_w23(self):
         # and w23, w8, #0xfffffff8: the rounded size the hook raises, read by every later use of it
-        self.assertEqual(oot_shadow.WORDS[0], 0x121d7117)
-        self.assertEqual(oot_shadow.WORDS[0] & 0x1f, 23)
+        self.assertEqual(WORDS[0], 0x121d7117)
+        self.assertEqual(WORDS[0] & 0x1f, 23)
 
     def test_lift_and_menu_wiring(self):
-        lift = (ROOT / "nx2/lift.py").read_text(encoding="utf-8")
-        standalone = lift[lift.index("if a.standalone:"):lift.index("discover.discover(L")]
-        self.assertIn("oot_shadow.install(", standalone)
         menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
-        api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
+        api = (ROOT / "game/options.h").read_text(encoding="utf-8")   # (the game's option ids)
         options = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
         replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
         self.assertIn("HOS_OPT_SHADOW_RES = 56", api)
@@ -148,18 +137,23 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
+    sitehooks.use(args.cc, args.cargo)
     result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(InstallTests))
     if not result.wasSuccessful():
         raise SystemExit(1)
-    host = (ROOT / "host/oot_shadow.c").read_text(encoding="utf-8")
+    host = (ROOT / "game/oot_shadow.c").read_text(encoding="utf-8")
     body = "".join(line for line in host.splitlines(keepends=True) if not line.startswith("#include"))
     with tempfile.TemporaryDirectory(prefix="oot-shadow-") as temporary:
         source = Path(temporary) / "fixture.c"
         executable = Path(temporary) / "fixture.exe"
-        source.write_text(HEAD + body + MAIN.replace("SITE_C", oot_shadow.HOOK), encoding="utf-8")
-        subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable)], check=True)
+        defs, line = hooked(cascade_size(), "int hos_site_shadow_cascade_size(")
+        text = HEAD + body + defs + MAIN.replace("SITE_C", line)
+        source.write_text(text, encoding="utf-8")
+        subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source),
+                        *sitehooks.objects(temporary, text), "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
 
 

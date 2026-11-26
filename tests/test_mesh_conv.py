@@ -98,7 +98,7 @@ def source_checks(src):
     if "mesh_conv_begin_recording();" not in block(draw, "void draw_begin_recording(int slot, VkCommandBuffer cmd"):
         fail("vk_draw.cpp: the switch is not read (and the batch let go) at each recording's start")
     begin = block(draw, "void mesh_conv_begin_recording() {")
-    if 'host->version >= 36 && host->ab_value ? host->ab_value("RX_VK_MESH_CONV", env) : env' not in begin or \
+    if 'host && host->ab_value ? host->ab_value("RX_VK_MESH_CONV", env) : env' not in begin or \
             "mesh_batch.clear();" not in begin:
         fail("vk_draw.cpp mesh_conv_begin_recording: not the A/B's value, or the batch kept")
     make = block(draw, "bool mesh_ring_make() {")

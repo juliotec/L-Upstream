@@ -155,8 +155,10 @@ int main(int argc, char** argv) {
     Texture tex;
     tex.gpu = at;
     const uint64_t before = backed(fd);
-    const bool zero = upload_all_zero(tex, total, nullptr, false);
+    bool checked = false;   /* (whether it looked at the storage at all: always here, a live 32 MB and more) */
+    const bool zero = upload_all_zero(tex, total, nullptr, false, checked);
     const uint64_t after = backed(fd);
+    CHECK(checked);
     std::printf("%s: %s, the memfd %llu KB backed before the check and %llu KB after\n", mode.c_str(),
                 zero ? "all zero" : "not all zero", (unsigned long long)(before >> 10), (unsigned long long)(after >> 10));
     if (mode == "allholes" || mode == "holes" || mode == "data" || mode == "tail") {

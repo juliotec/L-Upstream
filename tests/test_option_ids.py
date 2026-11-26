@@ -1,4 +1,4 @@
-"""All named and legacy numeric host/renderer option IDs must be distinct.
+"""All named and legacy numeric host/renderer option IDs (gpu/vk/vk_api.h) and the game's (game/options.h) must be distinct.
 
 Compile cases from the actual API enums so implicit enum increments count too.
 Keep pending Walk and Item wheel IDs reserved until they land (#2345, #2261).
@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
+    api += (ROOT / "game/options.h").read_text(encoding="utf-8")   # (the game's ids, which vk_api.h includes: one space)
     api = re.sub(r"/\*.*?\*/|//[^\n]*", "", api, flags=re.S)
     enums = re.findall(r"enum\s*\{[^}]*\}\s*;", api)
     declarations = [enum for enum in enums if "HOS_OPT_" in enum]

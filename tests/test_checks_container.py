@@ -1,5 +1,7 @@
-"""The checks in a container (tests/run_all.py --container, scripts/linux/checks.sh and checks.Dockerfile): the tools are CI's and
-mise.toml's, what runs has no network and writes only the checkout, and run_all.py's other arguments reach it as they are.
+"""The CI image and the checks in a container (scripts/linux/checks.Dockerfile, ci_setup.sh, ci_image.sh, checks.sh;
+tests/run_all.py --container): the image's tools are mise.toml's pins, its environment is ci_setup.sh's, ci.yml's jobs
+install nothing of their own, what runs locally has no network and writes only the checkout, and run_all.py's other
+arguments reach it as they are.
 
 A stand-in for podman and docker writes down what it is called with: nothing is built, fetched or started.
 
@@ -18,7 +20,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_SKIP = {"windows": "a bash script for Linux containers"}
 DOCKERFILE = (ROOT / "scripts/linux/checks.Dockerfile").read_text(encoding="utf-8")
-CI = re.search(r"\n  python:\n(?:(?:    .*)?\n)+", (ROOT / ".forgejo/workflows/ci.yml").read_text(encoding="utf-8")).group(0)   # (the checks' job)
+SETUP = (ROOT / "scripts/linux/ci_setup.sh").read_text(encoding="utf-8")
+IMAGE_SH = (ROOT / "scripts/linux/ci_image.sh").read_text(encoding="utf-8")
+WORKFLOWS = ROOT / ".forgejo/workflows"
+CI = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+CI_IMAGE = (WORKFLOWS / "ci-image.yml").read_text(encoding="utf-8")
 MISE = (ROOT / "mise.toml").read_text(encoding="utf-8").split("\n[tasks.test-deps]\n")[1].split("\n[")[0]
 ENGINE = """#!%s
 import json, os, sys
@@ -36,24 +42,82 @@ else:
 
 class VersionTests(unittest.TestCase):
     def same(self, pattern, *texts):
-        found = [sorted(set(re.findall(pattern, t))) for t in (DOCKERFILE, *texts)]
+        found = [sorted(set(re.findall(pattern, t))) for t in (SETUP, *texts)]
         self.assertTrue(found[0], pattern)
         for other in found[1:]:
             self.assertEqual(found[0], other, pattern)
 
-    def test_the_tools_are_cis(self):
-        packages = re.search(r"apt-get install -y (g\+\+ clang [a-z0-9 +-]+)", CI).group(1).split()
-        installed = re.search(r"apt-get install -y (g\+\+ clang [a-z0-9 +-]+)", DOCKERFILE).group(1).split()
-        self.assertEqual(sorted(installed), sorted(packages))
-        runner = "FROM " + re.search(r"os: (ubuntu)-([\d.]+)", CI).expand(r"\1:\2")
-        self.assertIn(runner + "\n", DOCKERFILE)
-        self.assertIn("dotnet-sdk-" + re.search(r"dotnet-version: '(\d+\.\d+)\.x'", CI).group(1), DOCKERFILE)
+    def test_the_pins_are_mises(self):
+        self.same(r"(?:zstandard|pillow|numpy|lz4|unicorn)==[\d.]+", MISE)
+        self.same(r"KhronosGroup/(\w+-Headers) (?:\\\n *)?([0-9a-f]{40})", MISE)
+        self.same(r"glslang/releases/download/[\w./-]+\.tar\.gz", MISE)
+        self.same(r"\b(2c34071f56ecf39d16233294d3739cf43f981fd39080f2fd9dccb782101191ce)\b", MISE)
+        pre_commit = re.search(r'"pypi:pre-commit" = "([\d.]+)"', (ROOT / "mise.toml").read_text(encoding="utf-8")).group(1)
+        self.assertIn("pre-commit==" + pre_commit, SETUP)
+        for tool in ("node", "github:rhysd/actionlint", "github:koalaman/shellcheck", "github:gitleaks/gitleaks"):
+            self.assertIn("lock %s)" % tool, SETUP)   # (mise.lock's file and SHA-256)
+        self.assertIn("scripts/ci_rust.sh rustfmt,clippy", SETUP)   # (mise.toml's Rust)
 
-    def test_the_pins_are_cis_and_mises(self):
-        self.same(r"(?:zstandard|pillow|numpy|lz4|unicorn)==[\d.]+", CI, MISE)
-        self.same(r"KhronosGroup/(\w+-Headers) (?:\\\n *)?([0-9a-f]{40})", CI, MISE)
-        self.same(r"glslang/releases/download/[\w./-]+\.tar\.gz", CI, MISE)
-        self.same(r"echo '([0-9a-f]{64}) ", CI, MISE)
+    def test_the_game_free_checks_tools(self):
+        for package in ("g++", "clang", "lld", "spirv-tools", "ccache", "libdav1d-dev", "llvm", "libclang-rt-18-dev",
+                        "cmake", "jq", "openssl"):
+            self.assertRegex(re.sub(r"\\\n\s*", " ", SETUP), r"(?:apt_install|BASE=\()[^\n]*(?<![\w+-])%s(?![\w+-])" % re.escape(package), package)
+
+    def test_the_images_and_their_stages(self):
+        for image in ("checks", "lite"):
+            parts = subprocess.run(["bash", str(ROOT / "scripts/linux/ci_setup.sh"), "parts", image], capture_output=True,
+                                   text=True, check=True).stdout.split()
+            stage = DOCKERFILE.split("\nFROM base AS %s\n" % image)[1].split("\nFROM ")[0]
+            self.assertEqual(re.findall(r"^RUN scripts/linux/ci_setup.sh (\S+)$", stage, re.M), parts, image)
+        self.assertIn("--target checks", (ROOT / "scripts/linux/checks.sh").read_text(encoding="utf-8"))
+        # (gitleaks from mise.lock's prebuilt release: no Go toolchain baked in)
+        self.assertIn("id: gitleaks-system", (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+
+    def test_one_base(self):
+        base = re.search(r"^FROM (ubuntu:24\.04@sha256:[0-9a-f]{64}) AS base$", DOCKERFILE, re.M).group(1)
+        self.assertIn("container: " + base + "\n", CI_IMAGE)
+
+    def test_the_environment_is_ci_setups(self):
+        env = subprocess.run(["bash", str(ROOT / "scripts/linux/ci_setup.sh"), "env"], capture_output=True, text=True,
+                             check=True).stdout.split()
+        block = re.search(r"\nENV ((?:.*\\\n)*.*\n)", DOCKERFILE).group(1)
+        docker = [w for w in block.replace("\\\n", " ").split() if not w.startswith("HOME=")]
+        self.assertEqual(sorted(docker), sorted(env))
+
+    def test_the_inputs(self):
+        inputs = subprocess.run(["bash", str(ROOT / "scripts/linux/ci_image.sh"), "inputs"], capture_output=True, text=True,
+                                check=True).stdout.split()
+        for f in inputs:
+            self.assertTrue((ROOT / f).is_file(), f)
+        paths = re.search(r"\n    paths:\n((?:      - .*\n)+)", CI_IMAGE).group(1).split()[1::2]
+        self.assertEqual(sorted(paths), sorted(inputs + [".forgejo/workflows/ci-image.yml"]))
+        for f in ("scripts/ci_rust.sh", "scripts/fetch_commit.sh", "mise.lock", ".pre-commit-config.yaml"):
+            self.assertIn(f, inputs)
+
+    def test_ci_installs_nothing_itself(self):
+        for gone in ("ci_apt.sh", "run: scripts/ci_rust.sh", "setup-python", "glslang-16", "fetch_commit.sh https", "pip install",
+                     "rustup-", "apt-"):
+            self.assertNotIn(gone, CI, gone)
+        jobs = re.findall(r"\n  ([\w-]+):\n((?:(?:    .*)?\n)+)", CI)
+        for name, job in jobs:
+            if "container:" in job:
+                image = re.search(r"image: \$\{\{ needs\.changes\.outputs\.(\w+) \}\}", job).group(1)
+                self.assertIn(image, ("checks", "lite"), name)
+                self.assertIn("if: needs.changes.outputs.%s_ready != 'true'\n        run: scripts/linux/ci_setup.sh "
+                              "--github-env --image %s" % (image, image), job, name)
+
+    def test_the_push_is_mains_alone(self):
+        on = CI_IMAGE.split("\non:\n")[1].split("\nconcurrency:")[0]
+        self.assertEqual(re.findall(r"^  ([a-z_]+):", on, re.M), ["push", "workflow_dispatch"])
+        self.assertIn("branches: [main]", on)
+        build, push = CI_IMAGE.split("\njobs:\n")[1].split("\n  push:\n")
+        self.assertIn("if: github.ref == 'refs/heads/main'", push)
+        self.assertIn("runs-on: deploy", push)
+        self.assertIn("secrets.PACKAGES_TOKEN_SEALED", push)
+        self.assertIn("scripts/ci_secret.sh unseal", push)
+        self.assertNotIn("secrets.", build)
+        self.assertNotIn("secrets.", CI)
+        self.assertNotIn("docker", CI.lower().replace("checks.dockerfile", ""))
 
 
 @unittest.skipUnless(shutil.which("bash") and shutil.which("git"), "bash and git")
@@ -66,12 +130,14 @@ class RunTests(unittest.TestCase):
         self.bin = self.top / "bin"
         self.bin.mkdir()
         # (the scripts' own tools, and none of the PC's engines)
-        for tool in ("bash", "env", "git", "dirname", "grep", "id", "cat", "realpath"):
+        for tool in ("bash", "env", "git", "dirname", "grep", "id", "cat", "realpath", "mktemp", "mkdir", "cp", "rm"):
             os.symlink(shutil.which(tool), self.bin / tool)
         self.root = self.checkout(self.top / "a checkout")
 
     def checkout(self, root):
-        for name in ("scripts/linux/checks.sh", "scripts/linux/checks.Dockerfile", "tests/run_all.py", "tests/compiler_command.py"):
+        inputs = subprocess.run(["bash", str(ROOT / "scripts/linux/ci_image.sh"), "inputs"], capture_output=True, text=True,
+                                check=True).stdout.split()
+        for name in ("scripts/linux/checks.sh", "tests/run_all.py", "tests/compiler_command.py", *inputs):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(ROOT / name, root / name)
         return root

@@ -183,7 +183,7 @@ class RumbleMappingTests(unittest.TestCase):
         self.assertIsNotNone(call, "the poll does not scale the rumble by the menu's strength")
         self.assertRegex(call.group(1), r"rumble_low\b.*rumble_high\b")   # (heavy first, light second)
         self.assertLess(call.start(), poll.index("rumble_due("))   # (Off is a change: a stop is sent)
-        self.assertRegex(re.sub(r"\s+", " ", function(HID, "static void vibration_send")), r"\brumble_map\( ?v ?, ?amp\[dev\] ?\)")
+        self.assertRegex(re.sub(r"\s+", " ", function(HID, "static void vibration_send")), r"\brumble_map\( ?v ?, ?vibration_amp\[dev\] ?\)")
 
     def test_mapping_and_strength(self):
         fixture = FIXTURE % {

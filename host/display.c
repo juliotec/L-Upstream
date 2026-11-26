@@ -8,7 +8,7 @@
    Mouse: a click in the window captures the mouse (hidden, kept in the window), Esc or leaving the window releases
    it (nn_hid.c reads its motion). While the Insert menu is open the mouse is free (the cursor shown, for the menu's
    clicks: hos_mouse_pointer) and the game gets none of it; the capture it had comes back when the menu closes. The same
-   while one of the game's own menus is open (host/oot_menu.c: hos_mouse_game_menu each frame it runs), its clicks and
+   while one of the game's own menus is open (game/oot_menu.c: hos_mouse_game_menu each frame it runs), its clicks and
    wheel for that menu (hos_mouse_game_pointer). */
 #include "hos.h"
 void hos_input_clear_toggles(void);
@@ -339,17 +339,17 @@ static void menu_mouse(HWND w, int open, int opened_by_escape) {
     menus_mouse(w, open, game_menu_open);
 }
 
-/* (host/oot_menu.c, the game's thread) one of the game's menus ran this frame */
+/* (game/oot_menu.c, the game's thread) one of the game's menus ran this frame */
 void hos_mouse_game_menu(void) {
     const LONG64 before = InterlockedExchange64(&game_menu_seen_ns, (LONG64)hos_now_ns());
     if (!before && hwnd) PostMessageA(hwnd, WM_APP + 10, 1, 0);
 }
-/* (host/oot_menu.c, the game's thread) frames go on with none of the game's menus holding the mouse: closed now */
+/* (game/oot_menu.c, the game's thread) frames go on with none of the game's menus holding the mouse: closed now */
 void hos_mouse_game_menu_gone(void) {
     const LONG64 seen = InterlockedCompareExchange64(&game_menu_seen_ns, 0, 0);
     if (seen && hwnd && InterlockedCompareExchange64(&game_menu_seen_ns, 0, seen) == seen) PostMessageA(hwnd, WM_APP + 11, 0, 0);
 }
-/* (host/oot_menu.c, the game's thread) the wheel's notches since the last call, for a screen that takes only the wheel
+/* (game/oot_menu.c, the game's thread) the wheel's notches since the last call, for a screen that takes only the wheel
    and leaves the mouse as it is (the R button's item choice, in play: the mouse the camera's). Notches count only while
    such a screen reads them (a call in the last 200 ms): a wheel turned in play does not wait for the next one */
 static volatile LONG play_wheel;
@@ -628,7 +628,7 @@ static DWORD WINAPI display_main(void *p) {
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandleA(NULL);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hIcon = LoadIconA(wc.hInstance, MAKEINTRESOURCEA(1));   /* (nx2/make_icon.py; none in a build without the picture) */
+    wc.hIcon = LoadIconA(wc.hInstance, MAKEINTRESOURCEA(1));   /* (builder/crates/build-compile/src/generated/res.rs; none in a build without the picture) */
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     wc.lpszClassName = "Longshot";
     RegisterClassA(&wc);

@@ -130,11 +130,14 @@ def source_checks():
     player = block(audio, audio.index("static float audio_player_gain(void)"))
     if "rx_option(HOS_OPT_VOLUME, 100)" not in player or "rx_option(HOS_OPT_MUTE_BACKGROUND, 0)" not in player:
         raise SystemExit("nn_audio.c: the volume is not read as HOS_OPT_VOLUME (default 100) and HOS_OPT_MUTE_BACKGROUND (off)")
-    replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
+    replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h") + read("game", "options.h")
     value = {}   # (every HOS_OPT_* enum: the cheats', the motion rows', the Audio tab's, and one-name ones as Text size's)
     for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+)([^}]*)\}", api):
-        names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
-        value.update({n: int(start) + i for i, n in enumerate(names)})
+        at = int(start) - 1
+        for n in [first + " = " + start] + [n.strip() for n in rest.split(",") if n.strip()]:
+            name, _, given = n.partition("=")   # (a later name's own value: game/options.h's HOS_OPT_SKIP_TITLE = 44)
+            at = int(given) if given.strip() else at + 1
+            value[name.strip()] = at
     table = block(replay, replay.index("t.option = [](int id) -> int {"))
     ids = [int(n) if n.isdigit() else value[n] for n in re.findall(r"\bid == (\w+)", table)]
     if len(ids) != len(set(ids)):
@@ -158,7 +161,7 @@ def source_checks():
         raise SystemExit("vk_menu.cpp: the tab strip has no Audio title")
     for name in ("HOS_OPT_VOLUME", "HOS_OPT_MUTE_BACKGROUND"):
         users = []
-        for folder in ("host", "gpu"):
+        for folder in ("host", "gpu", "game"):
             for path in (ROOT / folder).rglob("*.c*"):
                 text = path.read_text(encoding="utf-8", errors="replace")
                 if re.search(r"\brx_option(_set)?\(\s*(%s|%d)\s*," % (name, value[name]), text):

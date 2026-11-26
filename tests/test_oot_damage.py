@@ -1,24 +1,40 @@
-"""Damage taken: real arithmetic and life-write guards without a game dump."""
+"""Damage taken: real arithmetic and life-write guards without a game dump.
+
+The guards are the hook sites player.lifeHit and player.lifeWrite (before f_804bd8c0's two compare-and-swaps of an actor's
+life; game/sites/sites.toml), with game/oot_sites.c's callbacks: each is compiled as the lift lowers it (tests/sitehooks.py) and, side by
+side, as the text patch it replaced had it on main (OLD_GUARD): every case gives both the same registers.
+
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+"""
 import argparse
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 ROOT = Path(__file__).resolve().parents[1]
-import sys  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests"))
 from menu_model_fixture import menu_text  # noqa: E402
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches as patches
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import site, callback  # noqa: E402
+import sitehooks  # noqa: E402
+
+# (the text patch's guard on main, before each compare-and-swap: {hit} x9 at the first, the difference at the second)
+OLD_GUARD = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] &&\n"
+             "        hos_oot_is_player(c, c->x[19]) &&\n"
+             "        c->x[13] == recomp_load64(c,c->x[19] + 7184) + 8)\n"
+             "        c->x[12] = hos_oot_damage((uint32_t)c->x[11], (uint32_t)c->x[12], {hit});\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
+    sitehooks.use(args.cc, args.cargo)
+    api = (ROOT / "game/options.h").read_text(encoding="utf-8")   # (the game's option ids)
     menu = menu_text(ROOT)   # (vk_menu.cpp and its modules, their rows as table lines, #1633)
     options = (ROOT / "gpu/vk/vk_menu.h").read_text(encoding="utf-8")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
@@ -30,18 +46,12 @@ def main():
     # Hidden means Normal: with the Debug tools off the host is told Normal, whatever the saved choice.
     assert "if (id == HOS_OPT_DAMAGE_TAKEN) return menu_damage_taken();" in replay
     assert "int menu_damage_taken() { return cheats_on() ? opts.damage_taken : 1; }" in menu
-    source = '#include "a64.h"\n' + patches.LIFE_HEAD + patches.LIFE_CAS + '\n' + patches.LIFE_CAS + '\n}\n'
-    made = patches.patch_life(source)
-    assert made and made != source
-    assert patches.patch_life(made) == made, "Applying the patch twice must not scale twice"
-    assert patches.patch_life(source.replace(patches.LIFE_CAS, '', 1)) is None
-    assert patches.patch_life(source.replace(patches.LIFE_HEAD, 'void unrelated(void) {\n')) is None
-    assert patches.patch_file(source, 'authored.c', protect_hearts=False)[0] == source
-    assert patches.patch_file(source, 'authored.c', protect_hearts=True)[0] == made
-    # Compile the guard from each injected site, not a reimplementation of it.
-    body = made.split(patches.LIFE_HEAD)[1].rsplit('\n}', 1)[0]
-    guards = body.split(patches.LIFE_CAS)[:2]
-    host = (ROOT / 'host/oot_damage.c').read_text(encoding='utf-8')
+    hit = site("player.lifeHit", "f_804bd8c0", "before", 0x438)
+    write = site("player.lifeWrite", "f_804bd8c0", "before", 0x610)
+    # (each guard as the lift emits it, and the patch's, cut into functions of their own)
+    new = [sitehooks.line(hit), sitehooks.line(write)]
+    old = [OLD_GUARD.replace("{hit}", "(uint32_t)c->x[9]"), OLD_GUARD.replace("{hit}", "(uint32_t)c->x[11] - (uint32_t)c->x[12]")]
+    host = (ROOT / 'game/oot_damage.c').read_text(encoding='utf-8')
     host = '\n'.join(line for line in host.splitlines() if not line.startswith('#include'))
     head = r'''
 #include <stdint.h>
@@ -51,6 +61,8 @@ enum { HOS_OPT_DAMAGE_TAKEN = 55 };
 static int setting = 1, protection, player = 1;
 int rx_option(int id, int otherwise) { assert(id == 55 && otherwise == 1); return setting; }
 int hos_oot_hearts_enabled(void) { return protection; }
+#include <string.h>
+#define A64_NOESC
 typedef struct { uint64_t x[32]; } Ctx;
 static int hos_oot_is_player(Ctx *c, uint64_t actor) { (void)c; return player && actor == 100; }
 static uint64_t recomp_load64(Ctx *c, uint64_t address) { (void)c; assert(address == 100 + 7184); return 200; }
@@ -123,12 +135,22 @@ int main(void) {
     puts("PASS: damage arithmetic, lethal/quarter hits, healing, protection, both player guards and option wiring");
 }
 '''
-    site = 'static void site(Ctx *c, int which) { if (which) {\n' + guards[0] + '\n} else {\n' + guards[1] + '\n} }\n'
+    sites = (callback("static void life_write(") + "\n" + callback("int hos_site_life_hit(") + "\n" +
+             callback("int hos_site_life_write(") + "\n"
+             "volatile uint8_t hos_site_on_player_lifeHit = 1, hos_site_on_player_lifeWrite = 1;\n"
+             "int (*volatile hos_site_fn_player_lifeHit)(Ctx *) = hos_site_life_hit;\n"
+             "int (*volatile hos_site_fn_player_lifeWrite)(Ctx *) = hos_site_life_write;\n"
+             "static void site_new(Ctx *c, int which) { if (which) {\n" + new[0] + "\n} else {\n" + new[1] + "\n} }\n"
+             "static void site_old(Ctx *c, int which) { if (which) {\n" + old[0] + "\n} else {\n" + old[1] + "\n} }\n"
+             "static void site(Ctx *c, int which) {   /* (the hook, checked against the patch's guard on a copy) */\n"
+             "    Ctx d = *c;\n    site_new(c, which);\n    site_old(&d, which);\n    assert(memcmp(c, &d, sizeof d) == 0);\n}\n")
     with tempfile.TemporaryDirectory(prefix='oot-damage-') as temporary:
         c = Path(temporary) / 'damage.c'
         exe = Path(temporary) / 'damage.exe'
-        c.write_text(head + host + site + main_c, encoding='utf-8')
-        subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', str(c), '-o', str(exe)], check=True)
+        text = head + host + sites + main_c
+        c.write_text(text, encoding='utf-8')
+        subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', str(c),
+                        *sitehooks.objects(temporary, text), '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

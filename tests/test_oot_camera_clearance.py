@@ -1,28 +1,25 @@
 """The camera's two near-plane clearance inputs retain the game's 16:9 shape (issue 1703).
 
-Run the real oot_wide.install and compile its generated after-load code with authored
-registers. Matching picture ratios become 16:9; other values and every other register
-stay unchanged. No game image, lifted code or GPU is used.
+The hook sites wide.clearance and wide.clearanceFollow (game/oot_wide_sites.c), after the two loads main's widescreen C
+went after, are compiled as the lift lowers them (tests/sitehooks.py) with authored registers. Matching picture ratios become 16:9;
+other values and every other register stay unchanged. With A64_CAMERA_DIAGNOSTICS=1 in the game's environment the sites
+count and, while camera-clearance.trace is there, log their hits. No game image, lifted code or GPU is used.
 
-python -I -B tests/test_oot_camera_clearance.py [--cc gcc]
+python -I -B tests/test_oot_camera_clearance.py [--cc clang] [--cargo cargo]
 """
 import argparse
-import contextlib
-import io
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
+
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
 sys.path.insert(0, str(ROOT / "tests"))
-import oot_wide  # noqa: E402
-import kit  # noqa: E402,F401
-import toolchain  # noqa: E402
+from widesites import hook, site  # noqa: E402
+import sitehooks  # noqa: E402
 from run_all import bundled_mingw  # noqa: E402
 
 # Authored from Arm ARM LDR SIMD/FP unsigned-immediate fields: size=10,
@@ -32,22 +29,6 @@ def ldr_s(rt):
 
 
 SITES = ((0x71a844, ldr_s(10), 10), (0x71b624, ldr_s(14), 14))
-
-
-class Image:
-    def __init__(self, words):
-        self.words = words
-
-    def word(self, pc):
-        return self.words[pc]
-
-
-def installed(words):
-    lifter = SimpleNamespace(after={})
-    log = io.StringIO()
-    with contextlib.redirect_stdout(log):
-        oot_wide.install(lifter, Image(words))
-    return lifter.after, log.getvalue()
 
 
 FIXTURE = r'''
@@ -81,8 +62,9 @@ void hos_log(const char *fmt, ...) {
 }
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 static void a64_vset64(uint64_t v[2], uint64_t bits) { v[0] = bits; v[1] = 0; }
+#define A64_NOESC
+DEFS
 static void apply(Ctx *c, unsigned site) {
-    (void)c;
     if (site == 0) { SITE_0 }
     else { SITE_1 }
 }
@@ -169,68 +151,47 @@ int main(void) {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    cc = args.cc or os.environ.get("CC")
+    cc = args.cc
     if not cc:
-        bundled_mingw()
-        cc = toolchain.find("clang", host=True)
-        if not os.path.isfile(cc):
-            cc = shutil.which("gcc") or shutil.which("cc") or cc
-    mingw = toolchain.mingw(host=True)
-    selected = shutil.which(cc) or cc
-    bundled_cc = os.path.join(mingw, "bin", "clang.exe") if mingw else ""
-    flags = (toolchain.native_target(host=True) + toolchain.native_link(host=True)
-             if os.name == "nt" and bundled_cc and os.path.normcase(os.path.realpath(selected)) ==
-             os.path.normcase(os.path.realpath(bundled_cc)) else [])
+        bundled_mingw()   # (Windows: the clone's llvm-mingw on PATH's place, as the build has it)
+        mingw = os.environ.get("LONGSHOT_MINGW")
+        cc = (os.path.join(mingw, "bin", "clang.exe") if mingw else None) or "clang"
+    sitehooks.use(cc, args.cargo)
+    flags = []
     if os.name == "nt":
         flags.append("-D_CRT_SECURE_NO_WARNINGS")
-    words = {oot_wide.MAIN + off: word for off, word, _ in oot_wide.SITES}
-    words.update({oot_wide.MAIN + off: word for off, word, _ in SITES})
-    original_switch = os.environ.get("A64_CAMERA_DIAGNOSTICS")
-    os.environ.pop("A64_CAMERA_DIAGNOSTICS", None)
-    after, _ = installed(words)
-    os.environ["A64_CAMERA_DIAGNOSTICS"] = "1"
-    diagnostic_after, _ = installed(words)
-    if original_switch is None:
-        del os.environ["A64_CAMERA_DIAGNOSTICS"]
-    else:
-        os.environ["A64_CAMERA_DIAGNOSTICS"] = original_switch
-    # Main has no hook: compile the original no-op and fail on its wide result,
-    # rather than failing for a missing Python name or a compile error.
+    names = ("wide.clearance", "wide.clearanceFollow")
+    for name, (off, word, _) in zip(names, SITES):
+        x = site(name)
+        assert int(x.function[2:], 16) + x.offset == 0x80020000 + off, "%s is not after main+%#x" % (name, off)
+        at = (x.offset - x.signature_offset) // 4
+        assert x.signature[at] == (word, 0xffffffff), "%s's signature does not hold %08x" % (name, word)
+    hooked = [hook(name, "int clearance_diagnostics", "void wide_clearance") for name in names]
+    defs = hooked[0][0] + "\n".join(d[d.index("int hos_site_"):] for d, _ in hooked[1:])   # (the shared part once)
     creationflags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     with tempfile.TemporaryDirectory(prefix="camera-clearance-") as temporary:
         folder = Path(temporary)
         source, executable = folder / "fixture.c", folder / "fixture.exe"
-        for enabled, hooks in ((0, after), (1, diagnostic_after)):
-            fixture = FIXTURE.replace("DIAGNOSTICS", str(enabled))
-            for i, (off, _, _) in enumerate(SITES):
-                fixture = fixture.replace("SITE_%d" % i, hooks.get(oot_wide.MAIN + off, ""))
+        for enabled in (0, 1):
+            fixture = FIXTURE.replace("DIAGNOSTICS", str(enabled)).replace("DEFS", defs)
+            for i, (_, line) in enumerate(hooked):
+                fixture = fixture.replace("SITE_%d" % i, line)
             source.write_text(fixture, encoding="utf-8")
-            for command, cwd in (([cc, *flags, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable)], None),
+            env = {k: v for k, v in os.environ.items() if k != "A64_CAMERA_DIAGNOSTICS"}
+            if enabled:
+                env["A64_CAMERA_DIAGNOSTICS"] = "1"
+            for command, cwd in (([cc, *flags, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source),
+                                  *sitehooks.objects(temporary, fixture), "-o", str(executable)], None),
                                  ([str(executable)], folder)):
                 run = subprocess.run(command, cwd=cwd, creationflags=creationflags, capture_output=True, text=True,
-                                     encoding="utf-8", errors="replace", timeout=30)
+                                     encoding="utf-8", errors="replace", timeout=30, env=env)
                 print(run.stdout, end="")
                 print(run.stderr, end="", file=sys.stderr)
                 if run.returncode:
                     raise SystemExit(run.returncode)
-    for off, word, _ in SITES:
-        pc = oot_wide.MAIN + off
-        assert pc in after
-        for missing in (False, True):
-            changed = dict(words)
-            if missing:
-                del changed[pc]
-            else:
-                changed[pc] = word ^ 1
-            os.environ.pop("A64_CAMERA_DIAGNOSTICS", None)
-            guarded, warning = installed(changed)
-            assert pc not in guarded, hex(pc)
-            assert "main+%#x" % off in warning and "left out" in warning
-            assert {k: v for k, v in after.items() if k != pc} == guarded
-    if original_switch is not None:
-        os.environ["A64_CAMERA_DIAGNOSTICS"] = original_switch
-    print("PASS: both original words guarded; missing or changed words leave only that site original")
+    print("PASS: both sites after main's two loads, their signatures holding main's words")
 
 
 if __name__ == "__main__":

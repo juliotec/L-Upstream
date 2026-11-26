@@ -22,10 +22,11 @@ The PC's job queue (scripts/devtools/jobqueue.py):
     dev.py queue status | history | cancel JOB
 A base folder you name, without the queue: what base, pack and rt run, and what the Test Farm runs
 (scripts/devtools/packs.py):
-    dev.py packs base DIR --romfs R --exefs E [--tree T] [--seed GAME]
+    dev.py packs base DIR --game G [--tree T] [--seed GAME] [--upscaler LIST]
     dev.py packs pack DIR NAME [--tree T]
     dev.py packs rt DIR RUNTIME [PACK...]
     dev.py packs warm DIR --run "CMD with {runtime}" [--run ...]
+    dev.py packs run [--tree T] -- ARGS...       longshot-builder of a checkout, built from its builder/
 A game folder you play, kept on the newest commit of main (scripts/devtools/update.py):
     dev.py update [--game DIR] [--check | --rollback | --gui] [--force]
                                             built from main's newest commit as soon as it lands, backed up first
@@ -60,7 +61,7 @@ def main(argv):
     p = parser()
     a = p.parse_args(argv)
     if command and not getattr(a, "takes_command", False):
-        p.error("only `queue run` takes a command after --")
+        p.error("only `queue run` and `packs run` take a command after --")
     a.command = command
     return a.func(a) or 0
 

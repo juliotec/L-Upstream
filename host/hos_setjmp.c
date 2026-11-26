@@ -32,9 +32,70 @@
 #include <string.h>
 
 #define DEPTH 256
-typedef struct { uint64_t rets[4], target; void *buf[32]; } SjSlot;   /* (buf: recomp_sj_setjmp's 248 bytes) */
-typedef struct { SjSlot slot[DEPTH]; int depth, overflow; } SjStack;
-static _Thread_local SjStack *stack;
+typedef struct SjStack SjStack;
+typedef struct { uint64_t rets[4], target; SjStack *stack; void *buf[32]; } SjSlot;   /* (buf: recomp_sj_setjmp's 248 bytes) */
+struct SjStack { SjSlot slot[DEPTH]; int depth, overflow; };
+
+/* The slots are a guest context's, not a host thread's: a guest fiber that set a jump on one host thread may be resumed
+   on another (hos_thread.c fiber_switch) and longjmp there, on the fiber's own host stack, which went with it. So each
+   context (a thread's or a fiber's Ctx) has its stack, found by its address; hos_setjmp_forget lets a context's go when
+   the context ends (a thread destroyed, a fiber finalized or set up again), so a context made at the same address later
+   starts empty. A slot knows its stack, so recomp_sj_pop needs no context */
+typedef struct { const Ctx *c; SjStack *stack; } SjOwner;
+static SRWLOCK owners_lock = SRWLOCK_INIT;
+static SjOwner *owners;
+static int nowners, cap_owners;
+
+static SjStack *stack_of(const Ctx *c, int make) {
+    SjStack *found = NULL;
+    AcquireSRWLockShared(&owners_lock);
+    for (int i = 0; i < nowners && !found; i++)
+        if (owners[i].c == c) found = owners[i].stack;
+    ReleaseSRWLockShared(&owners_lock);
+    if (found || !make) return found;
+    SjStack *s = (SjStack *)calloc(1, sizeof *s);
+    if (!s) return NULL;
+    AcquireSRWLockExclusive(&owners_lock);
+    if (nowners == cap_owners) {
+        const int cap = cap_owners ? 2 * cap_owners : 16;
+        SjOwner *grown = (SjOwner *)realloc(owners, sizeof *owners * (size_t)cap);
+        if (!grown) {
+            ReleaseSRWLockExclusive(&owners_lock);
+            free(s);
+            return NULL;
+        }
+        owners = grown, cap_owners = cap;
+    }
+    owners[nowners++] = (SjOwner){c, s};   /* (only c's own thread makes c's: no other can have raced it in) */
+    ReleaseSRWLockExclusive(&owners_lock);
+    return s;
+}
+
+void hos_setjmp_forget(const Ctx *c) {
+    SjStack *gone = NULL;
+    AcquireSRWLockExclusive(&owners_lock);
+    for (int i = 0; i < nowners; i++)
+        if (owners[i].c == c) {
+            gone = owners[i].stack;
+            owners[i] = owners[--nowners];
+            break;
+        }
+    ReleaseSRWLockExclusive(&owners_lock);
+    free(gone);
+}
+
+/* (tests: how many slots c has pushed) */
+int hos_setjmp_depth(const Ctx *c) {
+    const SjStack *s = stack_of(c, 0);
+    return s ? s->depth : 0;
+}
+
+/* a push refused (more than DEPTH owners nested): its setjmp still runs, but no return address matches it. One for the
+   process: its buffer is only ever written (two threads refused at once write their registers over each other's, which
+   nothing reads: no longjmp goes to it, its target stays 0), and it outlives every thread, so a fiber that pushed it on
+   one host thread pops it on another after the first has ended (a thread's own was freed with that thread). recomp_sj_pop
+   knows it by its address */
+static SjSlot refused;
 
 #ifdef _WIN32
 /* buf: rbx rbp rdi rsi r12 r13 r14 r15 at 0-56, rsp (after the return) at 64, the return address at 72, xmm6-15 at
@@ -143,29 +204,33 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
 #endif
 
 void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {
-    (void)c;
-    if (!stack) stack = (SjStack *)calloc(1, sizeof *stack);
-    if (stack->depth >= DEPTH) {   /* (too deep: the outermost slots go, as they are the least likely targets) */
-        memmove(&stack->slot[0], &stack->slot[1], sizeof stack->slot[0] * (DEPTH - 1));
-        stack->depth = DEPTH - 1;
-        if (!stack->overflow++) hos_log("setjmp: more than %d nested setjmp owners on this thread", DEPTH);
+    SjStack *const stack = stack_of(c, 1);
+    if (!stack || stack->depth >= DEPTH) {
+        /* (too deep: refused, not the outermost slots shifted out, which would move the live slots under the frames
+           that hold them; a longjmp to this owner then misses as it would without the wrapper) */
+        if (stack && !stack->overflow++) hos_log("setjmp: more than %d nested setjmp owners in one context: refused", DEPTH);
+        return refused.buf;
     }
     SjSlot *s = &stack->slot[stack->depth++];
-    s->rets[0] = r0, s->rets[1] = r1, s->rets[2] = r2, s->rets[3] = r3, s->target = 0;
+    s->rets[0] = r0, s->rets[1] = r1, s->rets[2] = r2, s->rets[3] = r3, s->target = 0, s->stack = stack;
     return s->buf;
 }
 
 uint64_t recomp_sj_target(void **buf) { return ((SjSlot *)((char *)buf - offsetof(SjSlot, buf)))->target; }
 
 void recomp_sj_pop(void **buf) {
+    SjSlot *const s = (SjSlot *)((char *)buf - offsetof(SjSlot, buf));
+    if (s == &refused) return;   /* (a refused push's: nothing was pushed) */
+    SjStack *const stack = s->stack;
     if (!stack) return;
-    const int i = (int)(((SjSlot *)((char *)buf - offsetof(SjSlot, buf))) - stack->slot);
+    const int i = (int)(s - stack->slot);
     if (i >= 0 && i < DEPTH && i < stack->depth) stack->depth = i;
 }
 
 /* a64_call_miss's first question: a longjmp to a pushed setjmp owner? (does not return when it is) */
 void hos_setjmp_return(Ctx *c, uint64_t target) {
-    if (!stack || !stack->depth || !target) return;
+    SjStack *const stack = target ? stack_of(c, 0) : NULL;
+    if (!stack || !stack->depth) return;
     for (int i = stack->depth - 1; i >= 0; i--) {
         SjSlot *s = &stack->slot[i];
         if (s->rets[0] != target && s->rets[1] != target && s->rets[2] != target && s->rets[3] != target) continue;
@@ -179,7 +244,7 @@ void hos_setjmp_return(Ctx *c, uint64_t target) {
     }
 }
 
-/* ...and every indirect jump's (third_party/a64-kit/rt a64_ijump_hook): the setjmp return addresses are entries too
+/* ...and every indirect jump's (builder/rt/a64_rt.c a64_ijump_hook): the setjmp return addresses are entries too
    (the callers run them, recomp_sj_target), so the longjmp's BR finds a function there and never missed: it called
    the owner's code inside longjmp's own frame, which returned into longjmp's caller (0x8168215c, the UDF after OoT's
    BL longjmp: the text box thread's "branch to a non-function") */

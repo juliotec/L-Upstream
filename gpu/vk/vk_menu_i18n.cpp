@@ -170,9 +170,7 @@ std::string known_code(const std::string& code) {
     return "";
 }
 std::string language_txt() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string path(exe, n);
+    const std::string path = game_module_string();
     return path.substr(0, path.find_last_of("\\/") + 1) + "language.txt";
 }
 /// language.txt's language, as host/nn_applet.c reads it: its first line that is not blank or a comment and holds a code the

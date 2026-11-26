@@ -1,4 +1,4 @@
-"""The Debug tab's inventory editor's items (gpu/vk/oot_cheat_items.h, read by gpu/vk/vk_menu.cpp and host/hos_main.c):
+"""The Debug tab's inventory editor's items (game/oot_cheat_items.h, read by gpu/vk/vk_menu.cpp and game/oot_tools.c):
 no two rows share a label or a pouch name, and the probe list names no spelling twice. The Hookshot and the Longshot are
 two items of the game, each with its own row: the project's rename to Longshot once made the Hookshot's row a second
 Longshot (Item_Hookshot and Weapon_Range_Hookshot gone), so the Debug tab could not give the Hookshot.
@@ -36,7 +36,7 @@ def rows(cxx):
     with tempfile.TemporaryDirectory(prefix="cheat-items-") as folder:
         src, exe = Path(folder) / "items.cpp", Path(folder) / "items.exe"
         src.write_text(PRINTER, encoding="utf-8")
-        subprocess.run([cxx, "-std=c++17", "-Wall", "-Werror", "-I" + str(ROOT / "gpu" / "vk"), str(src), "-o", str(exe)],
+        subprocess.run([cxx, "-std=c++17", "-Wall", "-Werror", "-I" + str(ROOT / "game"), str(src), "-o", str(exe)],
                        check=True)
         out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
     return [line.split("\t") for line in out.splitlines()]

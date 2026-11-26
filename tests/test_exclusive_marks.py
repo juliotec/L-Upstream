@@ -1,11 +1,11 @@
-"""Compile the runtime's actual exclusive monitor (rt/a64_rt.c, and rt/a64.h's A64_INLINE_RT copy) and check what the
-soft write watch sees of LDXR/STXR and LDXP/STXP.
+"""Compile the runtime's actual exclusive monitor (builder/rt/a64_rt.c, what the lifted code calls) and check what the soft
+write watch sees of LDXR/STXR and LDXP/STXP.
 
 The renderer takes a page's mark and then reads the page (gpu/render/rx_buffer.cpp), so a store must be in memory
 before its mark: a mark set first can be taken with the old bytes, and the store then reaches the GPU never. Each
 mark here records the bytes it covers at that moment; after a successful store they must be the stored ones, and
 the pages of its first and last byte must be marked. Directed cases pin the monitor's rules (same address and size,
-one store per reservation, CLREX, another writer), and a seeded random run compares both copies, step by step,
+one store per reservation, CLREX, another writer), and a seeded random run compares it, step by step,
 with the model a64_rt.c documents: STXR succeeds when the reservation is valid for that address and size and memory
 still holds the value LDXR read. No game, SDK or GPU is used.
 """
@@ -19,7 +19,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
 from srccut import block   # noqa: E402
 
-RUN_ALL_ARGS = ["--cc", "clang"]   # (the compiler the build uses for the runtime, nx2/build.py)
+RUN_ALL_ARGS = ["--cc", "clang"]   # (the compiler the build uses for the runtime, builder/crates/build-compile)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,7 +28,6 @@ HARNESS = r"""#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define A64_INLINE static inline
 enum { PAGE = 4096, PAGES = 4 };
 static _Alignas(PAGE) uint8_t window[PAGES * PAGE];
 static uint8_t *guest = window;   /* (a pointer, as A64_MEM is: the compiler knows no alignment beyond the guest's) */
@@ -62,7 +61,6 @@ typedef struct {
 } Impl;
 static const Impl impls[] = {
     {"a64_rt.c", recomp_ldxr, recomp_stxr, recomp_clrex},
-    {"a64.h A64_INLINE_RT", a64_i_ldxr, a64_i_stxr, a64_i_clrex},
 };
 
 static int failures;
@@ -129,7 +127,7 @@ static void pairs(void) {
     }
 }
 
-/* both copies against the documented model, on one seeded stream of LDXR, STXR, CLREX and plain stores by another
+/* the monitor against the documented model, on one seeded stream of LDXR, STXR, CLREX and plain stores by another
    writer (which may store the value already there) over the 32 bytes either side of a page boundary */
 static void differential(const Impl *m, uint32_t steps) {
     uint64_t rng = 0x9E3779B97F4A7C15ull;
@@ -175,7 +173,7 @@ static void differential(const Impl *m, uint32_t steps) {
 }
 
 int main(void) {
-    for (int i = 0; i < 2; i++) {
+    for (size_t i = 0; i < sizeof impls / sizeof impls[0]; i++) {
         directed(&impls[i]);
         differential(&impls[i], 200000);
     }
@@ -184,7 +182,7 @@ int main(void) {
         printf("%d failures\n", failures);
         return 1;
     }
-    puts("PASS: LDXR/STXR and LDXP/STXP follow the monitor's rules, both copies agree with its model over 200000 "
+    puts("PASS: LDXR/STXR and LDXP/STXP follow the monitor's rules, it agrees with its model over 200000 "
          "steps, and every successful store is marked after it is written");
     return 0;
 }
@@ -195,14 +193,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="cc")
     a = p.parse_args()
-    rt = (ROOT / "third_party/a64-kit/rt/a64_rt.c").read_text(encoding="utf-8")
-    header = (ROOT / "third_party/a64-kit/rt/a64.h").read_text(encoding="utf-8")
+    rt = (ROOT / "builder/rt/a64_rt.c").read_text(encoding="utf-8")
     actual = [block(rt, marker) for marker in (
         "static uint64_t load_n(", "static int cas_n(", "uint64_t recomp_ldxr(", "uint32_t recomp_stxr(",
         "void recomp_ldxp(", "uint32_t recomp_stxp(", "void recomp_clrex(")]
-    actual += [block(header, marker) for marker in (
-        "A64_INLINE uint64_t a64_i_load_n(", "A64_INLINE int a64_i_cas_n(", "A64_INLINE uint64_t a64_i_ldxr(",
-        "A64_INLINE uint32_t a64_i_stxr(", "A64_INLINE void a64_i_clrex(")]
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     with tempfile.TemporaryDirectory(prefix="exclusive-marks-") as temporary:
         folder = Path(temporary)

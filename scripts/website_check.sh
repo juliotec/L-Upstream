@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # The website's build and checks (website/: npm ci, the Astro build, check-site.ts and its node tests), as CI runs them on
-# every change: `mise run ci` and .forgejo/workflows/ci.yml's website job call this; CircleCI's `website` job runs the
-# same three commands. No secrets: the build only reads public Forgejo data.
+# every change: `mise run ci` and .forgejo/workflows/ci.yml's website job call this. No secrets: the build only reads public Forgejo data.
 set -euo pipefail
 cd "$(dirname "$0")/../website"
 if [ ! -f package.json ]; then

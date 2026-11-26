@@ -1,24 +1,27 @@
-"""The game's Voice Language option is applied after a restart (host/oot_voice.c, nx2/oot_patches.py; issue 430).
+"""The game's Voice Language option is applied after a restart (game/oot_voice.c, the hook site options.voiceWritten; issue 430).
 
 The game's voice resource picks the voice files' language at its first update (the text language's default) and after that
 only when GameDataMgr lists OptionData.VoiceLanguage among the flags written since its last pass (f_80a9d1c0). option.sav is
 read after that first update and replaces the option's value without listing it, so a choice saved in an earlier session
 showed on the game's Options screen and was never applied: Japanese chosen, English voices.
 
-The update's check, in text shaped as the lift writes it, goes through nx2/oot_patches.py patch_file as a lift does and is
-compiled with host/oot_voice.c as it is, over a guest memory of its own with a made-up GameDataMgr (the enum table and its
+The update's check, in text shaped as the lift writes it, with the site's hook in place of its call as the lift lowers it
+(tests/sitehooks.py: a replace site on the call: x30 set, then game/oot_sites.c's callback, which calls the game's function through
+a64_lookup), and side by side with the text patch's call it replaced (OLD, as main had it), is compiled with game/oot_voice.c and game/flags.c as they are, over a guest memory of its own with a made-up GameDataMgr (the enum table and its
 entries) and stand-ins for the game's "was it written" and for the branch that reads the option and applies it. Then:
 
 - the start: the default is applied once, when its write is listed; updates with nothing new apply nothing;
 - option.sav read: the option's value replaced and not listed is applied, once (this fails without the fix);
 - a write from the Options screen is applied once, as before; another flag's write applies nothing;
 - another question through the hook (another flag's hash) gets the game's answer alone; a GameDataMgr without the option or
-  not made yet: the game's answer alone;
+  not made yet: the game's answer alone; the option's entry index past the count reads entry 0, as the game does;
 - HOS_VOICE_OPTION_FOLLOW=0: the game's answer alone, as shipped (the saved choice is not applied);
-- the edit is made once, at the update's call alone (another caller of f_80a9d1c0 is left), a second run changes nothing,
-  another version's text is left alone, and it is the supported build's only.
+- the site is the update's call alone (another caller of f_80a9d1c0 is left), in the supported build's table.
 
-python -I -B tests/test_oot_voice_option.py [--cc gcc]
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_oot_voice_option.py [--cc clang] [--cargo cargo]
 """
 import argparse
 import os
@@ -28,13 +31,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
 ENV_ON_H = str(ROOT / "gpu" / "vk" / "compat" / "longshot_env.h")
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import site, callback, slot  # noqa: E402
+import sitehooks  # noqa: E402
+
+CALL = "c->x[30] = 0x80a9ca9cULL; f_80a9d1c0(c);"   # (the bl as the lift writes it; OLD the text patch's on main)
+OLD = "c->x[30] = 0x80a9ca9cULL; hos_oot_voice_option(c, f_80a9d1c0);   /* (nx2/oot_patches.py: game/oot_voice.c) */"
 
 A64_H = r'''#pragma once
 #include <stdint.h>
@@ -42,6 +49,7 @@ A64_H = r'''#pragma once
 #define A64_NOESC
 typedef struct { uint64_t x[32]; uint8_t n, z, c, v; } Ctx;
 typedef void (*A64Fn)(Ctx *);
+A64Fn a64_lookup(uint64_t addr);
 #define GUEST 0x80000000ull
 extern unsigned char mem[0x10000];
 static inline uint64_t recomp_load32(Ctx *c, uint64_t a) { uint32_t v; (void)c; memcpy(&v, mem + (a - GUEST), 4); return v; }
@@ -51,6 +59,11 @@ static inline uint64_t recomp_load64(Ctx *c, uint64_t a) { uint64_t v; (void)c; 
 HOS_H = r'''#pragma once
 #include "a64.h"
 void hos_log(const char *fmt, ...);
+/* (host/hos.h's, over this guest memory: the flags service reads through them) */
+static inline void *hos_guest_range(uint64_t a, uint64_t n) {
+    return a >= GUEST && n <= sizeof mem && a - GUEST <= sizeof mem - n ? mem + (a - GUEST) : (void *)0;
+}
+#define HOS_WRITTEN(p, n) ((void)0)
 '''
 
 # The voice resource's update (f_80a9ca30) from its question to its two ways on, as the lift writes them; voice_apply
@@ -120,10 +133,14 @@ static void make_mgr(void) {
 
 /* the game's f_80a9d1c0: x0 GameDataMgr, x1 a flag's hash; x0 bit 0: listed as written. Its scratch registers are not kept */
 void f_80a9d1c0(Ctx *c) {
+    CHECK_WHY(c->x[30] == 0x80a9ca9cull, "the game's function is called with x30 other than the call's return address");
     asked++;
     c->x[0] = written && (uint32_t)c->x[1] == written;
     c->x[1] = c->x[2] = c->x[8] = c->x[9] = 0xdead;
 }
+/* (the runtime's lookup of a function by its guest address) */
+A64Fn a64_lookup(uint64_t addr) { return addr == 0x80a9d1c0ull ? f_80a9d1c0 : NULL; }
+_Thread_local uint64_t hos_site_callee;   /* (game/sites.c's: the replaced bl's callee, which its hook stores) */
 /* the update's branch at 0x80a9cd30: the option read and applied */
 void voice_apply(Ctx *c) { applied = (uint32_t)recomp_load32(c, ENTRIES + 0x38 * 3 + 0x1c); applies++; }
 void f_80a9ca30(Ctx *c);
@@ -181,6 +198,7 @@ int main(int argc, char **argv) {
     {   /* another question through the hook: the game's answer, whatever the option does; the option's change is still seen */
         Ctx c;
         memset(&c, 0, sizeof c);
+        c.x[30] = 0x80a9ca9cull;   /* (the call's return address, as the site's hook sets it before the callback) */
         c.x[0] = MGR, c.x[1] = OTHER, set_option(ENGLISH);
         hos_oot_voice_option(&c, f_80a9d1c0);
         CHECK(!(c.x[0] & 1) && applies == 3);
@@ -201,54 +219,67 @@ int main(int argc, char **argv) {
     store64(HOLDER, MGR), update();
     CHECK(applies == 5 && applied == JAPANESE);
     puts("PASS: another flag's question gets the game's answer; no option or no GameDataMgr: the game's answer alone");
+    /* the option's entry index past the count: entry 0 read, as the game reads it (and main did), so its change is seen */
+    store32(TABLE + 8 * 2 + 4, 9), update();
+    CHECK_WHY(applies == 6, "an option index past the entries' count is not read as entry 0, as the game reads it");
+    store32(TABLE + 8 * 2 + 4, 3), update();
+    CHECK(applies == 7 && applied == JAPANESE);
+    puts("PASS: an index past the count reads entry 0, as the game does");
 #endif
     return 0;
 }
 '''
 
 
+def hooked():
+    """LIFTED with the site's hook in place of the update's call, as the lift lowers it (tests/sitehooks.py), and the callback
+    and its slot"""
+    x = site("options.voiceWritten", "f_80a9ca30", "replace", 0x68)
+    hook = sitehooks.line(x, 0x80a9ca98, 0x80a9d1c0) + "\n" + CALL + "\n" + sitehooks.REPLACE_END
+    head = '#include "a64.h"\n'
+    return LIFTED.replace(head, head + "void hos_oot_voice_option(Ctx *A64_NOESC c, A64Fn game);\n"
+                          + "extern _Thread_local uint64_t hos_site_callee;\n"   # (the callback's: the hook stores it)
+                          + callback("int hos_site_voice_written(") + "\n" + slot(x), 1).replace(CALL, hook, 1)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--cc", default="gcc")
+    p.add_argument("--cc", default="clang")
+    p.add_argument("--cargo")
     a = p.parse_args()
+    sitehooks.use(a.cc, a.cargo)
 
-    out, counts, _ = oot_patches.patch_file(LIFTED, "code_009.c", True)   # (as a lift of the supported build does)
-    hooked = "hos_oot_voice_option(" in out
-    cc = shutil.which(a.cc) or shutil.which("gcc") or shutil.which("clang")
+    cc = shutil.which(a.cc)
     if not cc:
         print("SKIP: no C compiler")
-    else:
+        return
+    old = LIFTED.replace('#include "a64.h"\n', '#include "a64.h"\nvoid hos_oot_voice_option(Ctx *A64_NOESC c, A64Fn game);\n',
+                         1).replace(CALL, OLD, 1)
+    for what, out in (("the hook", hooked()), ("the text patch", old)):
         with tempfile.TemporaryDirectory(prefix="voice-option-") as tmp:
             tmp = Path(tmp)
             (tmp / "a64.h").write_text(A64_H, encoding="utf-8")
             (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
+            (tmp / "game_host.h").write_text('#include "hos.h"\n', encoding="utf-8")   # (host/game_host.h: the hos.h above)
             (tmp / "fixture.c").write_text(FIXTURE, encoding="utf-8")
             (tmp / "code_009.c").write_text(out, encoding="utf-8")
             sources = [str(tmp / "fixture.c"), str(tmp / "code_009.c")]
-            if hooked:   # (without the edit the update is the game's own: the check below then fails for the bug's reason)
-                (tmp / "oot_voice.c").write_text((ROOT / "host" / "oot_voice.c").read_text(encoding="utf-8"), encoding="utf-8")
-                sources += [str(tmp / "oot_voice.c"), "-DHOOKED"]
+            (tmp / "game").mkdir()   # (oot_voice.c and the flags service the option is read through, beside its flags.h:
+            for name in ("oot_voice.c", "flags.c", "flags.h"):   # their "game_host.h" is the one above)
+                (tmp / "game" / name).write_text((ROOT / "game" / name).read_text(encoding="utf-8"), encoding="utf-8")
+            sources += [str(tmp / "game" / "oot_voice.c"), str(tmp / "game" / "flags.c"), "-DHOOKED"]
             exe = tmp / ("fixture.exe" if os.name == "nt" else "fixture")
-            subprocess.run([cc, "-std=gnu11", "-O1", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", "-I", str(tmp)] + sources + ["-o", str(exe)],
+            subprocess.run([cc, "-std=gnu11", "-O1", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", "-I", str(tmp)] + sources
+                           + sitehooks.objects(tmp, out) + ["-o", str(exe)],
                            check=True)
             env = {k: v for k, v in os.environ.items() if k != "HOS_VOICE_OPTION_FOLLOW"}
             for mode, extra in (("", {}), ("off", {"HOS_VOICE_OPTION_FOLLOW": "0"})):
                 r = subprocess.run([str(exe), mode], env=dict(env, **extra), capture_output=True, text=True)
                 print("\n".join(line for line in r.stdout.splitlines() if line.startswith("PASS")))
                 if r.returncode:
-                    raise SystemExit("FAIL (%s):\n%s%s" % (mode or "follow", r.stdout, r.stderr))
-
-    assert hooked and counts["voice option check"] == 1, "the update's question was not routed through host/oot_voice.c"
-    assert out.count(oot_patches.VOICE_OPTION_NEW) == 1 and out.count(oot_patches.VOICE_OPTION_DECL) == 1
-    assert "c->x[30] = 0x80807210ULL; f_80a9d1c0(c);" in out, "another caller of f_80a9d1c0 was changed"
-    again, counts2, _ = oot_patches.patch_file(out, "code_009.c", True)
-    assert again == out and counts2["voice option check"] == 1, "a second run changed the text"
-    other = LIFTED.replace("0x80a9ca9cULL", "0x80a9caa0ULL")
-    assert oot_patches.patch_voice_option(other) == (other, 0), "another version's text was edited"
-    plain, counts3, _ = oot_patches.patch_file(LIFTED, "code_009.c", False)
-    assert plain == LIFTED and not counts3["voice option check"], "the edit is made on builds other than the supported one"
-    print("PASS: nx2/oot_patches.py: the update's call edited once (f_80a9d1c0's other caller left), a second run changes "
-          "nothing, other text is left alone, the supported build only")
+                    raise SystemExit("FAIL (%s, %s):\n%s%s" % (what, mode or "follow", r.stdout, r.stderr))
+    assert hooked().count("f_80a9d1c0(c);") == 2, "another caller of f_80a9d1c0 was changed, or the hooked call lost its else"
+    print("PASS: the update's call through the site, as through the text patch; f_80a9d1c0's other caller left")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """The sources of the shipped pipeline state list (assets/pipeline_states/: the tour's list, replaced whole, and the contributed ones,
-one file each) and nx2/pipeline_states.py's add, tour, merge and check.
+one file each) and scripts/pipeline_states.py's add, tour, merge and check.
 
   - the committed sources pass check: each list whole, xz, of this build's format, holding pipelines once, with its note;
   - the merge is reproducible (the same bytes twice, from the command line too) and holds every source's pipelines;
@@ -26,7 +26,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "nx2" / "pipeline_states.py"
+TOOL = ROOT / "scripts" / "pipeline_states.py"
 # (assets/pipeline_states.bin.xz before the split: its pipelines, sorted and joined, hashed. Each of the three is the part a
 # merge added: #1918's list, then #1935's and #2029's new pipelines)
 MIGRATED = {"hckrman101-first-play": 1261, "joey-magnus-linux-dlss-hd-pack": 3015, "jarynclouatre-most-of-the-game": 7251}

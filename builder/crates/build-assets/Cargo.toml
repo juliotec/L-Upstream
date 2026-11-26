@@ -1,0 +1,25 @@
+[package]
+name = "build-assets"
+description = "The finish stage's files: the button prompts, the texts, the icon, the pipeline lists and the shader list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ab_glyph_rasterizer.workspace = true
+build-core.workspace = true
+crc32fast.workspace = true
+flate2.workspace = true
+game-files.workspace = true
+lzma-rs.workspace = true
+png.workspace = true
+ruzstd.workspace = true
+serde.workspace = true
+sha1_smol.workspace = true
+serde_json.workspace = true
+ttf-parser.workspace = true
+zune-jpeg.workspace = true
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-"""The game's file system stays inside its mounts and never works through links (host/nn_fs.c, host/mods.c).
+"""The game's file system stays inside its mounts and never works through links (host/nn_fs.c, game/mods.c).
 
 Linux only (the posix layer's FindFirstFileA marks a symbolic link as a reparse point, as Windows does). Builds, from the
 sources as they are, nn_fs.c's guest_path_ok and delete_tree and mods.c's RomFS walk over host/posix/win32_posix.c's file
@@ -33,7 +33,7 @@ def main():
         return
     posix = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
     fs = (ROOT / "host/nn_fs.c").read_text(encoding="utf-8")
-    mods = (ROOT / "host/mods.c").read_text(encoding="utf-8")
+    mods = (ROOT / "game/mods.c").read_text(encoding="utf-8")
     pieces = [
         block(posix, "static DWORD error_of(int e) {"),
         "static BOOL fail_errno(void) { last_error = error_of(errno); return FALSE; }",
@@ -67,20 +67,21 @@ def main():
 #include <unistd.h>
 static DWORD last_error;
 #define HOS_FS_PATH 1024   /* (host/nn_fs.c's path buffers, #1497) */
+#define HOS_PATH_CAP MAX_PATH   /* (host/hos_paths.h, as on Linux: game/mods.c's path buffers) */
 static void hos_log(const char *f, ...) { (void)f; }
 static void lower_slash(char *s) { (void)s; }
 static int nput;
 static void put(const char *key, const char *host, const char *rel, uint64_t size, int is_dir, int mod) {
     (void)key; (void)host; (void)rel; (void)size; (void)is_dir; (void)mod; nput++;
 }
-typedef struct { int replaced, added; } Mod;   /* (the mod's counts: host/mods.c) */
+typedef struct { int replaced, added; } Mod;   /* (the mod's counts: game/mods.c) */
 static Mod mods[1];
 typedef struct { char *host, *key; int mod, other; } Shipped;   /* (the size tables a mod carries) */
 static Shipped *shipped;
 static int nshipped;
 static char sizes_key[] = "system/resource/resourcesizetable.product.111.nin_ounce_nvn2.rsizetable.zs";
 static int is_sizes(const char *key) { return strstr(key, ".rsizetable.zs") != NULL; }
-static int game_file(const char *rel, char *out, size_t cap) { (void)rel; (void)out; (void)cap; return 0; }
+static int game_file(const char *rel, char *out, size_t cap, uint64_t *size) { (void)rel; (void)out; (void)cap; (void)size; return 0; }   /* (game/mods.c: no game file here) */
 ''' + "\n".join(pieces) + r'''
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
 int main(int argc, char **argv) {

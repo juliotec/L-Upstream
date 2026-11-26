@@ -1,0 +1,1198 @@
+# The hook sites' definitions: what each site is and the contract of its callback (its form, shape, thread, arguments
+# and answer), the same in every game build. Where each is in a build is that build's
+# game/sites/<build id>/locations.toml; the host's flag and slot for each, a HOS_SITE line of game/sites.def.
+# Read by the lifter (builder/crates/sites) when the game is lifted; the format, how to add a site and what one costs:
+# docs/dev/reference/hooks.md. A site's place in this file is the order of several hooks at one instruction.
+format = 2
+
+# The Insert menu's Text speed and Text size (game/oot_text_step.c hos_text_letter_step).
+[[site]]
+name = "text.letterStep"
+doc = "A text pane's letter animation is about to step: its letter count loaded, the letters' time in s0"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:anim", "w9:u32:letters", "s0:f32:time"]
+
+# Skip opening (host/hos_main.c hos_oot_opening, through game/oot_sites.c).
+[[site]]
+name = "opening.request"
+doc = "A sequence asks for a one-shot event (x0 the request; the event's name at its arg + 6800)"
+shape = "event"
+thread = "worker"
+args = ["x0:ptr:request"]
+
+[[site]]
+name = "opening.timeline"
+doc = "An event's timeline is about to start; a callback that answers non-zero leaves it unstarted"
+can_return = true
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:player"]
+
+[[site]]
+name = "opening.skipQuery"
+doc = "Was the latest event skipped? A callback that answers non-zero has set x0 (the answer) itself"
+can_return = true
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:query"]
+
+# Skip title screen (game/oot_autoload.c, through game/oot_sites.c hos_site_menu_button_wait).
+[[site]]
+name = "menu.buttonWait"
+doc = "A sequence node starts waiting for a press of a screen's button (x0 the node; its screen's name at [[x0 + 0xe8] & ~3])"
+shape = "event"
+thread = "worker"
+args = ["x0:ptr:wait"]
+
+[[site]]
+name = "menu.buttonWaitNoDecideAnim"
+doc = "A sequence node starts waiting for a press of a screen's button, its decide animation left out (x0 the node; its screen's name at [[x0 + 0xe8] & ~3])"
+shape = "event"
+thread = "worker"
+args = ["x0:ptr:wait"]
+
+# The save requests' trace and the Insert menu's Transition autosave (host/hos_main.c hos_oot_trace_save).
+[[site]]
+name = "save.request"
+doc = "The save manager is asked to save; a callback that answers non-zero drops the request (x0 its result)"
+can_return = true
+shape = "data"
+thread = "worker"
+args = ["w1:u32:reason", "w2:u32:mode"]
+
+# Camera speed (the Insert menu's Camera speed, host/nn_vi.c hos_camera_scale, through game/oot_sites.c).
+[[site]]
+name = "camera.yawSpeed"
+doc = "The right stick's yaw speed has been worked out (s0), from the game's camera speed option"
+at = "return"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:speed"]
+
+[[site]]
+name = "camera.pitchSpeed"
+doc = "The right stick's pitch speed has been worked out (s0)"
+at = "return"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:speed"]
+
+[[site]]
+name = "camera.yawSpeedLevel2"
+doc = "The yaw speed at level 2 (the stick's actor with its flag at +0x218) has been worked out (s0)"
+at = "return"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:speed"]
+
+[[site]]
+name = "camera.pitchSpeedLevel2"
+doc = "The pitch speed at level 2 has been worked out (s0)"
+at = "return"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:speed"]
+
+# Native mouse look (host/mouse_native.c hos_mouse_camera, through game/oot_sites.c).
+[[site]]
+name = "camera.update"
+doc = "The player camera's update is about to run (x0 the camera)"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:camera"]
+
+# The game's menus' mouse (game/oot_menu.c hos_oot_menu_focus and hos_oot_menu_tick, through game/oot_sites.c).
+[[site]]
+name = "menu.focus"
+doc = "A menu screen's pane is getting the focus (x0 the screen, x1 the pane, x30 the caller's return address)"
+shape = "event"
+thread = "worker"
+args = ["x0:ptr:screen", "x1:ptr:pane", "x30:u64:lr"]
+
+[[site]]
+name = "menu.update"
+doc = "A menu screen's update is about to run (x0 the screen)"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:screen"]
+
+# The button prompts changed while the game runs (host/prompts.c, through game/oot_sites.c).
+[[site]]
+name = "text.boxDraw"
+doc = "A text box is about to be drawn (x0 the box pane)"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:box"]
+
+[[site]]
+name = "text.boxLayout"
+doc = "A text box is about to be laid out, before it looks at its status (x0 the box pane)"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:box"]
+
+[[site]]
+name = "font.glyphRender"
+doc = "FreeType is about to render a glyph (ft_smooth_render; x1 the glyph slot)"
+shape = "event"
+thread = "worker"
+args = ["x1:ptr:slot"]
+
+# The game's zstd decodes on the host's libzstd (host/hos_zstd.c, HOS_NATIVE_ZSTD and HOS_NATIVE_ZSTD_FRAMES, through
+# game/oot_sites.c).
+[[site]]
+name = "zstd.stream"
+doc = "The game's zstd stream decode of one chunk is about to run; a callback that answers non-zero has done it (x0 the result)"
+can_return = true
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:stream", "x1:ptr:src", "w2:i32:size", "x3:ptr:ddict"]
+
+[[site]]
+name = "zstd.frames"
+doc = "The game's whole-buffer zstd decode is about to run; a callback that answers non-zero has done it (x0 the result)"
+can_return = true
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:dctx", "x1:ptr:dst", "x2:u64:room", "x3:ptr:src", "x4:u64:size", "x7:ptr:ddict"]
+
+# Above 60 fps with HOS_FPS_CLOTH_60=1, Havok cloth solved at most 60 times a second (game/oot_high_fps.c
+# hos_oot_cloth_solve, through game/oot_sites.c).
+[[site]]
+name = "cloth.solve"
+doc = "A cloth's solve job is about to run; a callback that answers non-zero holds it (x0 = 0, the job's result)"
+can_return = true
+shape = "data"
+thread = "worker"
+
+# A movie's frame count above a 60 cap (issue 1742; host/nn_vi.c hos_movie_frames, through game/oot_sites.c).
+[[site]]
+name = "movie.frameCount"
+doc = "A movie player's count of its updates is about to step by one (add w8, w8, #1; x20 the player): the callback steps w8"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:player", "w8:u32:count"]
+
+# Scene format (host/nn_vi.c hos_scene_rgba16f, the Insert menu's HDR set to Native with the PsychoV35 tone mapper,
+# through game/oot_sites.c).
+[[site]]
+name = "render.sceneFormat"
+doc = "The scene buffer's other format, R11G11B10F (mov w9, #0x1a), before the pick: the callback sets w9 in its place"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["w9:u32:format"]
+
+# The Debug tab's Damage taken and heart protection (game/oot_damage.c hos_oot_damage, through game/oot_sites.c).
+[[site]]
+name = "player.lifeHit"
+doc = "An actor's life is about to be written by the damage's compare-and-swap (w11 the life, w12 the new life, w9 the hit)"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:actor", "x13:ptr:life", "w11:u32:old", "w12:u32:next", "w9:u32:hit"]
+
+[[site]]
+name = "player.lifeWrite"
+doc = "An actor's life is about to be written by the other compare-and-swap (w11 the life, w12 the new life)"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:actor", "x13:ptr:life", "w11:u32:old", "w12:u32:next"]
+
+# Link's update and the Debug tab's flight (host/hos_main.c hos_oot_lift_player, hos_oot_flight_pose and
+# hos_oot_flight_rotation, through game/oot_sites.c).
+[[site]]
+name = "player.update"
+doc = "An actor's movement update is about to test its flag byte (+0x6a5, w8) and move its body (x19 the actor)"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:actor"]
+
+[[site]]
+name = "player.pose"
+doc = "An actor's pose matrix (x25) has been written by its movement update (x19 the actor)"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:actor", "x25:ptr:matrix"]
+
+[[site]]
+name = "player.flightRotation"
+doc = "A controller's transform is about to go to its virtual method (x0 the controller, x1 the matrix)"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:controller", "x1:ptr:matrix"]
+
+# The Debug tab's free camera (host/hos_main.c hos_oot_free_view, through game/oot_sites.c).
+[[site]]
+name = "camera.view"
+doc = "A camera's view is about to be gone through (the head of the views' loop; x20 the view)"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:view"]
+
+# The Debug tab's Movement speed (host/hos_main.c hos_oot_cct_speed, through game/oot_sites.c).
+[[site]]
+name = "player.speedMove"
+doc = "Link's move has taken a controller into x0, its speed in metres a frame in s0, before it sets it (the first branch)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:controller", "s0:f32:speed"]
+
+[[site]]
+name = "player.speedMoveOther"
+doc = "Link's move has taken a controller into x0, its speed in metres a frame in s0, before it sets it (the second branch)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:controller", "s0:f32:speed"]
+
+[[site]]
+name = "player.speedSet"
+doc = "A character controller's forward speed is about to be set (x0 the controller, s0 the speed in metres a second)"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:controller", "s0:f32:speed"]
+
+[[site]]
+name = "player.speedSetComponent"
+doc = "A CCT component's controller has been taken into x0, its forward speed in s0 in metres a second, before it is set"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:controller", "s0:f32:speed"]
+
+# A horse's jump blend above 60 fps (game/oot_high_fps.c hos_oot_horse_whole_step, through game/oot_sites.c).
+[[site]]
+name = "horse.jumpStep"
+doc = "A horse's jump tests its step (s10) against 1: an answer of non-zero takes the branch past the slow-motion one"
+at = "branch"
+shape = "data"
+thread = "worker"
+args = ["s10:f32:step"]
+
+# The texture data heap's compaction asked for once in a while (game/oot_tex_compact.h, HOS_TEX_COMPACT_MS, through
+# game/oot_sites.c).
+[[site]]
+name = "texture.compactAsk"
+doc = "The texture manager tests whether it may ask for a compaction round (w8 its flags): an answer of non-zero does not ask"
+at = "branch"
+shape = "data"
+thread = "worker"
+args = ["w8:u32:flags"]
+
+# The physics solver's step count above 60 fps (issue 1798; game/oot_high_fps.c hos_oot_solver_steps, through
+# game/oot_sites.c).
+[[site]]
+name = "physics.solverSteps"
+doc = "The solver's step count has been cut from the frame step (w1; s0 the scaled step, s1 the steps a frame), before its store"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["w1:u32:steps", "s0:f32:scaled", "s1:f32:perFrame"]
+
+[[site]]
+name = "physics.solverStepsOther"
+doc = "The same in the solver's other update (w1; s0 the scaled step, s1 the steps a frame), before its store"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["w1:u32:steps", "s0:f32:scaled", "s1:f32:perFrame"]
+
+# Above a Frame rate cap of 60, the sound job at 60 Hz and the music manager's time and flags (game/oot_high_fps.h has
+# why and the logic, game/oot_high_fps.c the host's side, through game/oot_sites.c; at a cap of 60 the host hands back
+# what the game computed).
+[[site]]
+name = "sound.job"
+doc = "The sound manager's job is about to run a phase (w2); a callback that answers non-zero holds it (60 Hz above 60 fps)"
+can_return = true
+shape = "data"
+thread = "worker"
+args = ["w2:u32:phase"]
+
+[[site]]
+name = "sound.jobStep"
+doc = "The sound job's phase 0 has loaded the frame step (s0) it hands the sound engine"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:step"]
+
+[[site]]
+name = "music.update"
+doc = "The music manager's update is about to run (each run of the sound job's phase that runs it)"
+shape = "data"
+thread = "worker"
+
+[[site]]
+name = "music.time"
+doc = "The music manager has loaded the time object's step (s8) and seconds (s9; x8 the time object)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x8:ptr:time", "s8:f32:step", "s9:f32:seconds"]
+
+[[site]]
+name = "music.changeFlags"
+doc = "The music manager has read the battle manager's change flags (w8; x26 + 2200 the byte) to test bit 5"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x26:ptr:battle", "w8:u8:flags"]
+
+[[site]]
+name = "music.changeFlags1"
+doc = "The music manager has read the change flags again (w8) to test bit 1"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x26:ptr:battle", "w8:u8:flags"]
+
+[[site]]
+name = "music.changeFlags2"
+doc = "The music manager has read the change flags again (w8) to test bit 2"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x26:ptr:battle", "w8:u8:flags"]
+
+[[site]]
+name = "music.changeFlags6"
+doc = "The music manager has read the change flags again (w8) to test bit 6"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x26:ptr:battle", "w8:u8:flags"]
+
+# Link's driven body's target above 60 fps (issue 1494; game/oot_high_fps.c hos_oot_drive_target, through
+# game/oot_sites.c).
+[[site]]
+name = "physics.driveTarget"
+doc = "A body driven to a target has been loaded (x23; x20 the controller), before its target (+0x3c) is read"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:controller", "x23:ptr:body"]
+
+[[site]]
+name = "physics.driveTargetOther"
+doc = "The same on the path's other copy (x24 the body; x20 the controller), before the target is read"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:controller", "x24:ptr:body"]
+
+# Below 60 fps, Havok cloth (Link's cap, romfs Phive/Cloth; game/oot_high_fps.c hos_oot_cloth_seconds, through
+# game/oot_sites.c).
+[[site]]
+name = "cloth.time"
+doc = "The cloth's per-frame setup has loaded its step context's time (s0, the low half of d0; x22 the context)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x22:ptr:context", "s0:f32:seconds"]
+
+# Counters that add the frame step, or the step times a whole number, cut to whole frames (host/frame_whole.h,
+# host/nn_vi.c hos_frame_whole, through game/oot_sites.c).
+[[site]]
+name = "frame.wholePickup"
+doc = "The pick-up indicator's step toward the wallet has been made (s0), before its cut to whole frames (fcvtzs w12, s0)"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:indicator", "s0:f32:amount"]
+
+[[site]]
+name = "frame.wholeWater"
+doc = "The water's substeps (w8) are loaded and its step (s0) is about to be cut to whole frames (fcvtzs w9, s0)"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x21:ptr:water", "w8:u32:substeps", "s0:f32:amount"]
+
+[[site]]
+name = "frame.wholeTimeOfDay"
+doc = "The time of day's game seconds this frame (2 * step, s0) are about to be cut to whole ones (fcvtzs w8, s0)"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:clock", "s0:f32:amount"]
+
+[[site]]
+name = "frame.wholeScarecrowPlay"
+doc = "Scarecrow's Song playback's elapsed frames: the step (s0) about to be cut to whole frames (fcvtzu w8, s0)"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:song", "s0:f32:amount"]
+
+[[site]]
+name = "frame.wholeScarecrowRecord"
+doc = "The eight-note recording's elapsed frames (x9 the counter): the step (s0) about to be cut to whole frames (fcvtzu w8, s0)"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x9:ptr:counter", "s0:f32:amount"]
+
+[[site]]
+name = "frame.wholeScarecrowLast"
+doc = "The recording's last note's elapsed frames: the step (s0) about to be cut to whole frames (fcvtzu w8, s0)"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:song", "s0:f32:amount"]
+
+[[site]]
+name = "frame.wholeFloorWeb"
+doc = "The floor web's simulation steps this frame (s0) are about to be cut to whole ones (fcvtzs w22, s0), before the 0..3 clamp"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:web", "s0:f32:amount"]
+
+# The Controls row Disable camera centering (host/mouse_native.c hos_disable_camera_centering, through
+# game/oot_sites.c).
+[[site]]
+name = "camera.followYaw"
+doc = "The follow camera is about to ease its yaw toward Link's movement: an answer of non-zero skips that (x25 the base in x26)"
+at = "jump"
+shape = "data"
+thread = "worker"
+args = ["x25:ptr:params", "x26:ptr:base"]
+
+# A moving floor's carry above 60 fps (issue 439; game/oot_high_fps.c hos_oot_floor_carry_slow, through
+# game/oot_sites.c).
+[[site]]
+name = "physics.floorCarry"
+doc = "A character's floor carry tests the physics' 1/dt (s0) against 100: the tenth's branch taken only with a non-zero answer"
+at = "allow"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:invDt"]
+
+[[site]]
+name = "physics.floorCarryOther"
+doc = "The same test in the second module (s0 the physics' 1/dt)"
+at = "allow"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:invDt"]
+
+[[site]]
+name = "physics.floorCarryThird"
+doc = "The same test in the third module (s0 the physics' 1/dt)"
+at = "allow"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:invDt"]
+
+# The Voice Language option kept after a restart (issue 430; game/oot_voice.c hos_oot_voice_option, through
+# game/oot_sites.c).
+[[site]]
+name = "options.voiceWritten"
+doc = "The voice resource asks whether its option was written (bl f_80a9d1c0): the callback makes the call, its answer in x0"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:manager", "w1:u32:hash"]
+
+# The OptimizeChangeBank thread's allocations tried again when their heap is full (issue 1697; game/oot_heap_retry.c,
+# through game/oot_sites.c; from TomShafford/Hookshot 55d68e8cd6 and 65c1998222).
+[[site]]
+name = "heap.gpuAlloc"
+doc = "A model's material block asks for its GPU memory (bl f_80522050; x1 the request): the callback makes the call"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x1:ptr:request", "x2:u64:size"]
+
+[[site]]
+name = "heap.gpuAllocOther"
+doc = "The material block's other GPU memory (bl f_80522050; x1 the request): the callback makes the call"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x1:ptr:request", "x2:u64:size"]
+
+[[site]]
+name = "heap.cpuAlloc"
+doc = "A heap's tryAlloc for the MatBlock's +200 buffer (blr x8; x0 the heap, x1 the size, x2 the alignment): the callback calls it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x1:u64:size", "x2:u64:align"]
+
+[[site]]
+name = "heap.cpuAllocOther"
+doc = "A heap's tryAlloc for the MatBlock's +168 buffer (blr x8; x0 the heap, x1 the size, x2 the alignment): the callback calls it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x1:u64:size", "x2:u64:align"]
+
+# What the material block's build takes further down from the same heap (issue 2437 and the v3.0.0 crash reports): a
+# null one is tried in the heap's parents too, and the parent that had room is written to the heaps' holder, so the rest of
+# the build takes its memory there. Each callback reads the holder where its function keeps it.
+[[site]]
+name = "heap.objectAlloc"
+doc = "A heap's tryAlloc for f_8044f420's 0x238-byte object (blr x8; x0 the heap, x1 the size, x2 the alignment, x21 the heaps' holder): the callback calls it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x1:u64:size", "x2:u64:align", "x21:ptr:holder"]
+
+[[site]]
+name = "heap.objectBuffer"
+doc = "A heap's tryAlloc for the first of f_8044ed60's two buffers (blr x8; x0 the heap, x1 the size, x2 the alignment, x22 the heaps' holder): the callback calls it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x1:u64:size", "x2:u64:align", "x22:ptr:holder"]
+
+[[site]]
+name = "heap.objectBufferOther"
+doc = "A heap's tryAlloc for the second of f_8044ed60's two buffers (blr x8; x0 the heap, x1 the size, x2 the alignment, x22 the heaps' holder): the callback calls it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x1:u64:size", "x2:u64:align", "x22:ptr:holder"]
+
+[[site]]
+name = "heap.blockBuffer"
+doc = "A heap's tryAlloc for f_80443000's buffer (blr x8; x0 the heap, x1 the size, x2 the alignment; the heaps' holder at [sp]): the callback calls it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x1:u64:size", "x2:u64:align"]
+
+[[site]]
+name = "heap.blockObject"
+doc = "A heap's tryAlloc for f_80443000's 0x310-byte object (blr x8; x0 the heap, x1 the size, x2 the alignment; the heaps' holder at [sp]): the callback calls it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x1:u64:size", "x2:u64:align"]
+
+# f_804566e0's two reads of its heap's free size (the memory the build took): a build handed to a parent reads its own heap
+# both times, and the second puts it back in the holder.
+[[site]]
+name = "heap.restOwn"
+doc = "f_804566e0 is about to ask its heap's free size after the +200 buffer (before blr x8; x0 the heap, x8 its getFreeSize; the heaps' holder at [sp, #56]): the callback may name the build's own heap"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x8:ptr:method"]
+
+[[site]]
+name = "heap.restEnd"
+doc = "f_804566e0 is about to ask its heap's free size at the build's end (before blr x8; x0 the heap, x8 its getFreeSize; the heaps' holder at [sp, #56]): the callback puts the build's own heap back"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:heap", "x8:ptr:method"]
+
+# A song's playback after the ocarina above 60 fps (game/oot_high_fps.c hos_oot_song_cue, through game/oot_sites.c).
+[[site]]
+name = "song.noteCue"
+doc = "The song just played has asked whether the note flag is set (x0, f_832b7b50's answer): the callback may clear it"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x0:u64:flag"]
+
+[[site]]
+name = "song.noteCueOther"
+doc = "The ocarina's other melody playback has asked whether the note flag is set (x0): the callback may clear it"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x0:u64:flag"]
+
+# The ocarina's note controls (host/nn_hid.c: the five notes swapped for the host's own controls while the game waits
+# for notes; through game/oot_sites.c).
+[[site]]
+name = "ocarina.waitStart"
+doc = "The note-wait action is starting: the input kind loaded (w1)"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["w1:u32:kind"]
+
+[[site]]
+name = "ocarina.waitTick"
+doc = "The note-wait action's tick tests whether it runs (w8 bit 1)"
+at = "before"
+shape = "event"
+thread = "worker"
+args = ["w8:u8:flags"]
+
+[[site]]
+name = "ocarina.waitMode"
+doc = "The tick's mode check is about to branch (b.ne away when the mode refuses: z clear)"
+at = "before"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "ocarina.waitContext"
+doc = "The tick has asked for the input context (x0; 0: gone)"
+at = "before"
+shape = "event"
+thread = "worker"
+args = ["x0:ptr:context"]
+
+[[site]]
+name = "ocarina.waitOwner"
+doc = "The tick has asked for the wait's owner (x0; 0: it refused)"
+at = "before"
+shape = "event"
+thread = "worker"
+args = ["x0:ptr:owner"]
+
+[[site]]
+name = "ocarina.waitDone"
+doc = "The note-wait action has stored that it finished (str w9, [x19, #0x18])"
+at = "after"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "ocarina.waitReset"
+doc = "The tick's input reset has returned (the instruction after the call, which nothing else reaches)"
+at = "before"
+shape = "event"
+thread = "worker"
+
+# A looping animation one frame long (the frozen Zoras under the ice in adult Zora's Domain: start 0, end 1) is one pose
+# (issue 988; host/loop_step.h through host/nn_vi.c's hos_loop_step and hos_loop_pose and game/oot_sites.c).
+[[site]]
+name = "anim.loopStep"
+doc = "An animation entry's clock multiplies its step (s8) by the speed (fmul s2, s8, s1; x20 the entry): the callback makes it with the host's step"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:entry", "s8:f32:step"]
+
+[[site]]
+name = "anim.loopStepOther"
+doc = "The clock's other advance multiplies its step (s8) by the speed (fmul s1, s8, s0): the callback makes it with the host's step"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:entry", "s8:f32:step"]
+
+[[site]]
+name = "anim.loopPose"
+doc = "A skeleton's time (s0) is stored for drawing (str s0, [x22]; its range at +4, +8): the callback stores the host's time"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x22:ptr:at", "s0:f32:time"]
+
+# The saved steering rate above 60 fps (issue 312; game/oot_sites.c).
+[[site]]
+name = "steer.rateLower"
+doc = "The saved rate's first bound is about to be made (fmul s1, s0, s1): the callback makes it (s8 the step)"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:turn", "s1:f32:bound", "s8:f32:step"]
+
+[[site]]
+name = "steer.rateUpper"
+doc = "The saved rate's other bound is about to be made (fmul s0, s0, s8): the callback makes it"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:turn", "s8:f32:step"]
+
+# The game's job barriers waiting for their work (game/oot_barrier.h has the protocol and why; game/oot_barrier.c,
+# through game/oot_sites.c; HOS_OOT_BARRIER_WAIT, on by default).
+[[site]]
+name = "barrier.sleepClaim"
+doc = "A job's thread with nothing to claim sleeps 20 us (bl SleepThread's stub; x24 the job block P; it polls P+0x1f4 and P+0x1fc against w22)"
+at = "replace"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "barrier.sleepGather"
+doc = "The job's second loop sleeps 20 us (it polls P+0x200, its loop head's value in w25, against w22)"
+at = "replace"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "barrier.sleepDone"
+doc = "The job's last loop sleeps 20 us (it polls P+0x208, its loop head's value in w19, against the full mask at x29-100)"
+at = "replace"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "barrier.sleepOther"
+doc = "The second job's loop sleeps 20 us (x19 P; it polls P+0x210 and P+0x218, in w25 and w28, against the full mask at sp+16)"
+at = "replace"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "barrier.sleepThird"
+doc = "The third job's loop sleeps 20 us (x26 P; it polls P+0x220, in w21, against ~w28)"
+at = "replace"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "barrier.orClaim"
+doc = "An item's bit has been ORed into the polled word P+0x1f4 (ldset; x24 P): the waiters woken"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x24:ptr:block"]
+
+[[site]]
+name = "barrier.orClaimOther"
+doc = "An item's bit has been ORed into the polled word P+0x1fc (ldset; x24 P): the waiters woken"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x24:ptr:block"]
+
+[[site]]
+name = "barrier.orGather"
+doc = "An item's bit has been ORed into the polled word P+0x200 (ldset; x24 P): the waiters woken"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x24:ptr:block"]
+
+[[site]]
+name = "barrier.orDone"
+doc = "An item's bit has been ORed into the polled word P+0x208 (ldset; x24 P): the waiters woken"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x24:ptr:block"]
+
+[[site]]
+name = "barrier.orOther"
+doc = "An item's bit has been ORed into the polled word P+0x210 (ldset; x19 P): the waiters woken"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x19:ptr:block"]
+
+[[site]]
+name = "barrier.orOtherSecond"
+doc = "An item's bit has been ORed into the polled word P+0x218 (ldset; x19 P): the waiters woken"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x19:ptr:block"]
+
+[[site]]
+name = "barrier.orThird"
+doc = "An item's bit has been ORed into the polled word P+0x220 (ldset; x26 P): the waiters woken"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x26:ptr:block"]
+
+# Dynamic resolution (Lichii's "Max Resolution" patch; host/nn_vi.c hos_fixed_resolution, hos_dynres_runs and
+# hos_fixed_scale_bits, through game/oot_sites.c).
+[[site]]
+name = "dynres.fixedPath"
+doc = "The 3D's resolution path is chosen: an answer of non-zero takes the fixed path whatever the config flag (w8 bit 0)"
+at = "branch"
+shape = "data"
+thread = "worker"
+args = ["w8:u32:flags"]
+
+[[site]]
+name = "dynres.dynamicFrame"
+doc = "A frame takes the dynamic path (the instruction after the test, reached only from it)"
+at = "before"
+shape = "event"
+thread = "worker"
+
+[[site]]
+name = "dynres.fixedScale"
+doc = "The fixed path's scale, 1.0 (mov w9, #0x3f800000): the callback sets w9 in its place"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["w9:u32:scaleBits"]
+
+# The fixed path's scale (hos_fixed_scale_bits: the Insert menu's Resolution) reaching the 3D (game/oot_sites.c over
+# host/nn_vi.c).
+[[site]]
+name = "render.fixedScaleApply"
+doc = "The 3D's scale flags are about to be updated (w8 ORed into +0xe2c; x20 the object), on every way into the update"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:object", "w8:u32:recompute"]
+
+[[site]]
+name = "render.fixedScaleFlags"
+doc = "The 3D's scale override flags have been loaded (x8 from +0xe20; x20 the object)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:object", "x8:u64:flags"]
+
+# The frame's real time in place of the nominal rate, for a Frame rate cap above 60 (host/nn_vi.c realtime_step writes
+# hos_frame_seconds_bits, 0 at a cap of 60).
+[[site]]
+name = "frame.stepDivide"
+doc = "The frame's step has been divided (s8 = s1 / s0): base * the frame's seconds in its place while the host gives them"
+at = "after"
+shape = "data"
+thread = "worker"
+rule = "mul_f32"
+value = "frame.seconds"
+args = ["s8:f32:out", "s1:f32:in"]
+
+[[site]]
+name = "frame.stepProbe"
+doc = "The frame's step object (x19), which tells the host the step hook is in this build and where the game clock is"
+at = "after"
+shape = "data"
+thread = "worker"
+rule = "note_u64"
+value = "frame.stepObject"
+args = ["x19:ptr:what"]
+
+[[site]]
+name = "frame.globalStepDivide"
+doc = "The global step has been divided (s0 = s1 / s0): base * the frame's seconds in its place while the host gives them"
+at = "after"
+shape = "data"
+thread = "worker"
+rule = "mul_f32"
+value = "frame.seconds"
+args = ["s0:f32:out", "s1:f32:in"]
+
+# The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers
+# (game/oot_ocb_hold.h has why; game/oot_ocb_hold.c the rule and HOS_OCB_HOLD_MS).
+[[site]]
+name = "preload.choice"
+doc = "The preload manager chose the neighbouring map to preload (w21 the unit, bit 31 none; x19 the manager), before it tests that choice"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:manager", "w21:u32:unit"]
+
+# Sprint (game/oot_sprint.c).
+[[site]]
+name = "sprint.link"
+doc = "Link's movement update has loaded his input flags into x10 (x19 Link), before the sprint's start and keep tests"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:link", "x10:u64:flags"]
+
+[[site]]
+name = "sprint.stance"
+doc = "Link's stance and camera update has loaded his input flags' low byte into x8 (x19 Link), before it tests the dash bit"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:link", "w8:u8:flags"]
+
+# A jump's takeoff above 60 fps (HOS_FPS_TAKEOFF, game/oot_high_fps.h oot_takeoff_rest_speed).
+[[site]]
+name = "jump.takeoffSpeed"
+doc = "A jump's takeoff speed has been stored to the vector at x19 (its last part, str s2, [x19, #8])"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x19:ptr:velocity"]
+
+[[site]]
+name = "jump.takeoffVelocity"
+doc = "A body's linear velocity (x2; x19 the body's object) is about to be handed to Havok by the world's set-velocity call (blr x8)"
+at = "before"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:object", "x2:ptr:velocity"]
+
+# The gameplay field of view (game/crates/oot/src/fov.rs).
+[[site]]
+name = "camera.lens"
+doc = "The camera update has loaded the camera's vertical angle into s0 (x19 the camera), before it builds the projection"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:camera", "s0:f32:angle"]
+
+# The sun's shadow map size (game/oot_shadow.c).
+[[site]]
+name = "shadow.cascadeSize"
+doc = "The sun's cascade size has been rounded to a multiple of 8 (w23; x19 the shadow object), before its store at +0xe0"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:shadow", "w23:u32:size"]
+
+# Steady sun shadows near Link (game/oot_shadow_fit.c).
+[[site]]
+name = "shadow.fitBasis"
+doc = "The cascade fit's light basis has been built (the call returned; x19 the cascade), before the slice's arguments are set"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:cascade"]
+
+[[site]]
+name = "shadow.fitBox"
+doc = "The box fit's two modes have met with the slice's bounds in s5/s4 (min/max x) and s2/s3 (min/max y), x20 the cascade"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x20:ptr:cascade", "s5:f32:minX", "s4:f32:maxX", "s2:f32:minY", "s3:f32:maxY"]
+
+# The temporal upscalers' camera jitter (host/rx_backend.c hos_dlss_jitter_clip; DLSS, FSR 4 and FSR 3.1).
+[[site]]
+name = "jitter.viewRows"
+doc = "The view-projection block has loaded the projection's rows 0 and 1 (q19, q20; then q21, q22 here; x28 the view)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x28:ptr:view"]
+
+[[site]]
+name = "jitter.viewRowX"
+doc = "The second block has loaded the projection's row 0 into q26 (x28 the view)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x28:ptr:view"]
+
+[[site]]
+name = "jitter.viewRowY"
+doc = "The second block has loaded the projection's row 1 into q6 (x28 the view)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x28:ptr:view"]
+
+# Widescreen and ultrawide (game/oot_wide_sites.c).
+[[site]]
+name = "wide.outSize"
+doc = "The graphics setup has made the picture's size {2560, 1440} in x8 (its movk), before it stores it"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x8:u64:size"]
+
+[[site]]
+name = "wide.outSizeOther"
+doc = "The display settings object has made the picture's size {2560, 1440} in x8 (its movk), before it stores it"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x8:u64:size"]
+
+[[site]]
+name = "wide.sceneSize"
+doc = "The display settings object has made the scene's size {1920, 1080} in x8 (its movk), the size the game's upscaler takes in"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x8:u64:size"]
+
+[[site]]
+name = "wide.cameraRatio"
+doc = "The camera update has loaded the camera's ratio into s0 (ldr s0, [x19, #0x140]), to copy it into the projection the renderer reads"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:ratio"]
+
+[[site]]
+name = "wide.projectionRatio"
+doc = "sead's perspective projection's matrix update has loaded its ratio into s1 (ldp s0, s1, [x0, #0xac]; x0 the projection)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:projection", "s1:f32:ratio"]
+
+[[site]]
+name = "wide.projectionRatioCopy"
+doc = "An inlined copy of the projection's matrix update has loaded its ratio into s3 (ldp s0, s3, [x21, #0xac]; x21 the projection)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x21:ptr:projection", "s3:f32:ratio"]
+
+[[site]]
+name = "wide.projectionRatioCopy2"
+doc = "An inlined copy of the projection's matrix update has loaded its ratio into s3 (ldp s0, s3, [x0, #0xac]; x0 the projection)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:projection", "s3:f32:ratio"]
+
+[[site]]
+name = "wide.projectionRatioCopy3"
+doc = "An inlined copy of the projection's matrix update has loaded its ratio into s1 (ldp s0, s1, [x2, #0xac]; x2 the projection)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x2:ptr:projection", "s1:f32:ratio"]
+
+[[site]]
+name = "wide.clearance"
+doc = "The camera's near-plane clearance sphere has loaded the ratio into s10 (ldr s10, [x19, #0x51c])"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["s10:f32:ratio"]
+
+[[site]]
+name = "wide.clearanceFollow"
+doc = "The clearance's follow-up branch has loaded the ratio into s14 (ldr s14, [x19, #0x51c])"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["s14:f32:ratio"]
+
+[[site]]
+name = "wide.hud"
+doc = "The 2D canvas setup has loaded the layout's projection rows into q1 and q4 (ldp q1, q4, [x2]; x0 the canvas, its screen 0x1b8 before it)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:canvas"]
+
+[[site]]
+name = "wide.bubble"
+doc = "The speech bubble's anchor has been made: x * 1920 in s0, y * 1080 in s1 (fmul s1, s2, s1), before it is stored"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["s0:f32:x", "s1:f32:y"]
+
+[[site]]
+name = "wide.movie"
+doc = "The movie layer's draw has loaded ldp x9, x8, [x19, #0x18]; its viewport is at x29 - 40 (min x at +8, max x at +16)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x29:ptr:frame"]
+
+[[site]]
+name = "wide.savePicture"
+doc = "The viewport helper has loaded SetViewport's address (ldr x8, [x8]), before blr x8 with x, y, w, h in w1-w4"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["w1:u32:x", "w2:u32:y", "w3:u32:w", "w4:u32:h"]
+
+[[site]]
+name = "ui.calcDirty"
+doc = "The layout's calculate pass has loaded a pane's dirty bits (ldr w8, [x0]; x0 the pane), before it skips a pane with none"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:pane", "w8:u32:dirty"]
+
+[[site]]
+name = "ui.paneDirty"
+doc = "A pane's dirty bits have been loaded (ldr w8, [x0]; x0 the pane), before bit 6 decides whether its transform is remade"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:pane", "w8:u32:dirty"]
+
+[[site]]
+name = "ui.paneNoParent"
+doc = "A pane's transform is being made with no parent (ldp q0, q1, [sp, #0x40], where every such path joins)"
+at = "after"
+shape = "event"
+thread = "worker"
+args = []
+
+[[site]]
+name = "ui.paneParent"
+doc = "A pane's transform is being made with a parent (ldr w8, [x0, #0x30]; x0 the parent)"
+at = "after"
+shape = "event"
+thread = "worker"
+args = ["x0:ptr:parent"]
+
+[[site]]
+name = "ui.panePlaced"
+doc = "A pane's translation has been stored (stur d3, [x19, #0x4c]; x19 the pane), before its stored transform is read back"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:pane"]
+
+[[site]]
+name = "ui.paneSize"
+doc = "A pane's size as drawn has been loaded (ldp s0, s1, [x0, #0x58]; x0 the pane)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:pane", "s0:f32:width", "s1:f32:height"]
+
+# The area title card's frame in strips (game/hos_wide_ui.c hos_wide_title_*): its record packed three more times, the strips
+# drawn in place of the whole, and what was packed forgotten when its arena resets.
+[[site]]
+name = "ui.titlePrepare"
+doc = "A picture's record is about to be packed into the frame's constants (bl f_8154f1c0: x0 the record, x1 the arena, x2 the alignment, x8 where the constants go; x19 the drawer, x20 its pane): the callback makes the call"
+at = "replace"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:drawer", "x20:ptr:pane", "x0:ptr:record", "x1:u64:arena", "x2:u64:align", "x8:ptr:out"]
+
+[[site]]
+name = "ui.titleDraw"
+doc = "A picture is about to be drawn (x0 the drawer, x1 what it draws with); a callback that answers non-zero has drawn it"
+at = "entry"
+can_return = true
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:drawer", "x1:ptr:what"]
+
+[[site]]
+name = "ui.titleReset"
+doc = "The frame's constants arena is about to reset (x0 the arena): what was packed into it before goes"
+shape = "event"
+thread = "worker"
+args = ["x0:u64:arena"]
+
+[[site]]
+name = "ui.pictureConstants"
+doc = "A picture's record has been packed into the frame's constants and loaded (ldp x8, x9, [sp, #8]), before the drawer keeps them"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x8:u64:low", "x9:u64:high"]
+
+[[site]]
+name = "ui.pictureDraw"
+doc = "A picture is being drawn (mov x22, x0: the drawer; x1 what it draws with)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x0:ptr:drawer", "x1:ptr:what"]
+
+[[site]]
+name = "ui.layoutBuilt"
+doc = "A layout's panes have been built (f_81545d60 returned; add x0, x19, #0x10; x19 the layout)"
+at = "after"
+shape = "data"
+thread = "worker"
+args = ["x19:ptr:layout"]

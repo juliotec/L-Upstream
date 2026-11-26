@@ -1,6 +1,6 @@
 /* The game's resource size table (host/restbl.c): System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs,
    a zstd-compressed RESTBL. The game sizes the buffer it loads a file into from the file's entry, so a mod file larger than
-   the game's own needs a larger entry, and a file a mod adds needs one of its own. host/mods.c merges the tables the mods
+   the game's own needs a larger entry, and a file a mod adds needs one of its own. game/mods.c merges the tables the mods
    ship and raises the entries of the files they serve.
 
    From valentderah/totk-pc-recomp runtime/restbl.h (MIT):

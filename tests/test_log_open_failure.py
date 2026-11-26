@@ -35,6 +35,7 @@ FIXTURE = r'''#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define MAX_PATH 4096
+#define HOS_PATH_CAP MAX_PATH
 typedef unsigned long DWORD;
 typedef void *HANDLE;
 #define STD_ERROR_HANDLE ((DWORD)-12)
@@ -131,7 +132,7 @@ int main(int real_argc, char **real_argv) {
         } else {
             why = (shellpipe ? "a pipe the player chose (game | tee) is an external stderr: no file, stderr still the pipe"
                              : steamtty ? "Steam's markers in a developer's own terminal session (stdin a tty): stream, no surprise file"
-                                        : "the builder's --prepare-shaders step under Steam's markers: its merged stdout/stderr pipe is read line by line by make_game.py: no file, stderr still the pipe");
+                                        : "the builder's --prepare-shaders step under Steam's markers: its merged stdout/stderr pipe is read line by line by longshot-builder: no file, stderr still the pipe");
             CHECK(!f);
             CHECK(fstat(2, &st) == 0 && S_ISFIFO(st.st_mode));
             printf("PASS: %s\n", shellpipe ? "a shell-piped stderr is left exactly as the player made it"

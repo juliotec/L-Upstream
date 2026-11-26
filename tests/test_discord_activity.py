@@ -1,14 +1,14 @@
 """The Discord status's text: the place Link is and his age, over the version; the version alone on the title; the
 player's template.
 
-host/oot_area_names.c names each of the game's maps (the 80 of the supported build, by their names alone: no game file)
-in English, and spells out one it does not know. host/discord_activity.c reads the discord_text=, discord_image= and
+game/oot_area_names.c names each of the game's maps (the 80 of the supported build, by their names alone: no game file)
+in English, and spells out one it does not know. game/discord_activity.c reads the discord_text=, discord_image= and
 discord_image_text= lines of the options file and fills the status's template: its fields ({location}, {age}, {map},
 {version}, {build}, {commit}, {release}), {break} between its two lines, {name|text} only when name is not empty
 (nesting), {{ }} braces; what an empty part leaves ("[]", spaces, a dash) taken off; a line cut to Discord's 128 bytes at
 a whole letter and left out under 2. Longshot's version in parts, from git describe's forms. The activity's JSON is
 parsed here (quotes, backslashes and control characters in the player's text). The in-map rule: a known map and Link
-seen within 90 s. host/discord_rpc.c is checked in its source for using them and for sending a change within 15 s.
+seen within 90 s. game/discord_rpc.c is checked in its source for using them and for sending a change within 15 s.
 
     python -I -B tests/test_discord_activity.py [--cc gcc]
 """
@@ -22,7 +22,7 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
-HOST = ROOT / "host"
+GAME = ROOT / "game"
 
 # (the supported build's maps, Banc/GameBancParam: names only)
 MAPS = """BarinadeStage BigOctoStage BongoBongoStage BossRushIntervalRoom BottomOfTheWell CrumblingGanonCastle DarkLinkStage
@@ -198,7 +198,7 @@ int main(int argc, char **argv) {
 
 
 def check_source():
-    rpc = (HOST / "discord_rpc.c").read_text(encoding="utf-8")
+    rpc = (GAME / "discord_rpc.c").read_text(encoding="utf-8")
     for token, what in (("discord_activity_json(", "the activity built by discord_activity.c"),
                         ("discord_in_map(", "the in-map rule"), ("hos_oot_player_seen_ns()", "when Link was last seen"),
                         ("hos_oot_area_name(", "the place's name"), ("discord_settings_line(", "the options file's lines"),
@@ -207,12 +207,12 @@ def check_source():
                         ("hos_oot_stats(", "Link's hearts, rupees and tokens"),
                         ("sent_at + 15000", "a change sent within 15 s, not more often")):
         if token not in rpc:
-            raise SystemExit(f"host/discord_rpc.c: {what} is gone ({token})")
-    main = (HOST / "hos_main.c").read_text(encoding="utf-8")
-    if "Item_Token_Gold" not in main or "int hos_oot_stats(" not in main:
-        raise SystemExit("host/hos_main.c: the Gold Skulltula tokens or hos_oot_stats are gone")
-    if "int64_t hos_oot_player_seen_ns(void)" not in main:
-        raise SystemExit("host/hos_main.c: hos_oot_player_seen_ns is gone")
+            raise SystemExit(f"game/discord_rpc.c: {what} is gone ({token})")
+    tools = (GAME / "oot_tools.c").read_text(encoding="utf-8")
+    if "Item_Token_Gold" not in tools or "int hos_oot_stats(" not in tools:
+        raise SystemExit("game/oot_tools.c: the Gold Skulltula tokens or hos_oot_stats are gone")
+    if "int64_t hos_oot_player_seen_ns(void)" not in tools:
+        raise SystemExit("game/oot_tools.c: hos_oot_player_seen_ns is gone")
 
 
 def main():
@@ -226,10 +226,10 @@ def main():
         src.write_text(HARNESS, encoding="utf-8")
         windows = os.name == "nt"
         extra = {"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS} if windows else {}
-        build = subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(HOST), str(src),
-                                str(HOST / "oot_area_names.c"), str(HOST / "discord_activity.c"), "-o", str(exe)], **extra)
+        build = subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(GAME), str(src),
+                                str(GAME / "oot_area_names.c"), str(GAME / "discord_activity.c"), "-o", str(exe)], **extra)
         if build.returncode:
-            raise SystemExit("the host did not compile: see the compiler's output above")
+            raise SystemExit("the game's files did not compile: see the compiler's output above")
         run = subprocess.run([str(exe), *MAPS], capture_output=True, text=True, encoding="utf-8", **extra)
         print(run.stderr, end="")
         if run.returncode:

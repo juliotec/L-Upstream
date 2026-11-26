@@ -1,4 +1,4 @@
-"""Count Linux futex wakes and exercise SRW and critical-section waits. Run python -I -B tests/test_posix_cv_wake.py."""
+"""Check Linux futex operations for guest atomics, SRW and critical sections. Run python -I -B tests/test_posix_cv_wake.py."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -19,6 +19,7 @@ def main():
     posix = ROOT / "host" / "posix"
     source = (posix / "win32_posix.c").read_text()
     waits = between(source, "static struct timespec rel_ms(", "/* (any size:")
+    atomics = between(source, "int hos_posix_wait_atomic32(", "/* ---- time ---- */")
     harness = r"""
 #include <windows.h>
 #include <assert.h>
@@ -27,8 +28,12 @@ def main():
 #include <sys/syscall.h>
 static __thread DWORD last_error;
 static unsigned wakes;
+static uint32_t wake_limit;
 static long futex(volatile uint32_t *addr, int op, uint32_t value, const struct timespec *ts) {
-    if (op == FUTEX_WAKE_PRIVATE) __atomic_add_fetch(&wakes, 1, __ATOMIC_RELAXED);
+    if (op == FUTEX_WAKE_PRIVATE) {
+        __atomic_store_n(&wake_limit, value, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&wakes, 1, __ATOMIC_RELAXED);
+    }
     return syscall(SYS_futex, addr, op, value, ts, NULL, 0);
 }
 """
@@ -73,11 +78,19 @@ int main(void) {
         assert(wakes == before);
     }
     assert(wakes == 2);
+
+    uint32_t word = 7;
+    assert(hos_posix_wait_atomic32(&word, 8, 0));  /* different value: EAGAIN */
+    assert(!hos_posix_wait_atomic32(&word, 7, 0)); /* unchanged value: ETIMEDOUT */
+    hos_posix_wake_atomic32(&word, 0);
+    assert(__atomic_load_n(&wake_limit, __ATOMIC_RELAXED) == 1);
+    hos_posix_wake_atomic32(&word, 1);
+    assert(__atomic_load_n(&wake_limit, __ATOMIC_RELAXED) == INT_MAX);
 }
 """
     with tempfile.TemporaryDirectory() as temp:
         fixture = Path(temp) / "cv.c"
-        fixture.write_text(harness + waits + cases)
+        fixture.write_text(harness + waits + atomics + cases)
         exe = fixture.with_suffix("")
         subprocess.run([args.cc, "-std=gnu11", "-O2", "-pthread", "-I", str(posix), str(fixture), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=12)

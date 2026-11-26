@@ -77,6 +77,7 @@ bool all_mode=true;
 bool compile_all(){return all_mode;}   // (the level read; the real completion reader is cut out above)
 void precompile_run(void(*progress)(size_t,size_t)){calls.push_back(2);progress(1,2);}
 void pipeline_cache_save(bool force){if(!force)std::exit(2);calls.push_back(3);}
+void program_cache_publish(){calls.push_back(8);}   // (vk_progcache.cpp: the next game folder's start, after the save)
 std::string skipped_path(){return "sentinel";}
 void fsr4_prepare_shaders(){calls.push_back(7);}
 void prepare_watchdog(){}   // (vk_main.cpp: the run's watchdog, tests/test_prepare_stall.py)
@@ -115,7 +116,7 @@ int main(int argc,char** argv){
  std::vector<int> want{7,1};
  if(!fresh_seed)want.push_back(6);
  if(std::string(argv[3])=="1")want.push_back(5);
- for(int call:{2,3,4})want.push_back(call);
+ for(int call:{2,3,8,4})want.push_back(call);
  if(!run()||calls!=want){fprintf(stderr,"unexpected prediction scheduling in %s/%s\n",argv[1],argv[2]);return 2;}
  calls.clear();
  if(reuse_seed(nullptr,false,false)||!calls.empty())return 3;

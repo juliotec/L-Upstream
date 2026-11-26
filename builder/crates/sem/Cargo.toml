@@ -1,0 +1,14 @@
+[package]
+name = "sem"
+description = "The instructions' semantics: a decoded AArch64 instruction as mid IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+a64.workspace = true
+mir.workspace = true
+
+[lints]
+workspace = true

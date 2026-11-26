@@ -6,7 +6,7 @@ game is measured in the game, with HOS_COLLECT_VECTOR=0 against the default.
     python -I scripts/collect_bench.py [--cc clang] [--arch arm64|x86_64] [--reps N] [--source FILE] [--keep DIR]
 
 collect_in, marks_clear_256 and the vector walk are cut out of the source as tests/test_collect_wide.py cuts them, and
-compiled twice in one program at -O2 (the runtime's level, nx2/build.py): HOS_MARKS_VECTOR 0 (the word walk) and as
+compiled twice in one program at -O2 (the runtime's level, build-compile's RX_A64_RT_O2): HOS_MARKS_VECTOR 0 (the word walk) and as
 built (the vector walk; the program is not built where it is not). On x86-64 two programs: SSE2's loads (-mno-avx2)
 and AVX2's (-mavx2, as in a build for x86-64-v3; run where the CPU has AVX2). On arm64 NEON's. The mark array is the
 real one's size (1 << 27 marks). Each repetition sets the shape's marks and times one walk, then sets them again and times the

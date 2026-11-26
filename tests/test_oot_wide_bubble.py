@@ -2,12 +2,12 @@
 
 The game anchors the bubble at the speaker's place on the screen (-1..1) times the UI canvas's half size: x * 1920 in s0,
 y * 1080 in s1 (main+0x20c2b0..0x20c2c8, then stp s0, s1 to the bubble). Its screen draws through the UI projection that
-nx2/oot_wide.py's HUD site scales across by hos_ui_qx and up by hos_ui_qy (0: the game's own, a 16:9 picture), so the
+the hook site wide.hud scales across by hos_ui_qx and up by hos_ui_qy (0: the game's own, a 16:9 picture), so the
 anchor has to be divided by them, or the bubble is pulled toward the middle of a wider screen. This runs those seven
-instructions in C with whatever C nx2/oot_wide.py adds after them, as the lifter would, and draws the anchor through the
-scaled projection. No game or image is used.
+instructions in C with the hook site wide.bubble's hook after the last (its callback from game/oot_wide_sites.c), as the
+lift lowers it (tests/sitehooks.py), and draws the anchor through the scaled projection. No game or image is used.
 
-python -I -B tests/test_oot_wide_bubble.py [--cc gcc]
+python -I -B tests/test_oot_wide_bubble.py [--cc clang] [--cargo cargo]
 """
 import argparse
 import os
@@ -16,11 +16,14 @@ import subprocess
 import sys
 import tempfile
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_wide  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))   # (python -I leaves the check's own folder off the path)
+from widesites import hook, site  # noqa: E402
+import sitehooks  # noqa: E402
+
+MAIN = 0x80020000
 
 # (main offset, the game's instruction word there, what it does as C on ctx)
 STEPS = (
@@ -44,6 +47,7 @@ static Ctx ctx;
 static float s_get(int n) { float f; memcpy(&f, ctx.vreg[n], 4); return f; }
 static void s_put(int n, float f) { ctx.vreg[n][0] = ctx.vreg[n][1] = 0; memcpy(ctx.vreg[n], &f, 4); }
 static void s_bits(int n, uint32_t u) { float f; memcpy(&f, &u, 4); s_put(n, f); }
+#define A64_NOESC
 AFTER_C
 /* the anchor the game stores for a speaker at (nx, ny) on the screen */
 static void anchor(float nx, float ny, float *x, float *y) {
@@ -82,21 +86,29 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    words = {off: word for off, word, _ in STEPS}
-    sites = {off: (word, text) for off, word, text in oot_wide.SITES if off in words}
-    for off, (word, _) in sites.items():
-        assert word == words[off], "main+%#x: oot_wide.py expects %08x, the game has %08x" % (off, word, words[off])
-    after = "".join("static void after_%x(Ctx *c) {\n%s\n}\n" % (off, text) for off, (_, text) in sites.items())
+    sitehooks.use(args.cc, args.cargo)
+    x = site("wide.bubble")
+    off = int(x.function[2:], 16) + x.offset - MAIN
+    word = dict((o, w) for o, w, _ in STEPS)[0x20c2c8]
+    assert off == 0x20c2c8, "wide.bubble is not after main+0x20c2c8 (fmul s1, s2, s1), but main+%#x" % off
+    at = (x.offset - x.signature_offset) // 4
+    assert 0 <= at < len(x.signature) and x.signature[at] == (word, 0xffffffff), "wide.bubble's signature does not hold %08x" % word
+    defs, line = hook("wide.bubble")
+    sites = {off: line}
+    after = defs + "".join("static void after_%x(Ctx *c) {\n%s\n}\n" % (o, text) for o, text in sites.items())
     steps = "".join("    %s%s\n" % (code, " after_%x(&ctx);" % off if off in sites else "") for off, _, code in STEPS)
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     with tempfile.TemporaryDirectory(prefix="oot-wide-bubble-") as temporary:
         folder = Path(temporary)
         source = folder / "fixture.c"
-        source.write_text(FIXTURE.replace("AFTER_C", after).replace("STEPS_C", steps), encoding="utf-8")
+        text = FIXTURE.replace("AFTER_C", after).replace("STEPS_C", steps)
+        source.write_text(text, encoding="utf-8")
         executable = folder / "fixture.exe"
-        for command in ([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable)],
+        for command in ([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source),
+                         *sitehooks.objects(temporary, text), "-o", str(executable)],
                         [str(executable)]):
             result = subprocess.run(command, creationflags=flags, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=30)

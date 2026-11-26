@@ -1,6 +1,6 @@
 // AMD FSR 4, one of the temporal upscaler's engines (vk_temporal.h; vk_fsr4.cpp), through the AMD FSR API. Only the API's MIT
-// headers are built in (third_party/fidelityfx), and only in a build with LONGSHOT_FSR (make_game.py --fsr, which also puts
-// the camera jitter into the game: nx2/oot_jitter.py). AMD's signed amd_fidelityfx_loader_vk.dll and
+// headers are built in (third_party/fidelityfx), and only in a build with LONGSHOT_FSR (longshot-builder --upscaler fsr4, which also puts
+// the camera jitter into the game: the hook sites jitter.view*). AMD's signed amd_fidelityfx_loader_vk.dll and
 // amd_fidelityfx_upscaler_vk.dll are loaded from the user's PC at run time; none ship with Longshot. Linux: a Vulkan FSR 4
 // library (such as fsr4-vk's amd_fidelityfx_upscaler_vk.so) in their place.
 #pragma once

@@ -1,4 +1,4 @@
-/* (longshot) The arguments the Builder's supervisor gives a --prepare-shaders run (nx2/prepare_supervisor.py;
+/* (longshot) The arguments the Builder's supervisor gives a --prepare-shaders run (builder/crates/build-driver/src/supervisor.rs;
    docs/dev/reference/shader-preparation.md). Each takes one value and reaches the renderer as a switch, as --compile-shaders
    does (RX_VK_COMPILE_SHADERS), since the renderer is handed no command line:
 

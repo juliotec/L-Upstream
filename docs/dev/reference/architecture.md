@@ -1,49 +1,166 @@
 # Architecture
 
-Longshot runs the game's Switch 2 code natively on x86-64 Windows and Linux. Its AArch64 code is translated to C ahead
-of time from your own dump and compiled with clang. Horizon OS and NVN2 are implemented natively in the host, and the
+Longshot runs the game's Switch 2 code natively on x86-64 Windows and Linux. Its AArch64 code is lifted ahead of time
+from your own dump to LLVM IR and compiled with clang. Horizon OS and NVN2 are implemented natively in the host, and the
 game's GPU work is replayed on Vulkan. Nothing is emulated at run time.
 
-This page covers how the parts fit together, how a frame moves through them, how the renderer accounts for memory and
-decides per PC, and the rules the code keeps. To build and run it, see [setup](../setup.md) and [the build](build.md). For switches, see
-[switches](switches.md). For timing tools, see [profiling](profiling.md).
+This page covers how the parts fit together, how a build becomes a game folder, how a frame moves through the parts,
+how the renderer accounts for memory and decides per PC, and the rules the code keeps. To build and run it, see
+[setup](../setup.md) and [the build](build.md). For switches, see [switches](switches.md). For timing tools, see
+[profiling](profiling.md).
 
 ## The parts
 
 | Part | Where | What it is |
 |---|---|---|
-| The lifter and build | [`nx2/`](../../../nx2) | Reads the dump, lays out the image, lifts each guest function to C, and compiles and links the game |
+| The builder | [`builder/`](../../../builder) | `longshot-builder`: reads the dump, lays out the image, lifts each guest function to LLVM IR through its mid IR, compiles and links the game and the renderer, writes the game folder ([the builder](builder.md)) |
 | The host | [`host/`](../../../host) | Horizon OS: threads, SVCs, memory, file system, HID, audio, display, and NVN2 (`nvn_native.c`) |
+| The game | [`game/`](../../../game) | Everything about Ocarina of Time: the hook sites (as data the lift reads) and their callbacks ([hook sites](hooks.md)), the game's features, the mods' loader, its Insert menu rows and its Rust; behind [`game/game.h`](../../../game/game.h) and [`host/game_host.h`](../../../host/game_host.h) ([the game side](#the-game-side)) |
+| The game's Rust | [`longshot-rs/`](../../../longshot-rs), [`game/crates/`](../../../game/crates) | The one staticlib the game links (`liblongshot_rs.a`): the game's crates, ported from its C one part at a time |
 | The renderer | [`gpu/vk/`](../../../gpu/vk) | The Vulkan back end: replays NVN2 command streams, translates shaders, presents, runs upscalers and frame generation |
-| Vendored code | [`third_party/`](../../../third_party), `gpu/vk/eden`, `gpu/vk/sirit` | a64-kit (NSO loader and lifter), Eden's SM86 shader recompiler, SDL, ImGui, the upscaler SDKs. Each part of `third_party/` is checked against its `PROVENANCE.md`; `gpu/vk/eden` and `gpu/vk/sirit` are adapted copies kept in the tree |
+| Vendored code | [`third_party/`](../../../third_party), `gpu/vk/eden`, `gpu/vk/sirit` | Eden's SM86 shader recompiler, SDL, ImGui, zstd, libopus, Tracy, the upscaler SDKs' headers. Each part of `third_party/` is checked against its `PROVENANCE.md`; `gpu/vk/eden` and `gpu/vk/sirit` are adapted copies kept in the tree |
 
-The lineage: mkw-recomp (Mario Kart World) supplied the lifter, runtime, NVN2 layer and Vulkan back end, and Longshot
-continues [Hookshot](https://git.magicbean.dev/MagicBeanDev/Hookshot). `nx2/`, `host/` and `gpu/` stay close to mkw-recomp so
-its fixes still apply as a patch, which is why game-specific code goes in new files where possible.
+At run time the game is one program and one library. The lifted code and the host are linked into `longshot(.exe)`;
+the renderer is `longshot_vk.so` / `longshot_vk.dll`, which the host loads:
+
+```mermaid
+flowchart TD
+    subgraph exe["longshot(.exe)"]
+        lifted["the lifted game (gen/'s units):<br/>the game's code, libc, nn::util, NVN2's front end"]
+        rt["the runtime (gen/rt): the context, guest memory,<br/>page marks, a64_lookup for indirect calls"]
+        host["the host (host/): Horizon OS's SVCs and the HLE<br/>nn:: functions, files, input, audio, NVN2 (nvn_native.c)"]
+    end
+    vk["the renderer (gpu/vk, longshot_vk.so / .dll):<br/>replays the op stream on Vulkan, translates shaders, presents"]
+    lifted <--> rt
+    lifted -->|SVCs, HLE calls, NVN2 calls| host
+    host -->|game_call, the guest's callbacks| lifted
+    host -->|"the op streams at each queue submit (MkwVkHost / MkwVkRenderer)"| vk
+```
+
+The lineage: mkw-recomp (Mario Kart World) supplied the first lifter, runtime, NVN2 layer and Vulkan back end, and
+Longshot continues [Hookshot](https://git.magicbean.dev/MagicBeanDev/Hookshot). `host/` and `gpu/` stay close to
+mkw-recomp so its fixes still apply as a patch, which is why game-specific code goes in new files where possible.
+
+### The game side
+
+`host/` and `gpu/` are the generic Switch: Horizon OS and the NVN2 replay, which know nothing of the game. Everything
+about Ocarina of Time is in `game/` ([its README](../../../game/README.md)). The line between them is two headers:
+
+- [`host/game_host.h`](../../../host/game_host.h): what the host gives the game. Guest memory and `Ctx`, calling the
+  game's functions (`game_call`), the RomFS and the file readers, logging, the options (`rx_option`), input, the
+  frame's clock, the input recordings and the button prompts. `game/` includes it and nothing else of `host/` or
+  `gpu/` (bar the lift's runtime, `a64.h`).
+- [`game/game.h`](../../../game/game.h): what the game gives the host and the renderer. Its start (`game_init`), the
+  frame's hooks, the input hooks, the control bridge's game commands, the Mods and Cheats pages, the performance
+  summary, the files mods replace and the game's rows of the Insert menu. With [`game/options.h`](../../../game/options.h), the game's option ids, it is
+  all `host/` and `gpu/` include of `game/`. Its names are generic (`game_*`): no file of `host/` or `gpu/` names an
+  `oot_` symbol.
+
+`tests/test_game_boundary.py` checks both sides. Each hook is a plain C function; a table of function pointers is used
+only where the host keeps one already (the control bridge's `HosControlGame`). The game's C is compiled with the
+host's flags into the same game binary, and the game's Rust is linked into it through `longshot-rs`, the one
+staticlib: two would each carry Rust's standard library. A player's build compiles no Rust: the release carries a
+`liblongshot_rs.a` of the tree's Rust sources for each platform (`builder/crates/build-compile/src/rust.rs`).
 
 ### From dump to game folder
 
-[`nx2/make_game.py`](../../../nx2/make_game.py) runs the whole build (see [setup](../setup.md)). The stages:
+`longshot-builder build` runs the whole build ([the build](build.md), [the builder](builder.md)). The stages:
 
 ```
-.nup dump ──nup.py, unpack.py──▶ exefs + romfs   (ZBIC-compressed NSOs rewritten as plain ones; third_party/zbic)
-   │  a64-kit nso.py + nso2.py (DT_RELR)
-   ▼
-modules ──image.py──▶ image in Eden's layout from 0x80000000 (rtld, main, subsdk*, sdk), imports bound; standalone.py hooks the HLE set
-   │  lift.py --standalone (a64-kit + insn.py, lift_fixes.py, poll.py, chunks.py, rtgen.py)
-   ▼
-one C function per guest function, in chunks (<work>/sa/gen)
-   │  build.py --standalone: clang -O1 (hot functions at -O2, split_hot.py), x86-64-v3 where the CPU has it, lld
-   ▼
-longshot(.exe) = lifted game + host/      longshot_vk.dll / longshot_vk.so = gpu/vk, loaded by host/rx_backend.c
+.nup ──read (game-files)──▶ exefs/ (the code modules; LZ4 and ZBIC segments decoded)      ┐
+  │                         longshot_romfs.idx in the game folder: the romfs read in place  │ on a thread of its own,
+  │                                                                                         │ beside the lift and compile
+  │  image (image::build): the modules in Eden's layout from 0x80000000 (rtld, main, subsdk*, sdk),
+  │  the mods' ExeFS patches written into main, relocated, imports bound, the HLE set hooked
+  ▼
+image/image.bin + image.json
+  │  lift (cfg, sites, edits, lift, passes, llvm): discovery; the hook sites and patches placed as mid IR edits;
+  │  each function as mid IR, simplified, written as LLVM IR; units cut by compile cost
+  ▼
+gen/: units.txt (each lifted_*.ll unit's text made as the compile needs it), table.c, imports.c, image.c, rt/
+  │  compile (build-compile): clang -O1 (hot units -O2, never-run units -O0), the host against gen/rt, the renderer;
+  │  objects by key; lld
+  ▼
+longshot(.exe) = lifted game + host/      longshot_vk.so / longshot_vk.dll = gpu/vk, loaded by host/rx_backend.c
+  │  finish: the files swapped in; assets from the romfs (texts, prompts, shader list, pipeline lists, icon)
+  ▼
+the game folder   ──shaders: longshot --prepare-shaders──▶ the shader store and cache/
 ```
 
-The game folder holds `bin/longshot.exe` beside its launcher. Its own files stay in the folder above `bin`. What the game
-writes at run time goes in two subfolders, which the host creates (`host/game_layout.c`, `gpu/vk/vk_paths.h`):
+Each stage is cached by exactly what makes it, and the caches outlive a builder release:
+
+| Cache | Where | Keyed by |
+|---|---|---|
+| The lift | `gen/lift.key`, the lifts' store `<store>/lifts/<key>/` | the lifter's sources, the edits' data, the image, the options, the site tables, the host sources the lift reads, `main.npdm`, the guest profile |
+| A lifted unit | `gen/units.txt` | the lifter, the IR options and its functions' keys (each function's instructions, labels, tables, edits, profile counts) |
+| An object | the object store `<store>/compile/` | the compiler's identity, the flags, the source's content, every header it read |
+| A link | `build/` | what it reads and writes |
+| An asset | the work folder | exactly the romfs files and repository assets it is made from |
+| The shader caches | the shader cache folder (play's: `<cache>/shaders/<translator stamp>/<driver>/`, [where things are](build.md#where-things-are); else the game folder's `cache/`), the shader store | the shader translator's stamp (its sources' tokens), the drivers and GPUs |
+
+No path, builder version or build-wide option is in a key, so one mod, site or patch change rebuilds only what it
+changed, and a new builder release reuses the object store ([the builder](builder.md#the-compile)).
+
+### The mid IR and the hook sites
+
+The lifter does not write C and patch it. Each guest function is built as mid IR (`builder/crates/mir`): blocks of typed
+SSA values over the guest state's locations, each instruction's semantics from the Arm ARM (`crates/sem`). Every change
+Longshot makes to a function is an edit of that IR, in Rust data (`crates/edits`): each [hook site](hooks.md)'s form,
+placed by `crates/sites` from `game/`'s tables, the supported build's patches, and the host's entry hooks of the
+SDK's functions. The function builder writes them in as it builds the function, where it knows each instruction's
+place, so nothing matches lifted text. The passes then share page marks and remove the guest state's dead reads and
+writes, and the LLVM writer syncs the state with the context only where it must: guest memory never aliases the CPU
+state, registers are SSA values between the places that need them in memory, flags are values.
+
+### gen/, the runtime and the host
+
+gen/ is the contract between the lift and the compile ([the gen/ folder](builder.md#the-gen-folder)): the units and
+`units.txt`, the function table (`table.c`, what `a64_lookup` searches), the import stubs (`imports.c`), the boot
+constants `host/hos_main.c` reads (`image.c`), and the runtime in `gen/rt/`, copied from
+[`builder/rt`](../../../builder/rt) with the lift's config (`a64_config.h`). The host is compiled with `-I gen/rt`, so the
+lifted code and the host share one guest model: the context, guest memory, the page marks, the exclusive monitor, the
+setjmp calls, the float helpers ([the runtime](builder.md#the-runtime)).
+
+The host reads the game's romfs through one API, [`host/romfs.h`](../../../host/romfs.h), over the builder's index of
+the player's .nup (`host/romfs_index.c`) or a romfs folder ([the romfs, read in place](builder.md#the-romfs-read-in-place)).
+At its start the game opens the index beside `image.bin` and checks that the .nup it names is there and is the one it
+was built from (its size and its TOC's SHA-256), or stops with `nup_moved`. Then a game's file call
+(`host/nn_fs.c`) finds its file in this order:
+
+```mermaid
+flowchart TD
+    call["the game opens a file of its RomFS (nn_fs.c)"] --> overlay{"HOS_FS_OVERLAY has the file?<br/>(developers)"}
+    overlay -->|yes| ovfile["the overlay's file"]
+    overlay -->|no| mods{"a mod has the file?<br/>(mods.c)"}
+    mods -->|yes| modfile["the mod's file"]
+    mods -->|no| damaged{"a texture damaged in this dump,<br/>with a whole stand-in? (oot_damaged_files.c)"}
+    damaged -->|yes: the stand-in| api
+    damaged -->|no| api["host/romfs.h"]
+    api --> where{"an index open?"}
+    where -->|no| folder["the romfs folder<br/>(--romfs, or romfs beside the game)"]
+    where -->|yes| entry["the file's entry in longshot_romfs.idx:<br/>its offset and size in the .nup"]
+    entry -->|stored as it is| inplace["read in place from the .nup, at its offset"]
+    entry -->|stored as one zstd frame| copy{"a decoded copy open or kept?"}
+    copy -->|yes| reuse["that copy"]
+    copy -->|no| decode["decoded whole from the .nup at its open,<br/>kept after its close (256 MB of closed copies,<br/>the least recently used let go first)"]
+```
+
+A folder of the RomFS is listed from `romfs.h` with the mods' own entries added.
+
+### The game folder
+
+What the build puts in it is listed in [the builder](builder.md#the-game-folder): the game and the renderer (a folder an
+older builder made has them in `bin/`, which the host still reads), `image.bin`, `longshot_romfs.idx`, the
+assets and the build's records. It has no `romfs` folder: the game reads the .nup in place, so the .nup must stay where
+it was. What the game writes at run time goes in two subfolders, which the host creates (`game/game_layout.c`,
+`gpu/vk/vk_paths.h`):
 
 - `cache/`: the program cache (`longshot_programs.bin` and `.idx`), pipeline caches, this PC's pipeline state list
-  (`longshot_pipeline_states.bin`) and `longshot_driver_faults.txt`. The caches are made for this build and GPU, so they
-  can be deleted. Deleting the driver faults file sends the programs that crashed the driver's compiler to it again, and
+  (`longshot_pipeline_states.bin`) and `longshot_driver_faults.txt`. The caches are made for this translator and GPU, so
+  they can be deleted. A game longshot-builder starts for a profile keeps all of them in the shared shader cache folder
+  instead (`LONGSHOT_SHADER_CACHE`: `<the builder's cache>/shaders/<translator stamp>/<driver>/`, every build of that
+  translator on this driver sharing it; `vk_paths.h` `cache_path`), and its `cache/` holds only what the build put
+  there. Deleting the driver faults file sends the programs that crashed the driver's compiler to it again, and
   deleting the state list loses the pipelines this PC's play recorded.
 - `logs/`: logs and traces.
 
@@ -55,8 +172,8 @@ nearly all of it (99.6% of programs between a stable and a nightly), so a furthe
 instead of about 8 GB. The cache file's head names the store, and a cache of a store that is gone starts over. Deleting
 the store while no game runs is safe: each game folder prepares again. A store made again is new files put in the old
 ones' place, never the old ones cut short, so a game still reading them keeps them (Linux), and while one has them open
-they are not replaced (Windows). The builders keep `LONGSHOT_SHADER_STORE` for the game they start (the shaders' preparation
-at the build, the AppImage's Play), so the shaders are prepared in the store the game plays with.
+they are not replaced (Windows). `longshot-builder` and the launcher keep `LONGSHOT_SHADER_STORE` for the game they start (the
+shaders' preparation at the build, the launcher's Play), so the shaders are prepared in the store the game plays with.
 
 ### The host
 
@@ -83,7 +200,7 @@ at the build, the AppImage's Play), so the shaders are prepared in the store the
 - `gpu/vk` is the only renderer. Without a usable Vulkan nothing is drawn, and the log says "no renderer".
 - The interface between the host and the renderer is `MkwVkHost` / `MkwVkRenderer` in
   [`gpu/vk/vk_api.h`](../../../gpu/vk/vk_api.h). Any change to it bumps `MKWVK_API_VERSION`, and both binaries are rebuilt
-  together.
+  together: the renderer takes a host of its own version only, so its code never checks a host's version.
 - The host publishes small samples that the renderer reads, such as the pointer (`MkwVkPointer`,
   `host/display_pointer.h`) and the frame's jitter (`MkwVkJitter`). Each sits behind a short lock of its own. The
   renderer never calls the window system for them, and no window call runs while one of those locks is held.
@@ -284,7 +401,7 @@ switch, and the header only mirrors the rule for the log and the test). Sizes th
 computed in `policy_rule`, and each site calls the rule again at its first use.
 
 The program cache's stamp covers `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `eden/`, `sirit/` and `compat/`
-(`nx2/translator_files.py`). `device_policy.h` is not in the stamp, so every field `vk_shader.cpp` reads must be folded
+(`builder/crates/build-compile/src/generated/shader_stamp.rs`). `device_policy.h` is not in the stamp, so every field `vk_shader.cpp` reads must be folded
 into `translator_stamp`. The test fails if one is not.
 
 ### How switches are read
@@ -451,7 +568,8 @@ Each line below is enforced by a game-free check under `tests/` ([run the checks
 ## The Insert menu
 
 Every row of the Insert (F1) menu belongs to a feature module: one feature's rows in a file of `gpu/vk/menu/`, with the
-code that is theirs (state, texts, hints, actions), placed by the module itself. `gpu/vk/menu_model.h` is the model (no
+code that is theirs (state, texts, hints, actions), placed by the module itself. A row that changes the game, not the
+picture, is the game's: see [the game's rows](#the-games-rows). `gpu/vk/menu_model.h` is the model (no
 ImGui or Vulkan in it), `gpu/vk/menu_module.h` what a module includes, and `vk_menu.cpp` draws what the model builds. The
 build compiles every `gpu/vk/menu/*.cpp`, so a new feature is a new file. A section and its rows (`gpu/vk/menu/hdr.cpp`):
 
@@ -480,12 +598,29 @@ MENU_MODULE(hdr) {
   declared in `menu_module.h`'s "what modules ask the renderer" section.
 - **Room for 256** module rows and headings (`kModuleRowsMax`, `tests/test_menu_module_slots.py`).
 
+### The game's rows
+
+A row is the game's when it changes the game, not the picture, and is plain data: Field of view, Text speed, Text size,
+Skip title screen, Skip opening, Discord status, Ultrawide menus. It goes in `game/menu/` as a `GameMenuRow`
+([`game/game.h`](../../../game/game.h)): its key, texts, tab, kind (toggle, slider or choice), option id
+([`game/options.h`](../../../game/options.h)), range, default, choices and hints, and its place (`after` or `before` a
+key, `order`). The game's build compiles `game/menu/*.c` with the game's C, and the host hands the table to the renderer
+(`MkwVkHost`'s `game_menu_rows`).
+
+One generic module, `gpu/vk/menu/game_rows.cpp`, adds the rows to the menu in place, as any module adds its own. The
+renderer keeps their values, one int by option id. The menu loads and saves them as every row, under their keys, and the
+option callback (`vk_replay.cpp`) answers `rx_option` for their ids. A row that needs the renderer's code (a `shown`,
+`hint` or `on_change` hook, an action, ImGui) stays in `gpu/vk/menu/`, even when it is about the game: the HUD layout and
+its placement, Damage taken and Autosave (the Debug tools'), Game language.
+
+### The core's rows and the checks
+
 `vk_menu.cpp`'s own table keeps only the core's three section headings (`resolution`, `screen`, `developer`) and the
 custom rows it still draws itself (Custom output size's text field, the Controls row's bindings grid, the Debug tools'
 panel: `Custom` items in the model, `bespoke_row`); the Mods tab's lines are drawn by `draw_mods`. Checks:
 `tests/test_menu_modules.py` builds every module (no game) and fails on a missing anchor, a cycle or a doubled key; a
-check that reads rows uses `tests/menu_model_fixture.py` (`menu_text()`, `built_menu()`), and
-`tests/test_settings_table.py` compares the menu as built with the settings table in
+check that reads rows uses `tests/menu_model_fixture.py` (`menu_text()`, `built_menu()`, and `game_rows()` for the
+game's), and `tests/test_settings_table.py` compares the menu as built with the settings table in
 [graphics and controls](../../user/graphics-and-controls.md).
 
 ## Tools

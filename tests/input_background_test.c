@@ -68,7 +68,7 @@ static char last_log[256];
 static int origin_logs, script_logs;
 static long long logged_origin;
 volatile int64_t hos_hid_last_read;
-volatile uint64_t hos_hid_buttons;   /* (host/cheats.c reads it) */
+volatile uint64_t hos_hid_buttons;   /* (game/cheats.c reads it) */
 volatile int hos_nvn_sync_log_on;
 static int32_t bridge_stick[4];   /* (the bridge's sticks: the stick-directions case) */
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) {
@@ -257,7 +257,7 @@ static void hold_toggle_case(void) {
     bridge_buttons = 0; packet(0, 0, 0, 0);
 }
 
-/* Sprint's input as npad_states hands it to host/oot_sprint.c (a spy here): Sprint never presses A, so the game's buttons
+/* Sprint's input as npad_states hands it to game/oot_sprint.c (a spy here): Sprint never presses A, so the game's buttons
    are the player's own; held, toggled, a toggled sprint held (never ended) by Insert, Plus and the focus lost, a bridge's
    exclusive input keeping the player's Sprint out, and a bridge's SPRINT counted as its key, behind other windows too */
 #define SPY(on, down, toggle, reset, blocked) \
@@ -305,7 +305,7 @@ static void sprint_toggle_case(void) {
 }
 #undef SPY
 
-/* The game's menus' mouse clicks (host/oot_menu.c), through the real hos_hid_tap and host_taps: a click is a short
+/* The game's menus' mouse clicks (game/oot_menu.c), through the real hos_hid_tap and host_taps: a click is a short
    press of the host's own, which a Toggle on that button must not latch; the player's presses of it still do. */
 static void hold_taps_case(void) {
     front = controls_case = 1;

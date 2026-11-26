@@ -46,13 +46,13 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/longshot_env.h)
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "longshot_env.h")
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
+RUN_ALL_ALONE = True   # (it measures time or CPU, or races threads: beside other checks on a loaded runner it failed or timed out)
 
 ROOT = Path(__file__).resolve().parents[1]
 VK = ROOT / "gpu" / "vk"
@@ -94,11 +94,14 @@ B_DIRECT_STMT = "::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);"
 
 C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
 UI_RECORD_CALL = re.compile(r"\bui\s*::\s*record(?:_to)?\s*\(")
-NGX_RECORD_CALL = re.compile(r"\bNGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)\s*\(")   # (NVIDIA NGX's create/evaluate, DLSS's and frame generation's: its own commands into cmd)
+# (and DLSS 5's direct path, vk_dlss.cpp NrDirect: the FP16 model's own create and evaluate, d.create and d.evaluate through
+# the forwarder, record into cmd as NGX's do)
+NGX_RECORD_CALL = re.compile(r"\b(?:NGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)|NVSDK_NGX_VULKAN_(?:CreateFeature|EvaluateFeature))\s*\("
+                             r"|\bd\s*\.\s*(?:create|evaluate)\s*\(\s*d\s*\.\s*model_(?:create|evaluate)\b")
 FFX_RECORD_CALL = re.compile(r"\bl\s*\.\s*dispatch\s*\(")   # (AMD FidelityFX's ffxDispatch, through its loaded pointer: its own commands into cmd)
 XESS_RECORD_CALL = re.compile(r"\bl\s*\.\s*execute\s*\(")   # (Intel XeSS's xessVKExecute, through its loaded pointer: its own commands into cmd)
 OPAQUE_RECORD_CALL = re.compile(UI_RECORD_CALL.pattern + "|" + NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern + "|" +
-                                XESS_RECORD_CALL.pattern)
+                                XESS_RECORD_CALL.pattern + r"|\bnr_(?:create|evaluate)_feature\s*\(")
 B_DIRECT_BEFORE = re.compile(r"::\s*mkwvk\s*::\s*rec\s*::\s*boundary\s*\(\s*::\s*mkwvk\s*::\s*rec\s*::\s*B_DIRECT\s*\)\s*;\Z")
 
 
@@ -236,6 +239,12 @@ def check_sources():
     problems += direct_unbounded(dlss, "vk_dlss.cpp", NGX_RECORD_CALL)
     if B_DIRECT_STMT in dlss and not direct_unbounded(dlss.replace(B_DIRECT_STMT, "", 1), "vk_dlss.cpp", NGX_RECORD_CALL):
         problems.append("the B_DIRECT check missed an NGX recording without its boundary")
+    for name in ("NVSDK_NGX_VULKAN_CreateFeature", "NVSDK_NGX_VULKAN_EvaluateFeature", "d.create", "d.evaluate"):
+        site = dlss.index(name + "(")
+        boundary = dlss.rindex(B_DIRECT_STMT, 0, site)
+        broken = dlss[:boundary] + dlss[boundary + len(B_DIRECT_STMT):]
+        if not direct_unbounded(broken, "vk_dlss.cpp", NGX_RECORD_CALL):
+            problems.append("the B_DIRECT check missed an NR recording without its boundary: " + name)
     # (AMD FSR 4 records into cmd through ffxDispatch: after a B_DIRECT boundary; control: that boundary removed)
     fsr4 = (VK / "vk_fsr4.cpp").read_text(encoding="utf-8")
     problems += direct_unbounded(fsr4, "vk_fsr4.cpp", FFX_RECORD_CALL)
@@ -505,7 +514,7 @@ def main():
         if not caught:
             raise SystemExit("FAIL: a broken recorder (%s) passed" % what)
     pool.shutdown()
-    if a.bench or a.overlap:   # (with the renderer's CPU flags, nx2/build.py's CPU: RX_MARCH or x86-64-v3)
+    if a.bench or a.overlap:   # (with the renderer's CPU flags, the builder's CPU: RX_MARCH or x86-64-v3)
         fast = build(a.cxx, a.headers, out, rec, "bench", ["-march=" + os.environ.get("RX_MARCH", "x86-64-v3"), "-ffp-contract=off"])
         if a.bench:
             r = run(fast, None, "--bench", str(a.bench))

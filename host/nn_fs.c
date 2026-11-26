@@ -1,11 +1,15 @@
 /* nn::fs: mounts map to host folders.
-     rom:      the game's RomFS (extracted by tools/nx.py romfs), read-only
+     rom:      the game's RomFS (host/romfs.h: the player's .nup through the builder's index, or a romfs folder), read-only
      save:     <user>/save-work/<uid> (MountSaveData; committed files in <user>/save/<uid>)
      cache:    <user>/cache/<index>  (MountCacheStorage)
      temp:     <user>/temp           (MountTemporaryStorage)
    hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (ReadFile with an offset), so any number
    of guest threads can read one file at once. Results: switchbrew "Error codes" (module 2 = fs). */
 #include "hos.h"
+#include "romfs.h"
+#include "romfs_index.h"
+#include "save_dir.h"   /* (hos_saves_root: the profile's saves/, else the user folder) */
+#include "longshot_profile.h"   /* (LONGSHOT_PROFILE: the profile's saves/) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +18,7 @@
 #ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/longshot_env.h"
 #endif
+#include "../game/game.h"   /* (the game's hooks this file calls) */
 
 /* (longshot) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
    Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, and on Windows each file call goes through
@@ -93,6 +98,54 @@ static BOOL fs_FindNextFile(HANDLE h, WIN32_FIND_DATAA *fd) {
 
 const char *hos_romfs_dir, *hos_user_dir;
 
+/* (longshot) The run's save folder (host/save_dir.h): the profile's saves/; chosen once, at the start (hos_main.c) */
+static char save_dir_chosen[SAVE_DIR_MAX];
+static int save_dir_state;   /* (0 not chosen yet, 1 chosen: save_dir_chosen the folder, or empty for the user folder's; -1 refused) */
+static const char *save_dir_from;
+static char save_dir_why[SAVE_DIR_MAX + 256];
+int hos_save_dir_choose(void) {
+    if (!save_dir_state) {
+        const char *value = NULL;
+        static char profile_saves[SAVE_DIR_MAX];
+        if (longshot_profile_saves(getenv(LONGSHOT_PROFILE), SAVE_DIR_SEP[0], profile_saves, sizeof profile_saves))
+            value = profile_saves, save_dir_from = LONGSHOT_PROFILE;
+        save_dir_state = hos_save_dir_check_from(value, "the profile's saves folder ", save_dir_chosen,
+                                                 sizeof save_dir_chosen, save_dir_why, sizeof save_dir_why) ? 1 : -1;
+    }
+    return save_dir_state > 0;
+}
+const char *hos_save_dir_refused(void) { return save_dir_state < 0 ? save_dir_why : NULL; }
+const char *hos_save_dir_chosen(void) {
+    hos_save_dir_choose();
+    return save_dir_state > 0 && save_dir_chosen[0] ? save_dir_chosen : NULL;
+}
+const char *hos_save_dir_source(void) { return hos_save_dir_chosen() ? save_dir_from : NULL; }
+const char *hos_saves_root(void) {
+    const char *c = hos_save_dir_chosen();
+    return c ? c : hos_user_dir;
+}
+/* (longshot) The RomFS is read through romfs.h, whichever place it is in: the player's .nup through the builder's index
+   (hos_main.c opens it when the game folder has one and no romfs folder), or a romfs folder. Paths under hos_romfs_dir
+   are read there after the mods, the overlay and the stand-ins had their say: a file gets a handle that reads it
+   through romfs.h (Handle.rom; h is no host handle), a folder is listed from it. */
+HosRomfsIndex *hos_romfs_index;
+
+/* (longshot) path's part under hos_romfs_dir (the RomFS's), when path is in it; NULL otherwise */
+static const char *romfs_rel(const char *path) {
+    if (!hos_romfs_dir) return NULL;
+    size_t i = 0;
+    for (; hos_romfs_dir[i]; i++) {
+        const char a = hos_romfs_dir[i] == '/' ? '\\' : hos_romfs_dir[i], b = path[i] == '/' ? '\\' : path[i];
+        if (a != b) return NULL;
+    }
+    if (path[i] && path[i] != '\\' && path[i] != '/') return NULL;
+    return path + i;
+}
+
+/* (longshot) path's part under the RomFS (oot_damaged_files.c: then read it with romfs.h); NULL otherwise */
+const char *hos_fs_romfs_rel(const char *path) { return romfs_rel(path); }
+
+
 #define R_PATH_NOT_FOUND 0x202          /* fs::ResultPathNotFound */
 #define R_PATH_EXISTS 0x402             /* fs::ResultPathAlreadyExists */
 #define R_NOT_MOUNTED 0xCA02            /* fs::ResultInvalidMountName-ish: no such mount */
@@ -144,8 +197,6 @@ static int mount_entry(const char *name, const char *root, int writable, Save *s
 
 static int mount(const char *name, const char *root, int writable) { return mount_entry(name, root, writable, NULL); }
 
-int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
-int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
 /* (longshot) a guest path below its mount stays below it on the host: no "." or ".." part, no \\ or : (a drive or a
    Windows stream), no control characters; on Windows also no part ending in a dot or a space (Windows drops them) and
@@ -240,6 +291,7 @@ typedef struct {
     HANDLE h; int writable; HANDLE find; WIN32_FIND_DATAA fd; int find_done, is_dir; char path[HOS_FS_PATH];
     ExtraEntry *extras; int nextras, extra_pos;
     Save *save; char relative[HOS_FS_PATH]; int written;
+    HosRomfsFile *rom;   /* (longshot: a file of the RomFS, read through romfs.h; h is none) */
 } Handle;
 static Handle *handles[4096];
 static SRWLOCK handle_lock = SRWLOCK_INIT;
@@ -755,7 +807,7 @@ static int save_replay(Save *s) {
 }
 static int save_journal(SavePlan *p) {
     if (!save_sync_directory(p->save->committed) || !save_sync_parent(p->save->committed) ||
-        !save_sync_directory(hos_user_dir) || !save_sync_parent(hos_user_dir)) return 0;
+        !save_sync_directory(hos_saves_root()) || !save_sync_parent(hos_saves_root())) return 0;
     size_t bytes = 2;
     for (SaveOp *o = p->first; o; o = o->next) bytes += strlen(o->path) + 3;
     if (bytes > 16 * 1024 * 1024) return 0;
@@ -866,7 +918,7 @@ static int user_mount(const char *name, const char *sub) {
     char root[HOS_FS_PATH];
     const int is_save = !strncmp(sub, "save\\", 5);
     if (is_save) AcquireSRWLockExclusive(&save_lock);
-    snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
+    snprintf(root, sizeof root, "%s\\%s", is_save ? hos_saves_root() : hos_user_dir, sub);
     make_dirs(root);
     CreateDirectoryA(root, NULL);
     const int ok = mount(name, root, 1);
@@ -900,8 +952,8 @@ static int save_own(Save *s) {
 
 static int save_mount(const char *name, const char *uid) {
     char committed[HOS_FS_PATH], work[HOS_FS_PATH], parent[HOS_FS_PATH];
-    if (snprintf(committed, sizeof committed, "%s\\save\\%s", hos_user_dir, uid) >= (int)sizeof committed ||
-        snprintf(parent, sizeof parent, "%s\\save-work", hos_user_dir) >= (int)sizeof parent ||
+    if (snprintf(committed, sizeof committed, "%s\\save\\%s", hos_saves_root(), uid) >= (int)sizeof committed ||
+        snprintf(parent, sizeof parent, "%s\\save-work", hos_saves_root()) >= (int)sizeof parent ||
         !save_join(work, parent, uid)) return 0;
     AcquireSRWLockExclusive(&save_lock);
     Save *s;
@@ -1004,7 +1056,7 @@ static int save_mount(const char *name, const char *uid) {
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
 HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
+    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_saves_root(), (unsigned long long)G64(ARG(1) + 8),
              (unsigned long long)G64(ARG(1)));
     RET(GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);
 }
@@ -1165,8 +1217,16 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
         if (away) hos_vcore_back();
         RET(R_PATH_NOT_FOUND); return;
     }
-    HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    const char *in_romfs = !want_write && !save ? romfs_rel(path) : NULL;
+    HosRomfsFile *rom = in_romfs ? hos_romfs_open(in_romfs) : NULL;   /* (longshot) the RomFS: romfs.h */
+    if (in_romfs && !rom) {
+        if (away) hos_vcore_back();
+        if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s): not found", g);
+        RET(R_PATH_NOT_FOUND);
+        return;
+    }
+    HANDLE h = rom ? NULL : CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (!save && away) hos_vcore_back();
     if (h == INVALID_HANDLE_VALUE) {
         if (save) { ReleaseSRWLockExclusive(&save_lock); if (away) hos_vcore_back(); }
@@ -1176,11 +1236,13 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     }
     Handle *fh = (Handle *)calloc(1, sizeof *fh);
     if (!fh) {
-        if (!CloseHandle(h)) hos_log("fs: OpenFile(%s): could not close host handle", g);
+        if (rom) hos_romfs_file_close(rom);
+        else if (!CloseHandle(h)) hos_log("fs: OpenFile(%s): could not close host handle", g);
         if (save) { ReleaseSRWLockExclusive(&save_lock); if (away) hos_vcore_back(); }
         RET(R_OUT_OF_MEMORY); return;
     }
     fh->h = h;
+    fh->rom = rom;
     fh->writable = want_write;
     if (want_write) __atomic_add_fetch(&writes_open, 1, __ATOMIC_RELAXED);
     fh->save = save;
@@ -1259,8 +1321,12 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
         *oom = 1;
         return 0;
     }
+    if (fh->rom) {   /* (longshot) from the RomFS (romfs.h), at the file's offset: a positional read, no lock */
+        const int64_t got = hos_romfs_file_read(fh->rom, (uint64_t)off, GP(buf), size);
+        done = got > 0 ? (uint64_t)got : 0;
+    }
     if (fh->save) AcquireSRWLockShared(&save_lock);
-    while (done < size) {
+    while (!fh->rom && done < size) {
         OVERLAPPED ov = {0};
         int64_t o = off + (int64_t)done;
         ov.Offset = (DWORD)o;
@@ -1306,7 +1372,9 @@ HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
     LARGE_INTEGER sz = {0};   /* (longshot: a folder's handle has no size: 0, not the host stack's bytes) */
     const int away = hos_vcore_away();
     AcquireSRWLockShared(&file_call_lock);
-    GetFileSizeEx(get_handle(c, ARG(1))->h, &sz);
+    Handle *sized = get_handle(c, ARG(1));
+    if (sized->rom) sz.QuadPart = (int64_t)hos_romfs_file_size(sized->rom);
+    else GetFileSizeEx(sized->h, &sz);
     ReleaseSRWLockShared(&file_call_lock);
     if (away) hos_vcore_back();
     G64(ARG(0)) = (uint64_t)sz.QuadPart;
@@ -1351,10 +1419,10 @@ static void fs_set_file_size(Ctx *c, Handle *fh) {
     RET(ok ? 0 : 0x2EE202);
 }
 HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) { save_handle_call(c, fs_set_file_size, 0); }
-static void fs_flush_file(Ctx *c, Handle *fh) { FlushFileBuffers(fh->h); RET(0); }
+static void fs_flush_file(Ctx *c, Handle *fh) { if (!fh->rom) FlushFileBuffers(fh->h); RET(0); }
 HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { save_handle_call(c, fs_flush_file, 0); }
 static void fs_close_file(Ctx *c, Handle *fh) {
-    const int closed = CloseHandle(fh->h);
+    const int closed = fh->rom ? (hos_romfs_file_close(fh->rom), 1) : CloseHandle(fh->h);
     if (fh->writable) __atomic_sub_fetch(&writes_open, 1, __ATOMIC_RELAXED);
     if (fh->save) {
         Save *s = fh->save;
@@ -1545,7 +1613,7 @@ static const char *rom_rel(const char *guest) {   /* the path inside the RomFS m
 static int is_mod_dir(const char *guest) {
     const char *rel = rom_rel(guest);
     int n = 0;
-    if (rel) hos_mods_dir_extras(rel, "<", count_extra, &n);   /* ("<": no such folder: every entry counts) */
+    if (rel) hos_mods_dir_extras(rel, 1, count_extra, &n);   /* (every entry counts: the game has no such folder) */
     return n > 0;
 }
 
@@ -1554,7 +1622,9 @@ HLE(_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc) {
     char path[HOS_FS_PATH];
     if (!host_path(gstr(ARG(1)), path, sizeof path, NULL)) { RET(R_PATH_NOT_FOUND); return; }
     hos_blank_cached_icon(gstr(ARG(1)), path);
-    DWORD at = GetFileAttributesA(path);
+    const int in_romfs = romfs_rel(path) ? hos_romfs_stat(romfs_rel(path), NULL) : -1;
+    DWORD at = in_romfs < 0 ? GetFileAttributesA(path)
+               : in_romfs == 1 ? FILE_ATTRIBUTE_NORMAL : in_romfs == 2 ? FILE_ATTRIBUTE_DIRECTORY : INVALID_FILE_ATTRIBUTES;
     if (at == INVALID_FILE_ATTRIBUTES && is_mod_dir(gstr(ARG(1)))) at = FILE_ATTRIBUTE_DIRECTORY;   /* (only in mods) */
     if (fs_trace())
         hos_log("fs: GetEntryType(%s): %s", gstr(ARG(1)), at == INVALID_FILE_ATTRIBUTES ? "not found"
@@ -1579,13 +1649,19 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {
     Handle *dh = (Handle *)calloc(1, sizeof *dh);
     dh->is_dir = (int)ARG(2);   /* mode: 1 directories, 2 files, 3 both */
     snprintf(dh->path, sizeof dh->path, "%s", pat);   /* (for GetDirectoryEntryCount) */
-    dh->find = FindFirstFileA(pat, &dh->fd);
-    if (dh->find == INVALID_HANDLE_VALUE) dh->find_done = 1;
-    if (rom_rel(gstr(ARG(1)))) hos_mods_dir_extras(rom_rel(gstr(ARG(1))), path, add_extra, dh);
+    const char *in_romfs = romfs_rel(path);
+    if (in_romfs) {   /* (longshot) a folder of the RomFS: its listing from romfs.h, then the mods' own entries */
+        dh->find = INVALID_HANDLE_VALUE, dh->find_done = 1, dh->path[0] = 0;
+        if (hos_romfs_list(in_romfs, add_extra, dh) >= 0) dh->find = NULL;
+    } else {
+        dh->find = FindFirstFileA(pat, &dh->fd);
+        if (dh->find == INVALID_HANDLE_VALUE) dh->find_done = 1;
+    }
+    if (rom_rel(gstr(ARG(1)))) hos_mods_dir_extras(rom_rel(gstr(ARG(1))), 0, add_extra, dh);
     if (fs_trace())
         hos_log("fs: OpenDirectory(%s, mode %d)%s, %d entries from mods", gstr(ARG(1)), (int)ARG(2),
                 dh->find == INVALID_HANDLE_VALUE ? ": not found" : "", dh->nextras);
-    if (dh->find == INVALID_HANDLE_VALUE && !dh->nextras) { free(dh); RET(R_PATH_NOT_FOUND); return; }
+    if (dh->find == INVALID_HANDLE_VALUE && !dh->nextras) { free(dh->extras); free(dh); RET(R_PATH_NOT_FOUND); return; }
     G64(ARG(0)) = new_handle(dh);
     RET(0);
 }
@@ -1650,7 +1726,7 @@ HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
 HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
     AcquireSRWLockExclusive(&dir_lock);
     Handle *dh = get_handle(c, ARG(0));
-    if (dh->find != INVALID_HANDLE_VALUE) FindClose(dh->find);
+    if (dh->find != INVALID_HANDLE_VALUE && dh->find) FindClose(dh->find);
     free_handle(ARG(0));
     ReleaseSRWLockExclusive(&dir_lock);
     free(dh->extras);

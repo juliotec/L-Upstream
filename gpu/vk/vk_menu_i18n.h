@@ -24,7 +24,7 @@ const char* lang_name(int index);
 /// menu's Auto follows it until the next start
 const std::string& game_language();
 
-/// The game's languages, as nx2/make_game.py LANGUAGES lists them (language.txt's codes), each by its own name
+/// The game's languages, as longshot-builder LANGUAGES lists them (language.txt's codes), each by its own name
 int game_lang_count();
 const char* game_lang_code(int index);
 const char* game_lang_name(int index);

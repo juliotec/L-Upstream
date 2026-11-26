@@ -125,7 +125,7 @@ static int npresses;
 static int64_t script_end_ms;
 static int64_t script_elapsed_ms(int64_t now) { (void)now; return 0; }
 static void scripted_input(uint64_t *b, uint64_t *taps, int32_t s[4]) { (void)b; (void)taps; (void)s; }
-void hos_oot_autoload_input(void) {}   /* (host/oot_autoload.c: Skip title screen off) */
+void game_autoload_input(void) {}   /* (game/oot_autoload.c: Skip title screen off) */
 int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
 static int game_in_front(void) { return front; }
 static volatile LONG pad_raw_now;

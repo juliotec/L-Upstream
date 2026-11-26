@@ -1,4 +1,4 @@
-"""Two built game folders (a stable's and main's, each from its release AppImage), each run as one game session through
+"""Two built game folders (a stable's and main's, each from its release's builder), each run as one game session through
 the queue in timing mode that visits several areas: A, B, A, B. Each area is reached by the Debug tab's teleport, warmed up
 until no frame waits for a pipeline, then measured from the frame trace. The release-benchmark skill
 (.claude/skills/release-benchmark/SKILL.md) says how to build the folders and what to report. Python's standard library
@@ -39,7 +39,7 @@ def run(a, out, pinned, side, k):
     opts, no_env, noise = os.path.join(d, "options.ini"), os.path.join(d, "empty-env.txt"), os.path.join(d, "noise.jsonl")
     shutil.copyfile(pinned, opts)
     open(no_env, "w").close()
-    env = dict(ab.COMMON_ENV, HOS_OPTIONS_FILE=opts, HOS_ENV_FILE=no_env)
+    env = dict(ab.COMMON_ENV, HOS_ENV_FILE=no_env)
     wrapper = [sys.executable, "-I", os.path.join(HERE, "dev.py"), "queue", "run", "release-bench-%s%d" % (side, k),
                "--mode", "timing", "--desc", "%s: %s" % (side, label), "--noise", noise, "--"]
     r = {"side": side, "k": k, "label": label, "areas": {}}
@@ -48,7 +48,8 @@ def run(a, out, pinned, side, k):
         say("%s%d (%s): queued" % (side, k, label))
         session = longshot_bridge.start_session(
             rt, romfs=packs.runtime_romfs(rt), run=os.path.join(d, "game"), user=os.path.join(d, "user"),
-            repo_save=ab.scene_of(a.areas[0])["save"], env=env, ready="present", timeout=3600, wrapper=wrapper)
+            repo_save=ab.scene_of(a.areas[0])["save"], options=opts, env=env, ready="present", timeout=3600,
+            wrapper=wrapper)
         g = drive.Game(session.connect(30), d, "")
         end = time.monotonic() + 300
         while True:

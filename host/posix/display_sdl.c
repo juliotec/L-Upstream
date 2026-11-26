@@ -207,7 +207,8 @@ static DWORD WINAPI renderer_main(void *p) {
     (void)p;
     const int ok = rx_start(&vk_window);
     if (!ok) {   /* (longshot) the game ends at once: behind a black window it played on with its sound until the player closed
-                    it, and only then did the window after it (host/hos_crash_dialog.c) say why. That window reads this line */
+                    it, and only then did the window after it say why. That window (the builder's: builder/crates/crash/src/facts.rs)
+                    reads this line */
         if (!rx_start_failure_claim()) return 0;
         hos_log("display: the renderer did not start: the game ends, and the window after it says why");
         hos_log_flush();
@@ -351,7 +352,7 @@ void hos_display_loop(void) {
     }
     vk_window.window = window;
     hos_posix_window[0] = 1;
-    {   /* the window's icon: longshot.png in the game folder (make_game.py puts it there: the game's own icon, else Longshot's),
+    {   /* the window's icon: longshot.png in the game folder (longshot-builder puts it there: the game's own icon, else Longshot's),
            for X11 and the compositors that take one from the window; the others find it through the menu entry. (The folder, not
            the exe's: the game is bin/longshot in a packaged builder's folder, and the icon was looked for in bin/) */
         char png[MAX_PATH];

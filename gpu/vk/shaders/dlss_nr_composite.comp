@@ -1,0 +1,103 @@
+#version 450
+// DLSS 5's picture brought onto the upscaler's (vk_dlss.cpp nr_composite). The model's input is the picture perceptually
+// encoded (the square root of the game's linear light); this works in linear light and encodes back.
+// The composition is the one of the Bloodborne PC port (PMWork's dlssnr.hlsl, after the OptiScaler DLSS-NR fork's,
+// github.com/Dagherbou/OptiScaler_DLSSNR, GPL-3.0): the picture moves toward the model's by the detail strength (above 1
+// the change in light is raised to a power, so it stays a ratio), the change in light is held to the highlight guard on
+// both sides, and the colour strength blends from the picture's own hue at the model's light to the model's colour (above
+// 1, more chroma in OkLab, in step with the detail strength up to 1, so detail 0 is the upscaler's picture). That last
+// blend follows RenoDX's DLSS 5 addon (clshortfuse, github.com/clshortfuse/renodx);
+// the OkLab constants are Bjorn Ottosson's published ones.
+layout(local_size_x=8, local_size_y=8) in;
+layout(binding=0) uniform sampler2D original;
+layout(binding=1) uniform sampler2D neural;
+layout(binding=2) uniform sampler2D depth;
+layout(binding=3) uniform sampler2D motion;
+layout(binding=4, rgba16f) uniform writeonly image2D result;
+layout(binding=5) uniform sampler2D hdr_original;
+layout(push_constant) uniform P { ivec2 size; ivec2 input_size; ivec2 original_size; float detail; float color; float guard; int debug_view; int hdr; } pc;
+const vec3 Y = vec3(0.2126, 0.7152, 0.0722);
+vec4 sample_low(sampler2D tex,vec2 uv,ivec2 extent){
+ vec2 q=uv*vec2(extent)-0.5;ivec2 b=ivec2(floor(q));vec2 t=fract(q);
+ ivec2 hi=extent-1;
+ return mix(mix(texelFetch(tex,clamp(b,ivec2(0),hi),0),texelFetch(tex,clamp(b+ivec2(1,0),ivec2(0),hi),0),t.x),mix(texelFetch(tex,clamp(b+ivec2(0,1),ivec2(0),hi),0),texelFetch(tex,clamp(b+ivec2(1,1),ivec2(0),hi),0),t.x),t.y);
+}
+vec3 cbrt_signed(vec3 v) { return sign(v) * pow(abs(v), vec3(1.0 / 3.0)); }
+vec3 to_oklab(vec3 c) {
+    const mat3 rgb_to_lms = mat3(0.4122214708, 0.2119034982, 0.0883024619, 0.5363325363, 0.6806995451, 0.2817188376,
+                                 0.0514459929, 0.1073969566, 0.6299787005);
+    const mat3 lms_to_lab = mat3(0.2104542553, 1.9779984951, 0.0259040371, 0.7936177850, -2.4285922050, 0.7827717662,
+                                 -0.0040720468, 0.4505937099, -0.8086757660);
+    return lms_to_lab * cbrt_signed(rgb_to_lms * c);
+}
+vec3 from_oklab(vec3 lab) {
+    const mat3 lab_to_lms = mat3(1.0, 1.0, 1.0, 0.3963377774, -0.1055613458, -0.0894841775, 0.2158037573, -0.0638541728,
+                                 -1.2914855480);
+    const mat3 lms_to_rgb = mat3(4.0767416621, -1.2684380046, -0.0041960863, -3.3077115913, 2.6097574011, -0.7034186147,
+                                 0.2309699292, -0.3413193965, 1.7076147010);
+    vec3 lms = lab_to_lms * lab;
+    return lms_to_rgb * (lms * lms * lms);
+}
+void main() {
+    ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(dst, pc.size))) return;
+    ivec2 p = min(ivec2((vec2(dst) + 0.5) * vec2(pc.input_size) / vec2(pc.size)), pc.input_size - 1);
+    vec2 uv=(vec2(dst)+0.5)/vec2(pc.size);
+    vec4 a=all(equal(pc.size,pc.input_size)) ? texelFetch(original,dst,0) : sample_low(original,uv,pc.input_size);
+    vec4 b=all(equal(pc.size,pc.input_size)) ? texelFetch(neural,dst,0) : sample_low(neural,uv,pc.input_size);
+    vec3 al = max(a.rgb, vec3(0)); al *= al;
+    vec3 bl = max(b.rgb, vec3(0)); bl *= bl;
+    vec3 c;
+    if (pc.debug_view == 1) { imageStore(result, dst, pc.hdr != 0 ? sample_low(hdr_original,uv,pc.original_size) : a); return; }
+    if (pc.debug_view == 2) { imageStore(result, dst, b); return; }
+    if (pc.debug_view == 3) {
+        float d = clamp(dot(abs(bl-al), Y) * 20.0, 0.0, 1.0);
+        c = clamp(vec3(3*d, 3*d-1, 3*d-2), 0.0, 1.0);
+    } else if (pc.debug_view == 4) {
+        c = vec3(clamp(texelFetch(depth, p, 0).r, 0.0, 1.0));
+    } else if (pc.debug_view == 5) {
+        vec2 mv = texelFetch(motion, p, 0).xy;
+        c = vec3(clamp(vec2(0.5) + mv/32.0, 0.0, 1.0), 0.5);
+    } else {
+        float ya = dot(al, Y);
+        // (an empty answer, which the model gives for an input it cannot read: the picture as it was)
+        vec3 up = dot(bl, Y) <= 1e-5 ? al : mix(al, bl, clamp(pc.detail, 0.0, 1.0));
+        // (the change in light as a ratio, the same floor above and below so a dark pixel's ratio eases to one; detail
+        // above 1 raises it to a power, which leaves an unchanged pixel alone; the guard holds it both ways)
+        const float floor_light = 1.0 / 512.0;
+        float ratio = (dot(up, Y) + floor_light) / (ya + floor_light);
+        float amplified = pow(max(ratio, 1e-6), 1.0 + max(pc.detail - 1.0, 0.0));
+        float guard = max(pc.guard, 1.0);
+        float bounded = clamp(amplified, 1.0 / guard, guard);
+        up *= bounded / max(ratio, 1e-6);
+        // (colour strength 0: the picture's own hue at the model's light; 1: the model's colour; above 1, more chroma,
+        // as much more as the picture takes of the model's: all of it from detail 1, none at detail 0, so that is the
+        // upscaler's picture whatever the colour strength. The Bloodborne port adds it at any detail; from detail 1
+        // the two are the same)
+        c = mix(al * bounded, up, min(pc.color, 1.0));
+        float boost = pc.detail >= 1.0 ? pc.color
+                                       : 1.0 + max(pc.color - 1.0, 0.0) * max(pc.detail, 0.0);
+        if (boost > 1.0) c = from_oklab(vec3(1.0, boost, boost) * to_oklab(max(c, vec3(0))));
+        // Compress chroma toward neutral at constant luminance, rather than clipping channels.
+        float yc = dot(c, Y);
+        if (yc >= 0 && yc <= 1) {
+            vec3 chroma = c - vec3(yc);
+            float k = 1.0;
+            for (int i=0; i<3; ++i) {
+                if (chroma[i] > 0) k = min(k, (1-yc)/chroma[i]);
+                if (chroma[i] < 0) k = min(k, -yc/chroma[i]);
+            }
+            c = vec3(yc) + max(k, 0) * chroma;
+        }
+    }
+    if (pc.hdr != 0 && pc.debug_view == 0) {
+        vec4 source = texelFetch(hdr_original,dst,0);
+        vec3 h = max(source.rgb,vec3(0));
+        if(pc.hdr==2)h*=h;
+        float scale = pc.hdr==1 ? 1.0 + max(h.r,max(h.g,h.b)) : 1.0;
+        // Identity NR output is an exact no-op before half-float rounding.
+        // Model edits are residuals; highlights never pass through an SDR clamp.
+        vec3 light=clamp(h+(c-al)*scale,vec3(0),vec3(pc.hdr==1 ? 65504.0 : 1.0));
+        imageStore(result,dst,vec4(pc.hdr==2 ? sqrt(light) : light,source.a));
+    } else imageStore(result, dst, vec4(sqrt(max(c, vec3(0))), a.a));
+}

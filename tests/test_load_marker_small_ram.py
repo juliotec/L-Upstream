@@ -1,5 +1,5 @@
 """The load default against longshot_load_start.txt on a small-RAM PC: gpu/vk/vk_programs.cpp's programs_load_decide, cut out
-of the real source and run with stand-ins for the PC's RAM, the marker's folder, the log and the host (no game or GPU).
+of the real source and run with stand-ins for the PC's RAM, the marker's folder and the log (no game or GPU).
 
 A session whose loads found over 500 listed pipelines in no cache writes the marker (marker_write_lacked), which a settings
 change is enough for. Followed, it takes every later start to start mode: every listed program before the title, 26 GB of
@@ -23,8 +23,8 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# (the stand-ins: what programs_load_decide reads besides load_default.h. ram_total_mb is the PC's RAM; the host's version is
-# a current one, so the version rule plays no part)
+# (the stand-ins: what programs_load_decide reads besides load_default.h. ram_total_mb is the PC's RAM. The renderer takes
+# a host of its own API version only, so no host stand-in: there is no version rule to play a part)
 PRELUDE = r"""
 #include "load_default.h"
 #include <algorithm>
@@ -52,9 +52,6 @@ void logf(const char* fmt, ...) {
     g_log += line;
     g_log += '\n';
 }
-struct HostStub { int version; };
-static HostStub g_host{99};
-static HostStub* host = &g_host;
 std::atomic<int> load_mode{-1};
 std::atomic<bool> struck_last_session{false};
 bool precompile_wanted() { return true; }

@@ -1,9 +1,10 @@
 """The control bridge's client library (host/control.c, docs/dev/reference/control-bridge.md). Standard library only.
 
     Bridge(socket)            one connection: request(cmd, **args) -> the reply; Failed for no game or a timeout
-    start_session(game_dir)   a game started with the bridge on, in a run folder a supervisor owns (Session)
+    start_session(game_dir)   a game started with the bridge on, in a run folder a supervisor owns (Session), playing a
+                              throwaway profile of the run's own (make_profile: settings, saves, profile.json)
     Session(folder)           a run: info(), connect(), request(), log(), stop(), finish(); list_runs(root)
-    copy_save, copy_repo_save a save copied in as a run's saves; game_exe(game_dir) the executable a folder starts
+    copy_save, copy_repo_save a save copied in as a profile's saves; game_exe(game_dir) the executable a folder starts
 
 scripts/longshot_ctl.py is its command line; the tours (scripts/pipeline_tour.py, scripts/memtour.py) and the tests import
 it. Run as a script, it is a run's supervisor (start_session starts it: python -I -B longshot_bridge.py supervise RUN).
@@ -860,10 +861,10 @@ def plain_save_dirs(root, flag="--save"):
 
 
 @session_call
-def copy_save(src, data=None, slot=None, user=None):
-    """A save folder (account.sav, option.sav, slot_NN/) copied to where the game reads it in the data folder; with slot,
-    that slot alone (so Continue loads it). The source is only read, and holds plain files and folders only (no links).
-    Returns the destination"""
+def copy_save(src, saves, slot=None):
+    """A save folder (account.sav, option.sav, slot_NN/) copied to where the game reads it in a profile's saves folder
+    (<profile>/saves: host/save_dir.h); with slot, that slot alone (so Continue loads it). The source is only read, and
+    holds plain files and folders only (no links). Returns the destination"""
     src = os.path.abspath(src)
     if os.path.islink(src) or not os.path.isdir(src):
         raise Failed("--save: %s is not a folder" % src, 2)
@@ -880,14 +881,15 @@ def copy_save(src, data=None, slot=None, user=None):
     entries = [(os.path.join(src, n), n) for n in names
                if (n.startswith("slot_") and os.path.isdir(os.path.join(src, n)) and (slot is None or n == slot)) or
                os.path.isfile(os.path.join(src, n))]
-    return place_save(entries, [src], data, user, "--save")
+    return place_save(entries, [src], saves, "--save")
 
 
-def place_save(entries, sources, data, user, flag):
-    """entries ([(file or folder, its name in the save)]) copied into the data folder's save folder, which must be empty;
-    none of sources (the folders they come from) may hold it or be in it. Returns the destination"""
+def place_save(entries, sources, saves, flag):
+    """entries ([(file or folder, its name in the save)]) copied into the save folder of a profile's saves folder (saves:
+    <profile>/saves, where the game keeps them, host/save_dir.h), which must be empty; none of sources (the folders they
+    come from) may hold it or be in it. Returns the destination"""
     import shutil
-    root = os.path.abspath(user or os.path.join(data, "longshot"))
+    root = os.path.abspath(saves)
     dest = os.path.join(root, "save", SAVE_USER)
     plain_save_dirs(root, flag)
     dest_real = os.path.normcase(os.path.realpath(dest))
@@ -900,7 +902,7 @@ def place_save(entries, sources, data, user, flag):
         if overlap:
             raise Failed("%s: source and destination must be separate plain folders" % flag, 2)
     if os.path.exists(dest) and os.listdir(dest):
-        raise Failed("%s: %s already holds saves: give an empty --data (or none: the run folder's own)" % (flag, dest), 2)
+        raise Failed("%s: %s already holds saves: give an empty profile (or none: the run folder's own)" % (flag, dest), 2)
     os.makedirs(dest, exist_ok=True)
     for p, n in entries:
         if os.path.isdir(p):
@@ -945,8 +947,8 @@ def only_files(folder, wanted, label):
 
 
 @session_call
-def copy_repo_save(name, data=None, user=None, repo=None):
-    """The repo save `name` (in the checkout's assets/saves, or repo's) copied to where the game reads it, as copy_save
+def copy_repo_save(name, saves, repo=None):
+    """The repo save `name` (in the checkout's assets/saves, or repo's) copied into a profile's saves folder, as copy_save
     does: the save's slot_00 alone (the game makes account.sav and option.sav itself). Only the expected files, no links;
     a _profile folder beside the saves (an old layout, with someone's account.sav and option.sav) is refused. Returns the
     destination"""
@@ -964,14 +966,42 @@ def copy_repo_save(name, data=None, user=None, repo=None):
     plain_tree(save, "--repo-save")
     only_files(save, REPO_SAVE_FILES, save)
     only_files(os.path.join(save, "slot_00"), REPO_SLOT_FILES, os.path.join(save, "slot_00"))
-    return place_save([(os.path.join(save, "slot_00"), "slot_00")], [save], data, user, "--repo-save")
+    return place_save([(os.path.join(save, "slot_00"), "slot_00")], [save], saves, "--repo-save")
+
+
+# (a profile the way the game plays it: docs/dev/reference/profiles.md, host/longshot_profile.h)
+PROFILE_FILE, PROFILE_SETTINGS, PROFILE_SAVES = "profile.json", "settings.ini", "saves"
+
+
+@session_call
+def make_profile(folder, name="run", options=None):
+    """A profile for one run at folder, the only place the game takes its settings, saves and start slot from
+    (LONGSHOT_PROFILE): profile.json ({"v": 1, "name": name}) when it has none, settings.ini copied from options (a
+    longshot_options.ini's lines: the run's settings) when given, and saves/. A folder of the caller's own keeps what it
+    holds, but settings.ini is never written over. Returns the folder, whole"""
+    import shutil
+    folder = os.path.abspath(folder)
+    os.makedirs(os.path.join(folder, PROFILE_SAVES), exist_ok=True)
+    if not os.path.exists(os.path.join(folder, PROFILE_FILE)):
+        write_json(Path(folder) / PROFILE_FILE, {"v": 1, "name": name})
+    if options:
+        settings = os.path.join(folder, PROFILE_SETTINGS)
+        if os.path.lexists(settings):
+            raise Failed("options: %s has its settings already (%s): not written over" % (folder, settings), 2)
+        if not os.path.isfile(options):
+            raise Failed("options: %s is not a file" % options, 2)
+        shutil.copyfile(options, settings)
+    return folder
 
 
 @session_call
 def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=None, user=None, cwd=None, data=None,
                   save=None, slot=None, profile="default", headless=False, sock=None, env=None, ready="bridge",
-                  timeout=600, wrapper=None, repo_save=None, repo=None):
-    """Start a durable supervisor, optionally through an admission wrapper (argv, never a shell command)"""
+                  timeout=600, wrapper=None, repo_save=None, repo=None, options=None):
+    """Start a durable supervisor, optionally through an admission wrapper (argv, never a shell command). The game plays a
+    profile, the one place it takes its settings, saves and start slot from (LONGSHOT_PROFILE): the run folder's own
+    (<run>/profile, made by make_profile: options its settings.ini, a save copied into its saves/), or the one env's
+    LONGSHOT_PROFILE names (a save copied in must find its saves empty)"""
     game = os.path.abspath(game_dir)
     executable = game_exe(game, exe)
     if not os.path.isfile(executable):
@@ -990,8 +1020,6 @@ def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=
         raise Failed("test profile owns its user folder; use --save or --repo-save for a copy, not --user or --data", 2)
     if cwd and not image:
         raise Failed("--cwd needs --image (otherwise the game changes back to its image folder)", 2)
-    if WINDOWS and (save or repo_save) and not user and profile != "test":
-        raise Failed("%s on Windows needs --user or --profile test" % ("--save" if save else "--repo-save"), 2)
     changes = dict(env or {})
     if any(not k or "=" in k or "\0" in k + v for k, v in changes.items()):
         raise Failed("--env NAME=VALUE", 2)
@@ -1015,11 +1043,19 @@ def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=
     log = folder / "log.txt"
     log.touch()
     user = os.path.abspath(user) if user else str(folder / "user") if profile == "test" else None
+    # (the user folder of a run with a save: the run's own, so its recordings and the mouse's sensitivity are not the
+    # player's either)
     data = os.path.abspath(data) if data else str(folder / "data") if (save or repo_save) and not user else None
+    # (the profile the game plays: the run's own, or the caller's, which must be a whole path, as the game takes it)
+    game_profile = changes.get("LONGSHOT_PROFILE") or str(folder / "profile")
+    if not os.path.isabs(game_profile):
+        raise Failed("LONGSHOT_PROFILE must be a whole path (the game refuses another)", 2)
+    changes["LONGSHOT_PROFILE"] = make_profile(game_profile, folder.name, options)
+    saves = os.path.join(changes["LONGSHOT_PROFILE"], PROFILE_SAVES)
     if save:
-        copy_save(save, data, slot, user=user)
+        copy_save(save, saves, slot)
     elif repo_save:
-        copy_repo_save(repo_save, data, user=user, repo=repo)
+        copy_repo_save(repo_save, saves, repo=repo)
     if user:
         Path(user).mkdir(parents=True, exist_ok=True)
     if data:
@@ -1058,7 +1094,7 @@ def start_session(game_dir, *, run=None, root=None, exe=None, image=None, romfs=
     session = Session(folder)
     info = {"schema_version": MANIFEST_VERSION, "client_version": CLIENT_VERSION, "run": str(folder),
             "game": game, "executable": executable, "command": command, "cwd": working, "environment": changes,
-            "profile": profile, "user": user_path, "save_source": os.path.abspath(save) if save else
+            "profile": profile, "game_profile": changes["LONGSHOT_PROFILE"], "user": user_path, "save_source": os.path.abspath(save) if save else
             os.path.join(repo_saves_dir(repo), repo_save) if repo_save else None, "repo_save": repo_save, "slot": slot,
             "socket": sock, "socket_dir": socket_dir, "log": str(log), "pid": None, "process_start": None,
             "owner": {"pid": None, "birth": None}, "created_at": utc_now(), "started_at": None, "ended_at": None,

@@ -21,12 +21,18 @@ twice (the move, then the start after) on folders of its own:
   and copied ones alike: at both starts the old place keeps every entry and the new place is empty; once the entry can
   go, the next start moves them all. The entries' names are picked so that both kinds are listed before the one that
   fails, whatever the file system's order; from another drive too, where every entry is copied;
-- a user/ without links moves as before, and saves-moved.txt says where to.
+- a start cut at each step of the move in turn (a copy part way, a rename, the commit, a deletion), here and from
+  another drive: the next start uses the new place, which holds every entry as it was, and the old place is gone;
+- a delete of the old place's entries that fails after the commit: the new place is used, whole, and a later start
+  deletes them;
+- a user/ without links moves as before, and saves-moved.txt says where to;
+- the Windows branch compiles with llvm-mingw's clang, when the PATH has x86_64-w64-mingw32-clang.
 
 python -I -B tests/test_linux_saves_move.py [--cc gcc]
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,21 +45,60 @@ USER_ID = "5a3c9e1f0b7d24680000000000000001"
 def build(cc, tmp):
     source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
     start = source.index("static int is_dir(const char *p) {")
-    end = source.index("#endif", source.index("static const char *saves_dir(const char *beside) {"))
-    program = r'''#include <windows.h>
-#include <stdarg.h>
-#include "hos_atomic_file.h"
-#define SEP '/'
-#define SEP_S "/"
-static void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
-''' + source[start:end] + r'''
-int main(int argc, char **argv) { if (argc != 2) return 2; printf("uses %s\n", saves_dir(argv[1])); return 0; }
-'''
+    end = source.index("/* (longshot) What a write of a setting", source.index("static const char *saves_dir(const char *beside) {"))
     src, exe = tmp / "mover.c", tmp / "mover"
-    src.write_text(program, encoding="utf-8")
+    src.write_text(program(source[start:end], "/"), encoding="utf-8")
     subprocess.run([cc, "-std=gnu11", "-D_GNU_SOURCE", "-w", "-I", str(ROOT / "host" / "posix"), "-I", str(ROOT / "host"), str(src),
                     str(ROOT / "host" / "posix" / "win32_posix.c"), "-o", str(exe), "-lpthread", "-ldl"], check=True)
     return exe
+
+
+def program(code, sep):
+    """saves_dir and what it calls, with a main that prints the place it chose. SAVES_CUT_AT=<n> ends the process
+    (exit 70) at its n-th step (each HOS_AF_STEP: a copy or rename's, an entry copied, an old entry deleted), as a
+    PC that lost power there would"""
+    return r'''#include <windows.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+static int cut_steps;
+static void cut_step(const char *what) {
+    const char *at = getenv("SAVES_CUT_AT");
+    if (at && ++cut_steps == atoi(at)) { fprintf(stderr, "cut at %s\n", what); fflush(NULL); _exit(70); }
+}
+#define HOS_AF_STEP(what) cut_step(what)
+#include "hos_atomic_file.h"
+#define SEP '@SEP@'
+#define SEP_S "@SEP@"
+#define HOS_PATH_CAP MAX_PATH
+static void hos_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); putchar(10); }
+'''.replace("@SEP@", sep.replace("\\", "\\\\")) + code + r'''
+int main(int argc, char **argv) { if (argc != 2) return 2; printf("uses %s\n", saves_dir(argv[1])); return 0; }
+'''
+
+
+def compile_windows(tmp):
+    """The same, its Windows branch, compiled by llvm-mingw's clang when this PC has it (x86_64-w64-mingw32-clang on the
+    PATH): the Windows code is at least built"""
+    mingw = shutil.which("x86_64-w64-mingw32-clang")
+    if not mingw:
+        print("the Windows branch: not compiled (no x86_64-w64-mingw32-clang on the PATH)")
+        return
+    source = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    start = source.index("static int is_dir(const char *p) {")
+    end = source.index("/* (longshot) What a write of a setting", source.index("static const char *saves_dir(const char *beside) {"))
+    src = tmp / "mover_windows.c"
+    src.write_text(program(source[start:end], "\\"), encoding="utf-8")
+    r = subprocess.run([mingw, "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "host"), str(src),
+                        "-o", str(tmp / "mover.exe")], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit("test_linux_saves_move: the Windows branch does not compile:\n%s" % r.stderr)
+    print("the Windows branch: compiled by %s" % mingw)
 
 
 class Case:
@@ -72,10 +117,15 @@ class Case:
         (self.sync / USER_ID / "account.sav").write_text("my save", encoding="ascii")
 
     def start(self):
-        env = dict(os.environ, XDG_DATA_HOME=str(self.data))
-        r = subprocess.run([str(self.exe), str(self.user)], env=env, capture_output=True, text=True, timeout=60)
+        r = self.run()
         self.check(r.returncode == 0, "the start failed: %s" % r.stderr)
         return Path(r.stdout.strip().splitlines()[-1][len("uses "):])
+
+    def run(self, **extra):
+        env = dict(os.environ, XDG_DATA_HOME=str(self.data))
+        env.pop("SAVES_CUT_AT", None)
+        env.update(extra)
+        return subprocess.run([str(self.exe), str(self.user)], env=env, capture_output=True, text=True, timeout=60)
 
     def check(self, ok, what):
         if not ok:
@@ -163,6 +213,58 @@ def cannot_go(case, name, game_parent):
     c.check(tree(c.new) == whole, "once stuck/ could go, the new place did not get every entry: %s" % (
         sorted(set(whole.items()) ^ set(tree(c.new).items()))))
     c.saves_kept()
+
+
+def cut_anywhere(case, game_parent, where=""):
+    """A start cut at each of the move's steps in turn (a copy part way, a rename, the commit, a deletion), then a start
+    as usual: that one uses the new place, which holds every entry as it was, the old place's entries are gone and none
+    of the move's own names is left. Until all the steps are tried (the move then ends before the cut)"""
+    for at in range(1, 400):
+        c = case("cut at step %d%s" % (at, where), game_parent)
+        (c.user / "save" / USER_ID).mkdir(parents=True)
+        (c.user / "save" / USER_ID / "account.sav").write_text("my save", encoding="ascii")
+        (c.user / "save" / USER_ID / "backup.sav").write_text("my backup", encoding="ascii")
+        (c.user / "mouse_sens.txt").write_text("1.5", encoding="ascii")
+        (c.user / "linked").symlink_to(c.sync)
+        whole = tree(c.user)
+        r = c.run(SAVES_CUT_AT=str(at))
+        if r.returncode == 0:
+            c.check(at > 5, "the move has only %d steps: the cut points are not reached" % at)
+            c.check(tree(c.new) == whole and not c.user.exists(), "the uncut move")
+            return at - 1
+        c.check(r.returncode == 70, "the cut start failed otherwise: %s" % r.stderr)
+        place = c.start()
+        c.check(place == c.new, "after %s the next start uses %s" % (r.stderr.strip(), place))
+        c.check(tree(c.new) == whole, "after %s the new place is not the saves as they were: %s" % (
+            r.stderr.strip(), sorted(set(whole.items()) ^ set(tree(c.new).items()))))
+        c.check(not c.user.exists(), "after %s the old place is still there: %s" % (r.stderr.strip(), sorted(os.listdir(c.user))
+                                                                                    if c.user.exists() else ""))
+        c.check(c.start() == c.new and tree(c.new) == whole, "the start after that")
+        c.saves_kept()
+    raise SystemExit("test_linux_saves_move: the move never ended uncut")
+
+
+def delete_fails(case):
+    """The old place's entries not deleted after the commit (a file there that cannot be removed): the new place is used,
+    whole, at that start and the next; once the entry can go, a start deletes it and the old place is gone"""
+    c = case("a delete that fails")
+    held = c.user / "save" / USER_ID
+    held.mkdir(parents=True)
+    (held / "account.sav").write_text("my save", encoding="ascii")
+    whole = tree(c.user)
+    held.chmod(0o555)   # (its file cannot be removed)
+    try:
+        for n in (1, 2):
+            c.check(c.start() == c.new, "start %d did not use the new place" % n)
+            got = {k: v for k, v in tree(c.new).items() if k != ".moved-names"}
+            c.check(got == whole, "start %d: the new place is not the saves as they were" % n)
+            c.check((c.user / "save" / USER_ID / "account.sav").is_file() and not (c.user / "temp").exists(),
+                    "start %d: the old place's entries that could go did not, or the one that could not did" % n)
+    finally:
+        if held.exists():
+            held.chmod(0o755)
+    c.check(c.start() == c.new and tree(c.new) == whole, "the start once it can go")
+    c.check(not c.user.exists(), "the old place is still there")
 
 
 def main():
@@ -266,6 +368,14 @@ def main():
                 print("an entry that cannot go, the game on another drive: not tried (no other drive here: /dev/shm is "
                       "missing, read-only or the temporary folder's own)")
 
+        steps = cut_anywhere(case, tmp)
+        if drives:
+            with tempfile.TemporaryDirectory(prefix="saves-move-", dir=other) as far:
+                cut_anywhere(case, Path(far), ", the game on another drive")
+        if os.geteuid() != 0:   # (root removes the held file)
+            delete_fails(case)
+        compile_windows(tmp)
+
         c = case("save-work stays behind")
         (c.user / "save" / USER_ID).mkdir(parents=True)
         (c.user / "save" / USER_ID / "account.sav").write_text("committed", encoding="ascii")
@@ -305,7 +415,9 @@ def main():
         c.check((c.new / "temp").is_dir() and not (c.new / "save").is_symlink(), "the folders did not move as they were")
 
     print("PASS: the saves' move makes a link again in the new place and leaves its folder alone%s; a linked user/ and a "
-          "new place with entries keep the old place whole" % (", from another drive too" if drives else " (no other drive to try here)"))
+          "new place with entries keep the old place whole; a start cut at any of the move's %d steps, or a delete that "
+          "fails, leaves the saves whole in the place the next start uses" % (
+              ", from another drive too" if drives else " (no other drive to try here)", steps))
 
 
 if __name__ == "__main__":

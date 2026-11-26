@@ -1387,7 +1387,7 @@ bool pcache_load_off() {
 /// the file not read (pcache_load_off) they are judged too: a start that reads it would judge them the same
 bool pcache_drop_stale() {
     static const bool dropped = [] {
-        const std::string dir = cache_path("");   // (where pcache_init keeps them: the game folder's cache/, vk_paths.h)
+        const std::string dir = cache_path("");   // (where pcache_init keeps them: the shader cache folder, vk_paths.h)
         const pcache_stamp::Dropped gone = pcache_stamp::check(dir, program_cache_stamp(), pipelines_stamp_ok);
         if (gone.carried && gone.base)
             logf("vk: pipeline cache: another translator's (%llu MB, %llu MB when a precompile last finished alone) carried: most of "
@@ -1404,7 +1404,7 @@ bool pcache_drop_stale() {
 }
 void pcache_init() {
     if (pcache) return;
-    const std::string dir = pcache_dir = cache_path("");   // (the game folder's cache/, with its separator: vk_paths.h)
+    const std::string dir = pcache_dir = cache_path("");   // (the shader cache folder, with its separator: vk_paths.h)
     if (const size_t removed = PipelineCacheFile::cleanup_temporaries(dir))
         logf("vk: pipeline cache: %zu old temporary files removed", removed);
     pcache_path = dir + "longshot_vk_pipelines.bin";
@@ -1743,7 +1743,7 @@ VkResult note_out_of_memory(VkResult r) {
 }
 // ---- (longshot) The preparation's journal (prepare_journal.h; docs/dev/reference/shader-preparation.md) ----
 // A --prepare-shaders run that was given a file (--prepare-journal) writes a line before and after each driver compile call
-// it makes, so that the Builder's supervisor (nx2/prepare_supervisor.py) can tell which shader a run died or hung in, leave
+// it makes, so that the builder's supervisor (build-driver supervisor.rs) can tell which shader a run died or hung in, leave
 // that one out and start again. Here and not in the guards above: they are compiled alone by the checks, and a begin must
 // be written outside the armed window. The calls covered are the three the preparation makes: a program's shader modules
 // (vk_shader.cpp make_module, through extern_guarded_shader_module) and the pipelines built with a cache
@@ -2218,7 +2218,7 @@ uint64_t program_wm_sig(const Program& p) {
 // pipeline the game asks for is noted in longshot_pipelines.bin, by what built it; a release build, before the game starts,
 // makes every kept program ready and builds every noted pipeline on all the CPUs (the driver's own cache, longshot_vk_pipelines.bin,
 // makes that quick), so that nothing is built during play. RX_VK_PRECOMPILE=1: in any build; =0: off. A build with
-// RX_RELEASE=1 (nx2/build.py) has it on. The notes are written in every build ----
+// RX_RELEASE=1 (builder/crates/build-compile) has it on. The notes are written in every build ----
 std::mutex note_mu;
 FILE* note_file = nullptr;
 std::unordered_set<uint64_t> noted;   // (a pipeline once in the file, however many runs meet it)
@@ -2523,7 +2523,7 @@ void compute_variant_note(uint64_t key, uint64_t variant) {
 // longshot_pipeline_states.bin beside the executable. Unlike longshot_pipelines.bin it is good for any build of the back end: when
 // the shaders are prepared for a new one (prepare_run), every pipeline in it is noted for the precompile, its program translated
 // first when the seed's are not that one, so that a new release, or a new install with a list from someone else's play
-// (longshot_pipeline_states_shipped.bin, nx2/make_game.py: merged from assets/pipeline_states/), builds them before the game and not in
+// (longshot_pipeline_states_shipped.bin, longshot-builder: merged from assets/pipeline_states/), builds them before the game and not in
 // play. Only hashes, formats and state: the stages themselves come from the player's own game (longshot_shaders.bin).
 // Version 2 (HKSTATE2) holds what the game asked for, not what this GPU made of it: the targets' NVN formats (version 1 had the
 // Vulkan formats this device chose: decoded ASTC, widened formats), the draw's own topology and whether it was a mesh draw (not the
@@ -2693,7 +2693,7 @@ std::vector<uint64_t> state_list_computes(const std::string& path) {
 }
 /// The compute programs the precompile keeps ready before play (precompile_run). which: RX_VK_PRECOMPILE_COMPUTES, null when not set.
 /// keys, each once: those this install's play dispatched (longshot_computes.bin: learned) and those the shipped state list names
-/// (every one of them: a list is bounded where it is made, nx2/pipeline_states.py check and read_sent, never cut short here, where
+/// (every one of them: a list is bounded where it is made, scripts/pipeline_states.py check and read_sent, never cut short here, where
 /// a program left out would only show as a stall in play; not when state_lists is false or which is "learned").
 /// all: every kept compute program instead:
 ///  - a first start, with nothing learned yet (and whenever nothing names any, or which is "all"). The shipped list names what
@@ -8130,8 +8130,8 @@ void mesh_batch_drop() {
 }
 void mesh_conv_begin_recording() {
     static const int env = std::clamp(env_int("RX_VK_MESH_CONV", 2), 0, 2);
-    // (HOS_AB=RX_VK_MESH_CONV=<v>: each recording converts one way whole; a host before version 36 has no ab_value)
-    const int v = host && host->version >= 36 && host->ab_value ? host->ab_value("RX_VK_MESH_CONV", env) : env;
+    // (HOS_AB=RX_VK_MESH_CONV=<v>: each recording converts one way whole)
+    const int v = host && host->ab_value ? host->ab_value("RX_VK_MESH_CONV", env) : env;
     mesh_mode = std::clamp(v, 0, 2);
     mesh_batch.clear();
 }
@@ -11223,7 +11223,7 @@ void prepare_background() {
 /// vertex formats) looked like a hang (Discord 2026-11-10, "stuck on preparing shaders"); the Builder's bar moved, the log did not
 /// (longshot) The pipeline cache written while a warm builds, every kWarmSaveEvery, not only at its end. A preparation on a cold
 /// driver cache is hours of compiles (AMD: nightly-622's, 80 minutes in and going, with no longshot_vk_pipelines.bin written yet),
-/// and one killed, crashed, or stopped before its end (make_game's silence timeout, the player closing it) kept none of them: the
+/// and one killed, crashed, or stopped before its end (longshot-builder's silence timeout, the player closing it) kept none of them: the
 /// file was written once, after the last build. Now what was built up to the last save is in the file, and the next start's warm
 /// finds it in the cache. warm_save_due: whether a save is due at `now` (the first call only sets the next one); warm_save_tick: a
 /// background save when one is (pipeline_cache_save(false): its own thread, the builds go on, nothing written when nothing new)
@@ -11972,8 +11972,8 @@ bool predict_pending() {
     fclose(f);
     return true;
 }
-// (longshot) Compile shaders, the Builder's, make_game.py's and the launcher's choice (compile_shaders= in the game folder's
-// longshot_options.ini, where make_game.py writes it: the build's, not the player's settings in the user folder, vk_paths.h
+// (longshot) Compile shaders, longshot-builder's and the launcher's choice (compile_shaders= in the game folder's
+// longshot_options.ini, where longshot-builder writes it: the build's, not the player's settings in the user folder, vk_paths.h
 // options_path; 0 Most, the default; 1 All; any other number is Most). All builds the predicted pipelines too: about 50,000 for the driver's own cache, over 40 % more time (a full preparation on an RTX
 // 3090 with 24 threads: 415 and 413 s against 292 s without them), for pipelines play almost never draws ("vk: predicted
 // pipelines met in play"). RX_VK_COMPILE_SHADERS=all or most over the file (the game's --compile-shaders sets it, host/hos_main.c).
@@ -11987,9 +11987,7 @@ bool compile_level_all() {
             v = !strcmp(e, "all") || !strcmp(e, "1") ? 1 : 0;
             why = "RX_VK_COMPILE_SHADERS";
         } else {
-            char exe[MAX_PATH];
-            const DWORD n = game_module_path(exe, MAX_PATH);
-            std::string ini(exe, n);
+            std::string ini = game_module_string();
             ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "longshot_options.ini";
             if (FILE* f = fopen(ini.c_str(), "r")) {
                 char line[80];

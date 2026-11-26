@@ -7,9 +7,10 @@ another dump than the build read, got a table that is not the game's: the game d
 start (guest 0x1030 on sead::MainThread). Deleting prompts/rsizetable.zs and External.bfotf was the players' way round it.
 
 Now the table served is the RomFS's own table of the name the game opens, with the font's entry raised, made at the start;
-without a table of that name or a font entry in it, the game gets its own table and its own icons; the prompts' copies of
-the game's layouts and textures are served only when they are the size of the RomFS's. host/mods.c, host/prompts.c,
-host/texts.c, host/zs.c and host/restbl.c as they are, over real folders (tests/test_mods_size_table.py's fixture), on
+without a table of that name or a font entry in it, the game gets its own table and its own icons; the prompts' layouts and
+textures, read from the RomFS as they stream, are served only when what the build kept of them (their .base) was made
+from a file of the RomFS's size. game/mods.c, host/prompts.c,
+game/texts.c, host/zs.c and host/restbl.c as they are, over real folders (tests/test_mods_size_table.py's fixture), on
 made-up tables, no game data:
 
 - a table the build made from another dump (prompts/rsizetable.zs) is never served: the RomFS's own, its font entry raised,
@@ -18,7 +19,7 @@ made-up tables, no game data:
 - a table name the RomFS has not (another game version): the game's own table and its own icons;
 - a table without a font entry: the game's own table and its own icons;
 - a font entry with room already (the prompts' font no larger than the game's): the game's own table, and the prompts' font;
-- the layouts (prompts/Common.blarc): served when the size of the RomFS's, the game's own when not.
+- the layouts (prompts/Common.blarc.base): served when made from a file the size of the RomFS's, the game's own when not.
 
 python -I -B tests/test_prompts_size_table.py [--cc gcc]
 """
@@ -62,7 +63,7 @@ def need(entry):
 
 def case(exe, tmp, name, romfs, opens, stale=None, blarc=None, game_font=GAME_FONT):
     """a game folder with the prompts and no mods: romfs {path: bytes}; stale: a prompts/rsizetable.zs the build made (from
-    another table); blarc: prompts/Common.blarc's bytes; game_font: the RomFS's font's size. {path: what was served}, the
+    another table); blarc: the size of the layouts prompts/Common.blarc.base says it was made from; game_font: the RomFS's font's size. {path: what was served}, the
     log, the folder"""
     top = tmp / name
     game = top / "game"
@@ -72,7 +73,9 @@ def case(exe, tmp, name, romfs, opens, stale=None, blarc=None, game_font=GAME_FO
     if stale is not None:
         (game / "prompts/rsizetable.zs").write_bytes(fixture.frame(stale))
     if blarc is not None:
-        (game / "prompts/Common.blarc").write_bytes(blarc)
+        # ("HPBS", 1, the size, no samples, one run: the first 32 bytes, the game's zeros)
+        (game / "prompts/Common.blarc.base").write_bytes(b"HPBS" + struct.pack("<IQII", 1, blarc, 0, 1) +
+                                                         struct.pack("<II", 0, 32) + bytes(32))
     files = {FONT: fixture.frame(bytes(game_font)), **romfs}
     for rel, data in files.items():
         (game / "romfs" / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -134,8 +137,8 @@ def checks(exe, tmp):
     # the layouts: the build's copy served when it is the size of the RomFS's, the game's own when not
     for name, size, want in (("layouts-same", 64, "game/cache/prompts/Common.blarc.zs"), ("layouts-other", 80, "(the game's)")):
         served, log, _ = case(exe, tmp, name, {TABLE: fixture.frame(table()), LAYOUTS: fixture.frame(bytes(64))}, (LAYOUTS,),
-                              blarc=bytes(size))
-        expect("prompts/Common.blarc of %d bytes, the RomFS's of 64" % size, served, {LAYOUTS: want}, log)
+                              blarc=size)
+        expect("prompts/Common.blarc.base of %d bytes, the RomFS's of 64" % size, served, {LAYOUTS: want}, log)
     CHECK(not errors, "\n".join(errors))
     print("ok: 8 cases: the RomFS's own table of the name the game opens, its font entry raised (a build's table from "
           "another dump never served, either order; two versions' tables), the game's own table and icons for a name the "

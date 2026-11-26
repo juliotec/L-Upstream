@@ -1,5 +1,5 @@
 """The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers
-(host/oot_ocb_hold.h, nx2/oot_patches.py patch_ocb_hold).
+(game/oot_ocb_hold.h, the hook site preload.choice: game/sites/sites.toml, game/oot_sites.c).
 
 The preload manager's update (f_832b9880) picks one of the map's neighbours every frame, and a change cancels the one loading
 or loaded (the thread lets go of all of it and loads the other from the start). A choice flickering between two neighbours,
@@ -23,15 +23,15 @@ not an in-use unit: the game's own choice at that update, counted, and nothing o
 The switch's value: not set or empty is the default, a whole number its milliseconds, 0, a negative whole number or "off" 0
 (the game's own), anything else the default; the host reads it once.
 
-The patch: the choice goes through the host once, in the update only, where the update tests it (with the registers as
-locals, only where the manager's register has its local: else not patched); only in the supported build's lift; a file
-patched before, or whose code differs (another game version), is left as it is; the host's function is declared.
+The site (it replaced a text patch, the last edit inside a function): before the
+update's test of its choice (tbnz w21, #31 at f_832b9880+0x548, after its label, on every way in, as the patch was), an
+engine site on from the start; its callback puts the host's choice in x21 from the manager in x19, the patch's own call, in
+the update shaped as the lift writes it with the site's hook (the function keeps its registers in the context), compiled with
+a stand-in for the rule.
 
-python -I -B tests/test_ocb_hold.py
+python -I -B tests/test_ocb_hold.py [--cc clang] [--cargo cargo]
 """
-import contextlib
-import io
-import shutil
+import argparse
 import subprocess
 import sys
 import tempfile
@@ -39,8 +39,13 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import BUILD, site, callback, slot  # noqa: E402
+import sitehooks  # noqa: E402
+
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
+
+CC = "clang"
 
 FIXTURE = r"""
 #include "oot_ocb_hold.h"
@@ -411,107 +416,110 @@ int main(void) {
 }
 """
 
-# (the update as the lift has it around its choice, and the next function, which has the same label text)
-LIFTED = '''#include "a64.h"
-void f_832b9880(Ctx *__restrict A64_NOESC c) {
-    uint64_t x0_ = c->x[0], x8_ = c->x[8], x9_ = c->x[9], x19_ = c->x[19], x20_ = c->x[20], x21_ = c->x[21], x31_ = c->x[31];
-c->x[30] = 0x832b9dc8ULL; c->x[0] = x0_; c->x[8] = x8_; c->x[19] = x19_; c->x[20] = x20_; c->x[21] = x21_; c->x[31] = x31_; f_803e99b0(c);x0_ = c->x[0]; x8_ = c->x[8]; x9_ = c->x[9];
-L_832b9dc8:;
-if (((x21_ >> 31) & 1)) { goto L_832b9e0c; }
-    x8_ = 0x128ULL;
-L_832b9e0c:;
+# (the update as the lift writes it around its choice with the site's hook as the lift lowers it (tests/sitehooks.py): the registers in the
+# context. pick() stands for game/oot_ocb_hold.c's rule: the held unit 7 while the game chose another)
+LIFTED = r'''
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define A64_NOESC
+typedef struct { uint64_t x[32]; uint64_t vreg[32][2]; } Ctx;
+static uint64_t asked;
+uint64_t hos_oot_ocb_pick(Ctx *c, uint64_t mgr, uint64_t chosen) {
+    (void)c;
+    asked = mgr;
+    return (uint32_t)chosen == 0xffffffffu ? chosen : 7;
 }
-
-void f_832bb980(Ctx *__restrict A64_NOESC c) {
-L_832b9dc8:;
-if (((x21_ >> 31) & 1)) { goto L_832b9e0c; }
+%(callback)s
+%(slot)s
+static int update(Ctx *__restrict A64_NOESC c) {
+L_80001000:;
+%(hook)s
+if (((c->x[21] >> 31) & 1)) { goto L_80001100; }
+    c->x[12] = 0x40ULL;
+    return (int)c->x[21];
+L_80001100:;
+    return -1;
+}
+int main(void) {
+    int fails = 0;
+    Ctx c;
+    memset(&c, 0, sizeof c);
+    c.x[19] = 0x84001000, c.x[21] = 3;
+    if (update(&c) != 7 || asked != 0x84001000 || c.x[21] != 7) fails++, printf("FAIL: the held unit is not the one asked\n");
+    c.x[21] = 0xffffffffull;   /* (none chosen: the game's way, its bit 31 still set) */
+    if (update(&c) != -1) fails++, printf("FAIL: no choice did not take the game's branch\n");
+    hos_site_on_preload_choice = 0, c.x[21] = 3;   /* (the site off: the game's choice) */
+    if (update(&c) != 3) fails++, printf("FAIL: the site off changed the choice\n");
+    printf(fails ? "preload_choice: %%d FAILED\n" : "preload_choice: all passed\n", fails);
+    return fails != 0;
 }
 '''
-CALL = "    x21_ = hos_oot_ocb_pick(c, x19_, x21_);   " + oot_patches.OCBH_MARK + "\n"
 
 
 class OcbHoldTests(unittest.TestCase):
     def test_rule(self):
-        compiler = shutil.which("gcc") or shutil.which("clang")
-        if not compiler:
-            self.skipTest("no C compiler")
+        compiler = CC
         with tempfile.TemporaryDirectory(prefix="longshot-ocb-hold-") as tmp:
             tmp = Path(tmp)
             (tmp / "rule.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "rule.exe"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1", "-I", str(ROOT / "host"),
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1", "-I", str(ROOT / "host"), "-I", str(ROOT / "game"),
                                     str(tmp / "rule.c"), "-o", str(binary)], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("all passed", run.stdout)
 
-    def test_patch(self):
-        out, n = oot_patches.patch_ocb_hold(LIFTED)
-        self.assertEqual(n, 1)
-        update = out[out.index(oot_patches.OCBH_HEAD):out.index("void f_832bb980")]
-        self.assertIn("L_832b9dc8:;\n" + CALL + "if (((x21_ >> 31) & 1)) { goto L_832b9e0c; }\n", update)
-        self.assertEqual(out.count("hos_oot_ocb_pick(c,"), 1)   # (the one call; the next function's text as it was)
-        self.assertIn('#include "a64.h"\n' + oot_patches.OCBH_DECL, out)
-        self.assertEqual(oot_patches.patch_ocb_hold(out), (out, 1))   # (patched before: as it is)
-        other = LIFTED.replace("{ goto L_832b9e0c; }\n    x8_ = 0x128ULL;", "{ goto L_832b9e10; }\n    x8_ = 0x128ULL;")
-        self.assertNotEqual(other, LIFTED)
-        self.assertEqual(oot_patches.patch_ocb_hold(other), (other, 0))   # (another game version's code)
-        none = LIFTED.replace("void f_832b9880", "void f_932b9880")
-        self.assertEqual(oot_patches.patch_ocb_hold(none), (none, 0))
+    def test_site(self):
+        x = site("preload.choice", "f_832b9880", "before", 0x548)
+        self.assertEqual((x.thread, x.signature_offset), ("worker", 0x548))
+        self.assertIn("x19:ptr:manager", x.args)
+        self.assertIn("w21:u32:unit", x.args)
 
-    def test_patch_without_locals(self):
-        plain = LIFTED.replace("    uint64_t x0_ = c->x[0], x8_ = c->x[8], x9_ = c->x[9], x19_ = c->x[19], x20_ = c->x[20], "
-                               "x21_ = c->x[21], x31_ = c->x[31];\n", "").replace(
-            "L_832b9dc8:;\nif (((x21_ >> 31)", "L_832b9dc8:;\nif (((c->x[21] >> 31)", 1)
-        out, n = oot_patches.patch_ocb_hold(plain)
-        self.assertEqual(n, 1)
-        self.assertIn("    c->x[21] = hos_oot_ocb_pick(c, c->x[19], c->x[21]);", out)
+    def test_callback_in_the_update(self):
+        compiler = CC
+        x = site("preload.choice", "f_832b9880", "before", 0x548)
+        hook = sitehooks.line(x)
+        src = LIFTED % {"callback": callback("int hos_site_preload_choice("), "slot": slot(x), "hook": hook}
+        with tempfile.TemporaryDirectory(prefix="longshot-ocb-site-") as tmp:
+            tmp = Path(tmp)
+            (tmp / "site.c").write_text(src, encoding="utf-8")
+            binary = tmp / "site.exe"
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Werror", "-Wno-unused-label", "-O1", str(tmp / "site.c"),
+                                    *sitehooks.objects(tmp, src), "-o", str(binary)],
+                                   text=True, capture_output=True)
+            self.assertEqual(build.returncode, 0, build.stderr + src)
+            run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("all passed", run.stdout)
 
-    def test_patch_locals_without_the_managers_local(self):
-        # (the choice in x21's local but no local for x19, the manager: c->x[19] may be stale there, so not patched)
-        no_x19 = LIFTED.replace(" x19_ = c->x[19],", "", 1)
-        self.assertNotEqual(no_x19, LIFTED)
-        self.assertEqual(oot_patches.patch_ocb_hold(no_x19), (no_x19, 0))
-        out, counts, lines = oot_patches.patch_file(no_x19, "code_037.c", True)
-        self.assertNotIn("hos_oot_ocb_pick", out)
-
-    def test_patch_file_counts_it(self):
-        out, counts, lines = oot_patches.patch_file(LIFTED, "code_037.c", True)
-        self.assertEqual(counts["preload choice"], 1)
-        self.assertIn(CALL, out)
-        self.assertTrue(any("choice of a neighbouring map" in line for line in lines), lines)
-        again, counts, lines = oot_patches.patch_file(out, "code_037.c", True)
-        self.assertEqual(again, out)
-        self.assertEqual(counts["preload choice"], 1)
-
-    def test_patch_file_supported_build_only(self):
-        # (another build's lift, or one not standalone: the host's reading of the manager is that build's, so not patched,
-        # and the report does not warn about it)
-        out, counts, lines = oot_patches.patch_file(LIFTED, "code_037.c", False)
-        self.assertNotIn("hos_oot_ocb_pick", out)
-        self.assertEqual(counts["preload choice"], 0)
-        said = io.StringIO()
-        with contextlib.redirect_stdout(said):
-            oot_patches.report(["code_037.c"], [counts], False)
-        self.assertNotIn("preload manager's choice", said.getvalue())
-        said = io.StringIO()
-        with contextlib.redirect_stdout(said):
-            oot_patches.report(["code_037.c"], [counts], True)
-        self.assertIn("preload manager's choice was found 0 times", said.getvalue())
+    def test_supported_build_only(self):
+        # (the host's reading of the manager is the supported build's: the site is in that build's table alone, so another
+        # build's lift has no hook there)
+        tables = sorted((ROOT / "game" / "sites").glob("*/locations.toml"))
+        self.assertTrue(tables)
+        having = [t.parent.name for t in tables if 'name = "preload.choice"' in t.read_text(encoding="utf-8")]
+        self.assertEqual(having, [BUILD])
 
     def test_host_calls_the_rule(self):
-        host = (ROOT / "host" / "oot_ocb_hold.c").read_text(encoding="utf-8")
+        host = (ROOT / "game" / "oot_ocb_hold.c").read_text(encoding="utf-8")
         for needle in ('getenv("HOS_OCB_HOLD_MS")',
                        "oot_ocb_step(&hold, guest_load, c, mgr, want, hold_ns, hos_input_movie_time(&hold_time, hos_now_ns()))",
                        "uint64_t hos_oot_ocb_pick(Ctx *c, uint64_t mgr, uint64_t chosen) {",
                        "strcmp(hos_main_build_id, OCB_BUILD) != 0", "if (!hold_read) {"):
             self.assertIn(needle, host)
         # (the build the layout comes from is the one the patches are made for)
-        self.assertIn('#define OCB_BUILD "%s"' % oot_patches.LIFE_BUILD_ID, host)
+        self.assertIn('#define OCB_BUILD "%s"' % BUILD, host)
         # (the switch read once, whatever its value: no "not read yet" value it could also take)
         self.assertNotIn("hold_ns < 0", host)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cc", default="clang")
+    ap.add_argument("--cargo")
+    args, rest = ap.parse_known_args()
+    CC = args.cc
+    sitehooks.use(args.cc, args.cargo)
+    unittest.main(argv=[sys.argv[0]] + rest)

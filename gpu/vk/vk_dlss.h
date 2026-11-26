@@ -4,15 +4,55 @@
 #pragma once
 
 #include <vector>
+#include "dlss_nr_support.h"
+#include "dlss_nr_settings.h"
+#include "nr_metrics.h"
 
 #include "vk_internal.h"
 
 namespace mkwvk {
 
 struct TemporalEngine;
+struct TemporalFrame;
+struct TemporalImage;
 
 /// Whether this build has DLSS in it (LONGSHOT_NGX)
 bool dlss_built();
+
+// ---- DLSS 5 (NVIDIA's neural rendering, NGX feature 18): after the temporal upscaler, before the HUD ----
+/// The model's working size this frame, a percent of the picture (the DLSS 5 model resolution row's)
+int dlss_nr_scale();
+void dlss_nr_idle();
+bool dlss_nr_pending();   // (a check asked for (dlss_nr_retry) waits for the recording thread)
+/// The model over the upscaler's picture (vk_temporal.cpp draw_engine): true with result the picture to show instead of
+/// f.output; false, nothing done (off, not available, or failed: the upscaler's picture is shown)
+bool dlss_nr_chain(VkCommandBuffer cmd, TemporalFrame& f, bool native_hdr, TemporalImage& result);
+/// The menu's DLSS 5 rows show (gpu/vk/menu/dlss5.cpp): NVIDIA's model, nvngx_dlssnr.dll, is in one of the folders NGX
+/// searches for DLSS's runtime (runtime_dirs: RX_VK_DLSS_DIR, the game's ngx folder, LOCALAPPDATA's Longshot/ngx), or
+/// (Windows) the known community FP16 one in such a folder's fp16 folder (dlss_nr_model.h), on an NVIDIA GPU, in a build
+/// with DLSS. Linux: only with RX_VK_DLSS_NR_LINUX=1 (native NGX finds its own runtime). Looked for once a run: a DLL put in
+/// while the game runs shows the rows at the next start
+bool dlss_nr_offered();
+/// The DLSS 5 model row shows (gpu/vk/menu/dlss5.cpp): an RTX 50 with both files, NVIDIA's and the known FP16 one (Windows)
+bool dlss_nr_model_offered();
+enum DlssNrStatus { NR_WAITING, NR_ACTIVE, NR_PENDING, NR_FAILED };
+DlssNrStatus dlss_nr_status();   // (the last evaluation's, for the menu: never inferred from the On row)
+dlss_nr::Issue dlss_nr_check(bool refresh = false);   // (the last check's; refresh asks the recording thread to check again)
+dlss_nr::Issue dlss_nr_issue();   // (why DLSS 5 does not run now, whether or not it is On)
+void dlss_nr_retry();             // (checked again: the menu's DLSS 5 row turned On)
+/// What the menu's DLSS 5 rows hold, for the renderer (the recording thread takes a copy each frame)
+struct DlssNrControls {
+    bool requested = false;
+    dlss_nr::Settings model;   // (latched when the model's feature is made: a change makes it again, once it settles)
+    int detail = 100, color = 100;   // (the composite's, at once: hundredths of the way to the model's picture, of its colour)
+    int highlight = 20;              // (the most the model may brighten or darken a pixel, tenths of a ratio)
+    int debug = 0;                   // (RX_VK_DLSS_NR_DEBUG's view for this run, never saved)
+    int scale = 100;                 // (the model's working size, a percent of the picture)
+    int model_file = 0;              // (the DLSS 5 model row as the run started, dlss_nr::ModelChoice: which file runs)
+};
+void dlss_nr_publish(const DlssNrControls& controls);
+/// Lock-free telemetry for the FPS counter's Dev level; owned_bytes leaves out what NVIDIA's runtime allocates itself
+dlss_nr::MetricsView dlss_nr_metrics();
 /// Why DLSS cannot be chosen here (the Insert menu's Upscaler row says it), DLSS_OK when it can or is not known yet
 enum DlssWhy { DLSS_OK, DLSS_NOT_BUILT, DLSS_ENV_OFF, DLSS_NEEDS_RTX, DLSS_NEEDS_DRIVER, DLSS_NO_RUNTIME,
                DLSS_RUNTIME_NOT_ASCII, DLSS_WHY_COUNT };

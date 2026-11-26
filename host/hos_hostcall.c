@@ -179,17 +179,6 @@ void hos_hle_stats_start(void) {
     CloseHandle(thread);
 }
 
-/* Call guest code from inside a host function (an HLE handler), with up to four arguments, on the current guest
-   stack. The guest callee keeps the AArch64 callee-saved registers; LR is restored here. Returns x0. */
-uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
-    uint64_t lr = c->x[30];
-    c->x[0] = a0; c->x[1] = a1; c->x[2] = a2; c->x[3] = a3;
-    c->x[30] = 0;
-    a64_icall(c, fn);
-    c->x[30] = lr;
-    return c->x[0];
-}
-
 /* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran (the NVN surface a game really uses). */
 void hos_hostcall_stats(void) {
     if (!env_on("HOS_HOSTCALL_STATS")) return;

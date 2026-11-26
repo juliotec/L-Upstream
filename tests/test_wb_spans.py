@@ -41,6 +41,7 @@ HARNESS = r'''
 #include <cstring>
 #include <mutex>
 #include <map>
+#include <memory>
 #include <random>
 #include <string>
 #include <unordered_map>

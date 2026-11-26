@@ -1002,20 +1002,16 @@ void hos_gpu_queue_submit(int channel_fd, const uint64_t *entries, uint32_t n, i
     hos_gpu_submit(channel_fd, entries, n);
 }
 
-/* The loop-header interrupt polls (nx2/poll.py): the virtual cores (HOS_VCORES) ask a thread holding a core a
+/* The loop-header interrupt polls (the lift's A64_POLL): the virtual cores (HOS_VCORES) ask a thread holding a core a
    waiter should have to give it up there, so guest code with no nn::os call or SVC in it (a long job) is preempted
    as Horizon would preempt it. */
-/* (nx2/rtgen.py) the loop-header poll: the lifted code has cleared c->poll and calls this with no argument, so that the
+/* (builder/rt/a64.h) the loop-header poll: the lifted code has cleared c->poll and calls this with no argument, so that the
    compiler keeps guest registers in host registers across the loop header (a call handed the context could change any
    of it). The thread's context is the running one's (hos_ctx: a fiber's while it runs one), which is where the kick
    (hos_thread.c) set the flag; nothing here reads it */
 void a64_poll_cur(void) {
     void hos_vcore_checkpoint(void);
     hos_vcore_checkpoint();
-}
-void a64_poll(Ctx *c) {   /* (the old form, A64_POLL_CTX builds) */
-    c->poll = 0;
-    a64_poll_cur();
 }
 
 /* CNTPCT_EL0 at the Switch 2's 31.25 MHz (rt/a64_rt.c's default counts the Switch 1's 19.2 MHz). The SDK checks

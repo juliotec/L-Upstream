@@ -1,0 +1,14 @@
+[package]
+name = "profile"
+description = "The guest profile: how often the game's functions, blocks and branches ran, keyed by the guest code itself"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lzma-rs.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

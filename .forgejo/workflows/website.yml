@@ -1,73 +1,65 @@
 # The player website (website/, Astro) on Cloudflare: longshot.magicbean.dev, the Worker longshot-website.
 # - A push to main that changes website/ or the docs it publishes (or Run workflow) builds it, runs its checks and
 #   deploys it. It is also rebuilt every hour, since the build collects progress data from Forgejo (website/PROGRESS.md).
-# - A pull request that changes those sources gets a preview: the build is uploaded as a new version of the Worker
-#   (`wrangler versions upload`, which leaves the site as it is) with the alias pr-<number>, served at
+# - A pull request's build and checks are ci.yml's website job (scripts/website_check.sh), on every pull request; it
+#   keeps the built dist/ as the artifact website-dist-<head commit>, so the site is built once.
+# - It also gets a preview: its built site (dist/) is uploaded as a new version of the Worker (`wrangler versions
+#   upload`, which leaves the site as it is) with the alias pr-<number>, served at
 #   https://pr-<number>-longshot-website.<subdomain>.workers.dev, and the link is posted on the PR.
 #
-# The PR's website/ code (npm ci, the build) runs with the Cloudflare token, so only trusted code is previewed:
-# - a PR from a branch of Longshot itself, which only people who may push to it can make: on every push;
-# - any other PR (from a fork) when a maintainer adds the label `preview`, after reading its changes. The
-#   label approves the commit the PR is at: the run checks it is still that commit, then takes the label off, so a
-#   later push needs the label again. pull_request_target runs this file from main, not from the PR, and checkout
-#   needs allow-unsafe-pr-checkout for it: the label and the commit check are what make it safe.
-# The Worker is website/wrangler.jsonc (the site, and worker/index.ts for the download links). Only a deploy applies its
-# domain, and only main deploys, so a PR's configuration can't change where the site goes.
+# A pull request's code never runs where the Cloudflare token can be opened. The token is sealed, and the seal broker
+# hands seal.key only to a job of main's own workflow files (docs/dev/reference/ci.md, Secrets only our runners can
+# open). So a preview is two jobs of pull_request_target, which runs this file from main, not from the PR, and neither runs
+# the PR's code:
+# - preview-wait (quick, no secrets) waits for ci.yml's website job to keep the PR's dist/ (scripts/ci_website_dist.py:
+#   only an artifact of ci.yml's pull_request run at the PR's head commit counts);
+# - preview-upload (runs-on: deploy) checks out main, takes that dist/ as files only, and uploads it with main's
+#   wrangler, main's wrangler.jsonc and main's worker/index.ts. A PR's change to the Worker itself shows in its preview
+#   only once merged.
+# Previewed: a PR from a branch of Longshot itself, which only people who may push to it can make, on every push; any
+# other PR (from a fork) when a maintainer adds the label `preview`, after reading its changes. The label approves the
+# commit the PR is at: the preview is that commit's dist/ only, then the label comes off, so a later push needs the label
+# again. Only a deploy applies the Worker's domain, and only main deploys.
 #
 # No game data is involved.
 #
 # Secrets (organisation or repository, Actions, Secrets): CLOUDFLARE_API_TOKEN_SEALED (Account, Workers Scripts: Edit;
 # Zone, Workers Routes: Edit on magicbean.dev for the custom domain) and CLOUDFLARE_ACCOUNT_ID. Optional:
 # PREVIEW_COMMENT_TOKEN_SEALED, a Forgejo token with write:issue: a fork's run gets a read-only job token, so without it
-# the link is only in the run's log and the label stays on. The _SEALED ones are sealed (scripts/ci_secret.sh): only the
-# runner kept for deploys (runs-on: deploy) has the seal.key that opens them, so another runner that takes this job
-# deploys nothing (docs/dev/reference/ci.md, Secrets only our runners can open).
+# the link is only in the run's log and the label stays on. The _SEALED ones are sealed (scripts/ci_secret.sh): only a
+# job of main (enable-openid-connect, SEAL_BROKER_PIN) gets the seal.key that opens them.
 name: Website
 
 on:
   push:
     branches: [main]
     paths: ['website/**', 'docs/**', 'CONTRIBUTING.md', '.forgejo/workflows/website.yml']
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths: ['website/**', 'docs/**', 'CONTRIBUTING.md', '.forgejo/workflows/website.yml']
   pull_request_target:
-    types: [labeled]
+    types: [opened, synchronize, reopened, labeled]
+    paths: ['website/**', 'docs/**', 'CONTRIBUTING.md', '.forgejo/workflows/website.yml']
   schedule:
     - cron: '7 * * * *'
   workflow_dispatch:
 
 jobs:
-  website:
+  # (main: build, check and deploy, with main's code only)
+  deploy:
     name: Website on Cloudflare
     if: >-
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-      || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
-      || (github.event_name == 'pull_request_target' && github.event.label.name == 'preview')
-    runs-on: deploy  # (only the runner kept for deploys: it alone has seal.key, docs/dev/reference/ci.md)
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+      && github.ref == 'refs/heads/main'
+    runs-on: deploy  # (the runner kept for deploys; the seal broker opens nothing for a run that isn't main's)
     container:
       image: ghcr.io/catthehacker/ubuntu:act-24.04
-      volumes: ['/magicbean-secrets:/run/magicbean-secrets:ro']   # (seal.key; a runner that doesn't allow it mounts nothing)
+    enable-openid-connect: true   # (the ID token the seal broker checks: this job only)
     timeout-minutes: 20
     env:
-      IS_PR: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SEAL_BROKER_PIN: ${{ vars.SEAL_BROKER_PIN }}
     steps:
-      - uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the commit
+        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref }}
-          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
-
-      - name: Check it is the approved commit
-        if: github.event_name == 'pull_request_target'
-        run: |
-          got=$(git rev-parse HEAD)
-          if [ "$got" != "$HEAD_SHA" ]; then
-            echo "::error::The PR is at $got now, not $HEAD_SHA: read the new changes, then add the label again"
-            exit 1
-          fi
 
       - name: Is there a website
         id: site
@@ -85,7 +77,7 @@ jobs:
           npm run check
 
       - name: Deploy
-        if: steps.site.outputs.present == 'true' && env.IS_PR != 'true'
+        if: steps.site.outputs.present == 'true'
         working-directory: website
         env:
           SEALED: ${{ secrets.CLOUDFLARE_API_TOKEN_SEALED }}
@@ -94,11 +86,72 @@ jobs:
           CLOUDFLARE_API_TOKEN=$(printf '%s' "$SEALED" | ../scripts/ci_secret.sh unseal)
           echo "::add-mask::$CLOUDFLARE_API_TOKEN"
           export CLOUDFLARE_API_TOKEN
-          npx wrangler deploy --message "main @ ${HEAD_SHA:0:12}"
+          npx wrangler deploy --message "main @ ${GITHUB_SHA:0:12}"
+
+  # (a preview, 1 of 2: the PR's dist/, as ci.yml built it; main's script, which only reads the API)
+  preview-wait:
+    name: Website preview, built by CI
+    if: >-
+      github.event_name == 'pull_request_target' && (
+        (github.event.action != 'labeled' && github.event.pull_request.head.repo.full_name == github.repository)
+        || (github.event.action == 'labeled' && github.event.label.name == 'preview'))
+    runs-on: quick  # (a quick job: it only waits)
+    timeout-minutes: 40
+    outputs:
+      found: ${{ steps.dist.outputs.found }}
+    steps:
+      - name: Check out main's code (never the pull request's)
+        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}   # (main, never the PR)
+          sparse-checkout: scripts
+      - name: ci.yml's website-dist of the PR's head
+        id: dist
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -I scripts/ci_website_dist.py wait --sha "$HEAD_SHA"
+
+  # (a preview, 2 of 2: main's code uploads the PR's dist/, files only)
+  preview-upload:
+    name: Website preview, upload
+    needs: [preview-wait]
+    if: >-
+      always() && github.event_name == 'pull_request_target' && (
+        (github.event.action != 'labeled' && github.event.pull_request.head.repo.full_name == github.repository)
+        || (github.event.action == 'labeled' && github.event.label.name == 'preview'))
+    runs-on: deploy  # (the runner kept for deploys; the seal broker opens nothing for a run that isn't main's)
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+    enable-openid-connect: true   # (the ID token the seal broker checks: this job only, which runs main's code only)
+    timeout-minutes: 20
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      SEAL_BROKER_PIN: ${{ vars.SEAL_BROKER_PIN }}
+      BUILT: ${{ needs.preview-wait.result == 'success' && needs.preview-wait.outputs.found == 'true' }}
+    steps:
+      - name: Check out main's code (never the pull request's)
+        uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}   # (main, never the PR)
+
+      - name: Main's wrangler
+        if: env.BUILT == 'true'
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      - name: The PR's dist/, files only
+        if: env.BUILT == 'true'
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci_website_dist.py fetch --sha "$HEAD_SHA" --out website/dist
 
       - name: Upload the preview
         id: upload
-        if: steps.site.outputs.present == 'true' && env.IS_PR == 'true'
+        if: env.BUILT == 'true'
         working-directory: website
         env:
           SEALED: ${{ secrets.CLOUDFLARE_API_TOKEN_SEALED }}
@@ -128,7 +181,7 @@ jobs:
           ALIAS_URL: ${{ steps.upload.outputs.alias_url }}
           VERSION_URL: ${{ steps.upload.outputs.version_url }}
         run: |
-          # (PREVIEW_COMMENT_TOKEN_SEALED when it is set and this runner's seal.key opens it; else the job's own token)
+          # (PREVIEW_COMMENT_TOKEN_SEALED when it is set and the seal broker's key opens it; else the job's own token)
           FORGEJO_TOKEN=$JOB_TOKEN
           if [ -n "$SEALED" ] && token=$(printf '%s' "$SEALED" | scripts/ci_secret.sh unseal); then
             echo "::add-mask::$token"
@@ -165,14 +218,14 @@ jobs:
           EOF
 
       - name: Take the label off
-        if: always() && github.event_name == 'pull_request_target'
+        if: always() && github.event.action == 'labeled'
         env:
           SEALED: ${{ secrets.PREVIEW_COMMENT_TOKEN_SEALED }}
           JOB_TOKEN: ${{ github.token }}
           API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
           LABEL_ID: ${{ github.event.label.id }}
         run: |
-          # (PREVIEW_COMMENT_TOKEN_SEALED when it is set and this runner's seal.key opens it; else the job's own token)
+          # (PREVIEW_COMMENT_TOKEN_SEALED when it is set and the seal broker's key opens it; else the job's own token)
           FORGEJO_TOKEN=$JOB_TOKEN
           if [ -n "$SEALED" ] && token=$(printf '%s' "$SEALED" | scripts/ci_secret.sh unseal); then
             echo "::add-mask::$token"

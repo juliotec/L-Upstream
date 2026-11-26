@@ -1,8 +1,9 @@
-"""Game-free checks of the steady sun shadows (host/oot_shadow_fit.c, nx2/oot_shadow_fit.py): the install's checks, the
+"""Game-free checks of the steady sun shadows (game/oot_shadow_fit.c, the hook sites shadow.fitBasis and shadow.fitBox): the sites, the
 sun's cascade 0 only, a world-fixed basis, a steady square on whole texels that holds the game's box, the switch, and by
 default the steady fit on Shadow resolution Highest's 3072 texels only, the game's below.
 
-The host helper is compiled with the lifter's injected calls against authored game objects: a camera turning and walking
+The host helper is compiled with the sites' callbacks (game/oot_sites.c) and their hooks as the lift lowers them (tests/sitehooks.py) against
+authored game objects: a camera turning and walking
 over a slice like Hyrule Field's (0.1 to about 10 m, an ultrawide view). No dump, lifted code or game assets are needed.
 
     python -I -B tests/test_oot_shadow_fit.py
@@ -15,70 +16,79 @@ import sys
 import tempfile
 import unittest
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_shadow_fit as fit
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves the check's own folder off the path)
+from sitecheck import hooked, site  # noqa: E402
+import sitehooks  # noqa: E402
+
+MAIN_BASE = 0x80020000
+
+
+def basis():
+    x = site("shadow.fitBasis", "f_80733120", "after")
+    # (its point is by meaning: the instruction after the call to the basis builder, f_80733620, which the lift finds)
+    assert (x.point.kind, x.point.target, x.point.shift, x.point.ordinal) == ("call", "f_80733620", 1, None), x.point.describe()
+    return x
+
+
+def box():
+    return site("shadow.fitBox", "f_80733be0", "after", 0x31c)
+
+
+def words_of(x):
+    """{address: word} of a site's signature and guards, each masked word the guard's whole one where a guard has it"""
+    entry = int(x.function[2:], 16)
+    out = {}
+    for i, (w, m) in enumerate(x.signature):
+        if m == 0xffffffff:
+            out[entry + x.signature_offset + 4 * i] = w
+    for off, ws in x.guards:
+        for i, (w, m) in enumerate(ws):
+            assert m == 0xffffffff
+            out[entry + off + 4 * i] = w
+    if x.point is not None and x.point.kind == "call":   # (the call the point names, its bl the signature's first word)
+        at = entry + x.signature_offset
+        assert x.signature[0] == (0x94000000, 0xfc000000), "the signature's first word is not the call"
+        out[at] = 0x94000000 | (((int(x.point.target[2:], 16) - at) // 4) & 0x3ffffff)
+    return out
 
 
 class InstallTests(unittest.TestCase):
-    def install(self, change=None, build_id=fit.BUILD_ID, existing=None):
-        words = {}
-        for start, ws in (fit.BASIS_WORDS, fit.BOX_WORDS, fit.REJOIN_WORDS):
-            for i, w in enumerate(ws):
-                words[start + 4 * i] = w
-        if change is not None:
-            words[change] ^= 1
-
-        class Lifter:
-            after = {} if existing is None else dict(existing)
-
-        class Image:
-            def word(self, pc):
-                return words[pc]
-
-        lifter = Lifter()
-        return fit.install(lifter, Image(), build_id), lifter.after
-
-    def test_both_sites_after_existing_hooks(self):
-        count, after = self.install(existing={fit.BOX: "prior();"})
-        self.assertEqual(count, 2)
-        self.assertEqual(after[fit.BASIS], fit.BASIS_HOOK)
-        self.assertEqual(after[fit.BOX], "prior();\n" + fit.BOX_HOOK)
-        self.assertIn("hos_shadow_fit_basis(c, c->x[19]);", fit.BASIS_HOOK)
-        self.assertIn("hos_shadow_fit_box(c, c->x[20], _b)", fit.BOX_HOOK)
-
-    def test_rejects_wrong_build_and_each_changed_instruction(self):
-        self.assertEqual(self.install(build_id="another build"), (0, {}))
-        for start, ws in (fit.BASIS_WORDS, fit.BOX_WORDS, fit.REJOIN_WORDS):
-            for i in range(len(ws)):
-                self.assertEqual(self.install(change=start + 4 * i), (0, {}))
-
     def test_sites(self):
+        bx, bs = basis(), box()
+        words = words_of(bx)
+        basis_at = int(bx.function[2:], 16) + bx.signature_offset + 4 * bx.point.shift   # (after the call)
+        box_at = int(bs.function[2:], 16) + bs.offset
+        # (the words main's nx2/oot_shadow_fit.py checked, each whole: the basis call and its three arguments, the box fit's
+        # mode test, its branch, the meeting ldp and the three subtractions, and the other mode's way back)
+        self.assertEqual(words, {MAIN_BASE + 0x713188 + 4 * i: w for i, w in enumerate((0x94000126, 0x1e204120, 0x1e204101,
+                                                                                         0x91020260))})
+        self.assertEqual(words_of(bs), {**{MAIN_BASE + 0x713ef0 + 4 * i: w for i, w in enumerate(
+            (0x71000b1f, 0x54007840, 0x2a1f03e9, 0x2d401aa7, 0x1e253892, 0x1e223871, 0x1e203830))},
+            MAIN_BASE + 0x714dfc: 0x39585289, MAIN_BASE + 0x714e00: 0x17fffc3f})
         # the basis site is the instruction right after the call (bl, imm26 forward to main+0x713620)
-        start, ws = fit.BASIS_WORDS
-        self.assertEqual(fit.BASIS, start + 4)
-        self.assertEqual(start + 4 * (ws[0] & 0x3ffffff), fit.MAIN + 0x713620)
+        call = basis_at - 4
+        self.assertEqual(call + 4 * (words[call] & 0x3ffffff), MAIN_BASE + 0x713620)
         # the box site: fsub s18, s4, s5 / s17, s3, s2 / s16, s1, s0 read the bounds the hook rewrites
-        start, ws = fit.BOX_WORDS
-        self.assertEqual(fit.BOX, start + 12)
+        ws = [words_of(bs)[box_at - 12 + 4 * i] for i in range(7)]
         for word, (d, n, m) in zip(ws[4:], ((18, 4, 5), (17, 3, 2), (16, 1, 0))):
             self.assertEqual((word & 0x1f, (word >> 5) & 0x1f, (word >> 16) & 0x1f), (d, n, m))
         self.assertEqual((ws[3] & 0x1f, (ws[3] >> 10) & 0x1f), (7, 6))   # the site's ldp loads s7, s6: not the bounds
+        self.assertEqual(box_at, MAIN_BASE + 0x713ef0 + 12, "shadow.fitBox is not after the ldp where the modes meet")
         # both modes reach the site: b.eq (imm19) goes to the other mode, whose b (imm26) comes back to the ldp
-        rejoin, (ldrb, b) = fit.REJOIN_WORDS
-        beq = start + 4
+        rejoin = MAIN_BASE + 0x714dfc
+        beq = box_at - 8
         self.assertEqual(beq + 4 * ((ws[1] >> 5) & 0x7ffff), rejoin)
+        ldrb, b = words_of(bs)[rejoin], words_of(bs)[rejoin + 4]
         self.assertEqual(ldrb, 0x39400000 | 0x614 << 10 | 20 << 5 | 9)   # ldrb w9, [x20, #0x614]
         self.assertEqual(b >> 26, 0b000101)
-        self.assertEqual(rejoin + 4 + 4 * ((b & 0x3ffffff) - (1 << 26)), fit.BOX)
+        self.assertEqual(rejoin + 4 + 4 * ((b & 0x3ffffff) - (1 << 26)), box_at)
 
-    def test_lift_wiring(self):
-        lift = (ROOT / "nx2/lift.py").read_text(encoding="utf-8")
-        # (installed before the functions are discovered: nx2/discover.py walks them, in new processes where there is no fork)
-        standalone = lift[lift.index("if a.standalone:"):lift.index("discover.discover(L,")]
-        self.assertIn("oot_shadow_fit.install(", standalone)
+    def test_callbacks(self):
+        self.assertIn("hos_shadow_fit_basis(c, c->x[19]);\n    return 0;", hooked(basis(), "int hos_site_shadow_fit_basis(")[0])
+        self.assertIn("hos_shadow_fit_box(c, c->x[20], b)", hooked(box(), "int hos_site_shadow_fit_box(")[0])
 
 
 HEAD = r'''
@@ -344,20 +354,25 @@ int main(void) {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
+    sitehooks.use(args.cc, args.cargo)
     result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(InstallTests))
     if not result.wasSuccessful():
         raise SystemExit(1)
-    host = (ROOT / "host/oot_shadow_fit.c").read_text(encoding="utf-8")
+    host = (ROOT / "game/oot_shadow_fit.c").read_text(encoding="utf-8")
     body = "".join(line for line in host.splitlines(keepends=True) if not line.startswith("#include"))
     with tempfile.TemporaryDirectory(prefix="oot-shadow-fit-") as temporary:
         source = Path(temporary) / "fixture.c"
         executable = Path(temporary) / "fixture.exe"
-        source.write_text(HEAD + body + MAIN.replace("BASIS_C", fit.BASIS_HOOK).replace("BOX_C", fit.BOX_HOOK),
-                          encoding="utf-8")
-        subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable),
-                        "-lm"], check=True)
+        basis_defs, basis_line = hooked(basis(), "int hos_site_shadow_fit_basis(")
+        box_defs, box_line = hooked(box(), "int hos_site_shadow_fit_box(")
+        text = (HEAD + body + basis_defs + box_defs.replace("#ifndef A64_NOESC\n#define A64_NOESC\n#endif\n", "")
+                + MAIN.replace("BASIS_C", basis_line).replace("BOX_C", box_line))
+        source.write_text(text, encoding="utf-8")
+        subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source),
+                        *sitehooks.objects(temporary, text), "-o", str(executable), "-lm"], check=True)
         subprocess.run([str(executable)], check=True, env=dict(os.environ, HOS_SHADOW_STABLE="1"))
         subprocess.run([str(executable)], check=True,
                        env=dict({k: v for k, v in os.environ.items() if k != "HOS_SHADOW_STABLE"}, FIXTURE_GATE="1"))

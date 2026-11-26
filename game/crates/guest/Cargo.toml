@@ -1,0 +1,13 @@
+# The guest as the game's Rust sees it (game/README.md): the lifted code's context, guest memory read and written
+# with checks, and the host's few services (host/game_host.h). The one crate of the game's with unsafe code.
+[package]
+name = "guest"
+description = "The game's view of the guest: the context, checked guest memory, the host's services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 /* (longshot, issue 1113) Input recordings for repeatable test runs and benchmarks: the glue of host/input_movie.h (what a
    recording is, and the format) to the switches, the menu and bridge controls, the file and the log. The places that call
    here are the ones where input reaches the game: host/nn_hid.c (each read of controller No.1, and of the motion sensors),
-   host/mouse_native.c (the native mouse camera, in the player camera's update), host/oot_menu.c (the mouse in the game's
+   host/mouse_native.c (the native mouse camera, in the player camera's update), game/oot_menu.c (the mouse in the game's
    menus), host/hos_main.c (Link's update: the marks, the anchors and the Debug tools' actions) and host/rx_backend.c
    (rx_option: the Debug tools' rows a replay answers).
 
@@ -58,6 +58,7 @@
    no movie pacing (host/nn_vi.c). */
 #include "hos.h"
 #include "input_movie.h"
+#include "../game/game.h"   /* (the game's hooks this file calls) */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,12 +74,6 @@ extern volatile uint32_t hos_frame_seconds_bits;   /* (host/nn_vi.c: 0 while the
 extern volatile uint64_t hos_step_probe;           /* (host/nn_vi.c: the game's step object, its +0xd58 the game clock) */
 int rx_option(int id, int otherwise);              /* (host/rx_backend.c: 0, the Game speed row: 1 Real time) */
 const char *hos_version(void);                     /* (host/hos_main.c) */
-int hos_oot_current_map(char *out, size_t cap);    /* (host/hos_main.c: the map Link was last seen in) */
-int hos_oot_state(int *event, int *loading, int *child);   /* (host/hos_main.c: an event playing, a load, Link the child) */
-int hos_oot_destination(int index, const char **child, const char **adult);   /* (the Debug tab's teleports' maps) */
-int hos_oot_teleport_ask(int index);               /* (host/hos_main.c: the bridge's teleport, taken at Link's update) */
-void hos_oot_teleport_cancel(int ticket);          /* (host/hos_main.c: an ask not taken yet, dropped) */
-int hos_oot_age_ask(int adult);                    /* (likewise the age switch) */
 extern const char *hos_user_dir;                   /* (host/nn_fs.c: the player's folder) */
 
 enum { MOVIE_OFF, MOVIE_RECORD, MOVIE_PLAY };
@@ -299,7 +294,7 @@ static int movie_load(const char *path) {   /* (into S.tape) */
 
 /* Whether two paths name one file: the same name, or (a link, another spelling, a hard link) the same file on the same
    volume. A path that does not name a file yet is no other file. (Paths here are UTF-8 strings: the exe's manifest makes
-   the process's code page UTF-8, so getenv, fopen and the A functions take them as they are: nx2/win_manifest.py) */
+   the process's code page UTF-8, so getenv, fopen and the A functions take them as they are: builder/crates/build-compile/src/generated/res.rs) */
 #ifdef _WIN32
 static int movie_file_id(const char *path, BY_HANDLE_FILE_INFORMATION *id) {
     HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
@@ -450,9 +445,9 @@ static void movie_start(double clock) {
                 "not frame for frame; the 60 cap and HOS_REALTIME_STEP=0 make it the game's own", timed ? "a cap above 60" :
                 "Game speed Real time", movie_mode == MOVIE_RECORD ? "replay of this recording" : "replay");
     const long long present = (long long)__atomic_load_n(&hos_present_count, __ATOMIC_RELAXED);
-    if (!hos_oot_current_map(S.map, sizeof S.map)) S.map[0] = 0;
+    if (!game_current_map(S.map, sizeof S.map)) S.map[0] = 0;
     int event, loading, child;
-    const char *age = hos_oot_state(&event, &loading, &child) ? (child ? "child" : "adult") : "";
+    const char *age = game_state(&event, &loading, &child) ? (child ? "child" : "adult") : "";
     if (S.rec) {
         S.file = fopen(S.rec_path, "wb");
         if (!S.file) hos_log("input: recording: cannot write %s: no recording", S.rec_path);
@@ -828,8 +823,8 @@ static char movie_why[128];   /* (why the last run-time playback was given up be
 static void movie_prep_step(void) {
     int event = 0, loading = 0, child = 0;
     char map[64] = "";
-    if (!hos_oot_state(&event, &loading, &child) || event || loading) return;   /* (a load or an event: wait for its end) */
-    const int have_map = hos_oot_current_map(map, sizeof map);
+    if (!game_state(&event, &loading, &child) || event || loading) return;   /* (a load or an event: wait for its end) */
+    const int have_map = game_current_map(map, sizeof map);
     const int64_t now = hos_now_ns();
     const int step = S.want_child >= 0 && child != S.want_child ? 1 : have_map && strcmp(map, S.tape.map) ? 2 : 0;
     if (step != S.prep_step) S.prep_step = step, S.prep_tries = 0;   /* (each step its own tries, asked at once) */
@@ -844,15 +839,15 @@ static void movie_prep_step(void) {
         if (step == 1) {
             hos_log("input: playback: Link is the %s and the recording starts with the %s: the age switch first",
                     child ? "child" : "adult", S.want_child ? "child" : "adult");
-            S.prep_ticket = hos_oot_age_ask(!S.want_child);
+            S.prep_ticket = game_age_ask(!S.want_child);
         } else {
             hos_log("input: playback: Link is in %s and the recording starts in %s: the teleport there first", map, S.tape.map);
-            S.prep_ticket = hos_oot_teleport_ask(S.want_dest);
+            S.prep_ticket = game_teleport_ask(S.want_dest);
         }
         S.prep_at = now;
         return;
     }
-    if (S.prep_ticket) hos_oot_teleport_cancel(S.prep_ticket);
+    if (S.prep_ticket) game_teleport_cancel(S.prep_ticket);
     snprintf(movie_why, sizeof movie_why, "Link could not be taken to %s (%s): not played.", S.tape.map,
              step == 1 ? "the age switch did not take" : "the teleport did not take");
     hos_log("input: playback: %s", movie_why);
@@ -942,7 +937,7 @@ static void movie_default_path(char *out, size_t cap) {
     char dir[900], map[64] = "", clean[64];
     snprintf(dir, sizeof dir, "%s/recordings", hos_user_dir ? hos_user_dir : "user");
     CreateDirectoryA(dir, NULL);
-    if (!hos_oot_current_map(map, sizeof map)) snprintf(map, sizeof map, "game");
+    if (!game_current_map(map, sizeof map)) snprintf(map, sizeof map, "game");
     size_t j = 0;
     for (size_t i = 0; map[i] && j + 1 < sizeof clean; i++) {
         const char ch = map[i];
@@ -1065,7 +1060,7 @@ int hos_input_play_start(const char *path, int sync, float sync_max) {
         S.want_child = !strcmp(S.tape.age, "child") ? 1 : !strcmp(S.tape.age, "adult") ? 0 : -1;
         S.want_dest = -1;
         const char *child, *adult;
-        for (int i = 0; S.tape.map[0] && hos_oot_destination(i, &child, &adult); i++)
+        for (int i = 0; S.tape.map[0] && game_destination(i, &child, &adult); i++)
             if ((S.want_child != 0 && child && !strcmp(child, S.tape.map)) || (S.want_child != 1 && adult && !strcmp(adult, S.tape.map))) {
                 S.want_dest = i;
                 if (S.want_child < 0) {   /* (a recording with no age (an older one): the age whose map it is, if only one's) */
@@ -1076,8 +1071,8 @@ int hos_input_play_start(const char *path, int sync, float sync_max) {
             }
         char here[64];
         int event, loading, now_child;
-        const int other_map = S.tape.map[0] && hos_oot_current_map(here, sizeof here) && strcmp(here, S.tape.map);
-        const int other_age = S.want_child >= 0 && hos_oot_state(&event, &loading, &now_child) && now_child != S.want_child;
+        const int other_map = S.tape.map[0] && game_current_map(here, sizeof here) && strcmp(here, S.tape.map);
+        const int other_age = S.want_child >= 0 && game_state(&event, &loading, &now_child) && now_child != S.want_child;
         if (other_map && S.want_dest < 0) {
             hos_log("input: playback: %s starts in %s, which no teleport goes to, and Link is in %s: not played", file,
                     S.tape.map, here);
@@ -1102,14 +1097,14 @@ void hos_input_play_stop(void) {
     if (movie_mode == MOVIE_PLAY) {
         if (S.started) movie_finish("stopped");
         else {   /* (stopped while Link is taken there: the age switch or teleport asked and not taken yet, not taken later) */
-            if (S.prep_ticket) hos_oot_teleport_cancel(S.prep_ticket);
+            if (S.prep_ticket) game_teleport_cancel(S.prep_ticket);
             __atomic_store_n(&movie_mode, MOVIE_OFF, __ATOMIC_RELEASE), movie_reset();
         }
     }
     ReleaseSRWLockExclusive(&movie_lock);
 }
 
-/* The host's clock for its own decisions by time (host/oot_ocb_hold.c, host/oot_tex_compact.c): wall_ns with nothing
+/* The host's clock for its own decisions by time (game/oot_ocb_hold.c, game/oot_tex_compact.c): wall_ns with nothing
    recorded or played; while a recording is recorded or played (or one is wanted from the start), the game clock's time, so
    the decision falls on the same game frame in a replay as in the recording. t is the caller's, under its lock */
 int64_t hos_input_movie_time(HosMovieTime *t, int64_t wall_ns) {

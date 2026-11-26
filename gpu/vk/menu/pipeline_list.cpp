@@ -1,6 +1,6 @@
 // The Insert menu's Save my pipeline list (#1633), first in the Debug tab's Developer section: the pipelines this play built
 // (shader hashes and draw state, no game data: longshot_pipeline_states.bin) with the "Submit your pipelines" issue's template
-// filled in from this run (pipeline_share.h; the builders do the same with nx2/pipeline_share.py), zipped into the Downloads
+// filled in from this run (pipeline_share.h; the builders do the same with longshot-builder share), zipped into the Downloads
 // folder; then the report on the clipboard, the folder shown and the issue opened in the browser, on a worker so the present
 // is not held (vk_menu.cpp's menu_tick finishes it: menu/pipeline_list.h). Fenced from a layout-only build (MENU_LAYOUT_ONLY).
 #include "menu_module.h"
@@ -83,17 +83,12 @@ void share_finish() {
     share_busy.store(false);
     menu_redraw();
 }
-std::string game_folder() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1);
-}
+std::string game_folder() { return game_folder_path(); }
 bool is_dir(const std::string& p) {
     const DWORD a = GetFileAttributesA(p.c_str());
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
-/// The mods the game loaded, by host/mods.c's rule: under the game folder's mods (or HOS_MODS), a folder holding romfs or exefs,
+/// The mods the game loaded, by game/mods.c's rule: under the game folder's mods (or HOS_MODS), a folder holding romfs or exefs,
 /// up to four folders deep; names starting with '-' or '_' are off
 void share_find_mods(const std::string& dir, const std::string& name, int depth, std::vector<std::string>& out) {
     if (depth > 0 && (is_dir(dir + "/romfs") || is_dir(dir + "/exefs"))) {
@@ -342,7 +337,7 @@ bool share_write(const std::string& path, const std::string& data) {
 /// frame generation and HDR as the menu has them now, and the mods
 std::vector<std::string> share_values(long long pipelines, bool v2, long long computes) {
     std::vector<std::string> v(ps::kFieldCount);
-    v[0] = menu_version();   // (nx2/build.py gives the version to gpu/vk/vk_version.cpp alone)
+    v[0] = menu_version();   // (builder/crates/build-compile gives the version to gpu/vk/vk_version.cpp alone)
     v[1] = share_os() + "; " + dev.props.deviceName + ", driver " + driver_text();
     const Out o = shown_output();
     v[2] = ps::output_text(o.w, o.h, opts.handheld != 0, output_choice(opts.output_res) == 0, aspect_follows_host(opts.ultrawide));

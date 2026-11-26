@@ -1,7 +1,7 @@
 """The workers of the shader preparation's first part (gpu/vk/prepare_workers.h, vk_draw.cpp prepare_run).
 
 With the NT heap the driver's compiles queue on its one lock, and more workers ran slower: the count stays half the CPUs. With
-the segment heap (nx2/win_manifest.py's heapType) every usable CPU gets a worker, as far as the free memory allows. This test
+the segment heap (the game's manifest's heapType: builder/crates/build-compile/src/generated/res.rs) every usable CPU gets a worker, as far as the free memory allows. This test
 compiles the real prepare_workers.h and checks:
 - without the segment heap the count is half_cpus, whatever the memory;
 - with it, one worker more for each kPerWorkerMB free past kReserveMB (768 MB past 4 GB), up to the usable CPUs and to kMaxWorkers;
@@ -88,7 +88,7 @@ def main():
     body = cache[cache.index("unsigned prepare_cpus() {"):]
     body = body[:body.index("\n}\n")]
     assert "prepare_workers::count(half_cpus(), usable_cpus()" in body and "segment_heap()" in body
-    manifest = (ROOT / "nx2/win_manifest.py").read_text(encoding="utf-8")
+    manifest = (ROOT / "builder/crates/build-compile/src/generated/res.rs").read_text(encoding="utf-8")   # (the builder's MANIFEST)
     assert ">SegmentHeap</heapType>" in manifest, "the game's manifest asks for the segment heap"
 
     with tempfile.TemporaryDirectory(prefix="prepare-workers-") as tmp:

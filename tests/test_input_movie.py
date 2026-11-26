@@ -344,25 +344,25 @@ const char *hos_version(void) { return "test-1"; }
    adult's Field_A), 1 Market; one asked is taken at the frame after, and its load keeps Link from his updates 15 frames) */
 static char cur_map[64];
 static int tp_pending = -1, tp_until = -1, child_now = 1, tp_cancels;
-int hos_oot_current_map(char *out, size_t cap) {
+int game_current_map(char *out, size_t cap) {
     if (!cur_map[0]) return 0;
     snprintf(out, cap, "%s", cur_map);
     return 1;
 }
-int hos_oot_state(int *event, int *loading, int *child) {
+int game_state(int *event, int *loading, int *child) {
     if (!cur_map[0]) return 0;
     *event = 0, *loading = tp_until > game_fr, *child = child_now;
     return 1;
 }
-int hos_oot_destination(int index, const char **child, const char **adult) {
+int game_destination(int index, const char **child, const char **adult) {
     static const char *const c[] = {"Field", "Market"}, *const a[] = {"Field_A", "Market_A"};
     if (index < 0 || index > 1) return 0;
     *child = c[index], *adult = a[index];
     return 1;
 }
-int hos_oot_teleport_ask(int index) { tp_pending = index; return 1; }
-int hos_oot_age_ask(int adult) { child_now = !adult; return 1; }
-void hos_oot_teleport_cancel(int ticket) { (void)ticket; tp_cancels++; }
+int game_teleport_ask(int index) { tp_pending = index; return 1; }
+int game_age_ask(int adult) { child_now = !adult; return 1; }
+void game_teleport_cancel(int ticket) { (void)ticket; tp_cancels++; }
 int64_t hos_now_ns(void) { return (int64_t)game_fr * 16666667; }
 const char *hos_user_dir = ".";
 #ifndef _WIN32
@@ -461,7 +461,7 @@ int main(int argc, char **argv) {
         game_clock((double)fr * clock_step);
         if (tp_pending >= 0) {   /* (a teleport asked at the update before: its map, and its load) */
             const char *child, *adult;
-            hos_oot_destination(tp_pending, &child, &adult);
+            game_destination(tp_pending, &child, &adult);
             snprintf(cur_map, sizeof cur_map, "%s", child_now ? child : adult);
             tp_until = fr + 15, tp_pending = -1;
             printf("TELEPORT %d %s\n", fr, cur_map);
@@ -576,9 +576,9 @@ def check(ok, message):
 
 def wiring():
     hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
-    main_c = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    tools_c = (ROOT / "game" / "oot_tools.c").read_text(encoding="utf-8")
     mouse = (ROOT / "host" / "mouse_native.c").read_text(encoding="utf-8")
-    menu = (ROOT / "host" / "oot_menu.c").read_text(encoding="utf-8")
+    menu = (ROOT / "game" / "oot_menu.c").read_text(encoding="utf-8")
     table = (ROOT / "gpu" / "vk" / "switches.def").read_text(encoding="utf-8")
     npad = block(hid, "static void npad_states(Ctx *c) {")
     begin, merge = npad.find("const int played = connected && hos_input_movie_begin(&given);"), npad.find("read_input(&buttons, &taps, stick);")
@@ -640,16 +640,17 @@ def wiring():
     check("hos_input_movie_menu(1, screen, button, NULL);" in block(menu, "static int set_focus(Ctx *c, uint64_t screen, uint64_t button) {") and
           "hos_input_movie_menu(2, screen, 0, key);" in block(menu, "static int set_item_key(Ctx *c, uint64_t screen, const char *key) {"),
           "the menu mouse's choices are not recorded")
-    lift = block(main_c, "void hos_oot_lift_player(Ctx *c, uint64_t actor) {")
+    lift = block(tools_c, "void hos_oot_lift_player(Ctx *c, uint64_t actor) {")
     check(0 <= lift.find("if (hos_input_movie_active()) {") < lift.find("recomp_load32(c, actor + 0x31c"),
           "Link's position is read for a recording with none")
     check("if (hos_input_movie_link(pos, to) && !oot_put_link(c, components, to))" in lift and
-          "A64Fn change_position = a64_lookup(0x806d2530ULL);" in block(main_c, "static int oot_put_link("),
+          "game_call_more(c, 0x806d2530ULL, arg, 2, (const uint64_t[]){controller, arg}, NULL, &lr);" in block(tools_c, "static int oot_put_link(") and
+          "a64_lookup" not in block(tools_c, "static int oot_put_link("),
           "HOS_INPUT_SNAP does not put Link back through his controller")
     took, call, gave = (lift.find("TryAcquireSRWLockExclusive(&cheats_lock)"), lift.find("hos_input_movie_link(pos, to)"),
                         lift.rfind("ReleaseSRWLockExclusive(&cheats_lock)"))
     check(0 <= took < call < gave, "Link's update does not give the recording his position under the cheats' lock")
-    check("actor + 0x31c" in lift and "#define STATE_LINK_POS 0x31c" in (ROOT / "host" / "oot_state_tap.c").read_text(encoding="utf-8"),
+    check("actor + 0x31c" in lift and "#define STATE_LINK_POS 0x31c" in (ROOT / "game" / "oot_state_tap.c").read_text(encoding="utf-8"),
           "the recording's position is not the state tap's")
     close = block((ROOT / "host" / "hos_relaunch.c").read_text(encoding="utf-8"), "void hos_close_finish(void) {")
     check("hos_input_movie_close();" in close, "the game's close work does not end the recording (ExitProcess runs no atexit)")
@@ -658,7 +659,7 @@ def wiring():
         check("SW(%s," % name in table, "no switch row for " + name)
     # (the Debug tools: the action the game takes goes through the recording before it is taken, and is recorded after; a
     # bridge's teleport a playback does not take is answered)
-    cheats = block(main_c, "static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {")
+    cheats = block(tools_c, "static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {")
     take, ask = cheats.find("action = hos_input_movie_action(live, &dropped);"), cheats.find("oot_bridge_teleport_take(&bridge_ticket)")
     acted, taken = cheats.find("oot_teleport(c, actor, (unsigned)(action - OOT_TELEPORT_ACTION))"), cheats.find("hos_input_movie_action_taken(taken);")
     check(0 <= ask < take < acted < taken, "the Debug tools' action does not go through the recording before it is taken, or "
@@ -714,15 +715,15 @@ def glue(cc, tmp):
     for decl in ("extern volatile LONG64 hos_present_count;", "extern volatile uint32_t hos_frame_seconds_bits;",
                  "extern volatile uint64_t hos_step_probe;",
                  "int rx_option(int id, int otherwise);", "const char *hos_version(void);",
-                 "int hos_oot_current_map(char *out, size_t cap);", "extern const char *hos_user_dir;",
-                 "int hos_oot_state(int *event, int *loading, int *child);",
-                 "int hos_oot_destination(int index, const char **child, const char **adult);",
-                 "int hos_oot_teleport_ask(int index);", "int hos_oot_age_ask(int adult);",
-                 "void hos_oot_teleport_cancel(int ticket);"):
+                 "int game_current_map(char *out, size_t cap);", "extern const char *hos_user_dir;",
+                 "int game_state(int *event, int *loading, int *child);",
+                 "int game_destination(int index, const char **child, const char **adult);",
+                 "int game_teleport_ask(int index);", "int game_age_ask(int adult);",
+                 "void game_teleport_cancel(int ticket);"):
         body = body.replace(decl, "")
     (tmp / "glue.c").write_text(GLUE_HEAD + body + GLUE_MAIN, encoding="utf-8")
     exe = tmp / ("glue.exe" if os.name == "nt" else "glue")
-    compile_c(cc, tmp / "glue.c", exe, ["-I", str(ROOT / "host")])
+    compile_c(cc, tmp / "glue.c", exe, ["-I", str(ROOT / "host"), "-I", str(ROOT / "game")])
     rec = tmp / "run.jsonl"
 
     # neither switch set (a player's game): the one decision takes the lock once, then no hook takes it or reads the guest
@@ -1057,7 +1058,7 @@ def main():
         tmp = Path(d)
         (tmp / "t.c").write_text(HEADER_FIXTURE, encoding="utf-8")
         exe = tmp / ("t.exe" if os.name == "nt" else "t")
-        compile_c(cc, tmp / "t.c", exe, ["-I", str(ROOT / "host")])
+        compile_c(cc, tmp / "t.c", exe, ["-I", str(ROOT / "host"), "-I", str(ROOT / "game")])
         r = subprocess.run([str(exe)], text=True, capture_output=True, timeout=60)
         check(r.returncode == 0, "format fixture:\n" + r.stdout + r.stderr)
         print("PASS: format")

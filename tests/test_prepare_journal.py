@@ -1,13 +1,13 @@
 """The preparation's journal (gpu/vk/prepare_journal.h): what a --prepare-shaders run writes before and after each call into
-the driver's compiler, and what the Builder's supervisor (nx2/prepare_supervisor.py) reads back when the run died.
+the driver's compiler, and what the builder's supervisor (builder/crates/build-driver/src/supervisor.rs) reads back when
+the run died.
 
 Compiles the real header alone and runs it, with no game and no GPU:
 - an entry is named as longshot_driver_faults.txt names one, and the game's own reader (driver_faults::parse) takes it;
-- a process that ends without closing anything (_Exit in the middle of a call) leaves its begin in the file: the supervisor's
-  parser finds that entry open, and only that one;
-- a run started again numbers on from the last entry, an entry past its limit is named by a "t" line, a run that got through
-  leaves nothing open;
-- a last line cut short and lines that are not the journal's are skipped;
+- three runs (one that ends without closing anything, _Exit in the middle of a call; one that names an entry past its limit
+  by a "t" line; one that gets through) write, numbering on, exactly builder/crates/build-driver/tests/data/
+  prepare_journal.txt, which the supervisor's own tests read (the entry the first died in found open, and only that one;
+  the limit's entry named; nothing open after the third; torn and foreign lines skipped; the result list);
 - the supervisor's list of programs to leave out and to build one at a time is read (asked_parse), and the test switch
   (RX_VK_TEST_PREPARE_FAULT) names the same programs in every run.
 And the source: the three driver calls of the preparation are journalled in vk_draw.cpp outside the guards, a line is flushed
@@ -17,7 +17,7 @@ shader translator's stamp.
     python -I -B tests/test_prepare_journal.py [--cxx g++]
 """
 import argparse
-import importlib.util
+import re
 import subprocess
 import sys
 import tempfile
@@ -138,14 +138,27 @@ def need(ok, what):
         raise SystemExit("test_prepare_journal: " + what)
 
 
-def supervisor():
-    spec = importlib.util.spec_from_file_location("prepare_supervisor_for_journal", ROOT / "nx2" / "prepare_supervisor.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+SUPERVISOR = ROOT / "builder" / "crates" / "build-driver" / "src" / "supervisor.rs"
+WRITTEN = ROOT / "builder" / "crates" / "build-driver" / "tests" / "data" / "prepare_journal.txt"
 
 
-def check_source(sup):
+def supervisor_exit_entry_limit():
+    m = re.search(r"pub const EXIT_ENTRY_LIMIT: i32 = (\d+);", SUPERVISOR.read_text(encoding="utf-8"))
+    need(m, "the supervisor has no EXIT_ENTRY_LIMIT")
+    return int(m.group(1))
+
+
+def translator_stamped():
+    """The shader translator's stamp's files (build-compile's generated/shader_stamp.rs): its folders and files of gpu/vk"""
+    stamp = (ROOT / "builder/crates/build-compile/src/generated/shader_stamp.rs").read_text(encoding="utf-8")
+    dirs = re.search(r"const DIRS: \[&str; \d+\] = \[([^\]]*)\];", stamp)
+    files = re.search(r"const FILES: \[&str; \d+\] = \[([^\]]*)\];", stamp)
+    need(dirs and files, "the shader translator's stamp names no folders or files")
+    names = lambda m: re.findall(r'"([^"]+)"', m.group(1))
+    return names(dirs), names(files)
+
+
+def check_source():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     for marker, begin, call in (("VkResult guarded_graphics_held(", "JournalEntry entry(prepare_journal::kGraphics,", "guarded_graphics(cache, ci, pl)"),
                                 ("VkResult guarded_compute_held(", "JournalEntry entry(prepare_journal::kCompute,", "guarded_compute(cache, ci, pl)"),
@@ -171,7 +184,8 @@ def check_source(sup):
          "kPrepareSkip" in block(draw, "VkResult guarded_graphics_held(") and
          "kPrepareSkip" in block(draw, "VkResult guarded_compute_held("), "a supervisor skip is reported as a driver fault")
     need('fopen(path.c_str(), "ab")' in header, "the journal is not appended to")
-    need("constexpr int kExitEntryLimit = %d;" % sup.EXIT_ENTRY_LIMIT in header, "the run's exit status for an entry past its limit is not the supervisor's")
+    need("constexpr int kExitEntryLimit = %d;" % supervisor_exit_entry_limit() in header,
+         "the run's exit status for an entry past its limit is not the supervisor's")
     main = (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8")
     watch = block(main, "void prepare_entry_watch() {")
     need("if (prepare_journal_overdue()) prepare_end(prepare_journal::kExitEntryLimit);" in watch, "an entry past its limit does not end the run")
@@ -184,25 +198,24 @@ def check_source(sup):
     need(0 <= started.find("prepare_supervised();") < started.index("if (prepare_only()) {"),
          "the supervised run is set up after the preparation's parts have read the crash markers")
     args = (ROOT / "host/prepare_args.h").read_text(encoding="utf-8")
-    source = (ROOT / "nx2/prepare_supervisor.py").read_text(encoding="utf-8")
+    source = SUPERVISOR.read_text(encoding="utf-8")
     for arg, switch in (("--prepare-journal", "LONGSHOT_PREPARE_JOURNAL"), ("--prepare-from", "LONGSHOT_PREPARE_FROM"),
                         ("--prepare-skip", "LONGSHOT_PREPARE_SKIP"), ("--prepare-entry-limit", "LONGSHOT_PREPARE_ENTRY_S")):
         need('if (!strcmp(arg, "%s")) return "%s";' % (arg, switch) in args, "the game does not take " + arg)
         need('"%s"' % arg in source, "the supervisor does not give " + arg)
         need('getenv("%s")' % switch in draw, "the renderer does not read " + switch)
     # (the shader translator's stamp: a change to one of its files makes every player translate every program again)
-    spec = importlib.util.spec_from_file_location("translator_files_for_journal", ROOT / "nx2" / "translator_files.py")
-    stamp = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(stamp)
+    dirs, files = translator_stamped()
     for rel in ("gpu/vk/prepare_journal.h", "gpu/vk/vk_draw.cpp", "gpu/vk/vk_main.cpp", "gpu/vk/vk_internal.h", "gpu/vk/driver_faults.h"):
-        need(not stamp.stamped(rel), rel + " is in the shader translator's stamp")
-    for name in stamp.FILES:
+        name = rel[len("gpu/vk/"):]
+        need(name not in files and name.split("/")[0] not in dirs, rel + " is in the shader translator's stamp")
+    for name in files:
         text = (ROOT / "gpu/vk" / name).read_text(encoding="utf-8")
         need("prepare_journal" not in text, name + " (stamped) knows of the journal")
     print("PASS: the journal in the source", flush=True)
 
 
-def check_journal(cxx, sup, tmp):
+def check_journal(cxx, tmp):
     source, exe = tmp / "journal.cpp", tmp / ("journal.exe" if sys.platform == "win32" else "journal")
     source.write_text(FIXTURE, encoding="utf-8")
     subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-pthread",
@@ -219,79 +232,34 @@ def check_journal(cxx, sup, tmp):
     need(r.returncode == 9, "the fixture did not die inside its entry: %d\n%s" % (r.returncode, r.stdout))
     text = journal.read_text(encoding="utf-8")
     need(text.endswith("\n") and text.splitlines()[0] == "run 1002 00800161 0", "the run's first line: %r" % text)
-    j = sup.parse(text)
-    need(j.runs == 1 and len(j.entries) == 4 and j.last_seq == 4 and j.driver == "1002 00800161", "the journal of a run that died: %r" % text)
-    opened = j.open_entries()
-    need(len(opened) == 1 and opened[0].seq == 2 and opened[0].kind == "graphics" and opened[0].key == 0xaaaa,
-         "the entry the process died in is not the open one")
-    need(opened[0].identity == "1002 00800161 000000000000aaaa" and opened[0].detail == "0000000000000008", "the open entry's identity")
-    need(j.timed() is None, "a run that died named no entry as past its limit")
-    done = {e.seq: e for e in j.entries}
-    need(done[1].result == 0 and done[1].ms == 7 and done[1].kind == "module" and done[1].key == 0x11, "an entry that returned")
-    need(done[3].result == -77 and done[3].ms == 489 and sup.entry_state(done[3]) == "faulted", "a fault the guard caught")
-    need(done[4].key == 0 and sup.entry_state(done[4]) == "built", "a shader of the renderer's own")
-    # (the game reads what the supervisor appends: the real driver_faults::parse on the file's text)
+    r = run(4, "limit")
+    need(r.returncode == supervisor_exit_entry_limit(), "the fixture's limit run: %d\n%s" % (r.returncode, r.stdout))
+    r = run(8, "ok")
+    need(r.returncode == 0, "the fixture's clean run: %d\n%s" % (r.returncode, r.stdout))
+    whole = journal.read_bytes().decode("utf-8")
+    want = WRITTEN.read_bytes().decode("utf-8")
+    need(whole == want, "the journal the header writes is not the one the supervisor's tests read (%s):\n%s"
+         % (WRITTEN.relative_to(ROOT).as_posix(), whole))
+    print("PASS: three runs write the journal the supervisor's tests read", flush=True)
+
+    # (the game reads what the supervisor appends, "<vendor> <driver> <program>" under its comment lines: the real
+    # driver_faults::parse on the file's text; another driver's line is not this one's)
     faults = tmp / "longshot_driver_faults.txt"
-    appended = sup.faults_with("", opened[0].identity)
-    need(appended.startswith("#") and appended.endswith("1002 00800161 000000000000aaaa\n"), "the faults file's text: %r" % appended)
-    need(sup.faults_with(appended, opened[0].identity) is None, "a program is listed twice")
-    more = sup.faults_with("10de 12345678 0000000000000001", "1002 00800161 000000000000cccc")
-    need(more == "10de 12345678 0000000000000001\n1002 00800161 000000000000cccc\n", "a last line without its end: %r" % more)
-    faults.write_text(sup.faults_with(appended, "1002 00800161 000000000000cccc") + "1002 00800170 000000000000dddd\n", encoding="utf-8")
+    faults.write_text("# Longshot: programs the graphics driver's compiler faulted on\n# (a comment)\n"
+                      "1002 00800161 000000000000aaaa\n1002 00800161 000000000000cccc\n1002 00800170 000000000000dddd\n",
+                      encoding="utf-8")
     keys = subprocess.run([str(exe), "faults", str(faults)], capture_output=True, text=True, timeout=60, check=True).stdout.split()
     need(sorted(keys) == ["000000000000aaaa", "000000000000cccc"], "the game does not read the supervisor's lines: %s" % keys)
-    print("PASS: a process that dies inside a call leaves that entry open, and the game reads the line made of it", flush=True)
-
-    r = run(j.last_seq, "limit")
-    need(r.returncode == sup.EXIT_ENTRY_LIMIT, "the fixture's limit run: %d\n%s" % (r.returncode, r.stdout))
-    text = journal.read_text(encoding="utf-8")
-    j = sup.parse(text)
-    need(j.runs == 2 and len(j.entries) == 8 and j.last_seq == 8, "the second run numbers on")
-    need([e.seq for e in j.open_entries()] == [6], "the second run's open entry (the first run's is not its own)")
-    timed = j.timed()
-    need(timed is not None and timed.seq == 6 and timed.ms == 6000 and timed.key == 0xaaaa, "the entry past its limit")
-    r = run(j.last_seq, "ok")
-    need(r.returncode == 0, "the fixture's clean run: %d\n%s" % (r.returncode, r.stdout))
-    whole = journal.read_text(encoding="utf-8")
-    j = sup.parse(whole)
-    need(j.runs == 3 and len(j.entries) == 12 and j.last_seq == 12 and not j.open_entries() and j.timed() is None,
-         "a run that got through leaves nothing open")
-    print("PASS: numbers go on across runs, a limit names its entry, a clean run leaves nothing open", flush=True)
-
-    # (lines cut short, and lines that are not the journal's)
-    for torn in ("b d graphics 1002 0080", "e", "b d graphics 1002 00800161 000000000000eeee 0000000000000000"):
-        t = sup.parse(whole + torn)
-        need(len(t.entries) == 12 and not t.open_entries() and t.incomplete, "a last line with no end is read: %r" % torn)
-    noisy = sup.parse("junk\nb 1 graphics 1002 00800161 0000000000000001 0000000000000000\n" + text.replace("\n", "\r\n", 3) +
-                      "e 99 0 1\nt 99 3\nb zz\n\nb 9 graphics 1002 00800161 0000000000000009 0000000000000000 more\n")
-    need(noisy.runs == 2 and len(noisy.entries) == 8 and [e.seq for e in noisy.open_entries()] == [6],
-         "lines that are not the journal's change what is read")
-    need(sup.parse("").runs == 0 and not sup.parse("").open_entries() and sup.parse("run 1002 00800161 0").runs == 0, "an empty journal")
-    cut = text[:text.rindex("\nt ") + 1]
-    half = sup.parse(cut[:-4])   # (the last whole line cut inside)
-    need(half.runs == 2 and all(e.seq != 8 or e.result is None for e in half.entries), "an end cut short counts as an end")
-    print("PASS: torn and foreign lines are skipped", flush=True)
-
-    j = sup.parse(whole)
-    listed = sup.results_text(j, [(j.entries[1], "crashed")], "prepared")
-    need("driver 1002 00800161\n" in listed and "runs 3\n" in listed and "ended prepared\n" in listed and "entries 12\n" in listed,
-         "the result list's head:\n" + listed)
-    need("crashed graphics 1002 00800161 000000000000aaaa 0000000000000008 0\n" in listed, "the culprit's row:\n" + listed)
-    # (built: each run's own shader and its module, and the last run's graphics pipeline; the caught fault three times; the
-    # limit run's open entry was only interrupted as far as this list knows)
-    need("built 7\n" in listed and "faulted 3\n" in listed and "crashed 1\n" in listed and "interrupted 1\n" in listed,
-         "the result list's totals:\n" + listed)
-    print("PASS: the result list", flush=True)
+    print("PASS: the game reads the lines the supervisor appends", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
-    sup = supervisor()
-    check_source(sup)
+    check_source()
     with tempfile.TemporaryDirectory(prefix="prepare-journal-") as tmp:
-        check_journal(args.cxx, sup, Path(tmp))
+        check_journal(args.cxx, Path(tmp))
     print("PASS: the preparation's journal")
 
 

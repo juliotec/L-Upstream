@@ -2,9 +2,9 @@
 
 Every RX_, HOS_ and LONGSHOT_ name the source reads from the environment has a row, every row is read somewhere, and a removed name (GONE)
 is read nowhere: a switch added without a row, a row left behind by a deleted read and a removal that left a read all
-fail here. A read is a whole string literal "RX_...", "HOS_..." or "LONGSHOT_..." in code under gpu/, host/ or nx2/ (not in a comment, not part of a
+fail here. A read is a whole string literal "RX_...", "HOS_..." or "LONGSHOT_..." in code under gpu/, host/ or game/ (not in a comment, not part of a
 longer string): the reads go through getenv, env_on and helpers that are handed the name, so the literal is what they
-share. A name nx2/build.py hands a C file as a macro (-DNAME="RX_...") is a read too. PREFIXES are the literals that are no switch themselves: the start of a family, matched against the names the
+share. A name the builder (builder/crates/build-compile) hands a C file as a macro (-DNAME="RX_...") is a read too. PREFIXES are the literals that are no switch themselves: the start of a family, matched against the names the
 environment holds.
 
 Then switches.h itself, compiled alone: find() on the sorted table, and report() on made-up environments (a switch set,
@@ -35,7 +35,7 @@ SKIP_DIRS = {"third_party", "tests", "build-linux", "build-windows"}
 ROW = re.compile(r'^SW\(((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+), (\w+), (\w+), "((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)"\)$')
 GONE = re.compile(r'^GONE\(((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+), "(\d{4}-\d{2}-\d{2})", "((?:[^"\\]|\\.)*)"\)$')
 LITERAL = re.compile(r'"((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+)"')
-BUILD_DEFINE = re.compile(r'-D[A-Z0-9_]+="((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+)"')
+BUILD_DEFINE = re.compile(r'-D[A-Z0-9_]+=\\"((?:RX|HOS|LONGSHOT)_[A-Z0-9_]+)\\"')   # (in a Rust string: -DNAME=\"RX_...\")
 
 
 def code_of(line):
@@ -72,7 +72,7 @@ def table():
 def literals():
     """{name: ["file:line", ...]} of the whole "RX_...", "HOS_..." and "LONGSHOT_..." literals in code"""
     found = {}
-    for base in ("gpu", "host", "nx2"):
+    for base in ("gpu", "host", "game"):
         for path in sorted((ROOT / base).rglob("*")):
             if path.suffix not in (".c", ".cpp", ".h", ".inc") or SKIP_DIRS & set(path.relative_to(ROOT).parts):
                 continue
@@ -85,9 +85,10 @@ def literals():
                     found.setdefault(m.group(1), []).append("%s:%d" % (path.relative_to(ROOT).as_posix(), n))
     # (a name the build hands a C file as a macro is read there: -DPGO_ENV="RX_VK_PGO_FILE" for the renderer's copy of
     #  host/pgo_rt.c, whose getenv(PGO_ENV) holds no literal of its own)
-    for n, line in enumerate((ROOT / "nx2" / "build.py").read_text(encoding="utf-8").splitlines(), 1):
-        for m in BUILD_DEFINE.finditer(line.split("#")[0]):
-            found.setdefault(m.group(1), []).append("nx2/build.py:%d" % n)
+    for path in sorted((ROOT / "builder" / "crates" / "build-compile" / "src").rglob("*.rs")):
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in BUILD_DEFINE.finditer(line.split("//")[0]):
+                found.setdefault(m.group(1), []).append("%s:%d" % (path.relative_to(ROOT).as_posix(), n))
     return found
 
 

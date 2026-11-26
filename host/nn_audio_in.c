@@ -8,7 +8,7 @@
    stream, and the ocarina never heard anything.
 
    Here there is always one device of each kind (as on the console, whose microphone is always there). The started streams
-   of one format share a source: one microphone opened once, through SDL3, or SDL2 as the Linux AppImage carries
+   of one format share a source: one microphone opened once, through SDL3, or SDL2 as a Linux build carries
    (host/hos_sdl.c), converted to that format; what it records goes to each stream's own buffer, the newest capacity's
    worth kept. Which one is the Insert menu's choice (gpu/vk/menu/audio.cpp, Audio: Microphone), told by hos_mic_select:
    off, the system's default, or a microphone by its name. One that is not there, does not open, stops sending, or is no

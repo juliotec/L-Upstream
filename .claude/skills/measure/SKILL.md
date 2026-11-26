@@ -46,7 +46,7 @@ python -I scripts/dev.py ab --env RX_VK_X=0 --scene market  # a switch: set agai
   it refuses a run whose replay diverged. Record a route for it if none goes where you need
   ([replay a recording](../../../docs/dev/developing.md#replay-a-recording)).
 - A place no scene, save or route reaches: `dev.py queue run NAME --mode timing -- <your run>`, the
-  same save and route each time (the control bridge, `HOS_INPUT_PLAY` or `HOS_INPUT_SCRIPT`), `HOS_OPTIONS_FILE` pinned, interleaved, at
+  same save and route each time (the control bridge, `HOS_INPUT_PLAY` or `HOS_INPUT_SCRIPT`), the settings pinned (the run's profile's `settings.ini`: `longshot_ctl.py launch --options`), interleaved, at
   least two runs each, the median; read back each log's `vk: switches set` line.
 - With frame generation on (`--framegen`), count which engine made the frames in the measured stretch only.
 - Steam's Game Mode changes RADV's pipeline keys: warm and measure in the same kind of session. A handheld or laptop

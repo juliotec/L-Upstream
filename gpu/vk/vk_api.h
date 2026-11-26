@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 45   /* (44: binding_is_default; 45: Windows Vulkan loader resolver) */
+#define MKWVK_API_VERSION 48   /* (45: Windows Vulkan loader resolver; 46: romfs_read; 47: no romfs_dir; 48: game_menu_rows) */
 
 enum { OUTPUT_TRIAL_EXPIRED, OUTPUT_TRIAL_PREPARING, OUTPUT_TRIAL_READY, OUTPUT_TRIAL_ACTIVE, OUTPUT_TRIAL_SHOWN };
 enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
@@ -33,9 +33,9 @@ typedef struct MkwVkMonitor {
     int width, height;        /* desktop pixels, not DPI-scaled window coordinates */
     int flags;                /* HOS_MONITOR_* */
 } MkwVkMonitor;
-enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
-/* (longshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
-enum { HOS_OPT_TEXT_SIZE = 10 };
+/* The option ids of the game's own features (Field of view, Damage taken, the cheats, the HUD's layout...) are the game's:
+   game/options.h. The ones here are the renderer's and the host's. Every id is answered by the one option callback. */
+#include "../../game/options.h"
 /* (longshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
    or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
 enum { HOS_OPT_GYRO = 18, HOS_OPT_GYRO_SENS_X, HOS_OPT_GYRO_INV_X, HOS_OPT_GYRO_INV_Y, HOS_OPT_GYRO_SENS_Y, HOS_OPT_GYRO_DEADZONE };
@@ -51,13 +51,11 @@ enum { HOS_OPT_VOLUME = 27, HOS_OPT_MUTE_BACKGROUND };
 enum { HOS_OPT_WALK_MODE = 49, HOS_OPT_WALK_SPEED };
 /* (longshot) the Insert menu's HDR set to Native (host/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
    the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
-/* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on; HOS_OPT_SKIP_TITLE, 44: its Skip
-   title screen row, host/oot_autoload.c: 1 on) */
-enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD, HOS_OPT_SKIP_TITLE };
+enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE };   /* (43 and 44 are the game's: game/options.h) */
 /* (HOS_OPT_DISABLE_CAMERA_CENTERING, 45: Controls' movement-follow yaw, host/mouse_native.c: 0 stock, 1 disabled) */
 enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
 /* (longshot) the Insert menu's Camera speed: the right stick's camera turn in percent of the game's, 50 to 400 (host/nn_vi.c
-   hos_camera_scale, nx2/oot_patches.py). 48: after the HDR and Discord rows' 40 to 43, Skip title's 44 and camera centering's 45 */
+   hos_camera_scale, the hook sites camera.*Speed*). 48: after the HDR and Discord rows' 40 to 43, Skip title's 44 and camera centering's 45 */
 enum { HOS_OPT_CAMERA_SPEED = 48 };
 /* (HOS_OPT_PROMPTS, 46: the Button prompts row, host/prompts.c: 0 Auto, else HOS_PROMPT_* + 1; a change shows at once) */
 enum { HOS_OPT_PROMPTS = 46 };
@@ -65,13 +63,6 @@ enum { HOS_OPT_PROMPTS = 46 };
    makes the scene buffer RGBA16F only then, so Native HDR with the row on Vanilla keeps the game's R11G11B10F and the
    temporal upscalers, which take only that scene) */
 enum { HOS_OPT_HDR_TONEMAP = 47 };
-/* Gameplay's vertical field of view, percent of the game's current angle; 100 is unchanged. */
-/* Walk mode and Walk speed use 49 and 50. */
-enum { HOS_OPT_FOV = 51 };
-/* (HOS_OPT_SKIP_OPENING, 52: Gameplay's Skip opening, host/hos_main.c hos_oot_opening. Off. The new-game story movie
-   and Navi waking Link. 44 stays reserved for Skip title, 49 and 50 are Walk's, 60 is reserved for the item wheel. A new option id
-   answered by the existing option callback does not change MkwVkHost or MkwVkRenderer.) */
-enum { HOS_OPT_SKIP_OPENING = 52 };
 /* (HOS_OPT_FPS_CAP, 53: the Game frame rate cap row, host/nn_vi.c fps_refresh reads it at each present: 0 the console's 60, then
    90, 120, 144, 165, 240, 6 Uncapped; a change applies in play) */
 enum { HOS_OPT_FPS_CAP = 53 };
@@ -79,23 +70,16 @@ enum { HOS_OPT_FPS_CAP = 53 };
 enum { HOS_OPT_HOLD_TOGGLE = 54 };
 /* Audio output: 0 Auto, 1 Stereo, 2 5.1, 3 Mono. Only Mono averages final stereo output live. */
 enum { HOS_OPT_AUDIO_OUTPUT = 57 };
-/* (HOS_OPT_SPRINT, 97: the Controls tab's Sprint row, host/oot_sprint.c: 1 on, 0 Sprint's key and button do
+/* (HOS_OPT_SPRINT, 97: the Controls tab's Sprint row, game/oot_sprint.c: 1 on, 0 Sprint's key and button do
    nothing) */
 enum { HOS_OPT_SPRINT = 97 };
 /* (HOS_OPT_SPRINT_TOGGLE, 98: the Controls page's Toggle for Sprint, toggle_sprint=: 1, a press of Sprint's key or button
-   turns it on and the next or Link's state turns it off (host/oot_sprint.c); 0, the default: Sprint while held) */
+   turns it on and the next or Link's state turns it off (game/oot_sprint.c); 0, the default: Sprint while held) */
 enum { HOS_OPT_SPRINT_TOGGLE = 98 };
-/* Damage taken: 0 Half, 1 Normal (unchanged), 2 Double, 3 Quadruple. */
-enum { HOS_OPT_DAMAGE_TAKEN = 55 };
-/* (HOS_OPT_SHADOW_RES, 56: Graphics' Shadow resolution, host/oot_shadow.c: the sun's cascades as drawn, its Auto resolved
-   (gpu/vk/vk_menu.cpp menu_shadow_res), 0 the game's 1600, 1 2200, 2 3072, read each frame. The existing option callback:
-   no new member.) */
-enum { HOS_OPT_SHADOW_RES = 56 };
 /* (HOS_OPT_RENDER_THREAD, 58: whether the render thread runs on this run, 1 or 0, as the renderer resolved it once at the
    start (gpu/vk/vk_replay.cpp async_on: RX_VK_ASYNC=1, or unset and the Insert menu's Threaded rendering On, or its Auto's
    choice). host/nvn_native.c answers the game's present poll at once with it. The existing option callback: no new member.) */
 enum { HOS_OPT_RENDER_THREAD = 58 };
-enum { HOS_OPT_TRANSITION_AUTOSAVE = 59 };
 /* (HOS_OPT_MOUSE_INVERT_X, 61: Controls' Invert mouse horizontal, 1 on: the mouse's left and right swapped, as option
    8, Invert mouse vertical, swaps its up and down. host/mouse_native.c (the camera's yaw) and host/nn_hid.c (the mouse
    as the right stick) read it by its number, as they read 8. The existing option callback: no new member. 59 is the
@@ -111,21 +95,11 @@ enum { HOS_OPT_VIBRATION = 63 };
 enum { HOS_OPT_VIBRATION_STATUS = 64 };
 /* (HOS_OPT_NATIVE_ZSTD, 65: an unset HOS_NATIVE_ZSTD on this GPU, host/hos_zstd.c: 1 or 2; 0 until the device is made) */
 enum { HOS_OPT_NATIVE_ZSTD = 65 };
-/* (HOS_OPT_HUD_LAYOUT, 71: Graphics' HUD layout, host/hos_wide_ui.c reads it at each present by its number: on a screen
-   that is not 16:9, 0 the HUD's corners at the screen's edges, 1 the HUD in the middle 16:9 as before #95 (on a narrower
-   screen fitted to its width, as the menus). HOS_WIDE_UI, when set, stands over it. The existing option callback: no new
-   member. 62 to 70, 80, 88 and 90 are taken by open pull requests.) */
-enum { HOS_OPT_HUD_LAYOUT = 71, HOS_OPT_HUD_HEALTH, HOS_OPT_HUD_BUTTONS, HOS_OPT_HUD_MINIMAP };
-/* One packed placement per group: x and y in percent of the picture (signed, biased by 16), scale in percent. */
-enum { HOS_HUD_DEFAULT_PLACEMENT = 16 | (16 << 6) | (100 << 12) };
 /* (longshot) Controls' DualSense HD Haptics, 1 on (the default): a DualSense that RenHDrum plays (host/rumble_renhdrum.c)
    taps its speaker and kicks back its held L2/R2 from the game's vibration, the motors' heavy hits a little deeper; 0
    its voice coils only, as before. host/pad_sdl.c reads it by its number each poll. The existing option callback: no new
    member. 93: 62 to 70, 80, 88 and 90 are taken by open pull requests */
 enum { HOS_OPT_DS_HD_HAPTICS = 93 };
-/* (HOS_OPT_WIDE_MENUS, 102: Graphics' Ultrawide menus, host/hos_wide_ui.c reads it at each present by its number: 3 is Extended,
-   the menus at their 16:9 size with their side panes at the screen's edges. The existing option callback: no new member.) */
-enum { HOS_OPT_WIDE_MENUS = 102, HOS_WIDE_MENUS_EXTENDED = 3 };
 /* (longshot) the Controller speaker page (host/pad_speaker.c), a block of its own from 140 (the numbers below are taken by
    main or by open pull requests). HOS_OPT_PAD_SPEAKER_VOLUME, 140: its volume in percent; HOS_OPT_PAD_SPEAKER_CLASS + n,
    141 to 149: where the n-th kind of sound plays, host/audio_source.h's classes from Navi's voice (class n + 1): 0 Off,
@@ -155,7 +129,7 @@ enum { HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH, HOS_PAD_BACK, H
        HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER, HOS_PAD_RSHOULDER, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT,
        HOS_PAD_RIGHT, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_RPADDLE1, HOS_PAD_LPADDLE1,
        HOS_PAD_RPADDLE2, HOS_PAD_LPADDLE2, HOS_PAD_N };
-/* (longshot) the inputs that have prompt artwork (host/prompts.c, nx2/prompt_assets.py's PADS): the prompt font's code
+/* (longshot) the inputs that have prompt artwork (host/prompts.c, builder/crates/build-assets/src/prompts's PADS): the prompt font's code
    points go by this count, so the paddles past it show their Switch button's default icon */
 enum { HOS_PAD_ART_N = HOS_PAD_RTRIGGER + 1 };
 /* (longshot) a DualShock 4's or DualSense's touchpad click, which opens the Insert menu as F1 does (host/pad_sdl.c,
@@ -167,8 +141,8 @@ enum { HOS_PAD_TOUCHPAD = 31 };
    (button and slot unused). */
 enum { HOS_BIND_PAD, HOS_BIND_KEY, HOS_BIND_SPRINT_AUTO, HOS_BIND_SPRINT_ON, HOS_BIND_SPRINT_BEGIN, HOS_BIND_SPRINT_TOGGLE };
 enum { HOS_SPRINT_AUTO_KEY = 1, HOS_SPRINT_AUTO_B = 2, HOS_SPRINT_AUTO_PAD = 4, HOS_SPRINT_AUTO_LS_SHIFT = 3 };
-/* (longshot) the controller faces of the button prompts (host/prompts.c): the Switch, then nx2/prompt_faces.py FACES' order,
-   then the keyboard's (nx2/prompt_keys.py: the keys bound, not the pad inputs); the Button prompts row's value is one more (0
+/* (longshot) the controller faces of the button prompts (host/prompts.c): the Switch, then builder/crates/build-assets/src/prompts/faces.rs FACES' order,
+   then the keyboard's (builder/crates/build-assets/src/prompts/keys.rs: the keys bound, not the pad inputs); the Button prompts row's value is one more (0
    Auto) */
 enum { HOS_PROMPT_SWITCH, HOS_PROMPT_XBOX, HOS_PROMPT_PS4, HOS_PROMPT_PS5, HOS_PROMPT_STEAMDECK, HOS_PROMPT_KEYBOARD, HOS_PROMPT_N };
 /* (longshot) what of the button prompts follows a new face or new controls at once (MkwVkHost.prompts_live, a bit each):
@@ -179,7 +153,7 @@ enum { HOS_PROMPTS_LIVE_TEXTURES = 1, HOS_PROMPTS_LIVE_LAYOUTS = 2, HOS_PROMPTS_
    key is held, the movement keys tilt the left stick less: host/nn_hid.c walk_held). The ocarina's five note controls
    take a gamepad input too, and share it: a note's key can be some other control's key at once, host/nn_hid.c has_pad.
    The HUD shortcut (keys and gamepad inputs, its own: host/nn_hid.c hud_pad_mask). Then Sprint, keys and gamepad inputs,
-   which sets the game's dash input in Link's flags (host/oot_sprint.c: the game's run after a roll) */
+   which sets the game's dash input in Link's flags (game/oot_sprint.c: the game's run after a roll) */
 enum { HOS_KEY_MOVE_UP = HOS_SW_N, HOS_KEY_MOVE_DOWN, HOS_KEY_MOVE_LEFT, HOS_KEY_MOVE_RIGHT, HOS_KEY_CAM_UP,
        HOS_KEY_CAM_DOWN, HOS_KEY_CAM_LEFT, HOS_KEY_CAM_RIGHT, HOS_KEY_OC_NOTE_L, HOS_KEY_OC_NOTE_R,
        HOS_KEY_OC_NOTE_A, HOS_KEY_OC_NOTE_Y, HOS_KEY_OC_NOTE_X, HOS_KEY_WALK, HOS_KEY_TOGGLE_HUD, HOS_KEY_SPRINT, HOS_KEY_N };
@@ -285,10 +259,7 @@ typedef struct MkwVkHost {
     /* (longshot) the controller face of the button prompts the game was given at its start (host/prompts.c): HOS_PROMPT_*;
        -1 none (the game's own icons), or not chosen yet */
     int (*prompt_face)(void);
-    /* (longshot) the game's romfs folder (--romfs, or romfs beside the executable): the overlays read the game's own menu font
-       from it (gpu/vk/vk_imgui.cpp), in memory only */
-    const char *(*romfs_dir)(void);
-    /* (longshot) ultrawide's menus (nx2/oot_wide.py KEEP_VTABLES): keep_mask sets which of those screens keep the whole picture
+    /* (longshot) ultrawide's menus (game/oot_wide_sites.c WIDE_KEEP_*): keep_mask sets which of those screens keep the whole picture
        (a bit each; HOS_WIDE_KEEP=<hex> over it); returns the margin of the middle 16:9 at either side, a fraction of the
        picture's width (0: the picture is 16:9) */
     float (*wide_menus)(uint32_t keep_mask);
@@ -377,7 +348,7 @@ typedef struct MkwVkHost {
        its warm-up), 0 the switch's normal value, 1 the A/B's, 2 or 3 those sides in a transition (a flip inside the frame,
        or less than 0.3 s before its end), which scripts/perf.py ab leaves out */
     int (*ab_frame)(int64_t from_ns, int64_t to_ns);
-    /* (version 35: 24 is the audio outputs, 25 the microphone test, 26 the performance summary, 27 the frame trace, 28 the renderer's out of memory note, 29 the monitors, 30 the performance sample's tracking, 31 the renderer's quick invalidate, 32 the rumble test, 33 the NFC tags, 34 the A/B within one run) the Mods tab (host/mods.c, host/cheats.c). mod_info: mod i in the list's order, 0 past the end
+    /* (version 35: 24 is the audio outputs, 25 the microphone test, 26 the performance summary, 27 the frame trace, 28 the renderer's out of memory note, 29 the monitors, 30 the performance sample's tracking, 31 the renderer's quick invalidate, 32 the rumble test, 33 the NFC tags, 34 the A/B within one run) the Mods tab (game/mods.c, game/cheats.c). mod_info: mod i in the list's order, 0 past the end
        (name: its folder; detail: what it has; note: what of it is not used and why, "" none); mod_edit: op 0 off, 1 on, 2 up a
        place, 3 down a place, kept at once and applied at the next start; mods_changed: 0 while the order and the switches are
        the start's, else a number for them (the restart question). cheat_info: cheat i of the mods that were on at the start,
@@ -413,6 +384,14 @@ typedef struct MkwVkHost {
     int (*binding_is_default)(int button);
     /* (version 45) Resolve vkGetInstanceProcAddr through the executable on Windows. */
     uintptr_t (*vulkan_loader_proc)(void);
+    /* (version 46, longshot) a whole file of the game's RomFS (host/romfs.h: the .nup's index, or a romfs folder), by its
+       path there: malloc'd, *n its size; NULL when there is none or it is larger than limit. Freed with romfs_free. The
+       renderer's only way to the game's files (the overlays' menu font: gpu/vk/vk_imgui.cpp) */
+    uint8_t *(*romfs_read)(const char *rel, size_t *n, size_t limit);
+    void (*romfs_free)(void *p);
+    /* (version 48, longshot) the game's rows of the Insert menu (game/game.h game_menu_rows, game/menu/): plain data, *count
+       of them, which the menu adds to its own at the start (gpu/vk/menu/game_rows.cpp) */
+    const struct GameMenuRow *(*game_menu_rows)(int *count);
 } MkwVkHost;
 /* (version 35) a cheat's kind: a heading (no opcodes), a data cheat (switched), a master cheat (always on), not supported (note) */
 enum { MKWVK_CHEAT_HEADING, MKWVK_CHEAT_DATA, MKWVK_CHEAT_MASTER, MKWVK_CHEAT_UNSUPPORTED };

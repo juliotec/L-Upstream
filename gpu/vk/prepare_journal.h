@@ -6,7 +6,7 @@
 // work fell to the game's own first start, which died in the same place.
 //
 // So a preparation asked for a journal (longshot --prepare-shaders --prepare-journal <file>, LONGSHOT_PREPARE_JOURNAL) appends
-// one short line before each driver compile call and one after it. The Builder's supervisor (nx2/prepare_supervisor.py) reads
+// one short line before each driver compile call and one after it. The builder's supervisor (build-driver supervisor.rs) reads
 // the file when the run dies: a begin with no end is where it was. docs/dev/reference/shader-preparation.md has the whole of it.
 //
 // The lines ('\n' ended, fields separated by one space, numbers in hex except where said):

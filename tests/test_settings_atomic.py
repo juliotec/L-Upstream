@@ -252,7 +252,7 @@ def sources():
     need("hos_atomic_write(" in moved and not re.search(r'fopen\([^;]*"w[b+]?"\)', moved), "hos_main.c: saves-moved.txt through the helper")
     recover = body(main, "static void recover_writes(void) {")
     need(recover and "hos_atomic_remove_stale(" in recover, "hos_main.c has recover_writes, which removes the stand-ins of the settings")
-    need("hos_atomic_remove_stale(hos_options_file())" in recover, "recover_writes removes the stand-in of the settings file wherever it is (the user folder's, HOS_OPTIONS_FILE's)")
+    need("hos_atomic_remove_stale(hos_options_file())" in recover, "recover_writes removes the stand-in of the settings file wherever it is (the profile's, the game folder's)")
     call = main.find("\n    recover_writes();")
     need(call >= 0 and main.rfind('if (!hos_user_dir) hos_user_dir = "user";', 0, call) >= 0 and call < main.find("hos_options_carry();", call),
          "the start calls recover_writes() after the user folder is chosen and before the options' one-time copy")

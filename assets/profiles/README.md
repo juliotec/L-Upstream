@@ -1,65 +1,42 @@
 # Play profiles
 
 Profiles the build compiles with, committed so every build of a checkout uses the same ones: the release's builders,
-a player's own build (with DLSS or FSR 4 too), and a developer's. Names of Longshot's own functions, a hash of each
-one's shape and how often its branches ran, and the guest addresses of the game's hottest functions: no game code or
-data.
+a player's own build (with DLSS or FSR 4 too), and a developer's. No game code or data: the renderer's holds names of
+Longshot's own functions, a hash of each one's shape and how often its branches ran; the guest profile holds guest
+addresses, a 64-bit hash of each function's instruction words, and counts.
 
-## hot_funcs.txt: the hot list
+## guest.profile.xz: the lifted game code's
 
-The lifted game functions the game spends its time in, one a line, `f_<guest address>`, hottest first (the lift's
-`A64_HOT_FUNCS`). The lift puts them in `code_hot.c`, their float helpers inline, and the build compiles them as the eight
-hot pieces at `-O2` with their hot callees inlined, where every other lifted file is built at `-O1` (docs/dev/reference/build.md,
-"What the build compiles"). `nx2/make_game.py` (`hot_list_for`) builds with it unless the checkout's own `work/hot_funcs.txt`, a list
-`A64_HOT_FUNCS` names in the shell, or `LONGSHOT_HOT_LIST=0` (no list) says otherwise: copied into the build's work
-folder, or read where it is when that folder is the checkout's own `work/`. The AppImage and the Windows builder's tools
-folder carry it, so a player's build uses it too. No play profile of the hot pieces (`work/longshot_pieces.prof`,
-`RX_PGO`) comes with it: they are built at `-O2` without one.
+The guest profile (docs/dev/reference/builder.md, "The guest profile"): how often each of the game's functions, blocks
+and conditional branches ran, keyed by the function's entry and its code's hash, so a function whose code changed
+since (a game update, an ExeFS patch) takes none of its counts. Every build lifts with it: branch weights, the hottest
+functions in `lifted_hot_*` units at `-O2`, the ones it never saw run in `lifted_cold_*` units at `-O0`. Its text is
+`longshot-guest-profile 1 build <the game's main module's build id>`, then `f <entry> <code hash> <entries>`,
+`b <block> <count>` and `t <block> <taken count>` lines: addresses, hashes and counts only (each line checked against
+that form when committed). xz -9e: 2.8 MB, 13.8 MB of text; the lift and `longshot-builder dev profile --into` read it as it
+is. How to record it again: docs/dev/reference/build.md, "Record the guest profile".
 
-It is a list of guest addresses, so it changes mostly with the game's version. The translator can still move it: the
-lift decides where a function starts and which giant functions are split into pieces, and a function's time can move to
-the host (an entry hook). The lift's line `hot functions (A64_HOT_FUNCS): N of 680 listed found` shows that drift (a name
-it does not find is passed over). Make it again when the game or the translator changes where the game spends its time.
+Recorded: 71,741 of the game's 294,518 functions ran in at least one of:
 
-Recorded: 680 functions, for the game's version 1.1.1 (build `e0f3ccfa`), from Longshot's own lift of main 544229a2
-(v3.0.0-rc.7; the test builds carried unmerged pull requests too, their switches off) on Windows 11, a Ryzen 9 5900X (12
-cores, 24 threads) and an RTX 3090, at 3840x2160, frame rate uncapped, with the all-thread sampler (`HOS_PROFILE=1`: every
-game thread's stack, a sweep about every 4 ms):
+1. 2026-11-23, the new builder (`longshot-builder build --guest-profile generate`, #2286 at 851ee3f6), NVIDIA GeForce
+   RTX 3090, Linux, Ryzen 9 7900X, headless: the six scenes of the old hot list, dev.py ab's hyrule-field,
+   hyrule-field-adult, market, kakariko, deku-tree and fire-temple, each from the Kokiri start save, the counters
+   cleared once in play, then the teleport and 90 s in the scene. 43,333 functions ran.
+2. 2026-11-22, the same PC, an earlier build of the new lifter: the same six scenes, boot and loading included. 71,601
+   functions ran; every one still matches this build's code.
 
-1. 2026-11-17, a build with no hot list (every lifted function at `-O1`, so the list does not pick itself): adult Link
-   played by hand through Kakariko Village with three of its houses, then two legs up Death Mountain Trail, about 3
-   minutes; the samples of each area from 3 s after its load to the next load (75,280 samples of lifted code in
-   Kakariko, 33,015 on the trail).
-2. 2026-11-17, builds of the same days with a checkout's earlier list of 849 functions (which runs those faster, so it
-   leans away from them, not towards them): child Link standing in the Market from its save, and child Link standing in
-   Hyrule Field by day, two sessions each (92,652 and 68,111 samples).
-
-The rule is `scripts/perf.py hotlist`'s, applied by a script outside this repository, because the four areas come from three
-builds and two of them from one recording: a sample charges the innermost lifted function (a sample in a piece of a split
-giant function, `s_<addr>_<n>`, charges the giant, `f_<addr>`, which `scripts/perf.py hotlist` reaches through the giant's own
-frame); the four areas are weighted equally (each area's samples count as much as another's, however long it was
-recorded); the hottest first until 85 % of that weight, which came to 680 functions. It covers 85.0 % of Kakariko's
-samples of lifted code, 86.7 % of the trail's, 84.6 % of the Market's and 83.8 % of the field's; a list made without one
-of the areas still covers 79 to 84 % of that area. The game's Zstd decoder, which `scripts/perf.py hotlist` adds whatever the
-samples say, is not added: 4 of its 22 functions are in the list by their samples.
-
-- Measured (the same PC and route, one run a build, frames in play): against no list, Death Mountain Trail 45.3 -> 56.4 fps
-  (+25 %), the game's time a frame 20.8 -> 16.7 ms (-20 %); Kakariko 51.3 -> 55.7 fps (+9 %), 18.2 -> 16.2 ms (-11 %),
-  but more frames over 33 ms there (50 against 25 in about 100 s), not explained. The build: 6:17 -> 6:42 (+25 s) in an
-  incremental pair (11 of the 92 lifted files came from the cache); about +55 s from scratch, estimated. The eight pieces
-  took 1,452 s of compile CPU where the same functions take about 330 s at `-O1`: about a fifth more lifted compile CPU,
-  which is what a PC with few threads pays. Issue 505 has these runs and two other PCs' (a Steam Deck: +10 to +22 % on
-  the trail with a list of 319 or 773 functions).
-- Not yet: other areas (dungeons, the overworld's other places, fights), child Link in play, a play profile of the
-  pieces, a build from scratch, and the build time and memory on fewer cores.
+- Measured with it: a first build 124 s against 183 s with the never-run functions at `-O1` (all 24 threads); in ten
+  areas, seven of them not in the recording, fps, 1 % lows and the game's CPU time a frame the same within 1 %.
+- Not yet: a Windows recording, the areas past the six scenes. A new area can spend a few % of its work in functions
+  the six scenes never ran (4 % for the Deku Tree, against the other five); they run at `-O0` until a recording
+  covers them.
 
 ## longshot_vk.profdata.xz: the renderer's
 
-The Vulkan back end's play profile (nx2/build.py `RX_VK_PGO`; docs/dev/developing.md, "Record the renderer's play profile"),
-compressed with xz. `nx2/make_game.py` unpacks it into the work folder and builds the renderer with it, unless the
-checkout's `work/longshot_vk.profdata` or `RX_VK_PGO` says otherwise; the Linux AppImage carries it for the player's
-build, which compiles the renderer (the AppImage has no built one). A compiler that can't read it builds the renderer
-without it.
+The Vulkan back end's play profile (`RX_VK_PGO`; docs/dev/developing.md, "Record the renderer's play profile"),
+compressed with xz. longshot-builder unpacks it into the work folder (`longshot_vk.shipped.profdata`) and builds the
+renderer's own files with it, unless `RX_VK_PGO` says otherwise (builder/crates/build-compile/src/vk_profile.rs). A
+compiler that can't read it builds the renderer without it.
 
 One profile for every build for now. It ages rather than breaks: a function changed since the recording is compiled as
 if there were no profile, the rest keep theirs. Record it again before a release, and when the renderer has changed much.

@@ -4,7 +4,7 @@ Builds the tab's lines and keys (mod_lines, mods_step, mods_tick: from the sourc
 the mods in their order, then each mod's cheats under a heading (a file's own headings shown, never chosen); Up and Down
 step over headings and stop at the ends; Left and Right switch a mod off and on; Enter picks a mod up, Up and Down move it a
 place (not past the ends), Enter puts it down; a data cheat switches with Left, Right and Enter, a master code or an
-unsupported cheat does not; an older host (version 22) shows no Mods tab. And by text: the API's version and functions, the
+unsupported cheat does not; a host without the Mods tab's functions shows no Mods tab. And by text: the API's version and functions, the
 host's table, the tab strip's title, the restart question's slot for the mods.
 
 python -I -B tests/test_mods_menu.py [--cxx g++]
@@ -68,12 +68,10 @@ static void key(int k) {
 enum { UP = 1, DOWN = 2, LEFT = 3, RIGHT = 4, ESC = 5, ENTER = 7 };
 int main() {
     MkwVkHost h{};
-    h.version = 34, h.mod_info = mod_info, h.mod_edit = mod_edit, h.mods_changed = mods_changed, h.cheat_info = cheat_info,
-    h.cheat_set = cheat_set;
+    h.version = MKWVK_API_VERSION, h.mod_info = mod_info, h.mod_edit = mod_edit, h.mods_changed = mods_changed,
+    h.cheat_info = cheat_info, h.cheat_set = cheat_set;
     host = &h;
-    CHECK(!tab_shown(TAB_MODS) && tab_shown(TAB_GRAPHICS));   /* (a host before version 35: no Mods tab) */
-    h.version = 35;
-    CHECK(tab_shown(TAB_MODS));
+    CHECK(tab_shown(TAB_MODS) && tab_shown(TAB_GRAPHICS));
     const std::vector<ModLine> lines = mod_lines();
     std::string kinds;
     for (const ModLine& l : lines) kinds += l.kind;
@@ -111,7 +109,7 @@ int main() {
     CHECK(mods_sel == 0);
     nmods = 0;
     CHECK(!tab_shown(TAB_MODS));
-    printf("PASS: the Mods tab: its lines, the switches, moving a mod, the cheats; hidden without mods or an older host\n");
+    printf("PASS: the Mods tab: its lines, the switches, moving a mod, the cheats; hidden without mods\n");
     return 0;
 }
 '''

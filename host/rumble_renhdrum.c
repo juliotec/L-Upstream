@@ -50,6 +50,8 @@
     X(RenHdcEngine *, engine_create, (bool, bool))                                                                     \
     X(void, engine_destroy, (RenHdcEngine *))                                                                          \
     X(int32_t, engine_push_half_sample, (RenHdcEngine *, int64_t, bool, float, float, float, float))                  \
+    X(int32_t, settings_resolve_pure, (const RenHdcConfig *, RenHdcSettings *))                                         \
+    X(int32_t, engine_apply_settings, (RenHdcEngine *, const RenHdcSettings *))                                         \
     X(int32_t, engine_tick, (RenHdcEngine *, int64_t, uint8_t *))
 static struct {
 #define X(ret, name, args) ret(*name) args;
@@ -169,12 +171,9 @@ static void feed(int side, float al, float fl, float ah, float fh) {   /* (lk he
     if (usb_dsp) rh.dualsense_dsp_set_half_target(usb_dsp, right, al, fl, ah, fh);
     if (bt_dsp) rh.dualsense_dsp_set_half_target(bt_dsp, right, al, fl, ah, fh);
     if (sv_dsp) rh.dualsense_dsp_set_half_target(sv_dsp, right, al, fl, ah, fh);
-    /* (the Switch engine has no gain of its own: the strength scales what it is given, for testers' runs) */
-    const float g = vibration_gain((int)gain_percent);
-    const float sal = al * g > 1.0f ? 1.0f : al * g, sah = ah * g > 1.0f ? 1.0f : ah * g;
     for (int i = 0; i < RH_PADS; i++) {
         if (pads[i].xbox) rh.xbox_rumble_push_half_sample(pads[i].xbox, us, right, al, fl, ah, fh);
-        if (pads[i].engine) rh.engine_push_half_sample(pads[i].engine, us, right, sal, fl, sah, fh);
+        if (pads[i].engine) rh.engine_push_half_sample(pads[i].engine, us, right, al, fl, ah, fh);
     }
 }
 
@@ -369,7 +368,7 @@ int rh_usb_open(void *pad, int token) {
     AcquireSRWLockExclusive(&life);
     int ok = 0;
     if (!closed && !usb_pad) {
-        RenHdcDualSenseDsp *dsp = rh.dualsense_dsp_create(100, false);   /* (its full gain: the strength is ours) */
+        RenHdcDualSenseDsp *dsp = rh.dualsense_dsp_create(100, true);   /* (its full gain: the strength is ours) */
         if (dsp) {
             AcquireSRWLockExclusive(&lk);
             usb_dsp = dsp;
@@ -437,10 +436,37 @@ void *rh_usb_owner(void) { return usb_pad; }
 static void *bt_hid;
 static HANDLE bt_thread;
 static volatile LONG bt_run, bt_failed;
+/* Relative, high-resolution deadlines are shared by the two HID audio threads. */
+static HANDLE rh_report_timer(void) {
+    return CreateWaitableTimerExW(NULL, NULL, 0x2 /* HIGH_RESOLUTION */, 0x00100002 /* SYNCHRONIZE | TIMER_MODIFY_STATE */);
+}
+static void rh_wait_until(HANDLE timer, int64_t deadline) {
+    const int64_t ns = deadline - hos_now_ns();
+    if (ns <= 0) return;
+    LARGE_INTEGER due;
+    due.QuadPart = -(ns + 99) / 100;
+    if (timer && SetWaitableTimerEx(timer, &due, 0, NULL, NULL, NULL, 0)) {
+        WaitForSingleObject(timer, INFINITE);
+        return;
+    }
+    Sleep((DWORD)((ns + 999999) / 1000000));
+}
+
+/* A stalled HID write can outlive shutdown. Keep its handles and DSP until the writer has exited. */
+static int rh_join_writer(HANDLE *thread, volatile LONG *run, DWORD timeout) {
+    InterlockedExchange(run, 0);
+    if (!*thread) return 1;
+    if (WaitForSingleObject(*thread, timeout) != WAIT_OBJECT_0) return 0;
+    CloseHandle(*thread);
+    *thread = NULL;
+    return 1;
+}
+
 static DWORD WINAPI bt_main(LPVOID unused) {
     (void)unused;
     void hos_host_thread_register_self(const char *name);   /* (mkw_glue.c) */
     hos_host_thread_register_self("vibration (DualSense, Bluetooth)");
+    HANDLE timer = rh_report_timer();
     uint8_t report[RENHDRUM_DS5_BT36_REPORT_SIZE > RENHDRUM_DS5_BT_REPORT_SIZE ? RENHDRUM_DS5_BT36_REPORT_SIZE
                                                                               : RENHDRUM_DS5_BT_REPORT_SIZE];
     int64_t next = hos_now_ns(), loud_at = 0;
@@ -483,9 +509,11 @@ static DWORD WINAPI bt_main(LPVOID unused) {
                 fails = 0;
             }
         }
-        if (now > next + 4 * (int64_t)RENHDRUM_DS5_BT_PERIOD_NS) next = now;   /* (far behind: start again from now) */
-        if (next > now) Sleep((DWORD)((next - now + 999999) / 1000000));
+        const int64_t after_write = hos_now_ns();
+        if (after_write > next + 4 * (int64_t)RENHDRUM_DS5_BT_PERIOD_NS) next = after_write;
+        rh_wait_until(timer, next);
     }
+    if (timer) CloseHandle(timer);
     if (hd == 1 && !bt_failed) {   /* (closing: both triggers Off, so none stays stiff; the speaker stops with the reports) */
         int r = -1;
         AcquireSRWLockExclusive(&lk);
@@ -524,10 +552,12 @@ static void recreate_bt_dsp(int percent) {
     }
     ReleaseSRWLockExclusive(&life);
 }
+static void bt_close_locked(DWORD timeout);
 int rh_bt_open(void *pad, const char *hid_path) {
     if (!rh_ok || !hid_path || !*hid_path) return 0;
     AcquireSRWLockExclusive(&life);
     int ok = 0;
+    if (bt_thread && !bt_run) bt_close_locked(0);
     if (!closed && !bt_pad) {
         void *hid = hos_sdl_hid_open(hid_path);
         const int p = (int)gain_percent;
@@ -557,11 +587,8 @@ int rh_bt_open(void *pad, const char *hid_path) {
     return ok;
 }
 int rh_bt_alive(void) { return bt_thread && !bt_failed; }
-static void bt_close_locked(void) {   /* (life held) */
-    HANDLE thread = bt_thread;
-    bt_thread = NULL;
-    InterlockedExchange(&bt_run, 0);
-    if (thread) WaitForSingleObject(thread, 2000), CloseHandle(thread);   /* (it takes lk only, never life) */
+static void bt_close_locked(DWORD timeout) {   /* (life held) */
+    if (!rh_join_writer(&bt_thread, &bt_run, timeout)) return;
     if (bt_hid) hos_sdl_hid_close(bt_hid);
     bt_hid = NULL, bt_pad = NULL;
     AcquireSRWLockExclusive(&lk);
@@ -572,10 +599,10 @@ static void bt_close_locked(void) {   /* (life held) */
 }
 void rh_bt_close(void) {
     AcquireSRWLockExclusive(&life);
-    bt_close_locked();
+    bt_close_locked(100);
     ReleaseSRWLockExclusive(&life);
 }
-void *rh_bt_owner(void) { return bt_pad; }
+void *rh_bt_owner(void) { return bt_run ? bt_pad : NULL; }
 
 /* ---- a Steam Controller (2026)'s grips: report 0x88 every 3.875 ms on its cable, 7.75 ms over Bluetooth or its dongle,
    and the 0x86 reports that keep it in that mode, written beside SDL's own. RenHDrum's experimental: built from one
@@ -585,24 +612,11 @@ static void *sv_hid;
 static HANDLE sv_thread;
 static volatile LONG sv_run, sv_failed;
 static uint8_t sv_format;
-static void sv_wait(int64_t ns) {   /* (the periods are under the system's 1 ms sleep: a high-resolution timer, as nn_vi.c's) */
-    static _Thread_local HANDLE timer;
-    static _Thread_local int tried;
-    if (!tried) tried = 1, timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* HIGH_RESOLUTION */, 0x1F0003 /* ALL_ACCESS */);
-    if (timer) {
-        LARGE_INTEGER due;
-        due.QuadPart = -(ns / 100 > 0 ? ns / 100 : 1);
-        if (SetWaitableTimerEx(timer, &due, 0, NULL, NULL, NULL, 0)) {
-            WaitForSingleObject(timer, INFINITE);
-            return;
-        }
-    }
-    Sleep((DWORD)((ns + 999999) / 1000000));
-}
 static DWORD WINAPI sv_main(LPVOID unused) {
     (void)unused;
     void hos_host_thread_register_self(const char *name);   /* (mkw_glue.c) */
     hos_host_thread_register_self("vibration (Steam Controller)");
+    HANDLE timer = rh_report_timer();
     const int64_t period = (int64_t)(sv_format == RENHDRUM_VALVE_GRIP_FORMAT_MULAW_8K ? RENHDRUM_VALVE_GRIP_PERIOD_NS_8K
                                                                                       : RENHDRUM_VALVE_GRIP_PERIOD_NS_4K);
     uint8_t report[RENHDRUM_VALVE_GRIP_REPORT_SIZE], modes[RENHDRUM_VALVE_GRIP_MODE_REPORTS_SIZE];
@@ -639,19 +653,23 @@ static DWORD WINAPI sv_main(LPVOID unused) {
                 fails = 0;
             }
         }
-        if (now > next + 4 * period) next = now;   /* (far behind: start again from now) */
-        if (next > now) sv_wait(next - now);
+        const int64_t after_write = hos_now_ns();
+        if (after_write > next + 4 * period) next = after_write;
+        rh_wait_until(timer, next);
     }
+    if (timer) CloseHandle(timer);
     /* (every way out: its mode off, so it is not left waiting for grip audio) */
     if (rh.valve_grip_mode_off(sv_format, modes) == RENHDRUM_VALVE_GRIP_MODE_REPORT_COUNT)
         for (int k = 0; k < RENHDRUM_VALVE_GRIP_MODE_REPORT_COUNT; k++)
             hos_sdl_hid_write(sv_hid, modes + k * RENHDRUM_VALVE_GRIP_MODE_REPORT_SIZE, RENHDRUM_VALVE_GRIP_MODE_REPORT_SIZE);
     return 0;
 }
+static void sv_close_locked(DWORD timeout);
 int rh_steam_open(void *pad, const char *hid_path, int cable) {
     if (!rh_ok || !hid_path || !*hid_path) return 0;
     AcquireSRWLockExclusive(&life);
     int ok = 0;
+    if (sv_thread && !sv_run) sv_close_locked(0);
     if (!closed && !sv_pad) {
         void *hid = hos_sdl_hid_open(hid_path);
         const int p = (int)gain_percent;
@@ -684,11 +702,8 @@ int rh_steam_open(void *pad, const char *hid_path, int cable) {
     return ok;
 }
 int rh_steam_alive(void) { return sv_thread && !sv_failed; }
-static void sv_close_locked(void) {   /* (life held) */
-    HANDLE thread = sv_thread;
-    sv_thread = NULL;
-    InterlockedExchange(&sv_run, 0);
-    if (thread) WaitForSingleObject(thread, 2000), CloseHandle(thread);   /* (it takes lk only, never life) */
+static void sv_close_locked(DWORD timeout) {   /* (life held) */
+    if (!rh_join_writer(&sv_thread, &sv_run, timeout)) return;
     if (sv_hid) hos_sdl_hid_close(sv_hid);
     sv_hid = NULL, sv_pad = NULL;
     AcquireSRWLockExclusive(&lk);
@@ -699,10 +714,10 @@ static void sv_close_locked(void) {   /* (life held) */
 }
 void rh_steam_close(void) {
     AcquireSRWLockExclusive(&life);
-    sv_close_locked();
+    sv_close_locked(100);
     ReleaseSRWLockExclusive(&life);
 }
-void *rh_steam_owner(void) { return sv_pad; }
+void *rh_steam_owner(void) { return sv_run ? sv_pad : NULL; }
 
 /* ---- an Xbox pad's four motors, a Switch pad's packets ---- */
 int rh_pad_open(void *pad, int backend, int bluetooth, int pro) {
@@ -713,6 +728,16 @@ int rh_pad_open(void *pad, int backend, int bluetooth, int pro) {
         if (pads[i].pad) continue;
         RenHdcXboxRumble *x = backend == VIB_RH_XBOX ? rh.xbox_rumble_create(bluetooth != 0) : NULL;
         RenHdcEngine *e = backend == VIB_RH_SWITCH ? rh.engine_create(bluetooth != 0, pro != 0) : NULL;
+        if (e) {
+            /* Stock SDL takes standard USB packets and Bluetooth level 4 (Compatible). */
+            RenHdcSettings settings;
+            const int resolved = rh.settings_resolve_pure(NULL, &settings);
+            settings.bluetooth_level = 4;
+            if (resolved < 0 || rh.engine_apply_settings(e, &settings) < 0) {
+                rh.engine_destroy(e);
+                e = NULL;
+            }
+        }
         if (!x && !e) break;
         AcquireSRWLockExclusive(&lk);
         pads[i].pad = pad, pads[i].backend = backend, pads[i].xbox = x, pads[i].engine = e;
@@ -765,8 +790,8 @@ void rh_shutdown(void) {
     AcquireSRWLockExclusive(&life);
     closed = 1;
     usb_close_locked();
-    bt_close_locked();
-    sv_close_locked();
+    bt_close_locked(100);
+    sv_close_locked(100);
     ReleaseSRWLockExclusive(&life);
     for (int i = 0; i < RH_PADS; i++)
         if (pads[i].pad) rh_pad_close(pads[i].pad);

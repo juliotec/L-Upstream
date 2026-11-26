@@ -1,4 +1,4 @@
-"""The mods' Atmosphere cheats (host/cheats.c): the file's parse and the cheat VM, over a fake guest memory.
+"""The mods' Atmosphere cheats (game/cheats.c): the file's parse and the cheat VM, over a fake guest memory.
 
 Builds cheats.c's VM and parse, from the source as it is, with a fake game module (main, its code below code_end) and heap,
 and checks: a store into the heap; a button condition; a pointer chain (load, then store through the register); a loop with
@@ -92,7 +92,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
-    src = (ROOT / "host/cheats.c").read_text(encoding="utf-8")
+    src = (ROOT / "game/cheats.c").read_text(encoding="utf-8")
     body = src[src.index("enum { CHEAT_HEADING"):src.index("/* the file named <build id>.txt")]
     with tempfile.TemporaryDirectory(prefix="cheat-vm-") as tmp:
         tmp = Path(tmp)

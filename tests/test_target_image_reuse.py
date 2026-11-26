@@ -47,6 +47,7 @@ struct Texture {   // (the real one is larger; destroy_later reads these)
     VkImage image = &the_image;
     VmaAllocation allocation = &the_alloc;
     uint64_t bytes = 1 << 20, pad = 0, last_value = 0, pool_key = 0;
+    uint32_t id = 7;   // (its creation number: destroy_later names it to gone_note)
     std::vector<VkDeviceMemory> sparse_chunks;
     std::unordered_map<uint64_t, VkImageView> views;
     struct BlockAttachment { VkImage image; VmaAllocation allocation; int format; uint32_t level; };
@@ -67,6 +68,7 @@ namespace {
 std::deque<Dead> dead;
 std::atomic<uint64_t> dead_pooled_n{0};   // (vk_texture.cpp: render targets' images in the dead list on their way to the pool)
 void pool_put(Dead& d) { pooled.insert(d.image); }
+/* GONE */
 /* DESTROY_LATER */
 void dead_list(uint64_t completed) {
 /* DEAD_LOOP */
@@ -144,7 +146,10 @@ def main():
     frame = block(source, "void texture_frame(uint64_t completed)")
     if "destroy_later(*tex, completed);" not in frame:
         raise SystemExit("texture_frame's eviction no longer tells destroy_later what the GPU has finished")
-    fixture = (FIXTURE.replace("/* DEAD */", block(source, "struct Dead {") + ";")
+    # (gone_note, which destroy_later calls since the handle tables' stale log: the real one, with its log)
+    gone = source[source.index("constexpr uint32_t kGoneLog"):source.index("void gone_note(uint32_t id)")] + \
+        block(source, "void gone_note(uint32_t id)")
+    fixture = (FIXTURE.replace("/* GONE */", gone).replace("/* DEAD */", block(source, "struct Dead {") + ";")
                .replace("/* DESTROY_LATER */", block(source, "void destroy_later(Texture& tex, uint64_t completed)"))
                .replace("/* DEAD_LOOP */", block(frame, "    for (auto it = dead.begin(); it != dead.end();)")))
     with tempfile.TemporaryDirectory(prefix="longshot-target-reuse-") as temp:

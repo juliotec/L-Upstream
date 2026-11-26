@@ -1,7 +1,7 @@
 """The shaders are prepared again when the seed changes, not only when the translator does.
 
 prepare_run (gpu/vk/vk_draw.cpp) prepared once per translator: longshot_prepared.bin held program_cache_stamp() and nothing
-else. The seed (longshot_shaders.bin, nx2/shader_census.py) grows apart from the translator (4221050d added 19 compute
+else. The seed (longshot_shaders.bin, builder/crates/build-assets/src/census.rs) grows apart from the translator (4221050d added 19 compute
 programs), and a folder prepared before such an update never prepared the new programs: each was translated in play when
 first met. The record now also holds the seed's hash, size and write time; prepare_check hashes the seed only when its size
 or time is not the recorded one. This builds the record's helpers as they are in the source and checks, on files in a

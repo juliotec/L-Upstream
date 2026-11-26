@@ -19,25 +19,23 @@ showing the last line written ("vertex format NVN 0xe -> vk 17"). In one log the
   compile at work to the watchdog in the preparation's own process only; a game start goes on to play after 30 s as before.
   The pipeline cache's save is stopped only when workers were left in the driver or it faulted, and after twice that limit (a
   fault AMD's retry recovered from counts, so a slow save there is not stopped as early); otherwise it is reported, and its lines
-  end so that make_game.py's silence limit still applies.
-- make_game.py says "the GPU driver stopped responding" for exit status 4.
+  end so that a builder's silence limit still applies.
+(That the builder says "the GPU driver stopped responding" for exit status 4 is build-driver's own test,
+src/shaders_outcome_tests.rs.)
 
 python -I -B tests/test_prepare_stall.py --cxx clang++
 """
 import argparse
-import contextlib
-import importlib.util
-import io
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+RUN_ALL_ALONE = True   # (it measures time or CPU, or races threads: beside other checks on a loaded runner it failed or timed out)
 
 
 def block(text, marker):
@@ -278,16 +276,19 @@ int main(int argc, char** argv) {
     if (c == "busy-compile" || c == "busy-compile-intel") {
         // (a compile with a CPU at work: three times the limit before a stop on most drivers, past it and twelve times the limit
         // on Mesa's Intel driver)
-        // (two threads at work: the watchdog's busy is half a CPU in its window, and one thread alone fell below that when the
-        // checks run 24 at once on a loaded PC, which stopped the compile at 4 s)
+        // (four threads at work: the watchdog's busy is half a CPU in its window, and one thread alone fell below that when
+        // the checks run 24 at once on a loaded PC, two on a 10-core CI runner beside 9 other checks, which stopped the
+        // compile at 4 s)
         std::atomic<bool> done{false};
         auto spin = [&] { volatile uint64_t x = 0; while (!done.load(std::memory_order_relaxed)) x = x + 1; };
-        std::thread burn(spin), burn2(spin);
+        std::thread burn(spin), burn2(spin), burn3(spin), burn4(spin);
         prepare_moved(0, 5, 100);
         Sleep(c == "busy-compile" ? 25000 : 15000);   // (busy-compile: the watchdog ends the process before this does)
         done = true;
         burn.join();
         burn2.join();
+        burn3.join();
+        burn4.join();
         return c == "busy-compile" ? 8 : 0;
     }
     if (c == "save") {   // (a long save, nothing left in the driver: reported, then silent, never stopped)
@@ -322,7 +323,7 @@ def compile_run(cxx, name, code, tmp):
     exe = Path(tmp) / (name + (".exe" if os.name == "nt" else ""))
     src.write_text(code, encoding="utf-8")
     # (-D_CRT_SECURE_NO_WARNINGS: a clang that targets MSVC's C library, CI's, calls getenv and fopen deprecated, as the game's
-    # own build says too: toolchain.native_target)
+    # own build says too)
     cmd = [cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-D_CRT_SECURE_NO_WARNINGS", str(src),
            "-o", str(exe)]
     if os.name != "nt":
@@ -445,25 +446,11 @@ def check_sources():
         raise SystemExit("the hour for a compile at work is not kept to Mesa's Intel driver")
 
 
-def check_make_game():
-    spec = importlib.util.spec_from_file_location("make_game_stall", ROOT / "nx2" / "make_game.py")
-    make_game = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(make_game)
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        code = make_game.prepare_shaders([sys.executable, "-I", "-c", "import sys; sys.exit(4)"])
-    lines = [l for l in out.getvalue().splitlines() if l.startswith(make_game.NOT_PREPARED)]
-    if code != 4 or len(lines) != 1 or "(the GPU driver stopped responding)" not in lines[0]:
-        raise SystemExit("make_game.py does not say why for exit status 4: %r" % out.getvalue())
-    print("PASS make_game: exit status 4", flush=True)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="clang++")
     args = parser.parse_args()
     check_sources()
-    check_make_game()
     if not shutil.which(args.cxx):
         raise SystemExit("C++ compiler not found: " + args.cxx)
     with tempfile.TemporaryDirectory(prefix="prepare-stall-") as tmp:

@@ -1,5 +1,5 @@
 /* (longshot) Whole frames out of a frame step that can be under one, for the game's counters that add the step, or the step
-   times a whole number, cut to whole frames (nx2/oot_patches.py patch_whole_frames). At the console's 60 fps the step is 1 and
+   times a whole number, cut to whole frames (the hook sites frame.whole*). At the console's 60 fps the step is 1 and
    they count frames. Under a Frame rate cap above 60 the step is the frame's own time (host/nn_vi.c, hos_frame_seconds_bits):
    0.42 at 144 fps, cut to 0 every frame, and the counter never moves, so what waits on it never comes: the pick-up indicator
    above Link's head counts the rupees shown up to the wallet's (f_80a87e50: the shown +864 moves by (int)(step * the

@@ -1,12 +1,13 @@
 # NVIDIA DLSS is a local build's option: NVIDIA's SDK is never part of Longshot or its downloads. This only checks that
-# longshot_vk.dll still compiles and links with it, through llvm-mingw as players build it. It runs by hand, and on a push or
-# pull request only when a file DLSS's build depends on changed (the paths below), not on every push. scripts/fetch.py
+# longshot_vk.dll still compiles and links with it, through llvm-mingw as players build it. It runs by hand only (Actions >
+# Run workflow), when the DLSS or FSR 4 code changes. scripts/fetch.py
 # dlss fetches the SDK at its pinned release, SHA-256 checked, without DLSS's runtime: NVIDIA's license is accepted for that run
 # alone (--accept-nvidia-license), and nothing of it is uploaded or cached.
-# AMD FSR 4 (LONGSHOT_FSR=1: AMD's MIT headers, nothing downloaded) is built in the same run: both engines share
+# AMD FSR 4 (--upscaler fsr4: AMD's MIT headers, nothing downloaded) is built in the same run: both engines share
 # vk_temporal.cpp.
 # It runs on the Linux runner (there is no Windows one, docs/dev/reference/ci.md): RX_TARGET=windows, with llvm-mingw's Linux
-# build of tools.lock's release (scripts/builder_package.py --host linux), as build-windows.yml builds the back end.
+# build of tools.lock's release (scripts/longshot_builder.py llvm-mingw --host linux) and a Linux longshot-builder (scripts/longshot_builder.py,
+# the pinned Rust), as build-windows.yml builds the back end.
 name: Vulkan back end with NVIDIA DLSS
 
 on:
@@ -34,45 +35,57 @@ jobs:
         uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check out pinned Vulkan headers
-        run: scripts/fetch_commit.sh https://github.com/KhronosGroup/Vulkan-Headers 74d8a6cb930c68ef617b202c3ff3c59d919e086b _deps/cpm/vulkanheaders/v1.4.345   # v1.4.345
-      - name: Check out pinned SPIR-V headers
-        run: scripts/fetch_commit.sh https://github.com/KhronosGroup/SPIRV-Headers 04f10f650d514df88b76d25e83db360142c7b174 _deps/cpm/spirv-headers/vulkan-sdk-1.4.341.0   # vulkan-sdk-1.4.341.0
-      - name: Check out pinned VulkanMemoryAllocator
-        run: scripts/fetch_commit.sh https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator 1d8f600fd424278486eade7ed3e877c99f0846b1 _deps/cpm/vulkanmemoryallocator/v3.3.0   # v3.3.0
       - name: Set up Python
         uses: https://github.com/actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: llvm-mingw version
         id: llvm
-        run: echo "name=$(python -I scripts/builder_package.py llvm-mingw --name --host linux)" >> "$GITHUB_OUTPUT"
-      - uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        run: echo "name=$(python -I scripts/longshot_builder.py llvm-mingw --name --host linux)" >> "$GITHUB_OUTPUT"
+      - name: Restore (and save) llvm-mingw's archive
+        uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/llvm
-          key: ${{ steps.llvm.outputs.name }}
+          path: ${{ runner.temp }}/llvm/.cache
+          key: ${{ steps.llvm.outputs.name }}-archive
       - name: llvm-mingw
         run: |
-          echo "LONGSHOT_MINGW=$(python -I scripts/builder_package.py llvm-mingw "$RUNNER_TEMP/llvm" --host linux)" >> "$GITHUB_ENV"
+          echo "LONGSHOT_MINGW=$(python -I scripts/longshot_builder.py llvm-mingw "$RUNNER_TEMP/llvm" --host linux)" >> "$GITHUB_ENV"
           echo "RX_TARGET=windows" >> "$GITHUB_ENV"
+      - name: Restore (and save) the builder's Rust downloads
+        uses: https://github.com/actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/longshot-builder-rust/*.tar.xz
+            ${{ runner.temp }}/longshot-builder-rust/crates
+          key: longshot-builder-rust-downloads-${{ hashFiles('scripts/renhdrum.py', 'Cargo.lock') }}
+      - name: longshot-builder for this runner
+        run: >-
+          python -I scripts/longshot_builder.py build --target linux --profile release
+          --cache "$RUNNER_TEMP/longshot-builder-rust" --out "$RUNNER_TEMP/longshot-builder" --this-pc
+      # (tools.lock's windows-x64 CPM cache, what a player's Windows build compiles the back end with: the Vulkan, SPIR-V
+      # and VMA headers, at the pins it was made from, checked by its SHA-256 and installed by the builder above)
+      - name: tools.lock's cpm
+        run: |
+          "$RUNNER_TEMP/longshot-builder" dev tools install "$RUNNER_TEMP/win-tools" --system windows-x64 --only cpm \
+            --cache "$RUNNER_TEMP/tools-cache"
+          echo "RX_CPM=$RUNNER_TEMP/win-tools/tools/cpm" >> "$GITHUB_ENV"
       - name: NVIDIA's DLSS SDK (headers and nvsdk_ngx_s.lib)
         run: python -I scripts/fetch.py dlss --platform windows --build-only --accept-nvidia-license "$RUNNER_TEMP/ngx-sdk"
+      # (the back end alone (compile --only renderer), with both upscalers asked for: longshot-builder's compile says each in its notes)
       - name: longshot_vk.dll with NVIDIA DLSS and AMD FSR 4
         env:
-          RX_VK_ONLY: '1'
           RX_RELEASE: '1'
-          LONGSHOT_FSR: '1'
         run: |
-          OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" LONGSHOT_NGX_SDK="$RUNNER_TEMP/ngx-sdk" \
-            python -I nx2/build.py --standalone --jobs "$(nproc)" | tee "$RUNNER_TEMP/vk-build.log"
+          "$RUNNER_TEMP/longshot-builder" compile --only renderer --work "$RUNNER_TEMP/vk-work" --store "$RUNNER_TEMP/vk-store" --root "$PWD" \
+            --jobs "$(nproc)" --upscaler dlss,fsr4 --ngx-sdk "$RUNNER_TEMP/ngx-sdk" | tee "$RUNNER_TEMP/vk-build.log"
           test "${PIPESTATUS[0]}" -eq 0
-          grep -q "with NVIDIA DLSS" "$RUNNER_TEMP/vk-build.log"
-          grep -q "with AMD FSR 4" "$RUNNER_TEMP/vk-build.log"
+          grep -q "the Vulkan back end: with NVIDIA DLSS" "$RUNNER_TEMP/vk-build.log"
+          grep -q "the Vulkan back end: with AMD FSR 4" "$RUNNER_TEMP/vk-build.log"
       # (what it loads is only Windows' own: the system DLLs and the UCRT's api-ms-win-crt-*. NVIDIA's runtime, nvngx_dlss.dll,
       # is loaded by NGX at run time from the game folder's ngx folder, and its core, _nvngx.dll, from the driver's)
       - name: Imports
         run: |
-          dll="$RUNNER_TEMP/vk-work/sa/build/longshot_vk.dll"
+          dll="$RUNNER_TEMP/vk-work/build/longshot_vk.dll"
           "$LONGSHOT_MINGW/bin/llvm-objdump" -p "$dll" | sed -n 's/^ *DLL Name: //p' | tr -d '\r' | sort -u | tee "$RUNNER_TEMP/imports.txt"
           if grep -viE '^(kernel32|user32|gdi32|advapi32)\.dll$|^api-ms-win-crt-[a-z0-9-]+\.dll$' "$RUNNER_TEMP/imports.txt"; then
             echo "::error::longshot_vk.dll with NVIDIA DLSS imports a DLL that is not Windows' own (above)"

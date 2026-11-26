@@ -47,11 +47,18 @@ def main():
                    '-I' + str(source), '-I' + str(source / 'gpu/vk'), '-I' + str(source / 'host/posix'), '-I' + str(source / 'gpu/vk/compat'),
                    '-I' + str(source / 'third_party/imgui'), '-I' + str(args.vulkan_headers.resolve()),
                    str(Path(__file__).with_name('menu.cpp')), str(source / 'gpu/vk/vk_menu_i18n.cpp'), str(source / 'gpu/vk/menu_model.cpp')]
+        game_rows = source / 'game/menu/rows.c'
+        game_command = None
+        if game_rows.is_file():
+            command.append('-DLONGSHOT_CAPTURE_GAME_ROWS')
+            game_command = [args.cxx, '-x', 'c', '-std=c11', '-ffunction-sections', '-fdata-sections', str(game_rows)]
         command += [str(p) for p in sorted((source / 'gpu/vk/menu').glob('*.cpp'))]   # (the Insert menu's modules: the rows)
         command += [str(source / 'third_party/imgui' / p) for p in ['imgui.cpp', 'imgui_draw.cpp', 'imgui_widgets.cpp', 'imgui_tables.cpp']]
         # Ask the compiler which repository files this translation unit actually uses.
         # System dependencies are described by their toolchain versions below.
         dep_text = run(command + flags + ['-MM', '-MT', 'capture'], capture_output=True).stdout
+        if game_command:
+            dep_text += run(game_command + ['-MM', '-MT', 'capture'], capture_output=True).stdout
         dependencies = shlex.split(dep_text.replace('\\\n', ' '))
         fixture_cpp = Path(__file__).with_name('menu.cpp').resolve()
         sources = set()
@@ -71,6 +78,10 @@ def main():
         if dirty:
             parser.error('capture inputs differ from the named source revision; commit them or use a clean checkout:\n' + dirty)
         hashes = {p: hashlib.sha256((source / p).read_bytes()).hexdigest() for p in sorted(sources)}
+        if game_command:
+            game_rows_obj = Path(tmp) / 'game_rows.o'
+            run(game_command + ['-c', '-o', str(game_rows_obj)])
+            command.append(str(game_rows_obj))
         command += flags + ['-Wl,--gc-sections', '-o', str(exe)]
         run(command)
         # No ambient game settings or display modes affect the fixture. A temporary cwd

@@ -1,6 +1,6 @@
 """Learned songs in the debug inventory use saved IsGet flags, not pouch quantities.
 
-Compile the real host helpers with fake GameData and pouch calls. A learned song
+Compile the real host helpers with a fake flags service (game/flags.h) and pouch calls. A learned song
 with no pouch entry must show Unlocked; toggling it changes only its own flag.
 No game, save or GPU is needed.
 """
@@ -31,13 +31,9 @@ FIXTURE = r'''
 #include <cstring>
 #include <map>
 #include <string>
-#include "gpu/vk/oot_cheat_items.h"
+#include "game/oot_cheat_items.h"
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
 struct Ctx { uint64_t x[32]{}; };
-using A64Fn = void (*)(Ctx *);
-static constexpr uint64_t OOT_GAMEDATA_SLOT = 0x84c9e180ULL;
-static constexpr uint64_t manager_holder = 0x10000;
-static constexpr uint64_t manager = 0x20000;
 static std::map<std::string, int> pouch;
 static std::map<uint32_t, int> flags;
 static std::map<uint32_t, int> saved_flags, pending_flags;
@@ -46,27 +42,25 @@ static bool reject_flag_write;
 static void hos_log(const char *, ...) {}
 static int oot_pouch_count(Ctx *, const char *name) { ++pouch_reads; return pouch[name]; }
 static int oot_pouch_change(Ctx *, const char *name, int delta) { ++pouch_writes; pouch[name] += delta; return 2; }
-static int oot_gamedata_bool(Ctx *, uint32_t hash, int *value) {
+/* (the flags service, game/flags.h: GameDataMgr, a Bool flag read and written) */
+static constexpr uint64_t MGR = 0x1000;
+static uint64_t game_flags_mgr() { return MGR; }
+static int game_flag_bool(uint64_t mgr, uint32_t hash, int *value) {
     const auto i = flags.find(hash);
-    if (i == flags.end()) return 0;
+    if (mgr != MGR || i == flags.end()) return 0;
     *value = i->second;
     return 1;
 }
-static uint64_t recomp_load64(Ctx *, uint64_t address) {
-    CHECK(address == OOT_GAMEDATA_SLOT || address == manager_holder);
-    return address == OOT_GAMEDATA_SLOT ? manager_holder : manager;
-}
-static void game_set_bool(Ctx *c) {
-    CHECK(c->x[0] == manager && c->x[1] <= 1);
-    const auto hash = uint32_t(c->x[2]);
+/* (the game's Bool setter, f_806a2b20 (mgr, value, hash), called through host/game_call.h: it queues the live value and
+   the save's copy, which update_and_reload applies) */
+static int game_has(uint64_t fn) { return fn == 0x806a2b20ULL && !reject_flag_write; }
+static int game_call(Ctx *, uint64_t fn, uint64_t, int nargs, const uint64_t *args, uint64_t *) {
+    CHECK(fn == 0x806a2b20ULL && nargs == 3 && args[0] == MGR && args[1] <= 1);
+    const auto hash = uint32_t(args[2]);
     CHECK(flags.find(hash) != flags.end());
-    pending_flags[hash] = int(c->x[1]);
+    pending_flags[hash] = int(args[1]);
     ++flag_writes;
-    c->x[0] = 0;
-}
-static A64Fn a64_lookup(uint64_t address) {
-    CHECK(address == 0x806a2b20ULL);
-    return reject_flag_write ? nullptr : game_set_bool;
+    return 1;
 }
 static void update_and_reload() {
     for (const auto& [hash, value] : pending_flags) flags[hash] = saved_flags[hash] = value;
@@ -151,10 +145,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="c++")
     args = parser.parse_args()
-    source = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
+    source = (ROOT / "game/oot_tools.c").read_text(encoding="utf-8")
     helpers = [function(source, "static uint32_t oot_song_flag(")]
     helpers += [function(source, signature) for signature in (
-        "static uint64_t oot_singleton(Ctx *c, uint64_t slot) {",
         "static const char *oot_gamedata_queue_bool(Ctx *c, uint32_t hash, int value) {",
         "static int oot_mask_alias(",
         "static int oot_item_count(Ctx *c, const char *name) {",

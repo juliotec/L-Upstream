@@ -1,4 +1,4 @@
-"""The upscalers' vendor files a local build or game folder can use, which Longshot never commits or ships: each fetched
+"""The upscalers' vendor files for a developer's build or game folder, which Longshot never commits or ships: each fetched
 from its vendor's GitHub repository at one pinned commit, each file checked against its SHA-256, once the vendor's license
 is accepted (its flag, or a typed yes when asked; nothing is downloaded without it).
 
@@ -11,12 +11,12 @@ is accepted (its flag, or a typed yes when asked; nothing is downloaded without 
         loads (runtime/: DLSS's and DLSS Frame Generation's; without the latter beside DLSS's, NGX takes the driver's own,
         which may be older). The NGX core comes with NVIDIA's driver (libnvidia-ngx.so; _nvngx.dll, which is loaded from the
         driver's folder and is never to be put beside the game).
-          --game: the runtimes copied into <game folder>/ngx too, where the game looks first (nx2/make_game.py does the same
-                  for the folder it builds when LONGSHOT_NGX_SDK is set)
+          --game: the runtimes copied into <game folder>/ngx too, where the game looks first (longshot-builder does the same
+                  for the folder it builds with DLSS)
           --runtime-dir: the runtimes copied into that folder instead (Linux: $XDG_DATA_HOME/longshot/ngx; Windows:
                   %LOCALAPPDATA%\\Longshot\\ngx. RX_VK_DLSS_DIR names another when the game runs)
           --build-only: only what the build reads, not the runtimes (CI's link check)
-        Then build with LONGSHOT_NGX_SDK=<sdk folder>.
+        Then build with longshot-builder --ngx-sdk <sdk folder> (dev.py: LONGSHOT_NGX_SDK=<sdk folder>).
     python -I scripts/fetch.py fsr [--accept-amd-license] [--game <game folder>] [<folder>]
         AMD's FSR runtime for Vulkan (FSR SDK 2.4: FSR 4.1.2), for AMD FSR 4 (gpu/vk/vk_fsr4.cpp), into <folder> (default
         sdk/ffx in the development folder): amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll and
@@ -28,12 +28,14 @@ is accepted (its flag, or a typed yes when asked; nothing is downloaded without 
         (third_party/xess/PROVENANCE.md), with LICENSE-INTEL-XESS-SDK.txt and THIRD-PARTY-INTEL-XESS-SDK.txt. Windows only:
         Intel publishes no XeSS library for Linux
     fsr and xess --game: the files copied into <game folder> too, where the game looks after RX_VK_FSR_DIR / RX_VK_XESS_DIR
-        and beside the executable (nx2/make_game.py --fetch-fsr-runtime / --fetch-xess-runtime do the same for the folder
-        they build). A player's own DLL there that is not the pinned one is left alone.
+        and beside the executable (longshot-builder's --upscaler fsr4 / xess do the same for the folder they build). A
+        player's own DLL there that is not the pinned one is left alone.
 
 The vendors' files are theirs, under their own licenses, fetched beside them. AMD's and Intel's ask for no acceptance step;
 one is asked all the same, as for NVIDIA's: one rule for all three, and nobody gets the files without having seen the terms.
-nx2/make_game.py loads this file as a module (DLSS, FSR and XESS below); so do the tests.
+Players' builds fetch the same files themselves: longshot-builder (builder/crates/build-driver/src/runtimes.rs, --upscaler and
+--accept-licenses), with the same pins, which tests/test_ngx_sdk.py keeps the same as these. This is the developers' and
+CI's way to the files (an SDK folder for LONGSHOT_NGX_SDK, CI's DLSS link check). The tests load it as a module.
 """
 import argparse
 import importlib.util
@@ -104,8 +106,8 @@ class Sdk(object):
 
 
 def dev_sdk(name):
-    """sdk/<name> in this PC's development folder (scripts/devtools/common.py dev_home; loaded by its path, as make_game.py
-    loads this file)"""
+    """sdk/<name> in this PC's development folder (scripts/devtools/common.py dev_home; loaded by its path, as the tests
+    load this file)"""
     spec = importlib.util.spec_from_file_location("devtools_common", os.path.join(ROOT, "scripts", "devtools", "common.py"))
     common = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(common)
@@ -173,7 +175,7 @@ class Dlss(Sdk):
 
     def default_folder(self, platform=None):
         """sdk/ngx-linux or sdk/ngx-windows in the development folder: dev.py's builds take the one for their system
-        (nx2/make_game.py keeps its own, for the Builder: work/ngx-sdk)"""
+        (longshot-builder keeps its own, in its cache's runtimes/)"""
         return dev_sdk("ngx-" + (platform or host_platform()))
 
 
@@ -361,7 +363,7 @@ def main(argv=None):
         for target in ([os.path.join(a.game, "ngx")] if a.game else []) + ([a.runtime_dir] if a.runtime_dir else []):
             say("ngx-sdk: the DLSS runtime in %s" % sdk.install_runtime(folder, a.platform, target))
             say("ngx-sdk: DLSS Frame Generation's in %s" % os.path.join(target, sdk.runtime_name(a.platform, "framegen")))
-        say("ngx-sdk: build with LONGSHOT_NGX_SDK=%s" % folder)
+        say("ngx-sdk: build with --ngx-sdk %s (dev.py: LONGSHOT_NGX_SDK)" % folder)
     else:
         say("%s: %s's %s in %s" % (sdk.tag, sdk.vendor, "FSR runtime" if sdk is FSR else "XeSS library", folder))
         if a.game:

@@ -1,7 +1,6 @@
-"""The builders no longer update themselves (docs/dev/reference/releases.md): the Longshot Launcher reads Longshot's signed releases, and
-installs and updates each version's builder. What is left in the builders is command-line only, and none of it asks a server
-for a release: no GitHub link, no release lookup, no game update check (host/hos_update.c is gone), and none of the old
-self-update's hooks. The builders' windows, which had the version buttons, are gone too."""
+"""The builder does not update itself (docs/dev/reference/releases.md): the Longshot Launcher reads Longshot's signed releases, and
+installs and updates each version's longshot-builder. Nothing in it or the game asks a server for a release: no GitHub link,
+no release lookup, no game update check (host/hos_update.c is gone), and none of the old self-update's hooks."""
 import os
 from pathlib import Path
 import re
@@ -10,10 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 # (the code that used to ask GitHub for a release or install a newer builder, and must not now)
-SOURCES = [
-    "builder/linux/AppRun", "builder/linux/longshot-folder", "builder/linux/linux_tools.py", "builder/LongshotBuilder/Program.cs",
-    "builder/LongshotBuilder/Runner.cs", "builder/setup/setup.c", "host/hos_main.c",
-]
+SOURCES = ["host/hos_main.c", "game/oot_tools.c", "builder/crates/longshot-builder/src/main.rs", "builder/crates/build-driver/src/sources.rs"]
 
 
 class NoLookup(unittest.TestCase):
@@ -26,13 +22,12 @@ class NoLookup(unittest.TestCase):
                 self.assertIsNone(re.search(pattern, text), "%s: %s" % (rel, pattern))
         self.assertFalse((ROOT / "host" / "hos_update.c").exists(), "the game's own update check is back")
 
-    def test_the_builders_have_no_window(self):
-        for gone in ("builder/linux/longshot_builder.py", "builder/linux/linux_update.py", "builder/LongshotBuilder/MainWindow.xaml",
-                     "builder/LongshotBuilder/App.xaml", "builder/LongshotBuilder/Updater.cs"):
+    def test_the_standalone_builders_are_gone(self):
+        # (a release ships longshot-builder alone: no AppImage, no Windows builder or setup)
+        # (recomplauncher.json stays: longshot-builder's own, for RecompLauncher's release zip)
+        for gone in ("builder/LongshotBuilder", "builder/setup", "builder/linux", "scripts/linux/appimage.sh",
+                     "scripts/builder_package.py"):
             self.assertFalse((ROOT / gone).exists(), gone)
-        project = (ROOT / "builder/LongshotBuilder/LongshotBuilder.csproj").read_text(encoding="utf-8")
-        self.assertNotIn("UseWPF", project)
-        self.assertNotIn("UseWindowsForms", project)
 
 
 if __name__ == "__main__":

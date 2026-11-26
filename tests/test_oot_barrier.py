@@ -1,4 +1,4 @@
-"""The game's job barriers waiting for their work (host/oot_barrier.h, host/oot_barrier.c; HOS_OOT_BARRIER_WAIT), game-free.
+"""The game's job barriers waiting for their work (game/oot_barrier.h, game/oot_barrier.c; HOS_OOT_BARRIER_WAIT), game-free.
 
 Three of OoT's parallel-for jobs sleep 20 us and look again while the masks they poll are not full; with the switch the sleep
 is a wait that ends when a polled mask word moves, and the thread that ORs into such a word wakes the waiters after the OR.
@@ -16,45 +16,33 @@ Then broken variants (the header or the glue edited in the temporary copy), each
 look at the words after arming, the waiter not counted, a wake that wakes nobody, a wake that does not move the slot's word,
 no timeout, a wake for another job ending the wait, the core not given up, the switch not read, the wrong slot woken.
 
-And the patch (nx2/oot_patches.py patch_barrier_wait) on three small made-up lifted functions written here, their loops'
-polls added by the lift's own nx2/poll.py: every sleep in front of its wait, every OR into a polled word followed by its
-wake, each once, declared once; each wait told the words its loop's head loads, through the registers that loop compares; a
-second run changes nothing; a function whose code differs (a mark or a place: another game version) is left whole while the
-others are hooked; the count patch_file reports and the warning without them. The lift keeps each of the three in the
-context (nx2/guest_locals.py): its address is in mentioned_addresses(), and touches() says yes for it alone, both as the
-lift asks it (before nx2/poll.py adds the polls; patched then polled is polled then patched) and as written. Over a
-finished lift (a64_lift.mark_groups, the lift's last step, has put a group's page mark line inside places here) the patch
-hooks the three as the lift would have (grouped then patched is patched then grouped), and a second run changes nothing.
-Broken copies of the patch (edited in a temporary copy of nx2/oot_patches.py) must fail those checks: hooking code that
-differs, a polled OR without its wake, a wait told the wrong word, hooking again on a second run, hooking only the places
-that are there, a group's mark line not let through, a back-edge without its poll not let through, what those slots
-found not kept.
+And the hook sites that put the calls in (game/sites/sites.toml barrier.*, game/oot_sites.c; the text patch they
+replaced, nx2/oot_patches.py patch_barrier_wait, is deleted): five replace sites on the sleeps and seven after sites on the
+ORs into polled words, each where the patch put its text. Each place is built with the site's hook as the lift lowers it (tests/sitehooks.py)
+and, side by side, with the patch's text there (OLD_PLACES, made-up places of the lift's form), and run over stand-ins that log every call
+(the switch on or off, the wait answering yes or no): the same calls with the same arguments in the same order, and the
+same registers and memory. A wait told the wrong word, or a wake told the wrong block, is caught (the side-by-side run of
+a broken callback must fail). Each sleep site has guards elsewhere in its function (the loop head's loads and the masks'
+slot its wait is told), so a build that moved them does not resolve.
 
-python -I -B tests/test_oot_barrier.py [--cc gcc]
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_oot_barrier.py [--cc clang] [--cargo cargo]
 """
 import argparse
-import collections
-import contextlib
-import importlib.util
-import io
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / "third_party" / "a64-kit" / d) for d in ("lift", "tools")] + [str(ROOT / "nx2")]
-import a64_lift  # noqa: E402
-import oot_patches  # noqa: E402
-import poll  # noqa: E402
-
-
-def check(cond, what):
-    if not cond:
-        raise SystemExit("FAIL: " + what)
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import check, site, callback, slot, engine_fn  # noqa: E402
+import sitehooks  # noqa: E402
 
 
 # (the glue's hos.h: the guest memory as a 64 KB arena at 0x80000000; the rest it calls, defined by the fixture)
@@ -408,203 +396,199 @@ BROKEN = [
 ]
 
 
-# ---- the patch, on made-up lifted text: the heads, the marks and the places patch_barrier_wait looks for, written here (not
-# taken from the patch), between lines of filler; the loops' back-edges as the lift writes them before nx2/poll.py polls them
-FILL = "    c->x[9] = 0x1ULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n"
-# (two stores through x20: a64_lift.mark_groups gives them one shared page mark line, before the next line that ends their
-# run, which is inside a mark or a place wherever they are put below)
-STORES = "    recomp_store32(c,c->x[20] + 0,c->x[1]);\n    recomp_store32(c,c->x[20] + 4,c->x[2]);\n"
+# ---- the sites, side by side with the text patch they replaced: each place as the lift writes it (LIFTED_PLACES) and with
+# the patch's text in its place (OLD_PLACES: function, the text in its place). The places are made-up lifted text of the
+# lift's form: a sleep's call with its return address (the site's place plus 4) and its loop's back-edge, an OR's add and
+# ldset through the registers the callbacks read; the lines between, the labels and the other callee are written here
+SLEEP_CALL = "f_85106220(c);"
+MARK = "   /* (nx2/oot_patches.py: HOS_OOT_BARRIER_WAIT) */\n"
+FILL = "    c->x[12] = 0x3ULL;\n    c->x[12] &= 0xFFFFFFFFULL;\n"   # (made up: a mov of a register no callback reads)
+
+
+def _sleep(ret, args, after=""):
+    """a sleep's place, lifted and patched: the call, `after` lines, then the loop's back-edge"""
+    call = "c->x[30] = %#xULL; " % ret
+    tail = "%s{ A64_POLL(c); goto L_80001000; }\n" % after
+    return (call + SLEEP_CALL + "\n" + tail,
+            call + "if (!hos_oot_barrier_on() || !hos_oot_barrier_wait(%s)) %s%s%s" % (args, SLEEP_CALL, MARK, tail))
 
 
 def _or(base, off, addr, value, between=""):
-    return ("    { uint64_t _a=c->x[%d], _b=%dULL; uint64_t _r=_a+_b; c->x[%d]=_r; }\n%s"
-            "{ uint64_t _a = c->x[%d]; uint32_t *_p = (uint32_t *)A64_PTR(_a); uint32_t _o = __atomic_fetch_or(_p, (uint32_t)c->x[%d], "
-            "__ATOMIC_SEQ_CST); A64_MARK(_a, 4); c->x[8] = (uint64_t)_o; }\n" % (base, off, addr, between, addr, value))
+    """an OR's place, lifted and patched: the add of the polled word's address, `between` lines, the ldset"""
+    head = ("    { uint64_t _a=c->x[%d], _b=%dULL; uint64_t _r=_a+_b; c->x[%d]=_r; }\n%s"
+            "{ uint64_t _a = c->x[%d]; uint32_t *_p = (uint32_t *)A64_PTR(_a); uint32_t _o = __atomic_fetch_or(_p, "
+            "(uint32_t)c->x[%d], __ATOMIC_SEQ_CST); A64_MARK(_a, 4); c->x[8] = (uint64_t)_o;" % (base, off, addr, between, addr, value))
+    return head + " }\n", head + " if (hos_oot_barrier_on()) hos_oot_barrier_wake(_a - %dULL); }%s" % (off, MARK)
 
 
-JOB_A = ("void f_800998a0(Ctx *__restrict A64_NOESC c) {\n" + FILL +
-         "L_80099a00:;\n" + FILL +
-         "L_8009a420:;\nc->x[30] = 0x8009a424ULL; f_85106210(c);\n" + STORES +
-         "    c->x[8]=recomp_load32(c,c->x[24] + 500);\n    recomp_barrier();\n"
-         "    { uint64_t _b=c->x[29]; int64_t _o=-100; c->x[22]=recomp_load32(c,(_b+_o)); }\n" + FILL +
-         "c->x[30] = 0x8009a474ULL; f_851063b0(c);\nc->x[30] = 0x8009a478ULL; f_85106220(c);\ngoto L_80099a00;\n"
-         "L_8009a6ac:;\n" + STORES + _or(24, 500, 8, 23) + "    recomp_barrier();\n" + FILL +
-         "L_8009a6c0:;\n" + _or(24, 508, 8, 23) + FILL +
-         "c->x[30] = 0x8009a6e0ULL; f_80099350(c);\n    recomp_barrier();\n" + _or(24, 512, 8, 23) +
-         "L_8009a6f0:;\n    c->x[8]=recomp_load32(c,c->x[24] + 508);\n" + FILL +
-         "L_8009a768:;\n    c->x[25]=recomp_load32(c,c->x[24] + 512);\n" + FILL +
-         "    recomp_store32_sp(c,c->x[31] + 104,c->x[25]);\n" + FILL +
-         "    c->x[25]=recomp_load32(c,c->x[31] + 104);\n" +
-         _or(24, 520, 8, 9, "    c->x[11] = 0x1ULL;\n    c->x[11] &= 0xFFFFFFFFULL;\n    c->x[9]=recomp_load32(c,c->x[31] + 112);\n") +
-         "L_8009aa1c:;\n    c->x[19]=recomp_load32(c,c->x[24] + 520);\n" + FILL +
-         "    recomp_store32_sp(c,c->x[31] + 72,c->x[19]);\n" + FILL +
-         "    c->x[19]=recomp_load32(c,c->x[31] + 72);\n"
-         "c->x[30] = 0x8009afa4ULL; f_85106210(c);\n"
-         "    { uint64_t _b=c->x[29]; int64_t _o=-100; c->x[8]=recomp_load32(c,(_b+_o)); }\n" + FILL +
-         "c->x[30] = 0x8009afecULL; f_851063b0(c);\nc->x[30] = 0x8009aff0ULL; f_85106220(c);\ngoto L_8009aa1c;\n" +
-         "c->x[30] = 0x8009b230ULL; f_851063b0(c);\nc->x[30] = 0x8009b234ULL; f_85106220(c);\n"
-         "    c->x[11] = 0x1ULL;\n    c->x[11] &= 0xFFFFFFFFULL;\ngoto L_8009a768;\n}\n")
-JOB_B = ("void f_800738e0(Ctx *__restrict A64_NOESC c) {\n"
-         "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[19] = _r; }\n" + FILL + STORES +
-         _or(19, 528, 27, 26, "c->x[30] = 0x80073958ULL; f_80279140(c);\n    recomp_barrier();\n") + FILL +
-         _or(19, 536, 8, 9, "    { c->x[9]=(uint64_t)(uint32_t)((uint32_t)c->x[3]<<(c->x[21]&31)); }\n    recomp_barrier();\n") +
-         "    recomp_store32_sp(c,c->x[31] + 16,c->x[8]);\n"
-         "L_80073e38:;\n    c->x[25]=recomp_load32(c,c->x[19] + 528);\n    recomp_barrier();\n    c->x[28]=recomp_load32(c,c->x[19] + 536);\n" +
-         FILL + "    c->x[9]=recomp_load32(c,c->x[31] + 16);\n" + FILL +
-         "c->x[30] = 0x800747a8ULL; f_851063b0(c);\nc->x[30] = 0x800747acULL; f_85106220(c);\ngoto L_80073e38;\n}\n")
-JOB_C = ("void f_8007e200(Ctx *__restrict A64_NOESC c) {\n" + FILL +
-         "    recomp_store32_sp(c,c->x[31] + 68,c->x[9]);\n" + FILL +
-         _or(26, 544, 8, 9, "    { c->x[9]=(uint64_t)(uint32_t)((uint32_t)c->x[23]<<(c->x[21]&31)); }\n    recomp_barrier();\n") +
-         "L_8007e6c0:;\n    c->x[21]=recomp_load32(c,c->x[26] + 544);\n    recomp_barrier();\n"
-         "    c->x[28]=recomp_load32(c,c->x[31] + 68);\n" + FILL +
-         "    { uint64_t _r = (c->x[21] ^ ((uint64_t)(uint32_t)(((uint32_t)(c->x[28])) << 0))); _r &= 0xFFFFFFFFULL; c->x[8] = _r; }\n" +
-         FILL + "c->x[30] = 0x8007e908ULL; f_851063b0(c);\nc->x[30] = 0x8007e90cULL; f_85106220(c);\ngoto L_8007e6c0;\n}\n")
-UNPOLLED = '#include "a64.h"\n\n' + JOB_A + JOB_B + JOB_C   # (as nx2/guest_locals.py asks touches() about each function)
-LIFTED, POLLS = poll.add_polls(UNPOLLED)   # (as the patches meet it: each loop's back-edge `{ A64_POLL(c); goto L_x; }`)
-GROUPED = a64_lift.mark_groups(LIFTED)     # (a finished lift's: each group's page marks shared, the lift's last step)
-# (each sleep: its return address, the loop head it goes back to and the words that head loads into the registers the wait
-# must be told, P's register; the ORs into polled words: function, P's register, offset)
-SLEEPS = (("f_800998a0", 0x8009a478, None, "c->x[24]", ((500, "(uint32_t)recomp_load32(c,c->x[24] + 500)"),
-                                                     (508, "(uint32_t)recomp_load32(c,c->x[24] + 508)")), "(uint32_t)c->x[22]"),
-          ("f_800998a0", 0x8009b234, "L_8009a768", "c->x[24]", ((512, "(uint32_t)c->x[25]"),), "(uint32_t)c->x[22]"),
-          ("f_800998a0", 0x8009aff0, "L_8009aa1c", "c->x[24]", ((520, "(uint32_t)c->x[19]"),),
-           "(uint32_t)recomp_load32(c,c->x[29] - 100)"),
-          ("f_800738e0", 0x800747ac, "L_80073e38", "c->x[19]", ((528, "(uint32_t)c->x[25]"), (536, "(uint32_t)c->x[28]")),
-           "(uint32_t)recomp_load32(c,c->x[31] + 16)"),
-          ("f_8007e200", 0x8007e90c, "L_8007e6c0", "c->x[26]", ((544, "(uint32_t)c->x[21]"),), "~(uint32_t)c->x[28]"))
-ORS = (("f_800998a0", 500), ("f_800998a0", 508), ("f_800998a0", 512), ("f_800998a0", 520), ("f_800738e0", 528),
-       ("f_800738e0", 536), ("f_8007e200", 544))
-WAKE = "if (hos_oot_barrier_on()) hos_oot_barrier_wake(_a - %dULL); }"
+SHIFT = "    { c->x[10]=(uint64_t)(uint32_t)((uint32_t)c->x[4]<<(c->x[20]&31)); }\n    recomp_barrier();\n"
+PLACES = (
+    ("f_800998a0", _sleep(0x8009a478, "c->x[24], 500, (uint32_t)recomp_load32(c,c->x[24] + 500), 508, "
+                                      "(uint32_t)recomp_load32(c,c->x[24] + 508), (uint32_t)c->x[22]")),
+    ("f_800998a0", _sleep(0x8009b234, "c->x[24], 512, (uint32_t)c->x[25], 512, (uint32_t)c->x[25], (uint32_t)c->x[22]", FILL)),
+    ("f_800998a0", _sleep(0x8009aff0, "c->x[24], 520, (uint32_t)c->x[19], 520, (uint32_t)c->x[19], "
+                                      "(uint32_t)recomp_load32(c,c->x[29] - 100)")),
+    ("f_800998a0", _or(24, 500, 8, 13)),
+    ("f_800998a0", _or(24, 508, 8, 13)),
+    ("f_800998a0", _or(24, 512, 8, 13)),
+    ("f_800998a0", _or(24, 520, 8, 10, FILL + "    c->x[10]=recomp_load32(c,c->x[31] + 48);\n")),
+    ("f_800738e0", _sleep(0x800747ac, "c->x[19], 528, (uint32_t)c->x[25], 536, (uint32_t)c->x[28], "
+                                      "(uint32_t)recomp_load32(c,c->x[31] + 16)")),
+    ("f_800738e0", _or(19, 528, 27, 14, "c->x[30] = 0x80001204ULL; f_80001200(c);\n    recomp_barrier();\n")),
+    ("f_800738e0", _or(19, 536, 8, 10, SHIFT)),
+    ("f_8007e200", _sleep(0x8007e90c, "c->x[26], 544, (uint32_t)c->x[21], 544, (uint32_t)c->x[21], ~(uint32_t)c->x[28]")),
+    ("f_8007e200", _or(26, 544, 8, 10, SHIFT)),
+)
+LIFTED_PLACES = tuple(lifted for _, (lifted, _old) in PLACES)
+OLD_PLACES = tuple((function, old) for function, (_lifted, old) in PLACES)
+# (the site at each place, in OLD_PLACES' order: the five sleeps are replace sites on the bl, the ORs after sites on the ldset)
+PLACE_SITES = (("barrier.sleepClaim", "f_800998a0", "replace", 0xbd4), ("barrier.sleepGather", "f_800998a0", "replace", 0x1990),
+               ("barrier.sleepDone", "f_800998a0", "replace", 0x174c), ("barrier.orClaim", "f_800998a0", "after", 0xe10),
+               ("barrier.orClaimOther", "f_800998a0", "after", 0xe24), ("barrier.orGather", "f_800998a0", "after", 0xe48),
+               ("barrier.orDone", "f_800998a0", "after", 0x114c), ("barrier.sleepOther", "f_800738e0", "replace", 0xec8),
+               ("barrier.orOther", "f_800738e0", "after", 0x7c), ("barrier.orOtherSecond", "f_800738e0", "after", 0x52c),
+               ("barrier.sleepThird", "f_8007e200", "replace", 0x708), ("barrier.orThird", "f_8007e200", "after", 0x30c))
+
+SIDE = r"""#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#define A64_NOESC
+typedef struct { uint64_t x[32]; } Ctx;
+typedef void (*A64Fn)(Ctx *);
+static uint8_t arena[0x10000];
+#define A64_PTR(a) ((void *)(arena + ((a) & 0xfffc)))
+#define A64_MARK(a, n) ((void)(a), (void)(n))
+static uint64_t log_[256];
+static int logged, on, answer;
+static void note(uint64_t a) { if (logged < 256) log_[logged++] = a; }
+static uint64_t recomp_load32(Ctx *c, uint64_t a) { (void)c; note(0x1000 + (a & 0xffff)); uint32_t v; memcpy(&v, A64_PTR(a), 4); return v; }
+static void recomp_barrier(void) { note(0x2000); }
+void f_85106220(Ctx *c) { note(0x3000), note(c->x[30]); }
+static void f_80001200(Ctx *c) { note(0x4000), note(c->x[30]); }
+A64Fn a64_lookup(uint64_t a) { return a == 0x85106220ull ? f_85106220 : NULL; }
+_Thread_local uint64_t hos_site_callee;   /* (game/sites.c's: a replaced bl's callee, which its hook stores) */
+int hos_oot_barrier_on(void) { note(0x5000); return on; }
+int hos_oot_barrier_wait(uint64_t p, uint32_t o1, uint32_t s1, uint32_t o2, uint32_t s2, uint32_t full) {
+    note(0x6000), note(p), note(o1), note(s1), note(o2), note(s2), note(full);
+    return answer;
+}
+void hos_oot_barrier_wake(uint64_t p) { note(0x7000), note(p); }
+@CALLBACKS@
+@FUNCTIONS@
+typedef void (*Fn)(Ctx *);
+int main(void) {
+    static const Fn hooked[] = {@HOOKED@}, patched[] = {@PATCHED@};
+    int fails = 0;
+    for (unsigned k = 0; k < sizeof hooked / sizeof hooked[0]; k++)
+        for (on = 0; on < 2; on++)
+            for (answer = 0; answer < 2; answer++) {
+                Ctx a, b;
+                for (int r = 0; r < 32; r++) a.x[r] = 0x9e3779b97f4a7c15ull * (r + 1) + k;
+                for (unsigned i = 0; i < sizeof arena; i++) arena[i] = (uint8_t)(i * 7 + k);
+                b = a;
+                uint64_t la[256];
+                uint8_t ma[sizeof arena];
+                int na;
+                logged = 0, memset(log_, 0, sizeof log_);
+                hooked[k](&a);
+                memcpy(la, log_, sizeof la), na = logged, memcpy(ma, arena, sizeof arena);
+                for (unsigned i = 0; i < sizeof arena; i++) arena[i] = (uint8_t)(i * 7 + k);
+                logged = 0, memset(log_, 0, sizeof log_);
+                patched[k](&b);
+                if (na != logged || memcmp(la, log_, sizeof la) || memcmp(&a, &b, sizeof a) || memcmp(ma, arena, sizeof arena)) {
+                    printf("FAIL: place %u, on %d, answer %d\n", k, on, answer);
+                    fails++;
+                }
+            }
+    if (!fails) printf("same\n");
+    return fails != 0;
+}
+"""
 
 
-def function_text(s, name):
-    i = s.index("void %s(Ctx" % name)
-    j = s.find("\nvoid f_", i + 1)
-    return s[i:j if j >= 0 else len(s)]
+def side_by_side(callbacks_text=None):
+    """the C of the side-by-side run: each place hooked (the sites' hooks around or after the lifted text) and as the patch
+    made it, the callbacks (game/oot_sites.c's, or callbacks_text) and the sites' slots ahead"""
+    sites = [site(name, function, at, offset) for name, function, at, offset in PLACE_SITES]
+    functions, hooked_names, patched_names, fns = [], [], [], []
+    for k, (x, lifted, (function, old)) in enumerate(zip(sites, LIFTED_PLACES, OLD_PLACES)):
+        check(function == x.function, "%s is not in %s, where the patch put its text" % (x.name, function))
+        if x.at == "replace":
+            call = lifted.split("\n")[0]
+            check(call.endswith(SLEEP_CALL), "%s's place is not the sleep's call" % x.name)
+            # (the words and registers the wait is told come from the loop's head and the stack, elsewhere in the function:
+            # its guards are what keep a build that moved them from resolving; the side-by-side runs cannot see them)
+            check(len(x.guards) >= 3 and all(off != x.signature_offset and any(m == 0xffffffff for _, m in words)
+                                             for off, words in x.guards),
+                  "%s's guards do not hold the loop head's loads and the masks' slot (at least three, apart from its "
+                  "signature, each with a whole word)" % x.name)
+            pc = int(call.split("0x")[1].split("ULL")[0], 16) - 4
+            check(pc == int(x.function[2:], 16) + x.offset, "%s is not at the call whose return address the patch named" % x.name)
+            hook = (sitehooks.line(x, pc, 0x85106220) + "\n" + call + "\n" + sitehooks.REPLACE_END + "\n"
+                    + lifted[len(call) + 1:])
+            old = old.replace("\n{ A64_POLL(c); goto", "\n{ goto")
+            hook = hook.replace("\n{ A64_POLL(c); goto", "\n{ goto")
+        else:
+            hook = lifted + sitehooks.line(x) + "\n"
+        # (the loops' back-edges go nowhere here: each place is one run of its text)
+        hook = "".join(line for line in hook.splitlines(True) if "goto L_" not in line)
+        old = "".join(line for line in old.splitlines(True) if "goto L_" not in line)
+        functions.append("static void new_%d(Ctx *c) {\n%s}\nstatic void old_%d(Ctx *c) {\n%s}\n" % (k, hook, k, old))
+        hooked_names.append("new_%d" % k)
+        patched_names.append("old_%d" % k)
+        fn = engine_fn(x)
+        if fn not in fns:
+            fns.append(fn)
+    calls = callbacks_text if callbacks_text is not None else (
+        "".join(callback("int %s(" % fn) + "\n" for fn in fns))
+    return (SIDE.replace("@CALLBACKS@", calls + "".join(slot(x) for x in sites))
+            .replace("@FUNCTIONS@", "".join(functions)).replace("@HOOKED@", ", ".join(hooked_names))
+            .replace("@PATCHED@", ", ".join(patched_names)))
 
 
-def check_hooked(op, s, names=("f_800998a0", "f_800738e0", "f_8007e200")):
-    """every sleep of the named functions in front of its wait, told its loop's words; every polled OR with its wake"""
-    for fn, lr, head, p, words, full in SLEEPS:
-        if fn not in names:
-            continue
-        body = function_text(s, fn)
-        call = "c->x[30] = 0x%xULL; f_85106220(c);" % lr
-        check(call not in body, "%s: the sleep at LR %#x is left without its wait" % (fn, lr))
-        args = [p] + [x for off, seen in (words if len(words) == 2 else words * 2) for x in (str(off), seen)] + [full]
-        hooked = ("c->x[30] = 0x%xULL; if (!hos_oot_barrier_on() || !hos_oot_barrier_wait(%s)) f_85106220(c);" % (lr, ", ".join(args)))
-        check(body.count(hooked) == 1, "%s: the sleep at LR %#x is not in front of its wait once, told %s" % (fn, lr, args))
-        if head:   # (the words the wait is told are the ones its loop's head loads into those registers, from P)
-            loop = body[body.index(head + ":;\n"):]
-            for off, seen in words:
-                reg = seen[len("(uint32_t)"):]
-                check(("%s=recomp_load32(c,%s + %d);" % (reg, p, off)) in loop.split(":;\n", 2)[1],
-                      "%s: the wait at LR %#x is told %s at +%d, which its loop's head does not load" % (fn, lr, seen, off))
-    for fn, off in ORS:
-        if fn not in names:
-            continue
-        body = function_text(s, fn)
-        check(body.count(WAKE % off) == 1, "%s: the OR into P+%#x is not followed by its wake once" % (fn, off))
-    check(s.count(op.BARRIER_DECL) == 1 and ('#include "a64.h"\n' + op.BARRIER_DECL) in s, "the hooks are not declared once")
+def run_side(cc, tmp, code, name):
+    d = Path(tmp) / name
+    d.mkdir()
+    (d / "side.c").write_text(code, encoding="utf-8", newline="\n")
+    r = subprocess.run([cc, "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(d / "side.c"),
+                        *sitehooks.objects(d, code), "-o", str(d / "side.exe")], capture_output=True, text=True)
+    check(r.returncode == 0, "the side-by-side run (%s) does not compile:\n%s%s" % (name, r.stdout, r.stderr))
+    return subprocess.run([str(d / "side.exe")], capture_output=True, text=True, timeout=60)
 
 
-def patch_checks(op):
-    check(POLLS == 5 and LIFTED.count("{ A64_POLL(c); goto L_") == 5, "nx2/poll.py did not poll the five loops' back-edges")
-    out, n = op.patch_barrier_wait(LIFTED)
-    check(n == 3, "patch_barrier_wait found %d of the 3 functions" % n)
-    check_hooked(op, out)
-    check(op.patch_barrier_wait(out) == (out, 3), "a second run changed a hooked text, or did not count it")
-    # (another game version: one mark or one place differs; that function is left whole, the others are hooked)
-    for what, old, new in (("a mark", "c->x[19]=recomp_load32(c,c->x[24] + 520);", "c->x[19]=recomp_load32(c,c->x[24] + 524);"),
-                           ("a place", "c->x[30] = 0x8009b234ULL; f_85106220(c);", "c->x[30] = 0x8009b238ULL; f_85106220(c);"),
-                           ("an OR", "_b=508ULL", "_b=506ULL")):
-        other = LIFTED.replace(old, new, 1)
-        got, n = op.patch_barrier_wait(other)
-        check(n == 2, "with %s of f_800998a0 changed, %d functions were hooked, not 2" % (what, n))
-        check(function_text(got, "f_800998a0") == function_text(other, "f_800998a0"),
-              "f_800998a0 with %s changed (another game version) was hooked" % what)
-        check_hooked(op, got, ("f_800738e0", "f_8007e200"))
-    other = LIFTED.replace("    recomp_store32_sp(c,c->x[31] + 68,c->x[9]);\n", "    recomp_store32_sp(c,c->x[31] + 64,c->x[9]);\n")
-    got, n = op.patch_barrier_wait(other)
-    check(n == 2 and function_text(got, "f_8007e200") == function_text(other, "f_8007e200"),
-          "f_8007e200 without its full mask's store was hooked")
-    none = '#include "a64.h"\n\nvoid f_80000000(Ctx *__restrict A64_NOESC c) {\n' + FILL + "}\n"
-    check(op.patch_barrier_wait(none) == (none, 0), "a file without the functions changed")
-    made, counts, lines = op.patch_file(LIFTED, "code_hot_7.c", False)
-    check(counts["job barrier waits"] == 3 and any("job barriers" in x for x in lines), "patch_file does not count the barriers")
-    again, counts, lines = op.patch_file(made, "code_hot_7.c", False)
-    check(again == made and counts["job barrier waits"] == 3 and not any("job barriers" in x for x in lines),
-          "patch_file hooked a hooked file again")
-    said = io.StringIO()
-    with contextlib.redirect_stdout(said):
-        op.report(["a"], [counts])
-    check("job barriers" not in said.getvalue(), "report warns with the three functions hooked")
-    with contextlib.redirect_stdout(said):
-        op.report(["a"], [collections.Counter({"job barrier waits": 2})])
-    check("the job barriers were found in 2 of 3 functions" in said.getvalue(), "report does not warn with two of three")
-    # (the lift keeps the three in the context, nx2/guest_locals.py: keep_mentioned by the addresses the patch file names,
-    # and touches() asked of the function alone, as localize_regs asks it before nx2/poll.py adds the polls, and as written)
-    named = op.mentioned_addresses()
-    for fn in ("f_800998a0", "f_800738e0", "f_8007e200"):
-        check(int(fn[2:], 16) in named, "%s's address is not in mentioned_addresses(): the lift may give it locals" % fn)
-        for what, text in (("as the lift asks it (before the polls)", UNPOLLED), ("as written", LIFTED)):
-            check(op.touches(function_text(text, fn)), "touches() says no for %s alone, %s" % (fn, what))
-    check(not op.touches(function_text(none, "f_80000000")), "touches() says yes for a function no patch changes")
-    unpolled, n = op.patch_barrier_wait(UNPOLLED)
-    check(n == 3 and poll.add_polls(unpolled)[0] == out, "the patch before the polls is not the patch after them")
-    # (a finished lift, patched by hand: a group's mark line inside the first mark of f_800998a0 and two ORs' places)
-    check(GROUPED.count("    A64_MARK((c->x[20] + (uint64_t)(int64_t)(0)), 8);\n") == 3 and _or(24, 500, 8, 23) not in GROUPED,
-          "a64_lift.mark_groups put no mark line inside a place here: the case is not made")
-    grouped, n = op.patch_barrier_wait(GROUPED)
-    check(n == 3 and grouped == a64_lift.mark_groups(out),
-          "over a finished lift the patch found %d of the 3 functions, or did not hook them as the lift would have" % n)
-    check(op.patch_barrier_wait(grouped) == (grouped, 3), "over a finished lift a second run changed a hooked text, or did "
-          "not count it")
-
-
-# (copies of nx2/oot_patches.py edited: each must fail patch_checks)
-BROKEN_PATCH = [
-    ("        if not all(m.count(body) == 1 for m in marks) or not all(old.count(body) == 1 for old, _ in places):\n            continue\n",
-     "        if not all(old.count(body) == 1 for old, _ in places):\n            continue\n", "hooks code whose marks differ"),
-    ("      _barrier_or(24, 500, 8, 23), ", "      ", "a polled OR without its wake"),
-    ('"c->x[24], 520, (uint32_t)c->x[19], 520, (uint32_t)c->x[19], ', '"c->x[24], 512, (uint32_t)c->x[19], 512, (uint32_t)c->x[19], ',
+# (callbacks broken in the side-by-side run's copy: each must make it fail)
+BROKEN_CALLBACKS = [
+    ("c->x[24], 520, (uint32_t)c->x[19], 520, (uint32_t)c->x[19]", "c->x[24], 512, (uint32_t)c->x[19], 512, (uint32_t)c->x[19]",
      "a wait told the wrong word"),
-    ("        if all(new.count(body) == 1 and not old.count(body) for old, new in places):\n            done += 1\n            continue\n",
-     "", "a second run hooks again (or does not count a hooked function)"),
-    ("not all(old.count(body) == 1 for old, _ in places)", "not any(old.count(body) == 1 for old, _ in places)",
-     "hooks the places that are there when one is missing"),
-    ('_BARRIER_MARKS = r"((?:', '_BARRIER_MARKS = r"()" or r"((?:', "a group's page mark line inside a place not let through"),
-    (r'self.slots.append(r"(\{ A64_POLL\(c\); %s \}|%s)" % (goto, goto))', r'self.slots.append(r"(\{ A64_POLL\(c\); %s \})" % goto)',
-     "a loop's back-edge without its poll not let through"),
-    ('m.groups() + ("",)', '("",) * (len(m.groups()) + 1)', "the mark lines and gotos a place's slots found not kept"),
+    ("hos_oot_barrier_wake(c->x[19]);", "hos_oot_barrier_wake(c->x[27]);", "a wake told the OR's address, not its block"),
+    ("    if (!hos_oot_barrier_on() || !hos_oot_barrier_wait(c->x[26]", "    if (!hos_oot_barrier_wait(c->x[26]",
+     "a wait that does not ask the switch first"),
 ]
 
 
-def broken_patch_checks(tmp):
-    source = (ROOT / "nx2" / "oot_patches.py").read_text(encoding="utf-8")
-    for i, (old, new, what) in enumerate(BROKEN_PATCH):
-        check(source.count(old) == 1, "nx2/oot_patches.py no longer has the text broken patch %d changes: %r" % (i, old))
-        path = Path(tmp) / ("oot_patches_broken_%d.py" % i)
-        path.write_text(source.replace(old, new, 1), encoding="utf-8", newline="\n")
-        spec = importlib.util.spec_from_file_location("oot_patches_broken_%d" % i, path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        try:
-            patch_checks(mod)
-        except SystemExit as e:
-            if str(e).startswith("FAIL"):
-                continue
-            raise
-        raise SystemExit("FAIL: broken patch %d (%s) passed the patch checks" % (i, what))
+def sites_checks(cc, tmp):
+    r = run_side(cc, tmp, side_by_side(), "side")
+    check(r.returncode == 0 and "same" in r.stdout, "the sites and the text patch differ:\n" + r.stdout + r.stderr)
+    fns = []
+    for name, function, at, offset in PLACE_SITES:
+        fn = engine_fn(site(name, function, at, offset))
+        if fn not in fns:
+            fns.append(fn)
+    good = "".join(callback("int %s(" % fn) + "\n" for fn in fns)
+    for i, (old, new, what) in enumerate(BROKEN_CALLBACKS):
+        check(good.count(old) == 1, "game/oot_sites.c no longer has the text broken callback %d changes: %r" % (i, old))
+        r = run_side(cc, tmp, side_by_side(good.replace(old, new, 1)), "broken-cb-%d" % i)
+        check(r.returncode != 0 and "FAIL" in r.stdout, "broken callback %d (%s) passed the side-by-side run" % (i, what))
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--cc", default="gcc")
+    p.add_argument("--cc", default="clang")
+    p.add_argument("--cargo")
     a = p.parse_args()
-    patch_checks(oot_patches)
-    header = (ROOT / "host" / "oot_barrier.h").read_text(encoding="utf-8")
-    glue = (ROOT / "host" / "oot_barrier.c").read_text(encoding="utf-8")
+    sitehooks.use(a.cc, a.cargo)
+    header = (ROOT / "game" / "oot_barrier.h").read_text(encoding="utf-8")
+    glue = (ROOT / "game" / "oot_barrier.c").read_text(encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
 
     def build(tmp, name, h=header, g=glue):
@@ -613,6 +597,7 @@ def main():
         (d / "oot_barrier.h").write_text(h, encoding="utf-8", newline="\n")
         (d / "oot_barrier.c").write_text(g, encoding="utf-8", newline="\n")
         (d / "hos.h").write_text(STUB_HOS, encoding="utf-8", newline="\n")
+        (d / "game_host.h").write_text('#include "hos.h"\n', encoding="utf-8", newline="\n")   # (host/game_host.h: the stub hos.h)
         (d / "fixture.c").write_text(FIXTURE, encoding="utf-8", newline="\n")
         exe = d / "fixture.exe"
         extra = [] if os.name == "nt" else ["-I", str(ROOT / "host" / "posix"), "-pthread"]
@@ -630,7 +615,7 @@ def main():
             return subprocess.CompletedProcess([str(exe), mode], 1, "", "FAIL: no end in 120 s")
 
     with tempfile.TemporaryDirectory(prefix="oot-barrier-") as tmp:
-        broken_patch_checks(tmp)
+        sites_checks(a.cc, tmp)
         exe = build(tmp, "fixture")
         # (on by default since 18 Nov: unset is on; 0 / off the sleeps as before)
         for mode, value in (("on", "1"), ("on", " yes "), ("on", None), ("off", "0"), ("off", "off")):
@@ -642,16 +627,16 @@ def main():
         for i, (where, edits, mode, what) in enumerate(BROKEN):
             text = header if where == "header" else glue
             for old, _ in edits:
-                check(text.count(old) == 1, "host/oot_barrier.%s no longer has the text broken variant %d changes: %r"
+                check(text.count(old) == 1, "game/oot_barrier.%s no longer has the text broken variant %d changes: %r"
                       % ("h" if where == "header" else "c", i, old))
             for old, new in edits:
                 text = text.replace(old, new, 1)
             exe = build(tmp, "broken-%d" % i, h=text if where == "header" else header, g=text if where == "glue" else glue)
             r = run(exe, mode, "1" if mode == "on" else "0")
             check(r.returncode != 0 and "FAIL" in r.stderr, "broken variant %d: %s\n%s" % (i, what, r.stdout + r.stderr))
-    print("PASS: the job barriers wait until their masks move, are woken by the ORs, lose no wake-up and time out; the patch "
-          "hooks the three functions whole or not at all (%d broken variants and %d broken patches caught)"
-          % (len(BROKEN), len(BROKEN_PATCH)))
+    print("PASS: the job barriers wait until their masks move, are woken by the ORs, lose no wake-up and time out; the sites "
+          "call them as the text patch did (%d broken variants and %d broken callbacks caught)"
+          % (len(BROKEN), len(BROKEN_CALLBACKS)))
 
 
 if __name__ == "__main__":

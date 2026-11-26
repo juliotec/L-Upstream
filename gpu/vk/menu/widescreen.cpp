@@ -1,5 +1,5 @@
-// The Insert menu's widescreen rows (#1633), in the Graphics tab's Screen section: where the game's menus and its HUD in
-// play sit on a screen that is not 16:9.
+// The Insert menu's widescreen rows (#1633), in the Graphics tab's Screen section: where the game's HUD in play sits on a
+// screen that is not 16:9. (Ultrawide menus, where its menus sit, is the game's: game/menu/rows.c.)
 #include "menu_module.h"
 
 #include <atomic>
@@ -10,15 +10,7 @@
 namespace mkwvk {
 
 namespace {
-const char* tx_wide_menus(int v) {
-    static const char* t[] = {"Full width", "Centred, blurred sides", "Centred, black bars", "Extended"};
-    return t[std::min(std::max(v, 0), 3)];
-}
-MODULE_HINTS(hn_wide_menus, 0, "The menus stretched over the whole screen, as before.",
-             "The menus in the middle 16:9; beside them, what the game draws there, out of focus.",
-             "The menus in the middle 16:9; black beside them.",
-             "The menus at their 16:9 size, what sits at their sides moved out to the screen's edges.")
-/// (the HUD layout row, HOS_OPT_HUD_LAYOUT: host/hos_wide_ui.c places the HUD by it at each present, #1133)
+/// (the HUD layout row, HOS_OPT_HUD_LAYOUT: game/hos_wide_ui.c places the HUD by it at each present, #1133)
 std::atomic<int> hud_layout{0};
 std::atomic<int> hud_health{HOS_HUD_DEFAULT_PLACEMENT};
 std::atomic<int> hud_buttons{HOS_HUD_DEFAULT_PLACEMENT};
@@ -74,15 +66,6 @@ int menu_hud_option(int id) {
 
 MENU_MODULE(widescreen) {
     menu::tab("graphics")
-        .row({.key = "ultrawide_menus",
-              .label = "Ultrawide menus",
-              .help = "With the Aspect ratio at the monitor's shape: the pause, item and map menus, and what shows beside them. Loading "
-                      "screens and pre-rendered movies, which draw no world either, get the same sides. Changes at once.",
-              .value = &opts.wide_menus,
-              .lo = 0, .hi = 3,
-              .preset_exempt = true,
-              .text = [](int v) { return std::string(tx_wide_menus(v)); },
-              .hint = hn_wide_menus}, menu::after("fullscreen_monitor").order(50))
         .row({.key = "hud_layout",
               .label = "HUD layout",
               .help = "Where the gameplay HUD sits. Custom starts at the screen's edges and lets you place and resize its groups. "

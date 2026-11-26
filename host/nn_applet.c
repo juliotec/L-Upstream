@@ -131,7 +131,7 @@ static int handheld(void) {
    else is the game's own size, said in the log. The menu offers 2048x1152 and the screen's display modes (gpu/vk/display_modes.h;
    where they are not known 1920x1080, 2560x1440, 3840x2160, 5120x1440 and 5120x2880), and any other size as its own choice. The numbers it saved before are read as their sizes: 0 the game's
    2048 x 1152, 1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440, 5 5120 x 2880. The game's frame is its display size
-   (2560 x 1440 as shipped; nx2/oot_patches.py apply_output_size asks hos_output_size) times its graphics scale
+   (2560 x 1440 as shipped; the output size patch, builder/crates/edits/src/patches.rs, asks hos_output_size) times its graphics scale
    (GetCurrentGraphicsScale's tier: 0 x1, 1 x0.8, 2 x0.667). The tier is not the operation mode: the console's library maps
    the system's graphics scaling parameter (10, 20, 30) to it, and 0 is the full picture. 2048x1152 asks for tier 1, the game's
    own reduced size (what every run drew before, from x0 left at the call before's answer); each other size, and none chosen
@@ -188,7 +188,7 @@ uint32_t hos_output_size(int height) {
     if (!output_mode()) return height ? 1440 : 2560;
     return height ? output_h : output_w;
 }
-/* (longshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
+/* (longshot) The render targets' GPU pool (builder/crates/edits/src/patches.rs), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
    the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:
    hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool
    was scaled for, or the game crashes as Kokiri Forest loads, a null pointer or "texture handle ids -1");

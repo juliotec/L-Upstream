@@ -55,7 +55,7 @@ typedef struct LogFacts {
 static Session session;
 static HosReportPrivacy privacy;
 static File marker = NO_FILE, staging = NO_FILE;
-static char pending_dir[PATH_CAP], running_dir[PATH_CAP], marker_path[PATH_CAP], staging_path[PATH_CAP], game_dir[PATH_CAP];
+static char pending_dir[PATH_CAP], running_dir[PATH_CAP], marker_path[PATH_CAP], staging_path[PATH_CAP];
 static char published_stem[96];
 static int ready, claimed, prune_failed, quit_noted, quit_busy;
 static char record_bytes[TEXT_CAP];
@@ -466,7 +466,7 @@ static void format_record(Text *b, const Session *s, const HosCrashContext *c, u
     } else {
         field(b, "crash_handler", "not observed");
         field(b, "termination_note", "ended from outside or lost power, not necessarily a crash");
-        if (facts && facts->quit) field(b, "quit_asked", "yes"); /* (a quit never counts as a crash: hos_crash_dialog.h) */
+        if (facts && facts->quit) field(b, "quit_asked", "yes"); /* (a quit never counts as a crash: builder/crates/crash/src/facts.rs) */
         if (facts && facts->known) {
             decimal_field(b, "log_size_bytes", facts->bytes); decimal_field(b, "log_tail_bytes", facts->tail);
             timestamp(facts->epoch, when); field(b, "log_mtime_utc", when);
@@ -837,7 +837,6 @@ void hos_crash_record_start(const char *dir, const char *version, const char *lo
 #ifdef _WIN32
     prepare_dump(root);
 #endif
-    memcpy(game_dir, dir, length(dir, sizeof game_dir - 1) + 1);
     __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
 }
 /* The player asked to quit (the window closed, the control socket's quit: host/rx_backend.c rx_close_asked, before anything
@@ -861,43 +860,6 @@ void hos_crash_quit_asked(void) {
 #endif
     }
     __atomic_sub_fetch(&quit_busy, 1, __ATOMIC_SEQ_CST);
-}
-/* For the crash window (host/hos_crash_dialog.c): this run's id, its log ("" when it logs to no file) and the game folder,
-   NULL before a start recorded */
-const char *hos_crash_record_run(void) { return __atomic_load_n(&ready, __ATOMIC_ACQUIRE) ? session.run_id : NULL; }
-const char *hos_crash_record_log(void) { return __atomic_load_n(&ready, __ATOMIC_ACQUIRE) ? session.log_path : NULL; }
-const char *hos_crash_record_dir(void) { return __atomic_load_n(&ready, __ATOMIC_ACQUIRE) ? game_dir : NULL; }
-/* The helper, once its game has ended: the recovery a start does (an unclean record for each marker no live process holds),
-   without a marker of its own. 0 when the folders cannot be made */
-int hos_crash_record_recover(const char *dir) {
-    char root[PATH_CAP];
-    if (ready || !setup(dir, root)) return 0;
-    recover();
-    return 1;
-}
-/* Whether a run's marker is still there: 0 gone (or not a marker), 1 this run's, 2 there but not readable (Windows: its
-   owner's lock, held until the process is gone), 3 another run's (Linux's restart is the same process with a new run) */
-int hos_crash_record_marker(const char *dir, uint64_t pid, const char *run_id) {
-    char root[PATH_CAP], running[PATH_CAP], path[PATH_CAP], leaf[64];
-    if (!dir || !join(root, sizeof root, dir, "bug-reports") || !join(running, sizeof running, root, "running")) return 0;
-    snprintf(leaf, sizeof leaf, "%llu.running", (unsigned long long)pid);
-    if (!join(path, sizeof path, running, leaf)) return 0;
-#ifdef _WIN32
-    wchar_t w[PATH_CAP];
-    if (!wide(path, w)) return 0;
-    HANDLE f = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND ? 0 : 2;
-#else
-    int f = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (f < 0) return errno == ENOENT ? 0 : 2;
-#endif
-    Session s;
-    const int got = read_file(f, &s, sizeof s, 0);
-    close_file(f);
-    if (!got) return 2;
-    if (memcmp(s.magic, "Longshot running 1", 19)) return 0;
-    return !memcmp(s.run_id, run_id, length(run_id, 32)) && s.run_id[32] == 0 ? 1 : 3;
 }
 int hos_crash_record_write(const HosCrashContext *context) {
     int expected = 0;

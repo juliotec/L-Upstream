@@ -1,23 +1,20 @@
-"""One rule for on/off switches: env_on (gpu/vk/compat/longshot_env.h) in C and C++, kit.env_on in Python.
+"""One rule for on/off switches: env_on (gpu/vk/compat/longshot_env.h) in C and C++.
 
 Unset, empty, 0, false, off and no (any case, spaces around them not counted) are off; 1 and anything else are on, so
 RX_VK_NO_PROGRAM_CACHE=0 no longer turns the feature on. env_int reads a number with a default. Compile the header as C
-and as C++ and check both, and the Python twin, against the same table. Also check that no file in host/ or gpu/vk reads
+and as C++ and check both against the same table. Also check that no file in host/ or gpu/vk reads
 an on/off switch the old way, getenv(name) != NULL, for a name it reads nowhere else for a value. No game or GPU is needed.
 """
 import argparse
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import kit  # noqa: E402
 
 CASES = [(None, 0), ("", 0), ("0", 0), (" 0 ", 0), ("false", 0), ("FALSE", 0), ("Off", 0), ("no", 0), ("0\r\n", 0),
          ("1", 1), ("2", 1), ("yes", 1), ("on", 1), ("true", 1), ("00", 1), ("2c56dc1006942f74", 1), ("dir/x", 1)]
@@ -89,16 +86,6 @@ def main():
     if 'env_on_or("RX_VK_FSR4_STANDIN", 1)' not in fsr4:
         raise SystemExit("FAIL: the FSR 4 stand-in must use the default-on boolean parser")
 
-    for value, want in CASES:   # (Python's twin)
-        env = os.environ.copy()
-        os.environ.pop("LONGSHOT_T_SWITCH", None)
-        if value is not None:
-            os.environ["LONGSHOT_T_SWITCH"] = value
-        got = kit.env_on("LONGSHOT_T_SWITCH")
-        os.environ.clear(), os.environ.update(env)
-        if got != bool(want):
-            raise SystemExit("FAIL: kit.env_on with [%r] is %s" % (value, got))
-
     argv = []
     for value, want in CASES:
         if value is not None and ("\r" in value or "\n" in value):
@@ -129,7 +116,7 @@ def main():
     # (asked only whether it is set, on purpose, where the value is read by the rule elsewhere)
     set_at_all = {"HOS_FULLSCREEN": "gpu/vk/vk_menu.cpp: a run that names it at all keeps the menu's Fullscreen row out of it"}
     reads, presence = {}, {}
-    for path in sorted(p for d in ("host", "gpu") for p in (ROOT / d).rglob("*") if p.suffix in (".c", ".cpp", ".h")):
+    for path in sorted(p for d in ("host", "gpu", "game") for p in (ROOT / d).rglob("*") if p.suffix in (".c", ".cpp", ".h")):
         rel = path.relative_to(ROOT).as_posix()
         if "gpu/render" in rel or "third_party" in rel or "/tests/" in rel or "sirit" in rel:
             continue
@@ -146,7 +133,7 @@ def main():
     if old:
         raise SystemExit("FAIL: on/off switches still read as set-means-on (set to 0 they are on): use env_on:\n  " +
                          "\n  ".join("%s (%s)" % (n, ", ".join(presence[n])) for n in old))
-    # (no on/off switch of host/ read as a number: atoi says off for true, yes and on. Seen as atoi(getenv(name)), and as
+    # (no on/off switch of host/ or game/ read as a number: atoi says off for true, yes and on. Seen as atoi(getenv(name)), and as
     # atoi(e) within a few lines of e = getenv(name). A switch that is a number says so here)
     numbers = {"HOS_CORES", "HOS_PROFILE", "HOS_COND_RECORD", "HOS_FPS_TARGET", "HOS_REALTIME_WINDOW", "HOS_FRAME_SLEEP_MS",
                "HOS_MKW_INTERVAL", "RX_NVN_WATCH_AFTER", "HOS_MUTEX_TRACE", "HOS_FPS_MAX", "HOS_AUDIO_CHANNELS",
@@ -157,7 +144,7 @@ def main():
     direct = re.compile(r"atoi\(getenv\(" + switch + r"\)\)")
     taken = re.compile(r"\b(\w+)\s*=\s*getenv\(" + switch + r"\)")
     atoi_read = set()
-    for path in sorted((ROOT / "host").rglob("*.c")):
+    for path in sorted((ROOT / "host").rglob("*.c")) + sorted((ROOT / "game").rglob("*.c")):
         if "win32_posix" in path.name:
             continue
         rel = path.relative_to(ROOT).as_posix()
@@ -171,9 +158,9 @@ def main():
                     found.append(n)
             atoi_read.update("%s (%s:%d)" % (n, rel, number) for n in found if n not in numbers)
     if atoi_read:
-        raise SystemExit("FAIL: switches of host/ read with atoi: an on/off switch reads env_on, env_on_or or env_value_off, a "
+        raise SystemExit("FAIL: switches of host/ and game/ read with atoi: an on/off switch reads env_on, env_on_or or env_value_off, a "
                          "number env_int or a place in this check's list:\n  " + "\n  ".join(sorted(atoi_read)))
-    print("PASS: env_on's rule in C, C++ and Python (%d values); no on/off switch read the old way" % len(CASES))
+    print("PASS: env_on's rule in C and C++ (%d values); no on/off switch read the old way" % len(CASES))
 
 
 if __name__ == "__main__":

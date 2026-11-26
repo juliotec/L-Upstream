@@ -102,12 +102,25 @@ The emulator's save is backed up before it's replaced. The launcher doesn't expo
 |---|---|---|
 | Windows, pictured nightly Launcher, installed | `%APPDATA%\Longshot\save\` (normally `%USERPROFILE%\AppData\Roaming\Longshot\save\`) | `%LOCALAPPDATA%\Longshot\oot-save-backups` |
 | Windows, pictured nightly Launcher, portable | `LongshotLauncher-data\user\save\` beside the launcher | `LongshotLauncher-data\save-backups\` beside the launcher |
-| Windows, Launcher v1.0.0-rc.3 or game started directly without `--user` | `<game folder>\user\save\` (the game folder is `%USERPROFILE%\Games\Longshot` unless you chose another) | `%LOCALAPPDATA%\Longshot\oot-save-backups`; a portable launcher's backups are in `LongshotLauncher-data\save-backups\` beside it |
+| Windows, Launcher v1.0.0-rc.3 | `<game folder>\user\save\` (the game folder is `%USERPROFILE%\Games\Longshot` unless you chose another) | `%LOCALAPPDATA%\Longshot\oot-save-backups`; a portable launcher's backups are in `LongshotLauncher-data\save-backups\` beside it |
 | Linux and Steam Deck | `~/.local/share/longshot/save/` | `~/.local/share/longshot/save-backup/`, also `scripts/longshot_saves.py`'s (older backups, from a launcher before [LongshotLauncher#80](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/pulls/80) or the script before [LongshotLauncher#188](https://git.magicbean.dev/MagicBeanDev/LongshotLauncher/issues/188), stay in `~/.local/share/oot-save-backups`) |
 
 On Windows with the installed nightly Launcher, paste `%APPDATA%\Longshot\save\` into File Explorer's address bar
 and press **Enter**. `%APPDATA%` is your **Roaming** folder; `%LOCALAPPDATA%` is **Local**, where the launcher keeps backups.
-Starting `longshot.exe` directly without `--user` does not use the launcher's shared save folder.
+Started from Longshot's own folder (`Longshot.exe`, RecompLauncher's way), your saves are in your profile's `saves\save\`
+(`profile\saves\save\` beside `Longshot.exe`, or `%APPDATA%\Longshot\saves\save\` for RecompLauncher's), and your
+settings in its `settings.ini`: its first start copies the saves you had (a game folder's `user`, or
+`%APPDATA%\Longshot\save\`) there, and your settings when the profile has none, and keeps them where they were ([the folder you start Longshot from](updates-and-saves.md#the-folder-you-start-longshot-from)). Starting a
+game folder's `longshot.exe` directly, outside such a folder and with no profile, uses `%APPDATA%\Longshot\save\` too: the first such start moves a
+`user` folder from the game folder there. When `%APPDATA%\Longshot` already has anything of the same name as something
+in the game folder's `user` (`save`, `temp`, a settings file, not only saves), or something in `user` can't be copied,
+it leaves the game folder's `user` where it is and keeps using it, so the two are never mixed. A start stopped part way
+through the move (the PC lost power) leaves the saves whole: the next start finishes the move or starts it again.
+
+**Profiles:** each profile keeps its saves in a folder of its own, its `saves` (`save/` and `save-work/`, nothing
+else), which the game is given for that run (`LONGSHOT_PROFILE`). Your recordings and
+the mouse's sensitivity stay in the user folder above, the caches and logs in the game folder. If the saves folder
+cannot be made or written, the game does not start and says why, rather than play on another profile's saves.
 
 `save-work/<user id>/` beside `save/` is the game's working copy: the game writes there, and a finished save goes into
 `save/` one file at a time. A program reading during a save can see files from different saves; copy the folder while the

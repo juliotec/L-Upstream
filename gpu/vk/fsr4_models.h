@@ -72,7 +72,8 @@ struct ModuleScan {
 std::vector<ModuleScan> scan_loaded_modules();
 
 /// An upscaler library whose private layout (the provider classes, their vtables, IsSupported at entry 2) was read and
-/// run: named by its file's SHA-256, the same one scripts/fetch.py pins for the file a build fetches.
+/// run: named by its file's SHA-256, the same one the builder (build-driver runtimes.rs) and scripts/fetch.py pin for the
+/// file a build fetches.
 struct KnownLibrary {
     const char* sha256;   // (lower-case hex)
     const char* what;

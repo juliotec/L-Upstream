@@ -40,6 +40,7 @@
 #include "vk_gpu_clock.h"
 #include "vk_progress.h"
 #include "vk_programs.h"
+#include "vk_progcache.h"   // (program_cache_publish: the prepare run's end)
 #include "mesh_mode.h"
 #include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
 #include "prepare_journal.h"   // (kExitEntryLimit: the journalled preparation's exit status for one entry past its limit)
@@ -200,7 +201,7 @@ void new_refused() {
         return;   // (operator new asks malloc again)
     }
     t_new_tries = 0;
-    if (host && host->version >= 28 && host->out_of_memory) host->out_of_memory(kNewWhat);   // (does not return)
+    if (host && host->out_of_memory) host->out_of_memory(kNewWhat);   // (does not return)
     throw std::bad_alloc();
 }
 void new_refuse_test(int64_t presents) {   // (the replay's present, its count)
@@ -292,7 +293,7 @@ bool pick_device() {
     std::vector<VkPhysicalDevice> all(n);
     vkEnumeratePhysicalDevices(dev.instance, &n, all.data());
     if (!n) {   // (longshot) no device at all: no Vulkan driver lists a GPU. Why, where the PC says (NVIDIA's driver not loaded, a
-                // real-time kernel): the window after the start reads this line (host/hos_crash_dialog.h)
+                // real-time kernel): the window after the start reads this line (builder/crates/crash/src/facts.rs)
         LongshotNoGpu why;
 #ifdef _WIN32
         longshot_no_gpu_probe(nullptr, &why);
@@ -1387,8 +1388,8 @@ std::string skipped_path() { return cache_path("longshot_prepare_skipped"); }
 //   CPU is stuck on a lock, and stops at the ordinary limit on every driver),
 //   the run says where it stopped and why, leaves
 //   longshot_prepare_skipped so the game's own starts do not stop in the same place (what was not prepared is built when first
-//   drawn), and ends at once with exit status 4 (make_game.py: "the GPU driver stopped responding"). Not through exit(): that
-//   unloads the driver, which can wait on the same lock. Without this make_game.py would stop it after 15 minutes with no
+//   drawn), and ends at once with exit status 4 (longshot-builder: "the GPU driver stopped responding"). Not through exit(): that
+//   unloads the driver, which can wait on the same lock. Without this longshot-builder would stop it after 15 minutes with no
 //   line, and the game's first start would stop in the same place
 // - The pipeline cache's save, the last part, has no count and can take minutes on a large cache. When the run went on from a
 //   part and left workers inside the driver (prepare_left_workers), or the driver faulted, the save can wait on them for ever
@@ -1396,7 +1397,7 @@ std::string skipped_path() { return cache_path("longshot_prepare_skipped"); }
 //   (600 s), and a run that gets through it ends at once (prepare_end). Twice: a fault AMD's retry recovered from ("recovered
 //   with optimization disabled") counts as one, so on such a card every run is risky, and a save that is only slow should not be
 //   stopped at the parts' limit. Otherwise the save is only reported, and its lines stop after the parts' 300 s so that
-//   make_game.py's 15 minutes with no line (PREPARE_SILENCE) still stop a save that never ends
+//   longshot-builder's 15 minutes with no line (build-driver shaders.rs SILENCE) still stop a save that never ends
 /// (where the run is, for the watchdog: under one lock, so it reads a part with its own count)
 struct PrepareSeen {
     int part = -1;
@@ -1529,7 +1530,7 @@ void prepare_watchdog() {
                     logf("vk: preparation: still writing %s (%lld s): every pipeline is made, this is the disk", what,
                          (long long)still);
                 else
-                    continue;   // (silent from here: make_game.py's 15 minutes with no line stop a save that never ends)
+                    continue;   // (silent from here: longshot-builder's 15 minutes with no line stop a save that never ends)
             } else if (still >= quiet_s) {
                 if (stall_s > 0)
                     logf("vk: preparation: waiting: nothing in %s has finished for %lld s (%zu of %zu), %s. Stopped at %lld s if "
@@ -1551,7 +1552,7 @@ void prepare_watchdog() {
 // stops a run in which nothing moves and cannot say which shader the driver is stuck in, so the whole preparation was given
 // up for one shader. With a journal, an entry that has been inside the driver for longer than one gets is named in the
 // journal and the run ends at once with exit status 6 (prepare_journal::kExitEntryLimit), through prepare_end as the
-// watchdog's stop: the supervisor (nx2/prepare_supervisor.py) starts it again without that program. Looked at once a
+// watchdog's stop: the supervisor (build-driver supervisor.rs) starts it again without that program. Looked at once a
 // second, on a thread of its own: the watchdog's is compiled alone by its check. No journal, or no limit: nothing to do
 void prepare_entry_watch() {
     const char* limit = getenv("LONGSHOT_PREPARE_ENTRY_S");
@@ -1781,6 +1782,7 @@ bool started_up() {
         precompile_run(progress);
         prepare_moved(3, 0, 0);   // (the pipeline cache written out: the watchdog reports it, and stops it only when risky)
         pipeline_cache_save(true);
+        program_cache_publish();   // (the next game folder begins from it: vk_progcache.cpp seed_path)
         remove(skipped_path().c_str());
         if (prepare_left_workers() || driver_faults() > 0) {   // (exit() would unload a driver that may still hold workers)
             logf("vk: preparation: done; the run ends at once (%s)",
@@ -2132,39 +2134,18 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
 static const MkwVkRenderer* init_body(const MkwVkHost* h) {
     using namespace mkwvk;
     if (!h) return nullptr;
-    if (h->version < 14 || h->version > MKWVK_API_VERSION) {
-        std::fprintf(stderr, "vk: host version mismatch: host has %u, expected %u (or >= 14)\n", h->version, MKWVK_API_VERSION);
+    // (the host and the renderer are built together: one version, never another's)
+    if (h->version != MKWVK_API_VERSION) {
+        std::fprintf(stderr, "vk: host version mismatch: host has %u, expected %u\n", h->version, MKWVK_API_VERSION);
         return nullptr;
     }
-    std::memset(&host_storage, 0, sizeof(host_storage));
-    const size_t copy_size =
-        h->version < 15 ? offsetof(MkwVkHost, slept_ns) :
-        h->version < 17 ? offsetof(MkwVkHost, prompts_live) :
-        h->version < 20 ? offsetof(MkwVkHost, screen_size) :
-        h->version < 22 ? offsetof(MkwVkHost, take_text) :
-        h->version < 23 ? offsetof(MkwVkHost, options_path) :
-        h->version < 24 ? offsetof(MkwVkHost, audio_output_count) :
-        h->version < 25 ? offsetof(MkwVkHost, mic_test) :
-        h->version < 26 ? offsetof(MkwVkHost, perf_info) :
-        h->version < 27 ? offsetof(MkwVkHost, main_thread_times) :
-        h->version < 28 ? offsetof(MkwVkHost, out_of_memory) :
-        h->version < 29 ? offsetof(MkwVkHost, monitor_count) :
-        h->version < 30 ? offsetof(MkwVkHost, perf_tracking) :
-        h->version < 32 ? offsetof(MkwVkHost, rumble_test) :
-        h->version < 33 ? offsetof(MkwVkHost, nfc_count) :
-        h->version < 34 ? offsetof(MkwVkHost, ab_frame) :
-        h->version < 35 ? offsetof(MkwVkHost, mod_info) :
-        h->version < 36 ? offsetof(MkwVkHost, ab_value) :
-        h->version < 41 ? offsetof(MkwVkHost, output_preview_request) :
-        h->version < 45 ? offsetof(MkwVkHost, vulkan_loader_proc) :
-        sizeof(MkwVkHost);
-    std::memcpy(&host_storage, h, std::min(sizeof(host_storage), copy_size));
+    host_storage = *h;
     host = &host_storage;
     std::set_new_handler(new_refused);   // (a refused C++ allocation waits, then says out of memory)
     // (a C++ exception out of the renderer: said with its type and what(), then out of memory or the FATAL line: cxx_escape.h)
     cxx_escape::g_hooks.log = [](const char* line) { logf("%s", line); };
     cxx_escape::g_hooks.out_of_memory = [](const char* what) {
-        if (host && host->version >= 28 && host->out_of_memory) host->out_of_memory(what);   // (does not return)
+        if (host && host->out_of_memory) host->out_of_memory(what);   // (does not return)
     };
     cxx_escape::g_hooks.fatal = [](const char* why) {   // (as vk_replay.cpp's replay_fatal: the crash window reads its "vk: FATAL:")
         logf("vk: FATAL: %s", why);
@@ -2199,10 +2180,10 @@ static const MkwVkRenderer* init_body(const MkwVkHost* h) {
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, mesh_note, dev.external_memory_host ? "yes" : "no",
          dev.graphics_pipeline_library ? "yes" : "no", dev.maintenance5 ? "yes" : "no");
-    logf("vk: driver: %s", driver_text().c_str());   // (the builders' Save my pipeline list reads it: nx2/pipeline_share.py)
+    logf("vk: driver: %s", driver_text().c_str());   // (the builders' Save my pipeline list reads it: longshot-builder share)
     // (what this PC is, what it gets for it, and which of those a switch set: device_policy.h)
     device_policy_log(dev.policy, dev.facts, [](const char* line) { logf("%s", line); });
-    // (the crash report's facts, as the bug report words them: host/hos_crash_dialog.h reads the last of each)
+    // (the crash report's facts, as the bug report words them: builder/crates/crash/src/facts.rs reads the last of each)
     logf("report: gpu %s", device_report_text().c_str());
     logf("report: cpu %s", mkwvk::bug_report::cpu_text().c_str());
     logf("report: os %s", mkwvk::bug_report::os_text().c_str());

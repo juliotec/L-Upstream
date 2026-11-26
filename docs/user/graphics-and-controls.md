@@ -21,7 +21,7 @@ A and B on. Beside the rows, the help says what the row does and what the chosen
 
 </a>
 
-*UI-only example in the Modern dark theme, from 124e4a4d (after nightly 695) on Linux. The Custom values shown are illustrative, not recommended defaults.*
+*UI-only example in the Modern dark theme, from e78aa33d (after nightly 798) on Linux. The Custom values shown are illustrative, not recommended defaults.*
 
 Your choices are saved as you go, in `longshot_options.ini`: in `%APPDATA%\Longshot` when the launcher starts the game
 on Windows, so every version shares them, otherwise in the game folder ([where the files go](updates-and-saves.md#where-the-files-go)).
@@ -71,6 +71,11 @@ previous resolution. Other mode changes apply after a restart.
 Each row of the menu, in the menu's order, with its choices and its default. Labels on a setting say when it applies:
 after a restart, only on some GPUs or builds, only while HDR is on, or set for you by a quality preset.
 
+The area title card's frame reaches the picture's sides with **HUD layout** at Screen's edges or Custom,
+including at 16:10, 21:9, 32:9 and 48:9. Only the joining lines lengthen or shorten; the ornaments keep their
+usual size. Middle 16:9 keeps the game's original frame, and a 16:9 picture is unchanged. The other HUD
+elements retain their usual placement, including the width limit on very wide screens.
+
 | Tab | Option | Choices | Default |
 |---|---|---|---|
 | Graphics | Quality preset | Custom, Minimum (4GB), Low (6GB), Balanced (8GB), High (12GB), Ultra (16GB+), Auto (this PC) | Auto (this PC) on a first start; Custom in an options file from before it |
@@ -80,11 +85,15 @@ after a restart, only on some GPUs or builds, only while HDR is on, or set for y
 | | Profile | Docked, Handheld (after a restart) | Docked; a quality preset sets it |
 | | Upscaler | Game's own, NVIDIA DLSS (only in builds with NVIDIA's DLSS SDK, on NVIDIA RTX GPUs), AMD FSR 3.1 (every build, on GPUs it runs on), AMD FSR 4 (only in builds with FSR 4, on GPUs AMD's files cover), Off (no upscaling), Intel XeSS (Windows, with Intel's `libxess.dll` beside the game). NVIDIA DLAA, AMD FSR 4 Native AA and Intel XeSS Native AA are DLSS's, FSR 4's and XeSS's Native, chosen on the Render resolution row | Game's own; Auto (this PC) chooses DLSS or FSR 4 where they run, never XeSS |
 | | DLSS model | Transformer (K) (CNN (E) in its place on cards with less than 7 GB of video memory), Transformer 2 (M), Transformer 2 (L), NVIDIA default, CNN (E), CNN (F) (shown where DLSS runs, with DLSS or DLAA chosen as the Upscaler) | Transformer (K); CNN (E) under 7 GB |
-| | FSR 4 model | Auto (AMD's), Lite (INT8). Shown on Windows with an AMD GPU that runs FSR 4 and FSR SDK 2.4's upscaler DLL (the one the build fetches, checked by its SHA-256). On a GPU AMD lists no FSR 4 model for, Lite stands in and the row is not shown. Linux retains a saved Lite value but uses Auto. | Auto (AMD's) |
+| | FSR 4 model | Auto (AMD's), Lite (INT8). Shown only on AMD GPUs that run FSR 4, on Windows with FSR SDK 2.4's upscaler DLL (the one the build fetches, checked by its SHA-256). On a GPU AMD lists no FSR 4 model for, Lite stands in and the row is not shown. Linux retains a saved Lite value but uses Auto. | Auto (AMD's) |
 | | DLAA before the bloom | Off, On: where NVIDIA DLAA smooths the picture, after the game's bloom and tone map or before them (shown with NVIDIA DLSS; changeable with Render resolution Native (DLAA) only; changes at once; `RX_VK_DLSS_PRE_BLOOM` over it for one run) | Off |
-| | Dynamic resolution | Off, On: lets the game lower the 3D resolution automatically when the GPU is busy (hides the fixed Render resolution slider while On) | On; a quality preset sets it |
+| | Dynamic resolution | Off, On: lets the game lower the 3D resolution automatically when the GPU is busy (shown unless the Upscaler fixes the render size; hides the fixed Render resolution slider while On) | On; a quality preset sets it |
 | | Render resolution | Stepped slider of fixed render scales (shown while Dynamic resolution is Off). Game's own: 50%, 67%, 75%, 100% (each with its size). With DLSS or FSR 4: Ultra Performance (33%), Performance (50%), Balanced (58%), Quality (67%), 75%, 83%, 92%, Native (DLAA or FSR 4 Native AA: the 3D at full size). With Intel XeSS the same stops, named by the XeSS mode each runs under: Ultra Performance (33%), Balanced (50%, 58%), Ultra Quality (67%, 75%), Ultra Quality Plus (83%, 92%), Native (XeSS Native AA). With FSR 3.1: 33% to 92%, 100% (its native AA). With Off: 33%, 50%, 67%, 75%, 100% | Quality (67%) when Dynamic resolution is turned Off; a quality preset sets it |
 | | Sharpness | 0 to 100%, in steps of 10 | 0%; a quality preset sets it |
+| | DLSS 5 | Off, On: NVIDIA's DLSS 5 model adds detail to faces, skin and surfaces after the upscaler, before the HUD (it costs a lot of GPU time). Shown only with NVIDIA's `nvngx_dlssnr.dll` in the game's `ngx` folder (or `%LOCALAPPDATA%\Longshot\ngx`; on Windows also the community FP16 one in that folder's `fp16` folder, which RTX 20, 30 and 40 cards run), on an NVIDIA GPU, with NVIDIA DLSS, DLAA or AMD FSR as the Upscaler; Longshot does not include or download either file ([DLSS 5](dlss5.md)). The DLSS 5 preset and DLSS 5 settings rows show while it is On, and DLSS 5 model on an RTX 50 card with both files | Off |
+| | DLSS 5 model | Auto (NVIDIA's file), NVIDIA (NVIDIA's own `nvngx_dlssnr.dll`, its FP8 model), FP16 (the community FP16 conversion in the `fp16` folder): which file runs DLSS 5. Shown while DLSS 5 is On, and only on an RTX 50 card with both DLSS 5 files (Windows); with one file that one runs, and RTX 20, 30 and 40 cards run the FP16 file ([DLSS 5](dlss5.md)). `RX_VK_DLSS_NR_MODEL` sets it for a run. Applies after a restart | Auto |
+| | DLSS 5 preset | Default (our settings for the DLSS 5 settings page's rows, tuned in the game), Custom (shown once one of them is changed; choose Default to put them all back). Shown while DLSS 5 is On | Default |
+| | DLSS 5 settings | Opens the DLSS 5 page (shown while DLSS 5 is On; [DLSS 5](dlss5.md) has every row): Model resolution (25% to 100% of the picture), Detail strength and Colour strength (0 to 2), Style (Standard, Natural, Cinematic), Model strengths (As in OptiScaler, Model defaults, Applied: whether the next four reach the model), Intensity, Local structure, Local tone (0 to 2), Skin structure (Follows local structure, 0 to 2), Automatic skin mask (Off, On), Highlight guard (1.0x to 8.0x) | Default: 65%, 1.64, 1.26, Cinematic, Applied, 1.62, 1.22, 1.14, 0.74, On, 1.7x |
 | | Frame generation | Off, Auto (it shows who makes its frames: FSR 3.1 FG or Built-in FG), Fixed | Off |
 | | Frame generation multiplier | Stepped slider from 2x to 8x (shown while Frame generation is Fixed); with DLSS FG up to what NVIDIA's runtime makes on the GPU (6x on an RTX 50, 2x on an RTX 40) | 2x |
 | | Frame generation by | Shown while Frame generation is on. DLSS FG (NVIDIA DLSS Frame Generation: RTX 40 and newer, with a temporal Upscaler), FSR 3.1 FG (AMD FSR 3.1's frame interpolation, from the scene's depth and motion: any GPU), Built-in FG. DLSS FG is offered only where it runs; elsewhere the row has FSR 3.1 FG and Built-in FG, and its line at FSR 3.1 FG says why not DLSS FG (the log has NVIDIA's answer). At DLSS FG, FSR 3.1 makes the frames DLSS FG does not (Frame generation's Auto). At DLSS FG, the game's own menus, movies and loading screens show only the game's own frames (they have no Upscaler picture to make frames from): the row's line and the FPS counter say DLSS FG paused. With an Upscaler that is not temporal, the built-in one makes the frames and the line says why. `RX_VK_DLSS_FG=1` fixes the row at DLSS FG for a run. Changes at once | DLSS FG where it runs, else FSR 3.1 FG (an options file's Auto from before is this default) |
@@ -283,7 +292,10 @@ helper asks you to.
   and can show the footer at every level.
 - **Game speed:** Per frame slows the game whenever it is below 60 fps; Real time keeps normal speed down to 15 fps.
 - **Field of view** changes the gameplay camera's angle: 100% is the game's. Cutscenes, the HUD and movies keep theirs.
-- **Skip title screen** loads your most recent save at the start, once you have saved once.
+- **Skip title screen** loads your most recent save at the start, once you have saved once. It presses A for you on the
+  title screen, its file list and its Yes, each as soon as the game waits there; the game itself loads the save. Where
+  the game does not tell its screens (another version of it, or none told by 45 s), it presses A every couple of
+  seconds instead. With no save yet the title screen stays, so a new game can start. It waits while this menu is open.
 - **Game language** writes `language.txt` in the game folder, read at the next start. **Menu language** is this
   menu's: its translations are machine-made, and corrections are welcome.
 - **Bug report** saves what a report needs in a new folder ([what is in it](reporting-and-contributing.md#report-a-bug)).
@@ -390,7 +402,7 @@ udev rules, the `steam-devices` package on most distributions). A third-party pa
 weak rumble or none gets the plain motor rumble with `HOS_HD_RUMBLE=0` in `longshot_env.txt`.
 
 **DualSense haptics:** a DualSense on a USB cable plays the game's own fine vibration on its voice coils, through
-RenHDrum, which the Longshot Builder puts beside the game. Without it, the pad gets its motors. With **DualSense HD
+RenHDrum, which the build puts beside the game. Without it, the pad gets its motors. With **DualSense HD
 Haptics** on (the default) its speaker taps and its triggers kick back too; turn it off for the voice coils alone.
 
 **The supported console's Pro Controller over USB (Windows):** the game reads it itself, with its motion sensor and

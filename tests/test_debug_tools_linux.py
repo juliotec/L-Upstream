@@ -2,8 +2,9 @@
 compiled on Linux as well as Windows. They were inside `#ifdef _WIN32`, although everything they call exists on Linux
 too (host/posix provides the Windows calls they use), so a Linux build had the Insert menu's cheats without their code.
 
-The check follows host/hos_main.c's preprocessor conditions to each tool's definition and evaluates them twice: with
-_WIN32 defined, and with __linux__ defined instead. Conditions on other macros count as true.
+The check follows game/oot_tools.c's and host/hos_main.c's preprocessor conditions to each tool's definition (and to the
+switch's read, in game/oot_tools.c's game_init, and hos_main.c's call of it) and
+evaluates them twice: with _WIN32 defined, and with __linux__ defined instead. Conditions on other macros count as true.
 
 python -I -B tests/test_debug_tools_linux.py
 """
@@ -11,20 +12,21 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "host/hos_main.c"
 
-# The debug tools' definitions, and the line that reads the hearts switch.
+# The debug tools' definitions (game/oot_tools.c), the line that reads the hearts switch (game/oot_tools.c game_init),
+# and host/hos_main.c's call of game_init.
 TOOLS = [
-    r"static int oot_pouch_change\(",
-    r"static void oot_update_player_cheats\(",
-    r"int hos_oot_flight_shortcut_ready\(void\) \{",
-    r"static void oot_write_flight_rotation\(",
-    r"void hos_oot_flight_rotation\(",
-    r"void hos_oot_flight_pose\(",
-    r"void hos_oot_lift_player\(",
-    r"static void oot_build_free_view\(",
-    r"void hos_oot_free_view\(",
-    r'getenv\("HOS_OOT_PROTECT_HEARTS"\)',
+    ("game/oot_tools.c", r"static int oot_pouch_change\("),
+    ("game/oot_tools.c", r"static void oot_update_player_cheats\("),
+    ("game/oot_tools.c", r"int game_flight_shortcut_ready\(void\) \{"),
+    ("game/oot_tools.c", r"static void oot_write_flight_rotation\("),
+    ("game/oot_tools.c", r"void hos_oot_flight_rotation\("),
+    ("game/oot_tools.c", r"void hos_oot_flight_pose\("),
+    ("game/oot_tools.c", r"void hos_oot_lift_player\("),
+    ("game/oot_tools.c", r"static void oot_build_free_view\("),
+    ("game/oot_tools.c", r"void hos_oot_free_view\("),
+    ("game/oot_tools.c", r'getenv\("HOS_OOT_PROTECT_HEARTS"\)'),
+    ("host/hos_main.c", r"\bgame_init\(\);"),
 ]
 
 
@@ -79,17 +81,17 @@ def first_statement(lines, index):
 
 
 def main():
-    lines = SOURCE.read_text(encoding="utf-8").splitlines()
     problems = []
-    for pattern in TOOLS:
+    for rel, pattern in TOOLS:
+        lines = (ROOT / rel).read_text(encoding="utf-8").splitlines()
         hits = [i for i, line in enumerate(lines) if re.search(pattern, line)]
         if not hits:
-            problems.append("not found in host/hos_main.c: " + pattern)
+            problems.append("not found in %s: %s" % (rel, pattern))
             continue
         for i in hits + [first_statement(lines, i) for i in hits if lines[i].rstrip().endswith("{")]:
             for system, defined in (("Windows", {"_WIN32"}), ("Linux", {"__linux__"})):
                 if not compiled(lines, i, defined):
-                    problems.append("host/hos_main.c:%d (%s) is not compiled on %s" % (i + 1, lines[i].strip(), system))
+                    problems.append("%s:%d (%s) is not compiled on %s" % (rel, i + 1, lines[i].strip(), system))
     if problems:
         raise SystemExit("\n".join(problems))
     print("ok: the %d debug tools are compiled on Windows and Linux" % len(TOOLS))

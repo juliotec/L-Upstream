@@ -1,11 +1,14 @@
-"""The MOVIE patch keeps a centered 16:9 viewport on wide and narrow pictures.
+"""The movie site (wide.movie, game/oot_wide_sites.c's hos_site_wide_movie) keeps a centred 16:9 viewport on wide and
+narrow pictures: side bars on a wider one, bars above and below on a narrower one (#2358).
 
-python -I -B tests/test_movie_shape.py [--cc gcc] [--movie-module /path/to/oot_wide.py]
+The callback is cut out of game/oot_wide_sites.c and run on made-up viewports, game-free.
+
+python -I -B tests/test_movie_shape.py [--cc gcc] [--sites /path/to/oot_wide_sites.c]
 """
 
 import argparse
-import importlib.util
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,6 +23,7 @@ FIXTURE = r'''
 #include <stdio.h>
 #include <string.h>
 
+#define A64_NOESC
 typedef struct { uint64_t x[32]; } Ctx;
 static unsigned char mem[64];
 enum { VP = 8 };
@@ -39,8 +43,10 @@ static void recomp_store32(Ctx *c, uint64_t addr, uint32_t bits) {
     memcpy(mem + addr, &bits, sizeof bits);
 }
 
+@MOVIE@
+
 static void movie(Ctx *c) {
-    @MOVIE@
+    (void)hos_site_wide_movie(c);
 }
 
 static int check(const char *name, float ratio, float margin, const float expected[4]) {
@@ -82,15 +88,16 @@ int main(void) {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default=os.environ.get("CC", "gcc"))
-    parser.add_argument("--movie-module", type=Path, default=ROOT / "nx2" / "oot_wide.py")
+    parser.add_argument("--sites", type=Path, default=ROOT / "game" / "oot_wide_sites.c")
     args = parser.parse_args()
-    spec = importlib.util.spec_from_file_location("oot_wide_fixture", args.movie_module)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sites = args.sites.read_text(encoding="utf-8")
+    callback = re.search(r"^int hos_site_wide_movie\(Ctx \*A64_NOESC c\) \{.*?^\}", sites, re.M | re.S)
+    if not callback:
+        raise SystemExit("FAIL: no hos_site_wide_movie in %s" % args.sites)
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "movie_shape.c"
         exe = source.with_suffix(".exe" if os.name == "nt" else "")
-        source.write_text(FIXTURE.replace("@MOVIE@", module.MOVIE), encoding="utf-8")
+        source.write_text(FIXTURE.replace("@MOVIE@", callback.group()), encoding="utf-8")
         subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(exe)], check=True)
         return subprocess.run([str(exe)]).returncode
 

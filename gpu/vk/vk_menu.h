@@ -5,6 +5,8 @@
 
 #include "vk_internal.h"
 
+struct GameMenuRow;   // (game/game.h)
+
 namespace mkwvk {
 
 // (out of the box every feature is off: what the game does on its own. The ini beside the executable keeps a player's choices)
@@ -32,7 +34,7 @@ struct Options {
                           // (ir_opt/scene_tonemap_pass.h; vk_shader.cpp scene_tonemap_for)
     int fps_cap = 0;      // (longshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240, 6 Uncapped (host/nn_vi.c: frame_rate_cap= at the start, then HOS_OPT_FPS_CAP in play)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
-                          // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
+                          // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; the hook sites dynres.*, render.fixedScale*)
     int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, then the sizes the screen offers (vk_menu.cpp outputs,
                           // display_modes.h), then the player's own (custom_output); saved as the size (output_res=3840x2160) and read
                           // once, at the start (host/nn_applet.c)
@@ -52,11 +54,28 @@ struct Options {
     int dlss_pre_bloom = 0;   // (longshot) DLAA before the bloom: 0 off (DLAA after the game's bloom and tone map), 1 on
                               // (vk_temporal.cpp pre_bloom_wanted; DLAA only). Saved as dlss_pre_bloom; RX_VK_DLSS_PRE_BLOOM over it
     int sharpness = 0;    // 0 to 100
+    // (longshot) DLSS 5, NVIDIA's neural rendering after the upscaler (gpu/vk/menu/dlss5.cpp: its rows, shown only with NVIDIA's
+    // nvngx_dlssnr.dll found; vk_dlss.cpp dlss_nr_chain). Its values at first are the Default preset's (menu/dlss5.h);
+    // a row that shows 0 to 2 holds hundredths
+    int dlss5 = 0;                     // Off, On (RX_VK_DLSS_NR over it)
+    int dlss5_resolution = 65;         // the model's working size: 25 to 100 % of the picture, in fives
+    int dlss5_detail = 164;            // how far the picture moves to the model's, 0 to 200
+    int dlss5_colour = 126;            // how much of the model's colour comes too, 0 to 200
+    int dlss5_style = 2;               // 0 Standard, 1 Natural, 2 Cinematic
+    int dlss5_strengths = 2;           // 0 as in OptiScaler, 1 the model's defaults, 2 applied (the four below reach it)
+    int dlss5_intensity = 162;         // the model's own strength, 0 to 200
+    int dlss5_local_structure = 122;   // 0 to 200
+    int dlss5_local_tone = 114;        // 0 to 200
+    int dlss5_skin = 74;               // -100 follows the local structure, else 0 to 200
+    int dlss5_auto_mask = 1;           // the model's automatic skin mask: Off, On
+    int dlss5_highlight = 17;          // the most the model may brighten or darken a pixel: 10 to 80 tenths (1.7x)
+    int dlss5_model = 0;               // the file that runs it on an RTX 50 with both (dlss_nr_model.h): 0 Auto (NVIDIA's),
+                                       // 1 NVIDIA's, 2 the community FP16 one; after a restart (RX_VK_DLSS_NR_MODEL over it)
     int anisotropy = 4;   // (longshot) Anisotropic filtering: 0 the game's own (1x or 2x), 1 2x, 2 4x, 3 8x, 4 16x (the
                           // device's limit at most; gpu/vk/vk_draw.cpp aniso_override, RX_VK_ANISO over it)
     int grass_distance = 0;   // short blades: 0 the game's, 1 2x, 2 3x, 3 4x (RX_VK_GRASS_DISTANCE over it)
     int shadow_res = 0;   // (longshot) Shadow resolution, the sun's cascades: 0 Auto (the size for the card's memory,
-                          // menu_shadow_res), 1 the game's (1600), 2 2200, 3 3072 (host/oot_shadow.c: HOS_OPT_SHADOW_RES, 56).
+                          // menu_shadow_res), 1 the game's (1600), 2 2200, 3 3072 (game/oot_shadow.c: HOS_OPT_SHADOW_RES, 56).
                           // The Quality presets set it back to Auto (apply_preset)
     int realtime = 1;     // game time follows the clock (host/nn_vi.c); 0: per frame (slower frames, slower game)
     int handheld = 0;     // the game's handheld profile: ~4 fps, softer; read once, at the start (host/nn_applet.c)
@@ -69,9 +88,6 @@ struct Options {
     int hud_health_x = 0, hud_health_y = 0, hud_health_scale = 100;
     int hud_buttons_x = 0, hud_buttons_y = 0, hud_buttons_scale = 100;
     int hud_minimap_x = 0, hud_minimap_y = 0, hud_minimap_scale = 100;
-    int wide_menus = 1;   // ultrawide: the pause, item and map menus 0 at full width (stretched), 1 in the middle 16:9 with the sides
-                          // blurred, 2 with black bars (nx2/oot_wide.py, vk_framegen.cpp), 3 Extended: at their
-                          // 16:9 size with their side panes at the screen's edges (host/hos_wide_ui.c)
     int show_fps = 0;     // (longshot) the FPS counter: 0 Off, 1 FPS, 2 Frame time, 3 Graph, 4 Breakdown (fps_stats.h; saved as fps_counter=, an old On is 1)
     int fps_corner = 0;   // (longshot) its corner: 0 top right, 1 top left, 2 bottom right, 3 bottom left
     int fps_size = 0;     // (longshot) its size: 0 Auto (the window's height and Menu size), 1 Small, 2 Medium, 3 Large (fixed)
@@ -88,7 +104,7 @@ struct Options {
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
     int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick; 2: off (never captured)
     int disable_camera_centering = 0; // 0: stock movement-follow turning; 1: keep the player's horizontal direction
-    int sprint = 0; // 1: Sprint's key and button run (host/oot_sprint.c, HOS_OPT_SPRINT), and turning it on gave them
+    int sprint = 0; // 1: Sprint's key and button run (game/oot_sprint.c, HOS_OPT_SPRINT), and turning it on gave them
                     // Shift and the left stick's press (vk_menu.cpp apply_sprint_layout); 0, the default: they do nothing
     int sprint_toggle = 1; // the Controls page's Toggle for Sprint (toggle_sprint=, HOS_OPT_SPRINT_TOGGLE): 1, the default, a
                            // press turns it on and the next or Link's state off; 0: Sprint while its key or button is held
@@ -99,14 +115,10 @@ struct Options {
                           // runs again (host/nn_hid.c walk_held: HOS_OPT_WALK_MODE, 49)
     int walk_speed = 45;  // (longshot) how far the movement keys tilt the left stick while Link walks, percent, 15 to 90
                           // (host/nn_hid.c: HOS_OPT_WALK_SPEED, 50)
-    int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)
     int transition_autosave = 1;
-    int damage_taken = 1; // 0 Half, 1 Normal, 2 Double, 3 Quadruple (host/oot_damage.c)
+    int damage_taken = 1; // 0 Half, 1 Normal, 2 Double, 3 Quadruple (game/oot_damage.c)
     int input_replay_sync = 1;   // Drift correction (menu/input_recording.cpp): 0 Off, 1 every update, 2 every second, 3 every 5 s
-    int fov = 100;        // vertical gameplay field of view, 50..150% of the game's current angle (host/oot_fov.c)
-    int text_size = 0;    // dialogue and signs' text size: 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% (host/oot_text_size.c,
-                          // nx2/oot_patches.py; HOS_TEXT_SIZE)
-    int camera_speed = 100;   // (longshot) the right stick's camera turn in percent of the game's, 50 to 400 (host/nn_vi.c, nx2/oot_patches.py: HOS_OPT_CAMERA_SPEED, 48)
+    int camera_speed = 100;   // (longshot) the right stick's camera turn in percent of the game's, 50 to 400 (host/nn_vi.c, the hook sites camera.*Speed*: HOS_OPT_CAMERA_SPEED, 48)
     int invert_cam_x = 0; // right-stick camera horizontal inversion: 0 normal, 1 inverted
     int invert_cam_y = 0; // right-stick camera vertical inversion: 0 normal, 1 inverted
     int rumble = 100;     // Vibration strength: percent of what the game asks for, 25 to 200 (host/pad_sdl.c; rumble_strength=)
@@ -150,20 +162,22 @@ struct Options {
                           // 0: none, and Custom goes by Auto (this PC)'s tier (menu_memory_tier). No preset or row sets the
                           // VRAM budgets: one rule by the card (texture_budget.h, mirror_budget.h)
     int audio_output = 0; // (longshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1, 3 Mono; layout read at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
-    int discord = 1;   // (longshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (longshot) the Debug tab's tools (flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int volume = 100;     // (longshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (longshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
-    int skip_opening = 0;   // (longshot) skip the new-game opening (host/hos_main.c hos_oot_opening: HOS_OPT_SKIP_OPENING, 52). Off
     int game_lang = 0;    // the game's language (vk_menu_i18n.h game_lang_code): language.txt's, not kept in the options file
     int menu_lang = 0;    // this menu's language: 0 Auto (the game's own, language.txt), else menu_i18n::kLangs[menu_lang - 1]
                           // (vk_menu_i18n.cpp). Saved as menu_language
     int mic = 1;          // (longshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
     int microphone_gain = 100; // software capture gain, 0..400%; leaves the system's input volume alone
-    int skip_title = 0;   // (longshot) start with the most recent save, pressing through the title and its file list (host/oot_autoload.c); read at the start
     int reshade = 0;      // (longshot) the ReShade preset: 0 Off, 1 Warm, 2 Cool, 3 User (its file in reshade/selected.txt), 4.. the others (reshade/fx_builtin.h)
 };
 extern Options opts;
+// (the game's rows of the menu keep their values apart, by option id: Field of view, Text speed and size, Skip title screen,
+// Skip opening, Discord status, Ultrawide menus. game/menu/, gpu/vk/menu/game_rows.cpp)
+int* menu_game_value(int id);   // (the value of the game's row with this option id, game/options.h; nullptr: no such row)
+bool menu_game_option(int id, int* out);   // (the option callback's answer for it, a Toggle's 0 or 1; false: not a game row's)
+const ::GameMenuRow* menu_game_row(const int* value);   // (the game's row whose value this is, nullptr for another)
 constexpr int kAutoPreset = 6;   // (the Quality preset Auto (this PC): menu_auto_for_gpu, auto_settings.h)
 
 void menu_init();             // (the options from the file, once)

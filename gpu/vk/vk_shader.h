@@ -130,7 +130,7 @@ bool pipelines_stamp_ok(uint64_t stamp);   // (a pipeline-side file of this tran
 uint32_t mesh_fallback_layout();
 size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn,
                                bool computes = true, bool fallbacks = false);   // (computes: and every kept compute program)
-/// The precompile of every shader of the game (longshot_shaders.bin, from nx2/shader_census.py): how many programs it names, 0: none
+/// The precompile of every shader of the game (longshot_shaders.bin, from builder/crates/build-assets/src/census.rs): how many programs it names, 0: none
 size_t seed_open();
 std::string seed_path();   // (longshot_shaders.bin, beside the game)
 void seed_close();

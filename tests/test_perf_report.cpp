@@ -332,7 +332,7 @@ int main(int argc, char** argv) {
     CHECK("windows", pr::kernel_of("Windows 11 (build 26100)") == "10.0.26100");
     CHECK("unknown", pr::kernel_of("Linux").empty());
 
-    // the relay's address, stamped by the launcher into the game folder (the crash helper's rule)
+    // the relay's address, stamped by the launcher into the game folder (the crash window's rule)
     {
         std::string url;
         const std::string stamp = "version=nightly-419-257c5491\nsource=5bd71d51\n"

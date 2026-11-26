@@ -102,6 +102,51 @@ inline std::string default_dir() {
 #endif
 }
 
+/// The copies of prepared program caches beside the store (vk_progcache.cpp seed_path: spirv.pack.programs-<stamp> and
+/// spirv.idx.programs-<stamp>, one pair per translator, several hundred MB each): `stamp`'s pair kept, and the `others` newest
+/// pairs of other stamps by when their pack was written; every older pair removed, and every copy's temporary
+/// (`*.programs-*.new*`, vk_progcache.cpp fresh_name) an hour old, which a Longshot stopped while copying left. Run under the
+/// store's lock (Store::with_lock), so no Longshot is opening one meanwhile. How many pairs were removed.
+/// TODO: spirv.pack itself only grows: the blobs no program cache names any more stay. Compacting it needs every game folder's
+/// cache, whose records name blobs by their place in it, so it is not done here
+inline int prune_program_copies(const std::string& folder, uint64_t stamp, size_t others) {
+    namespace fs = std::filesystem;
+    static const std::string pack = "spirv.pack.programs-", idx = "spirv.idx.programs-";
+    char mine[17];
+    std::snprintf(mine, sizeof mine, "%016llx", (unsigned long long)stamp);
+    std::vector<std::pair<fs::file_time_type, std::string>> found;   // (when each other stamp's pack was written, its stamp)
+    std::unordered_set<std::string> stamps;
+    std::error_code ec;
+    const auto hour_ago = fs::file_time_type::clock::now() - std::chrono::hours(1);
+    for (fs::directory_iterator it(fs::path(folder), ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        // (a copy's temporary: one being written now is younger than an hour, one a stopped Longshot left is not)
+        if ((!name.compare(0, pack.size(), pack) || !name.compare(0, idx.size(), idx)) && name.find(".new") != std::string::npos) {
+            std::error_code t, gone;
+            const auto when = fs::last_write_time(it->path(), t);
+            if (!t && when < hour_ago) fs::remove(it->path(), gone);
+            continue;
+        }
+        for (const std::string* kind : {&pack, &idx}) {
+            if (name.size() != kind->size() + 16 || name.compare(0, kind->size(), *kind)) continue;
+            const std::string st = name.substr(kind->size());
+            if (st == mine || !stamps.insert(st).second) continue;
+            std::error_code t;
+            const auto when = fs::last_write_time(fs::path(folder) / (pack + st), t);
+            found.emplace_back(t ? fs::file_time_type::min() : when, st);   // (an index without its pack: oldest)
+        }
+    }
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    int removed = 0;
+    for (size_t i = others; i < found.size(); i++) {
+        std::error_code r1, r2;
+        const bool a = fs::remove(fs::path(folder) / (pack + found[i].second), r1),
+                   b = fs::remove(fs::path(folder) / (idx + found[i].second), r2);
+        removed += a || b;
+    }
+    return removed;
+}
+
 class Store {
 public:
     Store() = default;
@@ -125,6 +170,16 @@ public:
             good = held.ok && open_held();   // (not held a minute after another Longshot took it: none this run)
         }
         if (!good) return fail();
+        return true;
+    }
+    /// f() run under the store's lock (this process's threads and the other Longshots'), for files kept beside the store's
+    /// own that two of them must not write and read at once (vk_progcache.cpp's copy of a prepared program cache). false,
+    /// f not run: the lock not had within a minute
+    template <class F>
+    bool with_lock(F&& f) {
+        Held held(*this);
+        if (!held.ok) return false;
+        f();
         return true;
     }
     void close() {

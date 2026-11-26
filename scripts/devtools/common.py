@@ -1,7 +1,9 @@
 """What the development tools share: the checkout, this PC's development folder (dev_home: everything the tools keep, apart
 from the player's data), the RAM file system check and a file lock. Python's standard library only."""
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,12 +48,13 @@ def dev_home():
 # (what dev_home() holds, as `dev.py paths` prints it; docs/dev/reference/build.md, Where dev data lives)
 LAYOUT = (
     ("bases", "the shared bases, one per commit of main (`dev.py base`)"),
-    ("builder", "tools.lock's build tools, one folder per tools.lock, and their downloads"),
-    ("stores/objects", "the compiled objects every base and pack shares (LONGSHOT_OBJ_STORE)"),
-    ("stores/lifts", "the translations every base and pack shares (LONGSHOT_LIFT_STORE)"),
+    ("tools-store", "tools.lock's build tools, one folder per tools.lock, and their downloads (`longshot-builder dev tools install`)"),
+    ("store", "longshot-builder's stores every base and pack shares: compile/ (the objects), lifts/ (LONGSHOT_STORE)"),
+    ("cargo", "the cargo target folder longshot-builder is compiled in, for every checkout (`dev.py packs run`)"),
     ("queue", "the job queue's history.jsonl, jobs' tmp/ and NVIDIA shader cache nvcache/ (LONGSHOT_QUEUE_STATE)"),
     ("config", "dev_build.json and job_queue.json: your settings for dev.py's builds and the queue"),
-    ("work", "`mise run build`'s work folder (work-windows: the Windows game built on Linux)"),
+    ("builder-cache", "longshot-builder's per-user cache for every dev build (LONGSHOT_CACHE: runtimes, sources, tools), not a player's"),
+    ("work", "`mise run build`'s work folders, one per checkout (work-windows: the Windows game built on Linux)"),
     ("sdk", "the vendors' SDKs scripts/fetch.py downloads: ngx-linux, ngx-windows, ffx, xess"),
     ("runs", "game runs' output: longshot_ctl.py's control runs, memtour.py's, cover.py's"),
     ("update", "`dev.py update`'s worktree, work folder, backups of the game folder and history"),
@@ -66,14 +69,12 @@ def old_places():
     if WINDOWS:
         local = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Longshot")
         conf = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Longshot")
-        old = {"": os.path.join(local, "dev"), "stores/objects": os.path.join(local, "objects"),
-               "stores/lifts": os.path.join(local, "lifts"), "queue": os.path.join(local, "queue")}
+        old = {"": os.path.join(local, "dev"), "queue": os.path.join(local, "queue")}
     else:
         cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
         conf = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"),
                             "longshot")
-        old = {"": os.path.join(cache, "longshot-dev"), "stores/objects": os.path.join(cache, "longshot-objects"),
-               "stores/lifts": os.path.join(cache, "longshot-lifts"), "queue": os.path.join(cache, "longshot-queue")}
+        old = {"": os.path.join(cache, "longshot-dev"), "queue": os.path.join(cache, "longshot-queue")}
     # (these two files only: Tooling's sign-in and chat files share that folder and stay in it)
     for name in ("job_queue.json", "dev_build.json"):
         old["config/" + name] = os.path.join(conf, name)
@@ -94,6 +95,51 @@ def dev_path(rel):
         p = os.path.join(old, *rest.split("/")) if rest else old
         return p if os.path.exists(p) else new
     return new
+
+
+def work_dir(tree, windows=None):
+    """A checkout's own work folder for `mise run build` and `dev.py packs run` (longshot-builder's --work): work/<checkout>
+    (work-windows/ for the Windows game built on Linux, RX_TARGET=windows), keyed by the checkout's folder, so two checkouts
+    (two agents) never build in one"""
+    if windows is None:
+        windows = not WINDOWS and os.environ.get("RX_TARGET", "").strip().lower() == "windows"
+    tree = os.path.abspath(tree)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(tree)) or "tree"
+    key = "%s-%s" % (name, hashlib.sha1(os.path.normcase(tree).encode("utf-8")).hexdigest()[:8])
+    return os.path.join(dev_home(), "work-windows" if windows else "work", key)
+
+
+def old_data():
+    """[(path, what)]: data the tools of before kept and nothing reads now, there on this PC: the development folder's
+    builder/ (the build tools before tools-store/) and stores/ (the objects and lifts before store/), and the stores' older
+    places outside it (`dev.py bases --prune` lists and removes them)"""
+    home = dev_home()
+    found = [(os.path.join(home, "builder"), "the build tools before tools-store/"),
+             (os.path.join(home, "stores"), "the compiled objects and lifts before store/")]
+    if WINDOWS:
+        local = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Longshot")
+        found += [(os.path.join(local, "objects"), "the compiled objects of dev.py before the development folder"),
+                  (os.path.join(local, "lifts"), "the lifts of dev.py before the development folder")]
+    else:
+        cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+        found += [(os.path.join(cache, "longshot-objects"), "the compiled objects of dev.py before the development folder"),
+                  (os.path.join(cache, "longshot-lifts"), "the lifts of dev.py before the development folder")]
+    return [(p, what) for p, what in found if os.path.isdir(p) and not os.path.islink(p)]
+
+
+def tree_size(path):
+    """Bytes under path, each file once (hard links counted once), links not followed"""
+    seen, n = set(), 0
+    for top, _, files in os.walk(path):
+        for f in files:
+            try:
+                st = os.lstat(os.path.join(top, f))
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) not in seen:
+                seen.add((st.st_dev, st.st_ino))
+                n += st.st_size
+    return n
 
 
 def config_file(name):

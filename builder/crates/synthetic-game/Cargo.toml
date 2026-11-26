@@ -1,0 +1,18 @@
+[package]
+name = "synthetic-game"
+description = "The builder end to end on a synthetic game: a small AArch64 program packed as a .nup, built through every stage, run and built again"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dev-dependencies]
+build-compile.workspace = true
+build-core.workspace = true
+build-driver.workspace = true
+game-files = { workspace = true, features = ["testkit"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

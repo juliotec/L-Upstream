@@ -1,4 +1,4 @@
-/* Horizon OS layer (HLE of the Nintendo SDK at the nn:: boundary) for a64-kit games.
+/* Horizon OS layer (HLE of the Nintendo SDK at the nn:: boundary) for lifted games (after a64-kit's hos/: host/PROVENANCE.md).
 
    An import or SDK function the game calls is a C function `void imp_<mangled name>(Ctx *c)` (HLE(...) below):
    arguments in c->x[0..7], the result in c->x[0]. A symbol with such a definition is hooked both where the game
@@ -43,7 +43,7 @@ void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c);
    would never run. ENTRY_HOOK_SYM below is spliced.) */
 #define ENTRY_HOOK(addr) int entry_##addr(Ctx *c)
 /* ENTRY_HOOK_SYM(sym) { ... }: the same at the entry of the SDK's definition of the symbol (found in the image's symbol table),
-   spliced in by the standalone lift (nx2/entry_hooks.py; a new one lifts again) */
+   spliced in by the lift (builder/crates/edits/src/entry_hooks.rs; a new one lifts again) */
 #define ENTRY_HOOK_SYM(sym) int entry_sym_##sym(Ctx *c)
 /* ENTRY_HOOK_SYM_FROM(sym, min) { ... }: the same, called only when x2 (the size argument) is min or more: the spliced line
    tests it, so smaller calls stay in the lifted code without a call (the hook declines them too) */
@@ -64,9 +64,9 @@ void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c);
 #define HOS_SYSTEM_END 0x07000000ULL
 #define HOS_HEAP_BASE 0x1000000000ULL
 #define HOS_GUEST_SPACE (1ULL << 39)
-extern const uint64_t hos_image_base, hos_image_end;   /* (gen/hos_image.c) */
-extern const uint64_t hos_program_id;                  /* (gen/hos_image.c: main.npdm's) */
-extern const char hos_main_build_id[];                 /* (gen/hos_image.c: main's NSO build id, hex) */
+extern const uint64_t hos_image_base, hos_image_end;   /* (gen/image.c) */
+extern const uint64_t hos_program_id;                  /* (gen/image.c: main.npdm's) */
+extern const char hos_main_build_id[];                 /* (gen/image.c: main's NSO build id, hex) */
 /* (oot-recomp) MKW's own hooks at fixed guest addresses (its frame pacer in nvn_native.c / nn_vi.c, its idle loop in
    hos_thread.c) run only when the lifted main is Mario Kart World's: any other game has other code there */
 int hos_game_is_mkw(void);
@@ -186,6 +186,8 @@ extern uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size
 typedef struct HosThread HosThread;
 HosThread *hos_self(void);
 Ctx *hos_ctx(void);
+/* hos_setjmp.c: the setjmp slots of a context that ends (a thread destroyed, a fiber finalized or set up again) let go */
+void hos_setjmp_forget(const Ctx *c);
 uint64_t hos_thread_guest(HosThread *t);                   /* its nn::os::ThreadType in guest memory */
 uint64_t hos_thread_id(HosThread *t);
 HosThread *hos_thread_of(uint64_t guest_thread_type);      /* NULL if unknown */
@@ -211,6 +213,8 @@ int hos_cores(void);
 int hos_vcores_on(void);
 int hos_vcore_away(void);
 void hos_vcore_back(void);
+int hos_vcore_held(void);   /* 1 unless the calling guest thread gave its core up (host/game_call.c game_call) */
+int hos_vcore_kicked(void);   /* 1 while another thread asks the calling one for its core (game_call keeps the ask) */
 void hos_vcore_checkpoint(void);
 /* HOS_CHAIN=<path> (hos_chain.c, diagnostic): blocks, wake-ups, sleeps and presents of the guest threads for
    scripts/perf.py chain's critical path. kind: a wait that blocks begins / ends, a signal that can end one, a sleep begins /

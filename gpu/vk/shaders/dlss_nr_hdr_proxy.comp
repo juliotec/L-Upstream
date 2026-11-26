@@ -1,0 +1,13 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform sampler2D hdr_original;
+layout(binding=1,rgba16f) uniform writeonly image2D proxy;
+layout(push_constant) uniform P {ivec2 size;ivec2 source_size;int hdr;} pc;
+vec4 pixel(ivec2 p){vec4 a=texelFetch(hdr_original,clamp(p,ivec2(0),pc.source_size-1),0);if(pc.hdr==0)a.rgb*=a.rgb;return a;}
+void main(){
+ ivec2 p=ivec2(gl_GlobalInvocationID.xy);if(any(greaterThanEqual(p,pc.size)))return;
+ vec2 q=(vec2(p)+0.5)*vec2(pc.source_size)/vec2(pc.size)-0.5;ivec2 b=ivec2(floor(q));vec2 t=fract(q);
+ vec4 a=all(equal(pc.size,pc.source_size)) ? pixel(p) : mix(mix(pixel(b),pixel(b+ivec2(1,0)),t.x),mix(pixel(b+ivec2(0,1)),pixel(b+ivec2(1,1)),t.x),t.y);
+ vec3 h=max(a.rgb,vec3(0));float scale=pc.hdr!=0 ? 1.0+max(h.r,max(h.g,h.b)) : 1.0;
+ imageStore(proxy,p,vec4(sqrt(h/scale),a.a));
+}

@@ -1,9 +1,9 @@
 // The home folder and the user's name out of a line of the logs, one implementation for the host (C) and the renderer (C++):
 // the home folder, as a whole, written ~ (%USERPROFILE% on Windows), and the user's name as a folder of any path <user>
 // (/run/media/<user>, D:\Users\<user>, /var/home/<user>). The rest of the line, the rest of each path too, stays as it is.
-// Used by the game's log as it writes it (host/log_redact.c), the crash window (host/hos_crash_dialog.h
-// hos_crash_redact_line) and the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp redact). A line redacted again comes out
-// the same: ~, %USERPROFILE% and <user> are never a home folder or a name to take out.
+// Used by the game's log as it writes it (host/log_redact.c) and the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp
+// redact). The builder's crash window has a Rust port of it, byte for byte (builder/crates/crash/src/redact.rs). A line
+// redacted again comes out the same: ~, %USERPROFILE% and <user> are never a home folder or a name to take out.
 #ifndef LONGSHOT_REDACT_H
 #define LONGSHOT_REDACT_H
 

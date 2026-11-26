@@ -1,5 +1,5 @@
 /* (linux) The part of the Win32 API Longshot's runtime and Vulkan back end use, on POSIX: host/posix is on the include
-   path of Linux builds only (nx2/build.py), so `#include <windows.h>` finds this file and the Windows code paths stay
+   path of Linux builds only (builder/crates/build-compile), so `#include <windows.h>` finds this file and the Windows code paths stay
    as they are. Implemented in win32_posix.c (threads, events, fibers, files, memory, modules, exceptions, waveOut) and
    display_sdl.c (the window, keyboard, mouse).
 
@@ -180,6 +180,8 @@ void WakeAllConditionVariable(CONDITION_VARIABLE *cv);
 BOOL SleepConditionVariableSRW(CONDITION_VARIABLE *cv, SRWLOCK *l, DWORD ms, ULONG flags);
 BOOL SleepConditionVariableCS(CONDITION_VARIABLE *cv, CRITICAL_SECTION *cs, DWORD ms);
 BOOL WaitOnAddress(volatile void *addr, void *compare, SIZE_T size, DWORD ms);
+int hos_posix_wait_atomic32(volatile uint32_t *word, uint32_t expected, DWORD ms);
+void hos_posix_wake_atomic32(volatile uint32_t *word, int all);
 void WakeByAddressSingle(void *addr);
 void WakeByAddressAll(void *addr);
 

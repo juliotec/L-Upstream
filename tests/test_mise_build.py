@@ -12,50 +12,50 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN = """bash -c '
-work=1
-for a in "$@"; do case "$a" in --work|--work=*) work= ;; esac; done
-# (not the player builder folder, ~/.cache/longshot-builder or %LOCALAPPDATA%\\LongshotBuilder: `dev.py paths work`)
-[ -z "$work" ] || set -- --work "$(python3 -I scripts/dev.py paths work)" "$@"
-python3 -I nx2/make_game.py "$@"
-' build "$@"
-"""
+
+
+def tasks():
+    with (ROOT / "mise.toml").open("rb") as f:
+        return tomllib.load(f)["tasks"]
 
 
 class MiseBuildTest(unittest.TestCase):
 
     def test_task_declaration(self):
-        with (ROOT / "mise.toml").open("rb") as f:
-            tasks = tomllib.load(f)["tasks"]
-        build = tasks["build"]
-        self.assertEqual(build["depends"], ["build-deps"])
-        self.assertIn("-r requirements.txt", tasks["build-deps"]["run"])
+        t = tasks()
+        build = t["build"]
         self.assertEqual(build["shell"], "bash -c")
-        self.assertEqual(build["run"], RUN)
-        self.assertIn("nx2/make_game.py", build["description"])
-
-        # (build-dev: LONGSHOT_JOBS, else make_game.py's default_jobs, one compiler per CPU thread but one; build.py alone
-        # compiles one file at a time)
-        expected = {
-            "build-dev": "\njobs=\"${LONGSHOT_JOBS:-0}\"\n"
-                         "[ \"$jobs\" != 0 ] || jobs=\"$(python3 -I -c 'import os; print(max(1, (os.cpu_count() or 2) - 1))')\"\n"
-                         "python3 -I nx2/build.py --standalone --jobs \"$jobs\" \"$@\"\n",
-            "dev": "python3 -I scripts/dev.py \"$@\"",
-        }
-        for name, run in expected.items():
-            with self.subTest(task=name):
-                task = tasks[name]
-                self.assertEqual(task["shell"], "bash -c")
-                self.assertEqual(task["run"].lstrip("\n"), run.lstrip("\n"))
-                self.assertEqual(task.get("depends"), ["build-deps"])
-        self.assertEqual(tasks["setup"]["depends"], ["build-deps", "test-deps"])
-        self.assertEqual(tasks["setup"]["run"], "python3 -I scripts/setup.py")
-        self.assertIn("never measured", tasks["build-dev"]["description"])
+        self.assertEqual(build["run"], "python3 -I scripts/dev.py packs run --")
+        self.assertIn("longshot-builder", build["description"])
+        self.assertIn("packs run -- compile", t["build-dev"]["run"])
+        self.assertIn("never measured", t["build-dev"]["description"])
+        self.assertEqual(t["dev"]["run"], 'python3 -I scripts/dev.py "$@"')
+        for name in ("build", "build-dev", "dev", "setup"):
+            self.assertNotIn("build-deps", t[name].get("depends", []), name)   # (no Python packages for a build)
+        self.assertNotIn("build-deps", t)
+        self.assertEqual(t["setup"]["run"], "python3 -I scripts/setup.py")
+        self.assertIn("dev tools install . --system", t["tools"]["run"])
+        for check in ("cargo fmt --all --check", "cargo clippy --workspace --all-targets --locked -- -D warnings",
+                      "cargo test --workspace --locked"):
+            self.assertIn(check, t["rust"]["run"])
         # (a non-Linux setup goes on without the checks' Linux tools)
-        self.assertIn("exit 0", tasks["test-deps"]["run"].split("fi", 1)[0])
-        shown = sorted(n for n, t in tasks.items() if not t.get("hide"))
-        self.assertEqual(shown, ["build", "build-dev", "ci", "ci:smoke", "dev", "lint", "setup", "test", "test-changed", "tracy-tools"],
+        self.assertIn("exit 0", t["test-deps"]["run"].split("fi", 1)[0])
+        shown = sorted(n for n, task in t.items() if not task.get("hide"))
+        # (tools: setup's step that puts tools.lock's build tools in the checkout, as a player's build has them; setup.md)
+        self.assertEqual(shown, ["build", "build-dev", "ci", "dev", "lint", "rust", "setup", "test", "test-changed",
+                                 "tools", "tracy-tools"],
                          "a new task is one more thing to learn: fold it into one of these, or hide a helper")
+
+    def test_rust_is_pinned(self):
+        """mise.toml's Rust is the one docs/dev/reference/builder.md and scripts/renhdrum.py (the release's pinned Rust) name"""
+        with (ROOT / "mise.toml").open("rb") as f:
+            rust = tomllib.load(f)["tools"]["rust"]
+        renhdrum = (ROOT / "scripts" / "renhdrum.py").read_text(encoding="utf-8")
+        self.assertIn('RUST_VERSION = "%s"' % rust["version"], renhdrum)
+        builder = (ROOT / "docs" / "dev" / "reference" / "builder.md").read_text(encoding="utf-8")
+        self.assertIn("Rust %s, as `mise.toml` pins it (`scripts/renhdrum.py`'s `RUST_VERSION` pins the same" % rust["version"],
+                      builder)
+        self.assertIn("clippy", rust["components"])
 
     def test_windows_tooling_and_graceful_launcher(self):
         """pre-commit comes from PyPI (Aqua has no Windows build), and scripts/run-vk.ps1 -Graceful closes the game's window
@@ -77,49 +77,30 @@ class MiseBuildTest(unittest.TestCase):
         self.assertIn("if ($Graceful) { exit $p.ExitCode }", launcher)
 
     @unittest.skipUnless(shutil.which("mise") and shutil.which("bash") and shutil.which("python3"),
-                         "standalone task help needs mise, bash and python3")
-    def test_standalone_and_dev_help(self):
-        """build-dev and dev reach nx2/build.py's and dev.py's help without starting a build."""
-        for name, args, expected in (("build-dev", ["--help"], "usage: build.py"), ("dev", ["packs", "--help"], "usage: dev.py packs")):
-            with self.subTest(task=name):
-                done = subprocess.run(["mise", "run", "--yes", name, "--", *args], cwd=ROOT,
-                                      text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
-                self.assertEqual(done.returncode, 0, done.stdout)
-                self.assertIn(expected, done.stdout)
-
-    @unittest.skipUnless(shutil.which("mise") and shutil.which("bash") and shutil.which("python3"),
                          "the mise build task needs mise, bash and python3")
     def test_arguments_arrive_unchanged(self):
-        """Run a fake builder via mise, with no dump or real build, covering spaces and a trailing backslash: the arguments
-        arrive as given, after the development folder's --work when they name none."""
+        """`mise run build` with a fake dev.py, with no dump or real build, covering spaces and a trailing backslash: the
+        arguments arrive at `dev.py packs run --` as given (which adds the development folder's work/ when they name none:
+        test_dev_packs)"""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            (root / "nx2").mkdir()
             (root / "scripts").mkdir()
             # (TOML's basic strings take JSON's escapes)
             (root / "mise.toml").write_text(
-                '[tasks.build]\ndescription = "argv recorder"\nshell = "bash -c"\nrun = %s\n' % json.dumps(RUN),
+                '[tasks.build]\ndescription = "argv recorder"\nshell = "bash -c"\nrun = %s\n' % json.dumps(tasks()["build"]["run"]),
                 encoding="utf-8")
-            (root / "nx2" / "make_game.py").write_text(
-                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
             (root / "scripts" / "dev.py").write_text(
-                "import sys\nassert sys.argv[1:] == ['paths', 'work']\nprint('/dev home/work')\n", encoding="utf-8")
-            args = ["--nup", "Game [v131072] with spaces.nup", "--out", "C:\\Fake Folder\\", "--language", "en-US"]
-            for given, expected in ((args, ["--work", "/dev home/work"] + args),
-                                    (args + ["--work", "my work"], args + ["--work", "my work"]),
-                                    (["--work=w"] + args, ["--work=w"] + args)):
+                "import json, sys\nassert sys.argv[1:4] == ['packs', 'run', '--'], sys.argv\nprint(json.dumps(sys.argv[4:]))\n",
+                encoding="utf-8")
+            args = ["build", "--game", "Game [v131072] with spaces.nup", "--out", "C:\\Fake Folder\\", "--language", "en-US"]
+            for given, expected in ((args, args), (args + ["--work", "my work"], args + ["--work", "my work"])):
                 with self.subTest(given=given):
                     done = subprocess.run(["mise", "run", "--yes", "build", *given], cwd=root, env=os.environ.copy(),
                                           text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
                     output = done.stdout.strip().splitlines()
                     self.assertEqual(done.returncode, 0, done.stdout)
                     self.assertTrue(output, "mise produced no argv to check")
-                    try:
-                        actual = json.loads(output[-1])
-                    except json.JSONDecodeError:
-                        self.fail("the fake builder did not print JSON argv: " + done.stdout)
-                    self.assertEqual(actual, expected)
-
+                    self.assertEqual(json.loads(output[-1]), expected)
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ are the API side and the window, from the same commit (see `host/PROVENANCE.md`)
 Licensing as in TOTKPort's `NOTICE.md`: suyu's parts are GPL-2.0-or-later / GPL-3.0-or-later per file (texts in
 `third_party/suyu/`); `render/nvn_api.h` (h1k421, as adapted by jhaizhou), the NVN layer's design (jhaizhou's
 d2r-mobile / MacNativeGames) and the FSR 1 port in `render/rx_present_fx.cpp` are MIT; `render/renderdoc_app.h` is
-RenderDoc's MIT header. wgpu-native (MIT or Apache-2.0) is not vendored: `nx2/build.py` takes TOTKPort's build of it
+RenderDoc's MIT header. wgpu-native (MIT or Apache-2.0) is not vendored: the old Python builder took TOTKPort's build of it
 (`WGPU_NATIVE` for another).
 
 mkw-recomp's changes, for the Switch 2:

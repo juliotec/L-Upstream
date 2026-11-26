@@ -1,26 +1,33 @@
 """The saved steering rate in f_8263e8e0 does not decay on short steps (#312).
 
-Apply the real patch pipeline to an authored update with the two short arithmetic
-anchors, then compile and check its saved rate. Both signs, rate-limited and
+The two bounds' multiplies are the replace sites steer.rateLower and steer.rateUpper
+(game/sites/sites.toml, game/oot_sites.c). An authored update with the two
+multiplies is built with the sites' hooks as the lift lowers them (tests/sitehooks.py) and, side by
+side, with the text patch's arithmetic they replaced (OLD_ANCHOR, as main had it),
+then compiled and its saved rate checked. Both signs, rate-limited and
 target-limited turns, and the unchanged step >= 1 path are covered. No game files
 or lifted function body are used. The floating-point stand-ins check ordinary
-finite arithmetic and helper selection, not guest exception flags.
+finite arithmetic and helper selection, not guest exception flags (the hooks call
+the runtime's exact helpers, recomp_fpe_*, the patch the lift's fast ones, which
+fall back to those: here both are the same stand-ins).
 
-python -I -B tests/test_saved_turn_rate.py [--cc gcc]
+Transition check: main's text-patch C kept here as the oracle shows the sites do what it did; remove it once a
+deliberate behaviour change needs it.
+
+python -I -B tests/test_saved_turn_rate.py [--cc clang] [--cargo cargo]
 """
 import argparse
-import contextlib
-import io
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cc", "gcc"]
+RUN_ALL_ARGS = ["--cc", "{clang}", "--cargo", "{cargo}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (python -I leaves this folder off the path)
+from sitecheck import site, callback, slot  # noqa: E402
+import sitehooks  # noqa: E402
 
 ANCHOR = """    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c->vreg[1],4);_z=(_a^_b)&0x80000000ULL;
     _v=a64_fpx_mul32_fma32(c,_a,_b,_z);
@@ -29,6 +36,13 @@ ANCHOR = """    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c-
     _v=a64_fpx_mul32_fma32(c,_a,_b,_z);
     a64_vset64(c->vreg[0],_v);}
 """
+# (the text patch's arithmetic on main)
+OLD_ANCHOR = ANCHOR.replace(
+    "    _v=a64_fpx_mul32_fma32(c,_a,_b,_z);",
+    "    if ((uint32_t)c->vreg[8][0] > 0 && (uint32_t)c->vreg[8][0] < 0x3f800000u)\n"
+    "        _v=a64_fpx_div32_div32(c,_a,_b);\n"
+    "    else _v=a64_fpx_mul32_fma32(c,_a,_b,_z);")
+FMULS = ANCHOR.split("    {uint64_t")[1:]   # (each multiply's lift text: hooked one by one)
 HEAD = "void f_8263e8e0(Ctx *__restrict A64_NOESC c) {\n"
 UPDATE = HEAD + ANCHOR + """    const float rate = as_float(c->vreg[2][0]);
     const float lower = as_float(c->vreg[1][0]);
@@ -55,6 +69,9 @@ static uint64_t a64_fpx_mul32_fma32(Ctx *c, uint64_t a, uint64_t b, uint64_t z) 
 uint64_t a64_fpx_div32_div32(Ctx *c, uint64_t a, uint64_t b) {
     c->divides++; return as_bits(as_float(a) / as_float(b));
 }
+/* (the runtime's exact helpers the hooks call: the same stand-ins) */
+uint64_t recomp_fpe_div32(Ctx *c, uint64_t a, uint64_t b) { return a64_fpx_div32_div32(c, a, b); }
+uint64_t recomp_fpe_fma32(Ctx *c, uint64_t a, uint64_t b, uint64_t z) { return a64_fpx_mul32_fma32(c, a, b, z); }
 @UPDATE@
 static int failures, checks;
 static void check(float step, float rate, float applied, float expected, int corrected) {
@@ -125,36 +142,39 @@ int main(void) {
 '''
 
 
+def hooked(on=1):
+    """LIFTED with the two multiplies as the replace sites' hooks around them, the callbacks and slots ahead"""
+    lower = site("steer.rateLower", "f_8263e8e0", "replace", 0x238)
+    upper = site("steer.rateUpper", "f_8263e8e0", "replace", 0x23c)
+    new = "".join(sitehooks.line(x) + "\n    {uint64_t" + text + sitehooks.REPLACE_END + "\n" for x, text in zip((lower, upper), FMULS))
+    calls = (callback("static void turn_bound(") + "\n" + callback("int hos_site_turn_rate_lower(") + "\n"
+             + callback("int hos_site_turn_rate_upper(") + "\n" + slot(lower, on) + slot(upper, on))
+    return calls + LIFTED.replace(HEAD + ANCHOR, HEAD + new, 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
+    parser.add_argument("--cc", default="clang")
+    parser.add_argument("--cargo")
     args = parser.parse_args()
-    patched, counts, _ = oot_patches.patch_file(LIFTED, "code_035.c")
+    sitehooks.use(args.cc, args.cargo)
     with tempfile.TemporaryDirectory(prefix="saved-turn-rate-") as directory:
         source, binary = Path(directory) / "fixture.c", Path(directory) / "fixture.exe"
-        command = [args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(binary)]
-        source.write_text(FIXTURE.replace("@UPDATE@", patched), encoding="utf-8")
-        subprocess.run(command, check=True)
-        subprocess.run([str(binary)], check=True, timeout=30)
-        source.write_text(FIXTURE.replace("@UPDATE@", LIFTED), encoding="utf-8")
-        subprocess.run(command, check=True)
-        native = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
-        if native.returncode == 0 or "FAIL: saved rate step=0.25" not in native.stdout:
-            raise SystemExit("FAIL: the original arithmetic did not fail the short-step check")
-        print("PASS: original arithmetic compiles and fails the same short-step checks")
-    assert counts["saved turn rate"] == 1
-    assert UNRELATED in patched
-    again, repeated, _ = oot_patches.patch_file(patched, "code_035.c")
-    assert again == patched and repeated["saved turn rate"] == 1
-    for altered in (LIFTED.replace("vreg[8],4)", "vreg[9],4)"),
-                    LIFTED.replace(HEAD, HEAD + ANCHOR), UNRELATED):
-        output, missing, _ = oot_patches.patch_file(altered, "code_035.c")
-        assert output == altered and missing["saved turn rate"] == 0
-        warning = io.StringIO()
-        with contextlib.redirect_stdout(warning):
-            oot_patches.report([Path("code_035.c")], [missing])
-        assert "WARNING: the saved turn rate was found 0 times" in warning.getvalue()
-    print("PASS: scoped, idempotent, and missing or ambiguous anchor warns without a partial fix")
+
+        def build(update):
+            text = FIXTURE.replace("@UPDATE@", update)
+            source.write_text(text, encoding="utf-8")
+            subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(source),
+                            *sitehooks.objects(directory, text), "-o", str(binary)], check=True)
+        for update in (hooked(), LIFTED.replace(HEAD + ANCHOR, HEAD + OLD_ANCHOR, 1)):   # (the hooks; the text patch)
+            build(update)
+            subprocess.run([str(binary)], check=True, timeout=30)
+        for what, update in (("the original arithmetic", LIFTED), ("the hooks off", hooked(0))):
+            build(update)
+            native = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
+            if native.returncode == 0 or "FAIL: saved rate step=0.25" not in native.stdout:
+                raise SystemExit("FAIL: %s did not fail the short-step check" % what)
+        print("PASS: the original arithmetic, and the hooks off, compile and fail the same short-step checks")
 
 
 if __name__ == "__main__":

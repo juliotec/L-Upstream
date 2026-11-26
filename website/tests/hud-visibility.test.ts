@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
-import { MODULES_MARKER, readGraphicsSettings } from '../src/repo-docs/graphics-settings.ts';
+import { GAME_ROWS_MARKER, MODULES_MARKER, readGraphicsSettings } from '../src/repo-docs/graphics-settings.ts';
 
 const page = await readFile(new URL('../../docs/user/graphics-and-controls.md', import.meta.url), 'utf8');
 const moduleDir = new URL('../../gpu/vk/menu/', import.meta.url);
 const modules = await Promise.all((await readdir(moduleDir)).filter(name => name.endsWith('.cpp')).sort()
   .map(name => readFile(new URL(name, moduleDir), 'utf8')));
-const menu = await readFile(new URL('../../gpu/vk/vk_menu.cpp', import.meta.url), 'utf8') + MODULES_MARKER + modules.join('\n');
+const menu = await readFile(new URL('../../gpu/vk/vk_menu.cpp', import.meta.url), 'utf8') + MODULES_MARKER + modules.join('\n') +
+  GAME_ROWS_MARKER + await readFile(new URL('../../game/menu/rows.c', import.meta.url), 'utf8');
 
 test('custom HUD sliders and reset are published with their visibility condition', () => {
   const names = ['Hearts and magic horizontal', 'Hearts and magic vertical', 'Hearts and magic size',

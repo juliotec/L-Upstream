@@ -23,10 +23,10 @@ An update:
   2. backs up the folder's build files (the game, the renderer, image.bin, longshot_env.txt, longshot_options.ini, the
      texts...) into update/backups/, the last three kept; saves and mods are not touched by a build;
   3. builds that tree into the folder with its own dev.py when it has this command (so its own tools.lock and builder),
-     through the job queue, in the player's build environment, sharing the development folder's stores: when the
-     translation did not change, only what changed compiles. A folder that keeps its game files (romfs/,
-     .longshot_exefs/) is built again from them (make_game.py --update); another from the game files dev.py finds
-     (dev_build.json's "romfs" and "exefs");
+     through the job queue, with its own longshot-builder (`dev.py packs run`) in the player's build environment, sharing
+     the development folder's stores: only the units and objects that changed are lifted and compiled. A folder
+     longshot-builder made is built again from the game its longshot_build.json names (longshot-builder update); another
+     from the game dev.py finds (LONGSHOT_DEV_GAME, dev_build.json's "game", the newest .nup in ~/Games);
   4. on failure, or when stopped, puts the backup back (a stopped update is put back by the next `dev.py update` command);
      on success writes the commit into the folder (.longshot_dev_update; the picks into .longshot_dev_update_picks, the
      open pull requests into .longshot_dev_update_open) and what came in into update/history.md. An update without
@@ -60,10 +60,16 @@ MARK = ".longshot_dev_update"   # (in the game folder: the commit of the branch 
 PICKS = ".longshot_dev_update_picks"   # (and, after --pick, the commits picked onto it: a JSON list)
 OPEN = ".longshot_dev_update_open"   # (and, after --with, the open pull requests merged on top: [{pr, sha, title}])
 KEEP = 3
+# (longshot-builder's record of a game folder, what `update` builds it from: its name, then the names an earlier builder
+# gave it)
+RECORDS = ("longshot_build.json", "longshot_builder.json", "longshot.json")
 GAME_EXE = "longshot.exe" if common.WINDOWS else "longshot"
 BACKED_UP = (GAME_EXE, "longshot_vk.dll" if common.WINDOWS else "longshot_vk.so", "image.bin", "longshot_env.txt",
              "longshot_options.ini", "language.txt", "exefs_patches.txt", "longshot_pipeline_states_shipped.bin", MARK,
-             PICKS, OPEN)
+             PICKS, OPEN,
+             # (longshot-builder's notes: what it installed, which a rollback must put back with the files, or the next build
+             # takes the folder's old files for the new ones; and what `update` builds the folder from)
+             ".longshot_installed.json", *RECORDS, "longshot_version.txt")
 BACKED_UP_DIRS = ("texts",)
 PR_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
 PICKER = ["-c", "user.name=dev.py update", "-c", "user.email=dev-update@localhost"]   # (the picks' committer: local only)
@@ -431,20 +437,18 @@ def open_folder(path):
 
 # ---- the build ----
 def build_cmd(tree, game, log):
-    """(python, env, make_game.py's command) for the folder"""
-    py, env = build.environment()
-    env["LONGSHOT_KEEP_BUILD_FILES"] = "1"
-    if os.path.isdir(os.path.join(game, "romfs")) and os.path.isdir(os.path.join(game, ".longshot_exefs")):
-        args = ["--update", game]
+    """(env, the command) of the folder's build: `dev.py packs run` of the tree, longshot-builder's update of a folder it
+    built (its longshot_build.json names the game; an old name of it in a folder an earlier builder made), else its build
+    from the game dev.py finds"""
+    env = build.environment()
+    if any(os.path.isfile(os.path.join(game, r)) for r in RECORDS):
+        args = ["update", game]
     else:
-        romfs, exefs = build.game_files(build.config())
-        args = ["--romfs", romfs, "--exefs", exefs, "--out", game, "--language", "en-US"]
-    if common.WINDOWS:
-        build.windows_prebuilt(tree)
-    cmd = [py, "-I", "nx2/make_game.py"] + args + ["--work", part("work"), "--log", log]
-    if build.config().get("fsr"):
-        cmd.append("--fsr")
-    return py, env, cmd
+        args = ["build", "--game", build.game_source(build.config()), "--out", game, "--language", "en-US",
+                "--upscaler", build.upscalers(env)]
+    cmd = [sys.executable, "-I", os.path.join(tree, "scripts", "dev.py"), "packs", "run", "--tree", tree, "--"] + args + \
+        ["--work", part("work"), "--log", log]
+    return env, cmd
 
 
 def run_build(tree, game, commit):
@@ -457,7 +461,7 @@ def run_build(tree, game, commit):
 
 
 def build_here(tree, game, commit):
-    py, env, cmd = build_cmd(tree, game, part("build-%s.log" % commit[:8]))
+    env, cmd = build_cmd(tree, game, part("build-%s.log" % commit[:8]))
     say("building %s into %s (the log: %s)" % (commit[:8], game, part("build-%s.log" % commit[:8])))
     return jobqueue.run("update-" + commit[:8], "build", cmd, environ=env, cwd=tree)
 
